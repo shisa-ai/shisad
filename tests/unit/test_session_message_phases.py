@@ -369,6 +369,77 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         return dict(arguments)
 
 
+class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.plan_violations: list[str] = []
+        self._registry = SimpleNamespace(
+            get_tool=lambda _tool_name: ToolDefinition(
+                name=ToolName("fs.list"),
+                description="list files",
+                capabilities_required=[Capability.FILE_READ],
+            )
+        )
+        self._pep = SimpleNamespace(
+            evaluate=lambda tool_name, _arguments, _context: PEPDecision(
+                kind=PEPDecisionKind.ALLOW,
+                reason="allow",
+                tool_name=tool_name,
+                risk_score=0.0,
+            )
+        )
+
+    async def _evaluate_action(self, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            decision=ControlDecision.BLOCK,
+            reason_codes=["trace:tdg_confirmation_required"],
+            trace_result=SimpleNamespace(
+                allowed=False,
+                reason_code="trace:tdg_confirmation_required",
+                risk_tier=RiskTier.MEDIUM,
+            ),
+            consensus=SimpleNamespace(
+                votes=[
+                    SimpleNamespace(
+                        voter="ResourceAccessMonitor",
+                        decision=SimpleNamespace(value="BLOCK"),
+                        risk_tier=RiskTier.HIGH,
+                        reason_codes=["resource:outside_workspace_root"],
+                        details={},
+                    ),
+                    SimpleNamespace(
+                        voter="ExecutionTraceVerifier",
+                        decision=SimpleNamespace(value="BLOCK"),
+                        risk_tier=RiskTier.MEDIUM,
+                        reason_codes=["trace:tdg_confirmation_required"],
+                        details={},
+                    ),
+                ]
+            ),
+            action=SimpleNamespace(
+                action_kind=ActionKind.FS_LIST,
+                resource_id="../outside",
+                resource_ids=["../outside"],
+                origin=SimpleNamespace(model_dump=lambda mode="json": {}),
+            ),
+        )
+
+    async def _record_plan_violation(
+        self,
+        *,
+        sid: SessionId,
+        tool_name: ToolName,
+        action_kind: ActionKind,
+        reason_code: str,
+        risk_tier: RiskTier,
+    ) -> None:
+        _ = (sid, tool_name, action_kind, risk_tier)
+        self.plan_violations.append(reason_code)
+
+    async def _observe_pep_reject_signal(self, **_kwargs: object) -> None:
+        return None
+
+
 class _ValidateWritePathHarness(SessionImplMixin):
     def __init__(self, session: Session) -> None:
         self._internal_ingress_marker = object()
@@ -477,6 +548,81 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+
+
+@pytest.mark.asyncio
+async def test_m9_trace_confirmation_with_resource_block_queues_confirmation() -> None:
+    harness = _TraceConfirmationRoutingHarness()
+    sid = SessionId("sess-g1")
+    planner_context = SessionMessagePlannerContextResult(
+        validated=_validation_result(
+            params={"session_id": str(sid), "content": "list the similar files"}
+        ),
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.FILE_READ},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.FILE_READ}, session_id=sid),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "../outside"},
+        reasoning="List the user-requested similar files.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.pending_confirmation == 1
+    assert result.pending_confirmation_ids == ["c-1"]
+    assert result.rejected == 0
+    assert harness.plan_violations == []
 
 
 @pytest.mark.asyncio

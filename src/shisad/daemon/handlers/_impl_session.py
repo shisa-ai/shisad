@@ -8039,11 +8039,27 @@ class SessionImplMixin(HandlerMixinBase):
                 operator_owned_cli_input=operator_owned_cli_input,
                 raw_user_text=validated.content,
             )
-            trace_only_confirmation_block = trace_reason_requires_confirmation(
-                cp_eval.trace_result.reason_code
-            ) and not any(
-                vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
+            blocking_voters = [
+                str(getattr(vote, "voter", ""))
                 for vote in cp_eval.consensus.votes
+                if str(getattr(vote.decision, "value", vote.decision)) == "BLOCK"
+            ]
+            non_trace_blocking_voters = [
+                voter for voter in blocking_voters if voter != TRACE_VOTER_NAME
+            ]
+            trace_confirmation_reason = trace_reason_requires_confirmation(
+                cp_eval.trace_result.reason_code
+            )
+            trace_only_confirmation_block = (
+                trace_confirmation_reason and not non_trace_blocking_voters
+            )
+            trace_resource_confirmation_block = (
+                trace_confirmation_reason
+                and bool(non_trace_blocking_voters)
+                and all(voter == "ResourceAccessMonitor" for voter in non_trace_blocking_voters)
+            )
+            trace_confirmation_routable_block = (
+                trace_only_confirmation_block or trace_resource_confirmation_block
             )
             trace_only_stage2_block = (
                 cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
@@ -8085,10 +8101,10 @@ class SessionImplMixin(HandlerMixinBase):
                 block_threshold=self._policy_loader.policy.risk_policy.block_threshold,
             )
             if cp_eval.decision == ControlDecision.BLOCK:
-                # Trace-only stage2 can route to confirmation, but only when the
-                # underlying PEP result is already confirmable or can be retried
-                # under an explicit, scoped elevation request.
-                if trace_only_confirmation_block and (
+                # Confirmable trace failures can route to confirmation, including
+                # ResourceAccessMonitor corroboration; PEP still enforces hard
+                # policy rejects before any action can run.
+                if trace_confirmation_routable_block and (
                     pep_decision.kind.value != "reject" or pep_elevation is not None
                 ):
                     final_kind = "require_confirmation"
@@ -8217,7 +8233,7 @@ class SessionImplMixin(HandlerMixinBase):
                         (
                             "Trace gate decision: tool=%s action_kind=%s reason=%s "
                             "trace_only_confirmation=%s trace_only_stage2=%s "
-                            "trace_only_stage2_shell_exec=%s "
+                            "trace_only_stage2_shell_exec=%s trace_resource_confirmation=%s "
                             "blocking_voters=%s"
                         ),
                         proposal.tool_name,
@@ -8226,13 +8242,10 @@ class SessionImplMixin(HandlerMixinBase):
                         trace_only_confirmation_block,
                         trace_only_stage2_block,
                         trace_only_stage2_shell_exec,
-                        [
-                            vote.voter
-                            for vote in cp_eval.consensus.votes
-                            if vote.decision.value == "BLOCK"
-                        ],
+                        trace_resource_confirmation_block,
+                        blocking_voters,
                     )
-                if not cp_eval.trace_result.allowed and not trace_only_confirmation_block:
+                if not cp_eval.trace_result.allowed and not trace_confirmation_routable_block:
                     await self._record_plan_violation(
                         sid=sid,
                         tool_name=proposal.tool_name,
