@@ -101,6 +101,16 @@ Version must be updated in both places:
 - [ ] Record the exact release-close validation commands and outcomes in the
       active implementation/worklog doc; if any live lane cannot be run, note
       why before claiming the release is closeable
+- [ ] Run the Discord `#shisad` publish gate with the current tree before
+      claiming the release is publish-ready. See **Discord #shisad Publish
+      Gate** below.
+- [ ] Record the Discord publish-gate evidence in the active
+      implementation/worklog doc: redacted command shape, environment posture,
+      target channel, session/message identifiers or transcript/log path when
+      available, and result.
+- [ ] Stop before GitHub tag/PyPI publish if the current tree cannot post to
+      Discord `#shisad`, unless the human lead records an explicit narrowed
+      publish scope.
 - [ ] Remove stale build artifacts:
       `rm -rf dist/`
 - [ ] Build fresh artifacts:
@@ -144,6 +154,82 @@ Version must be updated in both places:
       or `dismissed_reason='used in tests'` as appropriate. Record alert IDs
       and disposition in the active worklog when they affect release-close.
 - [ ] Confirm the tree is clean: `git status -sb`
+
+## Discord #shisad Publish Gate
+
+Before a release is considered publish-ready, run the current shisad tree
+against the configured Discord integration and confirm it can post a low-noise
+test message or approved release announcement to Discord `#shisad`.
+
+The gate must use shisad's runtime channel path, not a direct Discord API
+client. One acceptable command shape is:
+
+```bash
+export RUNNER_INHERIT_SHISAD_ENV=1
+export SHISAD_DATA_DIR=/tmp/shisad-release-data
+export SHISAD_SOCKET_PATH=/tmp/shisad-release.sock
+export SHISAD_POLICY_PATH=/tmp/shisad-release-policy.yaml
+
+bash runner/harness.sh start --no-debug
+
+uv run python - <<'PY'
+import asyncio
+import os
+
+from shisad.core.api.transport import ControlClient
+
+
+async def main() -> None:
+    socket_path = os.environ["SHISAD_SOCKET_PATH"]
+    channel_id = os.environ["SHISAD_DISCORD_DEFAULT_CHANNEL_ID"]
+    client = ControlClient(socket_path)
+    await client.connect()
+    try:
+        result = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "<allowlisted-release-user-id>",
+                    "workspace_hint": "",
+                    "reply_target": channel_id,
+                    "content": (
+                        "Reply with exactly the approved release announcement "
+                        "or the approved low-noise publish-gate smoke text."
+                    ),
+                    "message_id": "release-publish-gate-vX.Y.Z",
+                }
+            },
+        )
+        delivery = dict(result.get("delivery", {}) or {})
+        target = dict(delivery.get("target", {}) or {})
+        if target.get("recipient"):
+            target["recipient"] = "<Discord #shisad default channel id>"
+        delivery["target"] = target
+        print(
+            {
+                "delivery": delivery,
+                "session_id": result.get("session_id", ""),
+                "pending_confirmation_ids": result.get("pending_confirmation_ids", []),
+            }
+        )
+    finally:
+        await client.close()
+
+
+asyncio.run(main())
+PY
+
+bash runner/harness.sh stop
+```
+
+Evidence must not print or paste bot tokens, webhook URLs, raw environment
+dumps, or unredacted logs. Record only the secret-loading posture (for example,
+which approved profile or secret loader was used), the target as
+`Discord #shisad`, the command shape with secret values redacted, the session
+or message identifier when available, and the result. If the post cannot be
+completed, stop the publish process and record the blocker or the human lead's
+explicit narrowed-scope rationale before any tag or PyPI publish action.
 
 ## CHANGELOG Style
 
