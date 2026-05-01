@@ -412,6 +412,57 @@ async def test_memory_promote_identity_candidate_rejects_quarantined_candidate_b
 
 
 @pytest.mark.asyncio
+async def test_memory_promote_identity_candidate_can_include_unowned_without_value(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    candidate_value = "I prefer tea over coffee."
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="preference",
+        key="preference:tea",
+        value=candidate_value,
+        predicate="likes(tea)",
+        source=MemorySource(
+            origin="external",
+            source_id="candidate-promote-unowned-1",
+            extraction_method="identity.candidate",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="candidate-promote-unowned-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        scope="user",
+        source_id="turn-promote-unowned-1",
+        content=candidate_value,
+    )
+
+    result = await harness.do_memory_promote_identity_candidate(
+        {
+            "ingress_context": context.handle_id,
+            "candidate_id": candidate.entry.id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["supersedes"] == candidate.entry.id
+    assert entry["value"] == candidate_value
+
+
+@pytest.mark.asyncio
 async def test_memory_promote_skill_rejects_quarantined_candidate_before_binding_check(
     tmp_path: Path,
 ) -> None:

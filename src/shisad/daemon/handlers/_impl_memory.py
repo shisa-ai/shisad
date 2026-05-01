@@ -599,6 +599,7 @@ class MemoryImplMixin(HandlerMixinBase):
             raise ValueError("ingress_context is required for memory.promote_identity_candidate")
         candidate_id = str(params.get("candidate_id", "")).strip()
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        include_unowned = bool(params.get("include_unowned", False))
         context = self._memory_ingress_registry.resolve(handle_id)
         promoted_value = params.get("value")
         if promoted_value is None:
@@ -607,6 +608,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 include_pending_review=True,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                include_unowned=include_unowned,
             )
             promoted_value = candidate.value if candidate is not None else None
         if promoted_value is None:
@@ -641,7 +643,7 @@ class MemoryImplMixin(HandlerMixinBase):
             taint_labels=context.taint_labels,
             user_id=user_id,
             workspace_id=workspace_id,
-            include_unowned=bool(params.get("include_unowned", False)),
+            include_unowned=include_unowned,
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 

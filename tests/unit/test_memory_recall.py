@@ -1000,6 +1000,30 @@ def test_m7_identifier_terms_drive_conflict_annotation(tmp_path: Path) -> None:
     assert {item.conflict for item in pack.results} == {True}
 
 
+def test_m7_identifier_only_query_drives_conflict_annotation(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-identifier-only-positive",
+        source_type="tool",
+        collection="project_docs",
+        content="M7 is the release with owner Nina.",
+    )
+    pipeline.ingest(
+        source_id="m7-identifier-only-negated",
+        source_type="tool",
+        collection="tool_outputs",
+        content="M7 is not the release with owner Nina.",
+    )
+
+    pack = pipeline.compile_recall(
+        "M7",
+        limit=2,
+    )
+
+    assert len(pack.results) == 2
+    assert {item.conflict for item in pack.results} == {True}
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:
