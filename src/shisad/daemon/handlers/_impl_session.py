@@ -8999,10 +8999,9 @@ class SessionImplMixin(HandlerMixinBase):
     ) -> tuple[str | None, str | None]:
         user_id = MemoryManager._normalize_owner_value(str(validated.user_id))
         workspace_id = MemoryManager._normalize_owner_value(str(validated.workspace_id))
-        if user_id is None and workspace_id is None:
-            return None, None
         if user_id is None or workspace_id is None:
-            # Partial owner tuples are malformed; blank sentinels make owner filters fail closed.
+            # Missing/partial owner tuples are malformed for review artifacts; blank
+            # sentinels make owner filters fail closed instead of falling back global.
             return "", ""
         return user_id, workspace_id
 

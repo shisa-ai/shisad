@@ -99,6 +99,13 @@ def _validation_result(
     )
 
 
+def _clear_validation_owner(validated: SessionMessageValidationResult) -> None:
+    validated.user_id = UserId("")
+    validated.workspace_id = WorkspaceId("")
+    validated.session.user_id = UserId("")
+    validated.session.workspace_id = WorkspaceId("")
+
+
 class _PhaseHarness(SessionImplMixin):
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -2776,6 +2783,69 @@ async def test_m7_identity_accept_does_not_promote_other_owner_candidate(
 
 
 @pytest.mark.asyncio
+async def test_m7_identity_review_fails_closed_for_ownerless_session(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    other_candidate_id = _write_pending_identity_candidate(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_id="candidate-ownerless-review",
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "/identity review"},
+        sanitized_text="/identity review",
+    )
+    _clear_validation_owner(validated)
+
+    response = await SessionImplMixin._maybe_handle_identity_candidate_command(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "No pending identity candidates." in str(response["response"])
+    assert other_candidate_id not in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_m7_identity_accept_fails_closed_for_ownerless_session(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    other_candidate_id = _write_pending_identity_candidate(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_id="candidate-ownerless-accept",
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": f"/identity accept {other_candidate_id}"},
+        sanitized_text=f"/identity accept {other_candidate_id}",
+    )
+    _clear_validation_owner(validated)
+
+    response = await SessionImplMixin._maybe_handle_identity_candidate_command(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert f"Identity candidate {other_candidate_id} was not found." in str(response["response"])
+    candidate = harness._memory_manager.get_entry(
+        other_candidate_id,
+        include_pending_review=True,
+    )
+    assert candidate is not None
+    assert candidate.superseded_by is None
+
+
+@pytest.mark.asyncio
 async def test_m5_finalize_response_does_not_surface_quarantined_identity_candidate(
     tmp_path: Path,
 ) -> None:
@@ -2860,6 +2930,38 @@ async def test_m7_finalize_response_does_not_surface_other_owner_strong_invalida
 
 
 @pytest.mark.asyncio
+async def test_m7_finalize_response_does_not_surface_strong_invalidation_for_ownerless_session(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, _signal_id = _write_strong_invalidation_proposal(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_suffix="ownerless-surface",
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+    _clear_validation_owner(execution.planner_dispatch.planner_context.validated)
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "Memory update candidate" not in text
+    session = execution.planner_dispatch.planner_context.validated.session
+    assert _PENDING_STRONG_INVALIDATION_KEY not in session.metadata
+    assert (
+        harness._memory_manager.list_events(
+            entry_id=target_id,
+            event_type="strong_invalidation_surfaced",
+            limit=10,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_m5_pending_strong_invalidation_yes_promotes_user_confirmed_version(
     tmp_path: Path,
 ) -> None:
@@ -2926,6 +3028,46 @@ async def test_m7_pending_strong_invalidation_yes_rejects_other_owner_pair(
         source_suffix="other-pending",
     )
     validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
+    validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
+        "target_entry_id": target_id,
+        "signal_entry_id": signal_id,
+    }
+
+    response = await SessionImplMixin._maybe_handle_pending_strong_invalidation(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "no longer available" in str(response["response"])
+    target = harness._memory_manager.get_entry(target_id, include_deleted=True)
+    assert target is not None
+    assert target.superseded_by is None
+    assert (
+        harness._memory_manager.list_events(
+            event_type="strong_invalidation_confirmed",
+            limit=10,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_m7_pending_strong_invalidation_yes_fails_closed_for_ownerless_session(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, signal_id = _write_strong_invalidation_proposal(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_suffix="ownerless-pending",
+    )
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
+    _clear_validation_owner(validated)
     validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
         "target_entry_id": target_id,
         "signal_entry_id": signal_id,
