@@ -883,28 +883,52 @@ class MemoryImplMixin(HandlerMixinBase):
         if params.get("include_quarantined") and not params.get("confirmed"):
             raise ValueError("confirmed is required when include_quarantined is true")
         entry_id = str(params.get("entry_id", ""))
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
         entry = self._memory_manager.get_entry(
             entry_id,
             include_deleted=bool(params.get("include_deleted", False)),
             include_quarantined=bool(params.get("include_quarantined", False)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         return {"entry": entry.model_dump(mode="json") if entry is not None else None}
 
     async def do_memory_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
-        deleted = self._memory_manager.delete(entry_id)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        deleted = self._memory_manager.delete(
+            entry_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
+        )
         return {"deleted": deleted, "entry_id": entry_id}
 
     async def do_memory_quarantine(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
         reason = str(params.get("reason", "")).strip()
-        changed = self._memory_manager.quarantine(entry_id, reason=reason)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        changed = self._memory_manager.quarantine(
+            entry_id,
+            reason=reason,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
+        )
         return {"changed": changed, "entry_id": entry_id, "reason": reason}
 
     async def do_memory_unquarantine(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
         reason = str(params.get("reason", "")).strip()
-        changed = self._memory_manager.unquarantine(entry_id, reason=reason)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        changed = self._memory_manager.unquarantine(
+            entry_id,
+            reason=reason,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
+        )
         return {"changed": changed, "entry_id": entry_id, "reason": reason}
 
     async def do_memory_set_workflow_state(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -936,11 +960,26 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_memory_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json"))
-        return {"format": fmt, "data": self._memory_manager.export(fmt=fmt)}
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        return {
+            "format": fmt,
+            "data": self._memory_manager.export(
+                fmt=fmt,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                include_unowned=bool(params.get("include_unowned", False)),
+            ),
+        }
 
     async def do_memory_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
-        verified = self._memory_manager.verify(entry_id)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        verified = self._memory_manager.verify(
+            entry_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
+        )
         return {"verified": verified, "entry_id": entry_id}
 
     async def do_memory_rotate_key(self, params: Mapping[str, Any]) -> dict[str, Any]:

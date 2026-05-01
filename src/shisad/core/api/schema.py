@@ -563,9 +563,13 @@ class MemoryEntryParams(_StrictParams):
     include_deleted: bool = False
     include_quarantined: bool = False
     confirmed: bool = False
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
-    def _validate_history_flags(self) -> MemoryEntryParams:
+    def _validate_owner_scope_and_history_flags(self) -> MemoryEntryParams:
+        _require_complete_owner_scope(self)
         if self.include_quarantined and not self.confirmed:
             raise ValueError("confirmed is required when include_quarantined is true")
         return self
@@ -574,9 +578,13 @@ class MemoryEntryParams(_StrictParams):
 class MemoryLifecycleParams(_StrictParams):
     entry_id: str
     reason: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
-    def _validate_reason(self) -> MemoryLifecycleParams:
+    def _validate_owner_scope_and_reason(self) -> MemoryLifecycleParams:
+        _require_complete_owner_scope(self)
         if not self.reason.strip():
             raise ValueError("reason is required")
         return self
@@ -597,6 +605,14 @@ class MemoryWorkflowStateParams(_StrictParams):
 
 class MemoryExportParams(_StrictParams):
     format: str = "json"
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> MemoryExportParams:
+        _require_complete_owner_scope(self)
+        return self
 
 
 class GraphQueryParams(_StrictParams):

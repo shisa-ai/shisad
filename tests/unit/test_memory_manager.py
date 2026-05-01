@@ -87,6 +87,60 @@ def test_m2_t4_memory_delete_is_soft_and_reversible(tmp_path: Path) -> None:
     assert entry_id in exported
 
 
+def test_m7_raw_id_manager_methods_filter_by_owner_scope(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="fact",
+        key="project.owner",
+        value="alice owns the project",
+        source=MemorySource(origin="user", source_id="owner-raw-id", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="owner-raw-id",
+        scope="user",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert decision.entry is not None
+    entry_id = decision.entry.id
+
+    assert (
+        manager.get_entry(
+            entry_id,
+            user_id="bob",
+            workspace_id="ws1",
+        )
+        is None
+    )
+    assert (
+        manager.export(
+            fmt="json",
+            user_id="bob",
+            workspace_id="ws1",
+        )
+        == "[]"
+    )
+    assert (
+        manager.export(
+            fmt="json",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        != "[]"
+    )
+    assert not manager.delete(entry_id, user_id="bob", workspace_id="ws1")
+    assert not manager.quarantine(entry_id, reason="cross-owner", user_id="bob", workspace_id="ws1")
+    assert not manager.verify(entry_id, user_id="bob", workspace_id="ws1")
+
+    entry = manager.get_entry(entry_id, user_id="alice", workspace_id="ws1")
+    assert entry is not None
+    assert entry.status == "active"
+    assert entry.user_verified is False
+
+
 def test_m2_t19_authenticated_encryption_detects_tampering(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
     stored = pipeline.ingest(source_id="doc-1", source_type="external", content="Hello world")
@@ -2229,6 +2283,48 @@ def test_m7_promote_identity_candidate_preserves_owner_tuple(tmp_path: Path) -> 
     }
     assert decision.entry.id in owner_visible_ids
     assert decision.entry.id not in other_visible_ids
+
+
+def test_m7_promote_unowned_identity_candidate_binds_successor_to_caller_owner(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate = _write_pending_identity_candidate(manager)
+
+    decision = manager.promote_identity_candidate(
+        candidate_id=str(candidate.id),
+        source=MemorySource(
+            origin="user",
+            source_id="cmd-unowned-accept",
+            extraction_method="identity.review.accept",
+        ),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="cmd-unowned-accept",
+        scope="user",
+        ingress_handle_id="handle-unowned-accept",
+        content_digest="digest-unowned-accept",
+        taint_labels=[],
+        user_id="user-1",
+        workspace_id="ws-1",
+        include_unowned=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.user_id == "user-1"
+    assert decision.entry.workspace_id == "ws-1"
+    owner_visible_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-1",
+            workspace_id="ws-1",
+            include_pending_review=True,
+            limit=10,
+        )
+    }
+    assert decision.entry.id in owner_visible_ids
 
 
 def test_m3_promote_identity_candidate_with_edit_uses_corrected_floor(tmp_path: Path) -> None:

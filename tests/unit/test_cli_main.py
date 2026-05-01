@@ -705,7 +705,10 @@ def test_cli_commands_route_through_rpc_wrapper(
             "strong",
         ],
     )
-    assert "favorite_color" in _invoke_ok(runner, ["memory", "export", "--format", "json"]).output
+    assert "favorite_color" in _invoke_ok(
+        runner,
+        ["memory", "export", "--format", "json", "--user", "alice", "--workspace", "ws-1"],
+    ).output
     _invoke_ok(runner, ["memory", "rotate-key"])
     assert (
         "root=entity:favorite_color"
@@ -883,7 +886,10 @@ def test_cli_commands_route_through_rpc_wrapper(
             "strength": "strong",
         },
     ) in calls
-    assert ("memory.export", {"format": "json"}) in calls
+    assert (
+        "memory.export",
+        {"format": "json", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
     assert (
         "graph.query",
         {

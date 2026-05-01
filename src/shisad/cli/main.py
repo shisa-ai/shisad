@@ -3012,13 +3012,27 @@ def memory_consolidate(as_json: bool, user_id: str, workspace_id: str) -> None:
 
 @memory.command("export")
 @click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
-def memory_export(fmt: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace ID for personal memory.",
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
+def memory_export(fmt: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     """Export current memory entries for operator backup/audit."""
     config = _get_config()
+    payload: dict[str, object] = {"format": fmt}
+    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
     result = rpc_call(
         config,
         "memory.export",
-        {"format": fmt},
+        payload,
         response_model=MemoryExportResult,
     )
     click.echo(str(result.data))

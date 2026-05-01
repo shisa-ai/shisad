@@ -2080,6 +2080,8 @@ async def test_contract_memory_write_round_trips_through_ingress_context_handle(
             "entry_type": "fact",
             "key": "profile.write_path",
             "value": "prefers structured write paths",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         },
     )
 
@@ -2092,7 +2094,10 @@ async def test_contract_memory_write_round_trips_through_ingress_context_handle(
     assert entry.get("channel_trust") == "command"
     assert entry.get("confirmation_status") == "user_asserted"
 
-    fetched = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    fetched = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
     stored = fetched.get("entry") or {}
     assert stored.get("key") == "profile.write_path"
     assert stored.get("value") == "prefers structured write paths"
@@ -2353,6 +2358,8 @@ async def test_contract_quarantine_cycle_preserves_open_thread_workflow_state(
         key="thread:customer-response",
         value="waiting on customer response",
         workflow_state="waiting",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert created.get("kind") == "allow"
@@ -2365,16 +2372,30 @@ async def test_contract_quarantine_cycle_preserves_open_thread_workflow_state(
 
     quarantined = await contract_harness.client.call(
         "memory.quarantine",
-        {"entry_id": entry_id, "reason": "manual-review"},
+        {
+            "entry_id": entry_id,
+            "reason": "manual-review",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     assert quarantined.get("changed") is True
 
-    hidden = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    hidden = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
     assert hidden.get("entry") is None
 
     quarantined_view = await contract_harness.client.call(
         "memory.get",
-        {"entry_id": entry_id, "include_quarantined": True, "confirmed": True},
+        {
+            "entry_id": entry_id,
+            "include_quarantined": True,
+            "confirmed": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     quarantined_entry = quarantined_view.get("entry") or {}
     assert quarantined_entry.get("workflow_state") == "waiting"
@@ -2382,14 +2403,83 @@ async def test_contract_quarantine_cycle_preserves_open_thread_workflow_state(
 
     restored = await contract_harness.client.call(
         "memory.unquarantine",
-        {"entry_id": entry_id, "reason": "review-cleared"},
+        {
+            "entry_id": entry_id,
+            "reason": "review-cleared",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     assert restored.get("changed") is True
 
-    restored_view = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    restored_view = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
     restored_entry = restored_view.get("entry") or {}
     assert restored_entry.get("workflow_state") == "waiting"
     assert restored_entry.get("status") == "active"
+
+
+@pytest.mark.asyncio
+async def test_contract_raw_id_memory_controls_enforce_owner_scope(
+    contract_harness: ContractHarness,
+) -> None:
+    created = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="fact",
+        key="profile.owner-private",
+        value="alice private raw-id memory",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert created.get("kind") == "allow"
+    entry = created.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+    assert entry_id
+
+    with pytest.raises(JsonRpcCallError):
+        await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+
+    hidden = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"},
+    )
+    deleted = await contract_harness.client.call(
+        "memory.delete",
+        {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"},
+    )
+    quarantined = await contract_harness.client.call(
+        "memory.quarantine",
+        {
+            "entry_id": entry_id,
+            "reason": "cross-owner",
+            "user_id": "bob",
+            "workspace_id": "ws1",
+        },
+    )
+    verified = await contract_harness.client.call(
+        "memory.verify",
+        {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"},
+    )
+    exported = await contract_harness.client.call(
+        "memory.export",
+        {"format": "json", "user_id": "bob", "workspace_id": "ws1"},
+    )
+    owner_view = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
+
+    assert hidden.get("entry") is None
+    assert deleted == {"deleted": False, "entry_id": entry_id}
+    assert quarantined == {"changed": False, "entry_id": entry_id, "reason": "cross-owner"}
+    assert verified == {"verified": False, "entry_id": entry_id}
+    assert json.loads(str(exported.get("data"))) == []
+    stored = owner_view.get("entry") or {}
+    assert stored.get("id") == entry_id
+    assert stored.get("status") == "active"
+    assert stored.get("user_verified") is False
 
 
 @pytest.mark.asyncio
@@ -2423,7 +2513,10 @@ async def test_contract_set_workflow_state_keeps_status_active(
     assert updated.get("changed") is True
     assert updated.get("workflow_state") == "closed"
 
-    fetched = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    fetched = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
     stored = fetched.get("entry") or {}
 
     assert stored.get("workflow_state") == "closed"
@@ -2479,7 +2572,10 @@ async def test_contract_set_workflow_state_rejects_closed_reopen(
 
     assert reopened.get("changed") is False
     assert reopened.get("reason") == "invalid_workflow_transition"
-    fetched = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    fetched = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
     stored = fetched.get("entry") or {}
     assert stored.get("workflow_state") == "closed"
 
@@ -2533,7 +2629,15 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
         }
         assert entry_id not in listed_ids
 
-        fetched = await harness.client.call("memory.get", {"entry_id": entry_id})
+        fetched = await harness.client.call(
+            "memory.get",
+            {
+                "entry_id": entry_id,
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "include_unowned": True,
+            },
+        )
         assert fetched.get("entry") is None
 
         retrieved = await harness.client.call(
@@ -3286,7 +3390,15 @@ async def test_contract_trust_matrix_rows_round_trip_with_expected_bands(
             expected_confidence,
             expected_band,
         ) in seeded.items():
-            fetched = await harness.client.call("memory.get", {"entry_id": entry_id})
+            fetched = await harness.client.call(
+                "memory.get",
+                {
+                    "entry_id": entry_id,
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
+                    "include_unowned": True,
+                },
+            )
             entry = fetched.get("entry") or {}
 
             assert entry.get("source_origin") == source_origin
@@ -3393,7 +3505,11 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
             (storage / f"{payload['id']}.json").write_text(json.dumps(payload), encoding="utf-8")
 
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
-        legacy_user = await harness.client.call("memory.get", {"entry_id": "legacy-user-verified"})
+        legacy_scope = {"user_id": "alice", "workspace_id": "ws1", "include_unowned": True}
+        legacy_user = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-user-verified", **legacy_scope},
+        )
         user_entry = legacy_user.get("entry") or {}
         assert user_entry.get("scope") == "user"
         assert user_entry.get("source_origin") == "user_direct"
@@ -3411,23 +3527,29 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
 
         legacy_episode = await harness.client.call(
             "memory.get",
-            {"entry_id": "legacy-context-episode"},
+            {"entry_id": "legacy-context-episode", **legacy_scope},
         )
         assert (legacy_episode.get("entry") or {}).get("entry_type") == "episode"
 
-        legacy_note = await harness.client.call("memory.get", {"entry_id": "legacy-context-note"})
+        legacy_note = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-context-note", **legacy_scope},
+        )
         assert (legacy_note.get("entry") or {}).get("entry_type") == "note"
 
         legacy_user_confirmed = await harness.client.call(
             "memory.get",
-            {"entry_id": "legacy-user-confirmed"},
+            {"entry_id": "legacy-user-confirmed", **legacy_scope},
         )
         user_confirmed_entry = legacy_user_confirmed.get("entry") or {}
         assert user_confirmed_entry.get("source_origin") == "user_confirmed"
         assert user_confirmed_entry.get("channel_trust") == "command"
         assert user_confirmed_entry.get("confirmation_status") == "auto_accepted"
 
-        legacy_inferred = await harness.client.call("memory.get", {"entry_id": "legacy-inferred"})
+        legacy_inferred = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-inferred", **legacy_scope},
+        )
         inferred_entry = legacy_inferred.get("entry") or {}
         assert inferred_entry.get("source_origin") == "consolidation_derived"
         assert inferred_entry.get("channel_trust") == "consolidation"
@@ -3441,12 +3563,15 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
         }
         assert "legacy-deleted" not in default_ids
 
-        hidden_deleted = await harness.client.call("memory.get", {"entry_id": "legacy-deleted"})
+        hidden_deleted = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-deleted", **legacy_scope},
+        )
         assert hidden_deleted.get("entry") is None
 
         visible_deleted = await harness.client.call(
             "memory.get",
-            {"entry_id": "legacy-deleted", "include_deleted": True},
+            {"entry_id": "legacy-deleted", "include_deleted": True, **legacy_scope},
         )
         deleted_entry = visible_deleted.get("entry") or {}
         assert deleted_entry.get("status") == "tombstoned"

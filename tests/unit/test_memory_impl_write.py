@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1100,6 +1101,130 @@ async def test_memory_set_workflow_state_can_include_unowned_target(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_m7_raw_id_memory_handlers_require_and_enforce_owner_scope(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-owner-note",
+        content="owner scoped note",
+    )
+    created = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:owner-scoped",
+            "value": "owner scoped note",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        }
+    )
+    assert created["entry"] is not None
+    entry_id = str(created["entry"]["id"])
+
+    with pytest.raises(ValueError, match="user_id and workspace_id are required"):
+        await harness.do_memory_get({"entry_id": entry_id})
+
+    hidden = await harness.do_memory_get(
+        {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"}
+    )
+    deleted = await harness.do_memory_delete(
+        {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"}
+    )
+    quarantined = await harness.do_memory_quarantine(
+        {
+            "entry_id": entry_id,
+            "reason": "cross-owner",
+            "user_id": "bob",
+            "workspace_id": "ws1",
+        }
+    )
+    verified = await harness.do_memory_verify(
+        {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"}
+    )
+    exported = await harness.do_memory_export(
+        {"format": "json", "user_id": "bob", "workspace_id": "ws1"}
+    )
+
+    assert hidden["entry"] is None
+    assert deleted == {"deleted": False, "entry_id": entry_id}
+    assert quarantined == {
+        "changed": False,
+        "entry_id": entry_id,
+        "reason": "cross-owner",
+    }
+    assert verified == {"verified": False, "entry_id": entry_id}
+    assert json.loads(str(exported["data"])) == []
+    entry = harness._memory_manager.get_entry(
+        entry_id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert entry is not None
+    assert entry.status == "active"
+    assert entry.user_verified is False
+
+
+@pytest.mark.asyncio
+async def test_m7_raw_id_memory_handlers_can_explicitly_include_unowned_target(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-legacy-note",
+        content="legacy unowned note",
+    )
+    created = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:legacy-unowned",
+            "value": "legacy unowned note",
+        }
+    )
+    assert created["entry"] is not None
+    entry_id = str(created["entry"]["id"])
+
+    fetched = await harness.do_memory_get(
+        {
+            "entry_id": entry_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        }
+    )
+    verified = await harness.do_memory_verify(
+        {
+            "entry_id": entry_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        }
+    )
+    exported = await harness.do_memory_export(
+        {
+            "format": "json",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        }
+    )
+
+    assert fetched["entry"] is not None
+    assert verified == {"verified": True, "entry_id": entry_id}
+    exported_rows = json.loads(str(exported["data"]))
+    assert [row["id"] for row in exported_rows] == [entry_id]
+
+
+@pytest.mark.asyncio
 async def test_memory_quarantine_cycle_preserves_workflow_state_via_impl(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(
@@ -1118,6 +1243,8 @@ async def test_memory_quarantine_cycle_preserves_workflow_state_via_impl(tmp_pat
             "key": "thread:customer-response",
             "value": "waiting on customer response",
             "workflow_state": "waiting",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1128,12 +1255,16 @@ async def test_memory_quarantine_cycle_preserves_workflow_state_via_impl(tmp_pat
         {
             "entry_id": entry_id,
             "reason": "manual-review",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
     restored = await harness.do_memory_unquarantine(
         {
             "entry_id": entry_id,
             "reason": "review-cleared",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 

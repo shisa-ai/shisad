@@ -91,6 +91,8 @@ def _write_pending_identity_candidate(manager: MemoryManager) -> str:
         confirmation_satisfied=True,
         ingress_handle_id="handle-candidate",
         content_digest="digest-candidate",
+        user_id="user-identity",
+        workspace_id="workspace-identity",
     )
     assert decision.entry is not None
     return decision.entry.id
@@ -128,6 +130,22 @@ def test_m3_record_identity_observation_candidate_writes_owner_observed_episode(
     assert entry.confirmation_status == "auto_accepted"
     assert entry.scope == "user"
     assert entry.confidence == pytest.approx(0.30)
+    assert entry.user_id == "user-identity"
+    assert entry.workspace_id == "workspace-identity"
+    owner_entries = harness._memory_manager.list_entries(
+        entry_type="episode",
+        user_id="user-identity",
+        workspace_id="workspace-identity",
+        limit=10,
+    )
+    other_owner_entries = harness._memory_manager.list_entries(
+        entry_type="episode",
+        user_id="other-user",
+        workspace_id="workspace-identity",
+        limit=10,
+    )
+    assert [item.id for item in owner_entries] == [entry_id]
+    assert other_owner_entries == []
 
 
 def test_m3_record_identity_observation_candidate_ignores_non_owner_observed_turn(

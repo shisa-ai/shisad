@@ -1050,6 +1050,32 @@ def test_m7_identifier_only_query_avoids_unrelated_negation_conflict(
     assert {item.conflict for item in pack.results} == {False}
 
 
+def test_m7_identifier_only_query_avoids_same_field_different_value_conflict(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-owner-nina",
+        source_type="tool",
+        collection="project_docs",
+        content="M7 owner Nina handles the release.",
+    )
+    pipeline.ingest(
+        source_id="m7-owner-not-mallory",
+        source_type="tool",
+        collection="tool_outputs",
+        content="M7 owner is not Mallory.",
+    )
+
+    pack = pipeline.compile_recall(
+        "M7",
+        limit=2,
+    )
+
+    assert len(pack.results) == 2
+    assert {item.conflict for item in pack.results} == {False}
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:

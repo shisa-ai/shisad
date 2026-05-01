@@ -8521,6 +8521,12 @@ class SessionImplMixin(HandlerMixinBase):
             taint_labels=list(ingress_context.taint_labels),
             ingress_handle_id=ingress_context.handle_id,
             content_digest=ingress_context.content_digest,
+            user_id=str(validated.user_id).strip() if validated.user_id is not None else None,
+            workspace_id=(
+                str(validated.workspace_id).strip()
+                if validated.workspace_id is not None
+                else None
+            ),
         )
         if decision.kind != "allow" or decision.entry is None:
             return None

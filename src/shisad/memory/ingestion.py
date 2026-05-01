@@ -90,6 +90,19 @@ _RECALL_DEFAULT_PROVENANCE_BY_COLLECTION: dict[
     "tool_outputs": ("tool_output", "tool_passed", "auto_accepted"),
     "external_web": ("external_web", "web_passed", "auto_accepted"),
 }
+_IDENTIFIER_CONFLICT_RELATION_TERMS = {
+    "assignee",
+    "item",
+    "issue",
+    "milestone",
+    "owner",
+    "project",
+    "release",
+    "state",
+    "status",
+    "task",
+    "ticket",
+}
 
 
 def _default_recall_provenance(
@@ -1007,9 +1020,12 @@ class IngestionPipeline:
                 shared_terms = token_sets[left] & token_sets[right]
                 overlap = shared_terms & query_terms
                 non_query_overlap = shared_terms - query_terms
+                meaningful_non_query_overlap = (
+                    non_query_overlap - _IDENTIFIER_CONFLICT_RELATION_TERMS
+                )
                 identifier_overlap = (
                     len(overlap) == 1
-                    and bool(non_query_overlap)
+                    and bool(meaningful_non_query_overlap)
                     and any(any(char.isdigit() for char in term) for term in overlap)
                 )
                 if (len(overlap) >= 2 or identifier_overlap) and negated[left] != negated[right]:

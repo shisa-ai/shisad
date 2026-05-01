@@ -6,6 +6,7 @@ import pytest
 
 from shisad.core.api.schema import (
     MemoryEntryParams,
+    MemoryExportParams,
     MemoryIngestParams,
     MemoryInvokeSkillParams,
     MemoryLifecycleParams,
@@ -37,6 +38,9 @@ class _StubImpl:
         self.last_memory_invoke_skill_payload: dict[str, object] | None = None
         self.last_memory_read_original_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
+        self.last_memory_delete_payload: dict[str, object] | None = None
+        self.last_memory_export_payload: dict[str, object] | None = None
+        self.last_memory_verify_payload: dict[str, object] | None = None
         self.last_memory_quarantine_payload: dict[str, object] | None = None
         self.last_memory_unquarantine_payload: dict[str, object] | None = None
         self.last_memory_set_workflow_state_payload: dict[str, object] | None = None
@@ -145,12 +149,15 @@ class _StubImpl:
         return {"entry": {"entry_id": "e1"}}
 
     async def do_memory_delete(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_delete_payload = payload
         return {"deleted": True, "entry_id": str(payload["entry_id"])}
 
-    async def do_memory_export(self, _payload: dict[str, object]) -> dict[str, object]:
+    async def do_memory_export(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_export_payload = payload
         return {"format": "json", "data": {}}
 
     async def do_memory_verify(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_verify_payload = payload
         return {"verified": True, "entry_id": str(payload["entry_id"])}
 
     async def do_memory_rotate_key(self, payload: dict[str, object]) -> dict[str, object]:
@@ -303,9 +310,10 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
 
 @pytest.mark.asyncio
 async def test_memory_verify_and_rotate_wrappers() -> None:
-    handlers = MemoryHandlers(_StubImpl(), internal_ingress_marker=object())  # type: ignore[arg-type]
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
     verify = await handlers.handle_memory_verify(
-        MemoryEntryParams(entry_id="e1"),
+        MemoryEntryParams(entry_id="e1", user_id="alice", workspace_id="ws1"),
         RequestContext(),
     )
     rotated = await handlers.handle_memory_rotate_key(
@@ -314,6 +322,9 @@ async def test_memory_verify_and_rotate_wrappers() -> None:
     )
     assert verify.verified is True
     assert rotated.active_key_id == "k1"
+    assert impl.last_memory_verify_payload is not None
+    assert impl.last_memory_verify_payload["user_id"] == "alice"
+    assert impl.last_memory_verify_payload["workspace_id"] == "ws1"
 
 
 @pytest.mark.asyncio
@@ -385,11 +396,22 @@ async def test_memory_lifecycle_wrappers_forward_payloads() -> None:
     handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
 
     quarantined = await handlers.handle_memory_quarantine(
-        MemoryLifecycleParams(entry_id="e1", reason="manual-review"),
+        MemoryLifecycleParams(
+            entry_id="e1",
+            reason="manual-review",
+            user_id="alice",
+            workspace_id="ws1",
+        ),
         RequestContext(),
     )
     unquarantined = await handlers.handle_memory_unquarantine(
-        MemoryLifecycleParams(entry_id="e1", reason="review-cleared"),
+        MemoryLifecycleParams(
+            entry_id="e1",
+            reason="review-cleared",
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
+        ),
         RequestContext(),
     )
     updated = await handlers.handle_memory_set_workflow_state(
@@ -407,8 +429,11 @@ async def test_memory_lifecycle_wrappers_forward_payloads() -> None:
     assert updated.workflow_state == "closed"
     assert impl.last_memory_quarantine_payload is not None
     assert impl.last_memory_quarantine_payload["reason"] == "manual-review"
+    assert impl.last_memory_quarantine_payload["user_id"] == "alice"
+    assert impl.last_memory_quarantine_payload["workspace_id"] == "ws1"
     assert impl.last_memory_unquarantine_payload is not None
     assert impl.last_memory_unquarantine_payload["reason"] == "review-cleared"
+    assert impl.last_memory_unquarantine_payload["include_unowned"] is True
     assert impl.last_memory_set_workflow_state_payload is not None
     assert impl.last_memory_set_workflow_state_payload["workflow_state"] == "closed"
     assert impl.last_memory_set_workflow_state_payload["user_id"] == "alice"
@@ -435,6 +460,9 @@ async def test_memory_list_and_get_wrappers_forward_history_flags() -> None:
             include_deleted=True,
             include_quarantined=True,
             confirmed=True,
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
         ),
         RequestContext(),
     )
@@ -447,3 +475,28 @@ async def test_memory_list_and_get_wrappers_forward_history_flags() -> None:
     assert impl.last_memory_get_payload["include_deleted"] is True
     assert impl.last_memory_get_payload["include_quarantined"] is True
     assert impl.last_memory_get_payload["confirmed"] is True
+    assert impl.last_memory_get_payload["user_id"] == "alice"
+    assert impl.last_memory_get_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_get_payload["include_unowned"] is True
+
+
+@pytest.mark.asyncio
+async def test_memory_export_wrapper_forwards_owner_scope() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    result = await handlers.handle_memory_export(
+        MemoryExportParams(
+            format="json",
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
+        ),
+        RequestContext(),
+    )
+
+    assert result.format == "json"
+    assert impl.last_memory_export_payload is not None
+    assert impl.last_memory_export_payload["user_id"] == "alice"
+    assert impl.last_memory_export_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_export_payload["include_unowned"] is True

@@ -1018,6 +1018,12 @@ class MemoryManager:
 
         promoted_value = candidate.value if value is None else value
         confidence_floor = 0.90 if confirmation_status == "user_confirmed" else 0.85
+        candidate_user_id = self._normalize_owner_value(candidate.user_id)
+        candidate_workspace_id = self._normalize_owner_value(candidate.workspace_id)
+        caller_user_id = self._normalize_owner_value(user_id)
+        caller_workspace_id = self._normalize_owner_value(workspace_id)
+        promoted_user_id = candidate_user_id or caller_user_id
+        promoted_workspace_id = candidate_workspace_id or caller_workspace_id
         decision = self.write_with_provenance(
             entry_type=candidate.entry_type,
             key=candidate.key,
@@ -1036,8 +1042,9 @@ class MemoryManager:
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             supersedes=candidate.id,
-            user_id=candidate.user_id,
-            workspace_id=candidate.workspace_id,
+            user_id=promoted_user_id,
+            workspace_id=promoted_workspace_id,
+            include_unowned=include_unowned,
         )
         if decision.kind != "allow" or decision.entry is None:
             return decision
@@ -1176,9 +1183,28 @@ class MemoryManager:
         )
         return True, "candidate_expired"
 
-    def delete(self, entry_id: str) -> bool:
+    def delete(
+        self,
+        entry_id: str,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> bool:
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return False
         entry = self._entries.get(entry_id)
         if entry is None:
+            return False
+        if not self._entry_matches_owner(
+            entry,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
+            include_unowned=include_unowned,
+        ):
             return False
         if self._is_deleted(entry):
             return True
@@ -1200,9 +1226,24 @@ class MemoryManager:
         *,
         confidence_delta: float = 0.10,
         confidence_cap: float = 0.95,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> bool:
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return False
         entry = self._entries.get(entry_id)
         if entry is None:
+            return False
+        if not self._entry_matches_owner(
+            entry,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
+            include_unowned=include_unowned,
+        ):
             return False
         previous_confidence = entry.confidence
         entry.user_verified = True
@@ -1223,7 +1264,13 @@ class MemoryManager:
             },
         )
         if self._is_retention_quarantined(entry):
-            self.unquarantine(entry.id, reason="retention_rejoin_on_reverify")
+            self.unquarantine(
+                entry.id,
+                reason="retention_rejoin_on_reverify",
+                user_id=owner_user_id,
+                workspace_id=owner_workspace_id,
+                include_unowned=include_unowned,
+            )
         self._audit(
             "memory.verify",
             {
@@ -1397,8 +1444,23 @@ class MemoryManager:
         self._audit(f"memory.{event_type}", {"entry_id": entry_id, **dict(metadata or {})})
         return True
 
-    def export(self, *, fmt: str = "json") -> str:
-        items = [entry.model_dump(mode="json") for entry in self.list_entries(include_deleted=True)]
+    def export(
+        self,
+        *,
+        fmt: str = "json",
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> str:
+        items = [
+            entry.model_dump(mode="json")
+            for entry in self.list_entries(
+                include_deleted=True,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                include_unowned=include_unowned,
+            )
+        ]
         for item in items:
             item["value"] = self._redact_export_value(item.get("value"))
         if fmt == "json":
@@ -1449,9 +1511,29 @@ class MemoryManager:
         for path in self._storage_dir.glob("*.json"):
             path.unlink(missing_ok=True)
 
-    def quarantine(self, entry_id: str, *, reason: str) -> bool:
+    def quarantine(
+        self,
+        entry_id: str,
+        *,
+        reason: str,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> bool:
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return False
         entry = self._entries.get(entry_id)
         if entry is None:
+            return False
+        if not self._entry_matches_owner(
+            entry,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
+            include_unowned=include_unowned,
+        ):
             return False
         entry.quarantined = True
         entry.status = "quarantined"
@@ -1465,9 +1547,29 @@ class MemoryManager:
         self._audit("memory.quarantine", {"entry_id": entry_id, "reason": reason})
         return True
 
-    def unquarantine(self, entry_id: str, *, reason: str) -> bool:
+    def unquarantine(
+        self,
+        entry_id: str,
+        *,
+        reason: str,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> bool:
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return False
         entry = self._entries.get(entry_id)
         if entry is None or self._is_deleted(entry):
+            return False
+        if not self._entry_matches_owner(
+            entry,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
+            include_unowned=include_unowned,
+        ):
             return False
         if not self._is_quarantined(entry):
             return True

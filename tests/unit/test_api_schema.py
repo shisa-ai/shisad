@@ -25,6 +25,7 @@ from shisad.core.api.schema import (
     MemoryConsolidateParams,
     MemoryDeleteResult,
     MemoryEntryParams,
+    MemoryExportParams,
     MemoryExportResult,
     MemoryGetResult,
     MemoryIngestParams,
@@ -694,10 +695,52 @@ class TestApiSchemaValidation:
             ).include_unowned
             is True
         )
+        assert (
+            MemoryEntryParams.model_validate({"entry_id": "entry-1", **owner_scope}).user_id
+            == "alice"
+        )
+        assert (
+            MemoryEntryParams.model_validate(
+                {"entry_id": "entry-1", "include_unowned": True, **owner_scope}
+            ).include_unowned
+            is True
+        )
+        assert (
+            MemoryLifecycleParams.model_validate(
+                {"entry_id": "entry-1", "reason": "manual-review", **owner_scope}
+            ).workspace_id
+            == "ws1"
+        )
+        assert (
+            MemoryLifecycleParams.model_validate(
+                {
+                    "entry_id": "entry-1",
+                    "reason": "manual-review",
+                    "include_unowned": True,
+                    **owner_scope,
+                }
+            ).include_unowned
+            is True
+        )
+        assert (
+            MemoryExportParams.model_validate(
+                {"format": "json", "include_unowned": True, **owner_scope}
+            ).include_unowned
+            is True
+        )
 
         ownerless_payloads: list[tuple[type[object], dict[str, object]]] = [
             (MemoryReviewQueueParams, {"limit": 10}),
             (MemoryReviewQueueParams, {"limit": 10, "include_unowned": True}),
+            (MemoryEntryParams, {"entry_id": "entry-1"}),
+            (MemoryEntryParams, {"entry_id": "entry-1", "include_unowned": True}),
+            (MemoryLifecycleParams, {"entry_id": "entry-1", "reason": "manual-review"}),
+            (
+                MemoryLifecycleParams,
+                {"entry_id": "entry-1", "reason": "manual-review", "include_unowned": True},
+            ),
+            (MemoryExportParams, {"format": "json"}),
+            (MemoryExportParams, {"format": "json", "include_unowned": True}),
             (
                 MemoryPromoteIdentityCandidateParams,
                 {"ingress_context": "handle-1", "candidate_id": "candidate-1"},
@@ -924,6 +967,8 @@ class TestApiSchemaValidation:
             {
                 "entry_id": "entry-1",
                 "reason": "manual-review",
+                "user_id": "alice",
+                "workspace_id": "ws1",
             }
         )
         workflow = MemoryWorkflowStateParams.model_validate(
@@ -939,7 +984,14 @@ class TestApiSchemaValidation:
         assert workflow.workflow_state == "closed"
 
         with pytest.raises(ValidationError):
-            MemoryLifecycleParams.model_validate({"entry_id": "entry-1", "reason": ""})
+            MemoryLifecycleParams.model_validate(
+                {
+                    "entry_id": "entry-1",
+                    "reason": "",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
+                }
+            )
 
     def test_m7_memory_retrieve_params_bound_sufficiency_coverage(self) -> None:
         low = MemoryRetrieveParams.model_validate(
@@ -980,6 +1032,8 @@ class TestApiSchemaValidation:
                 {
                     "entry_id": "e1",
                     "include_quarantined": True,
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
                 }
             )
 
@@ -988,6 +1042,8 @@ class TestApiSchemaValidation:
                 "entry_id": "e1",
                 "include_quarantined": True,
                 "confirmed": True,
+                "user_id": "alice",
+                "workspace_id": "ws1",
             }
         )
         assert params.include_quarantined is True
