@@ -38,8 +38,10 @@ from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import (
     InboxItemValue,
+    channel_summary_key,
     compose_channel_binding,
     inbox_item_key,
+    person_note_key,
     response_feedback_key,
 )
 from shisad.memory.remap import legacy_source_view_origin
@@ -3291,6 +3293,134 @@ async def test_contract_m8_feedback_telemetry_is_bounded_and_observational(
     assert value["telemetry_policy"] == "observation_only"
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_contract_m8_channel_state_preserves_curated_rows_via_control_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-m8-state",
+        channel_id="chan-m8-state",
+    )
+    note_key = person_note_key(
+        channel_id=channel_binding,
+        external_user_id="guest-m8-state",
+    )
+    summary_key = channel_summary_key(
+        channel_id=channel_binding,
+        summary_kind="digest",
+    )
+
+    def _seed(config: DaemonConfig) -> None:
+        config.channel_identity_allowlist = {"discord": ["guest-m8-state"]}
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        owner_scope = {"user_id": "guest-m8-state", "workspace_id": "guild-m8-state"}
+        curated_note = manager.write_with_provenance(
+            entry_type="person_note",
+            key=note_key,
+            value={
+                "external_user_id": "guest-m8-state",
+                "display_name": "Curated Guest",
+                "channel_id": channel_binding,
+                "interaction_summary": "Owner-curated behavioral note.",
+                "confidence_source": "owner_curated",
+                "owner_curated": True,
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="behavioral-curated-note",
+                extraction_method="manual",
+            ),
+            source_origin="user_corrected",
+            channel_trust="command",
+            confirmation_status="user_corrected",
+            source_id="behavioral-curated-note",
+            scope="channel",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            **owner_scope,
+        )
+        curated_summary = manager.write_with_provenance(
+            entry_type="channel_summary",
+            key=summary_key,
+            value={
+                "channel_id": channel_binding,
+                "summary_kind": "digest",
+                "summary_text": "Owner-curated behavioral digest.",
+                "confidence_source": "owner_curated",
+                "owner_curated": True,
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="behavioral-curated-summary",
+                extraction_method="manual",
+            ),
+            source_origin="user_corrected",
+            channel_trust="command",
+            confirmation_status="user_corrected",
+            source_id="behavioral-curated-summary",
+            scope="channel",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            **owner_scope,
+        )
+        assert curated_note.kind == "allow"
+        assert curated_summary.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        await harness.client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "guest-m8-state",
+                    "workspace_hint": "guild-m8-state",
+                    "reply_target": "chan-m8-state",
+                    "message_id": "msg-m8-state-observed",
+                    "content": "fresh observed channel state",
+                    "metadata": {
+                        "interaction_type": "direct",
+                        "display_name": "Observed Guest",
+                        "summary_kind": "digest",
+                        "summary_text": "Observed behavioral digest.",
+                    },
+                }
+            },
+        )
+        listed = await harness.client.call(
+            "memory.list",
+            {
+                "limit": 40,
+                "user_id": "guest-m8-state",
+                "workspace_id": "guild-m8-state",
+                "include_unowned": True,
+            },
+        )
+
+    current_entries = [
+        entry
+        for entry in listed.get("entries", [])
+        if isinstance(entry, dict) and entry.get("superseded_by") is None
+    ]
+    current_by_key = {
+        (entry.get("entry_type"), entry.get("key")): entry for entry in current_entries
+    }
+    curated_note = current_by_key[("person_note", note_key)]
+    curated_summary = current_by_key[("channel_summary", summary_key)]
+    observed_note = current_by_key[("person_note", f"{note_key}:observed")]
+    observed_summary = current_by_key[("channel_summary", f"{summary_key}:observed")]
+
+    assert curated_note["value"]["owner_curated"] is True
+    assert curated_note["value"]["interaction_summary"] == "Owner-curated behavioral note."
+    assert curated_summary["value"]["owner_curated"] is True
+    assert curated_summary["value"]["summary_text"] == "Owner-curated behavioral digest."
+    assert observed_note["value"]["owner_curated"] is False
+    assert observed_note["value"]["interaction_summary"] == "fresh observed channel state"
+    assert observed_summary["value"]["owner_curated"] is False
+    assert observed_summary["value"]["summary_text"] == "Observed behavioral digest."
 
 
 @pytest.mark.asyncio
