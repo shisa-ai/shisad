@@ -86,3 +86,11 @@ def test_memory_benchmark_cli_reports_invalid_operator_inputs(tmp_path: Path) ->
     assert storage_result.exit_code != 0
     assert "storage directory must be empty" in storage_result.output
     assert "Traceback" not in storage_result.output
+
+    threshold_result = runner.invoke(
+        cli_main.cli,
+        ["memory", "benchmark", "--fail-under-accuracy", "nan"],
+    )
+    assert threshold_result.exit_code != 0
+    assert "threshold must be finite" in threshold_result.output
+    assert "Traceback" not in threshold_result.output

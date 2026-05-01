@@ -194,6 +194,12 @@ def evaluate_memory_benchmark(
 
     if limit <= 0:
         raise ValueError("limit must be positive")
+    _validate_threshold_values(
+        fail_under_accuracy=fail_under_accuracy,
+        fail_under_recall=fail_under_recall,
+        fail_over_harm_rate=fail_over_harm_rate,
+        fail_over_p95_latency_ms=fail_over_p95_latency_ms,
+    )
     _validate_dataset(dataset)
     started = time.perf_counter()
     with _pipeline_storage(storage_dir) as resolved_storage:
@@ -625,6 +631,24 @@ def _threshold_failures(
     return failures
 
 
+def _validate_threshold_values(
+    *,
+    fail_under_accuracy: float | None,
+    fail_under_recall: float | None,
+    fail_over_harm_rate: float | None,
+    fail_over_p95_latency_ms: float | None,
+) -> None:
+    thresholds = {
+        "fail_under_accuracy": fail_under_accuracy,
+        "fail_under_recall": fail_under_recall,
+        "fail_over_harm_rate": fail_over_harm_rate,
+        "fail_over_p95_latency_ms": fail_over_p95_latency_ms,
+    }
+    for name, value in thresholds.items():
+        if value is not None and not math.isfinite(value):
+            raise ValueError(f"{name} threshold must be finite")
+
+
 def _capacity_failures(capacity_reports: list[dict[str, Any]]) -> list[str]:
     return [
         f"capacity_probe_failed:{report['target_tokens']}"
@@ -716,7 +740,11 @@ def run_memory_benchmark_cli(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run deterministic M6 memory benchmarks.")
-    parser.add_argument("--fixture", type=Path, help="External JSON benchmark fixture.")
+    parser.add_argument(
+        "--fixture",
+        type=_existing_file_arg,
+        help="External JSON benchmark fixture.",
+    )
     parser.add_argument("--storage-dir", type=Path, help="Memory benchmark storage directory.")
     parser.add_argument(
         "--limit",
@@ -748,12 +776,24 @@ def main(argv: list[str] | None = None) -> int:
             fail_over_harm_rate=args.fail_over_harm_rate,
             fail_over_p95_latency_ms=args.fail_over_p95_latency_ms,
         )
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        parser.error(str(exc))
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["allowed"] else 1
+
+
+def _existing_file_arg(value: str) -> Path:
+    path = Path(value)
+    if not path.exists():
+        raise argparse.ArgumentTypeError("fixture path does not exist")
+    if not path.is_file():
+        raise argparse.ArgumentTypeError("fixture path must be a file")
+    return path
 
 
 def _positive_int_arg(value: str) -> int:

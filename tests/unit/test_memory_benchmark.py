@@ -66,6 +66,16 @@ def test_m6_memory_benchmark_threshold_failure_is_user_visible(tmp_path: Path) -
     assert "accuracy_below_threshold" in report["failures"]
 
 
+def test_m6_memory_benchmark_rejects_non_finite_threshold(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="fail_under_accuracy threshold must be finite"):
+        evaluate_memory_benchmark(
+            builtin_memory_benchmark_dataset(),
+            storage_dir=tmp_path / "memory",
+            limit=4,
+            fail_under_accuracy=float("nan"),
+        )
+
+
 def test_m6_memory_benchmark_stage_durations_are_attributed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -488,6 +498,40 @@ def test_m6_memory_benchmark_script_reports_invalid_args(
     assert exc_info.value.code == 2
     assert "must be positive" in capsys.readouterr().err
 
+    with pytest.raises(SystemExit) as threshold_exc:
+        main(
+            [
+                "--output",
+                str(tmp_path / "out.json"),
+                "--fail-under-accuracy",
+                "nan",
+            ]
+        )
+    assert threshold_exc.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "threshold must be finite" in stderr
+    assert "Traceback" not in stderr
+
+
+def test_m6_memory_benchmark_script_reports_invalid_fixture(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--output",
+                str(tmp_path / "out.json"),
+                "--fixture",
+                str(tmp_path / "missing.json"),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "fixture path does not exist" in stderr
+    assert "Traceback" not in stderr
+
 
 def test_m6_memory_benchmark_script_reports_invalid_storage(
     tmp_path: Path,
@@ -508,4 +552,38 @@ def test_m6_memory_benchmark_script_reports_invalid_storage(
         )
 
     assert exc_info.value.code == 2
-    assert "storage directory must be empty" in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert "storage directory must be empty" in stderr
+    assert "Traceback" not in stderr
+
+    storage_file = tmp_path / "memory-file"
+    storage_file.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(SystemExit) as file_exc:
+        main(
+            [
+                "--output",
+                str(tmp_path / "file-out.json"),
+                "--storage-dir",
+                str(storage_file),
+            ]
+        )
+    assert file_exc.value.code == 2
+    file_stderr = capsys.readouterr().err
+    assert "File exists" in file_stderr
+    assert "Traceback" not in file_stderr
+
+
+def test_m6_memory_benchmark_script_reports_invalid_output_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_parent = tmp_path / "not-a-directory"
+    output_parent.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--output", str(output_parent / "out.json")])
+
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "File exists" in stderr
+    assert "Traceback" not in stderr
