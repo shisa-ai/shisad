@@ -49,6 +49,12 @@ def _validate_complete_owner_scope(model: Any) -> None:
     model.workspace_id = workspace_id
 
 
+def _require_complete_owner_scope(model: Any) -> None:
+    _validate_complete_owner_scope(model)
+    if getattr(model, "user_id", None) is None or getattr(model, "workspace_id", None) is None:
+        raise ValueError("user_id and workspace_id are required")
+
+
 class JsonRpcRequest(BaseModel):
     """JSON-RPC 2.0 request."""
 
@@ -425,6 +431,11 @@ class MemoryWriteParams(_StrictParams):
         _validate_complete_owner_scope(self)
         if not self.ingress_context.strip():
             raise ValueError("ingress_context is required")
+        if self.supersedes is not None:
+            self.supersedes = self.supersedes.strip()
+            if not self.supersedes:
+                raise ValueError("supersedes is required")
+            _require_complete_owner_scope(self)
         return self
 
 
@@ -454,7 +465,7 @@ class MemoryPromoteIdentityCandidateParams(_StrictParams):
             raise ValueError("ingress_context is required")
         if not self.candidate_id.strip():
             raise ValueError("candidate_id is required")
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -483,7 +494,7 @@ class MemoryRejectIdentityCandidateParams(_StrictParams):
             raise ValueError("ingress_context is required")
         if not self.candidate_id.strip():
             raise ValueError("candidate_id is required")
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -492,8 +503,10 @@ class MemorySupersedeParams(MemoryWriteParams):
 
     @model_validator(mode="after")
     def _validate_supersedes(self) -> MemorySupersedeParams:
-        if not self.supersedes.strip():
+        self.supersedes = self.supersedes.strip()
+        if not self.supersedes:
             raise ValueError("supersedes is required")
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -517,7 +530,7 @@ class MemoryReviewQueueParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> MemoryReviewQueueParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -568,6 +581,13 @@ class MemoryLifecycleParams(_StrictParams):
 class MemoryWorkflowStateParams(_StrictParams):
     entry_id: str
     workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"]
+    user_id: str | None = None
+    workspace_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> MemoryWorkflowStateParams:
+        _require_complete_owner_scope(self)
+        return self
 
 
 class MemoryExportParams(_StrictParams):

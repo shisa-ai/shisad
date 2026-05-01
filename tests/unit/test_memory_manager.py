@@ -834,6 +834,43 @@ def test_m7_workflow_state_transition_rejects_closed_reopen(tmp_path: Path) -> N
     assert unchanged.workflow_state == "closed"
 
 
+def test_m7_set_workflow_state_rejects_cross_owner_raw_id(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:owner-bound",
+        value="Owner-scoped release thread",
+        source=MemorySource(origin="user", source_id="msg-owner", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-owner",
+        scope="user",
+        workflow_state="active",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert decision.entry is not None
+
+    changed = manager.set_workflow_state(
+        decision.entry.id,
+        "closed",
+        user_id="bob",
+        workspace_id="ws1",
+    )
+
+    assert changed is False
+    unchanged = manager.get_entry(
+        decision.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert unchanged is not None
+    assert unchanged.workflow_state == "active"
+
+
 def test_m7_supersede_closed_workflow_entry_does_not_reopen(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     closed = manager.write_with_provenance(
@@ -1819,6 +1856,54 @@ def test_m1_supersedes_rejects_mismatched_or_reused_targets(tmp_path: Path) -> N
     )
     assert reused.kind == "reject"
     assert reused.reason == "supersedes_target_already_has_successor"
+
+
+def test_m7_supersede_rejects_cross_owner_raw_id(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    first = manager.write_with_provenance(
+        entry_type="note",
+        key="note:owner-bound",
+        value="alice draft",
+        source=MemorySource(origin="user", source_id="msg-owner-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-owner-1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert first.entry is not None
+
+    cross_owner = manager.write_with_provenance(
+        entry_type="note",
+        key="note:owner-bound",
+        value="bob draft",
+        source=MemorySource(origin="user", source_id="msg-owner-2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-owner-2",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=first.entry.id,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+
+    assert cross_owner.kind == "reject"
+    assert cross_owner.reason == "supersedes_target_not_found"
+    original = manager.get_entry(
+        first.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert original is not None
+    assert original.superseded_by is None
 
 
 def test_m1_supersede_trust_upgrade_requires_user_confirmation(tmp_path: Path) -> None:

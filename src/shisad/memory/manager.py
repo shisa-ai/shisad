@@ -348,6 +348,13 @@ class MemoryManager:
             prior_entry = self._entries.get(supersedes)
             if prior_entry is None or self._is_deleted(prior_entry):
                 return MemoryWriteDecision(kind="reject", reason="supersedes_target_not_found")
+            if owner_scope_requested and not self._entry_matches_owner(
+                prior_entry,
+                user_id=owner_user_id,
+                workspace_id=owner_workspace_id,
+                include_unowned=False,
+            ):
+                return MemoryWriteDecision(kind="reject", reason="supersedes_target_not_found")
             if prior_entry.superseded_by is not None:
                 return MemoryWriteDecision(
                     kind="reject",
@@ -1485,9 +1492,29 @@ class MemoryManager:
         self._audit("memory.unquarantine", {"entry_id": entry_id, "reason": reason})
         return True
 
-    def set_workflow_state(self, entry_id: str, workflow_state: WorkflowState) -> bool:
+    def set_workflow_state(
+        self,
+        entry_id: str,
+        workflow_state: WorkflowState,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> bool:
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return False
         entry = self._entries.get(entry_id)
         if entry is None or self._is_deleted(entry):
+            return False
+        if not self._entry_matches_owner(
+            entry,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
+            include_unowned=include_unowned,
+        ):
             return False
         if entry.entry_type not in ACTIVE_AGENDA_ENTRY_TYPES:
             raise ValueError("workflow_state only applies to active-agenda entry types")

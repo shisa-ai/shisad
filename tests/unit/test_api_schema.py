@@ -34,10 +34,13 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryListResult,
     MemoryMintIngressParams,
+    MemoryPromoteIdentityCandidateParams,
     MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
+    MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
+    MemoryReviewQueueParams,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
     MemoryVerifyResult,
@@ -590,10 +593,14 @@ class TestApiSchemaValidation:
                 "key": "note:chain",
                 "value": "updated",
                 "supersedes": "entry-1",
+                "user_id": "alice",
+                "workspace_id": "ws1",
             }
         )
 
         assert params.supersedes == "entry-1"
+        assert params.user_id == "alice"
+        assert params.workspace_id == "ws1"
 
         with pytest.raises(ValidationError):
             MemorySupersedeParams.model_validate(
@@ -603,8 +610,100 @@ class TestApiSchemaValidation:
                     "key": "note:chain",
                     "value": "updated",
                     "supersedes": "",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
                 }
             )
+
+    def test_m7_review_and_raw_id_mutations_require_owner_scope(self) -> None:
+        owner_scope = {"user_id": "alice", "workspace_id": "ws1"}
+
+        assert (
+            MemoryReviewQueueParams.model_validate({"limit": 10, **owner_scope}).user_id
+            == "alice"
+        )
+        assert (
+            MemoryPromoteIdentityCandidateParams.model_validate(
+                {
+                    "ingress_context": "handle-1",
+                    "candidate_id": "candidate-1",
+                    **owner_scope,
+                }
+            ).workspace_id
+            == "ws1"
+        )
+        assert (
+            MemoryRejectIdentityCandidateParams.model_validate(
+                {
+                    "ingress_context": "handle-1",
+                    "candidate_id": "candidate-1",
+                    **owner_scope,
+                }
+            ).workspace_id
+            == "ws1"
+        )
+        assert (
+            MemoryWriteParams.model_validate(
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "note",
+                    "key": "note:chain",
+                    "value": "updated",
+                    "supersedes": "entry-1",
+                    **owner_scope,
+                }
+            ).supersedes
+            == "entry-1"
+        )
+        assert (
+            MemoryWorkflowStateParams.model_validate(
+                {
+                    "entry_id": "entry-1",
+                    "workflow_state": "closed",
+                    **owner_scope,
+                }
+            ).user_id
+            == "alice"
+        )
+
+        ownerless_payloads: list[tuple[type[object], dict[str, object]]] = [
+            (MemoryReviewQueueParams, {"limit": 10}),
+            (
+                MemoryPromoteIdentityCandidateParams,
+                {"ingress_context": "handle-1", "candidate_id": "candidate-1"},
+            ),
+            (
+                MemoryRejectIdentityCandidateParams,
+                {"ingress_context": "handle-1", "candidate_id": "candidate-1"},
+            ),
+            (
+                MemoryWriteParams,
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "note",
+                    "key": "note:chain",
+                    "value": "updated",
+                    "supersedes": "entry-1",
+                },
+            ),
+            (
+                MemorySupersedeParams,
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "note",
+                    "key": "note:chain",
+                    "value": "updated",
+                    "supersedes": "entry-1",
+                },
+            ),
+            (
+                MemoryWorkflowStateParams,
+                {"entry_id": "entry-1", "workflow_state": "closed"},
+            ),
+        ]
+        for params_type, payload in ownerless_payloads:
+            with pytest.raises(ValidationError):
+                params_type.model_validate(payload)  # type: ignore[attr-defined]
 
     def test_c2_memory_retrieve_params_accept_owner_scope_fields(self) -> None:
         params = MemoryRetrieveParams.model_validate(
@@ -782,6 +881,8 @@ class TestApiSchemaValidation:
             {
                 "entry_id": "entry-1",
                 "workflow_state": "closed",
+                "user_id": "alice",
+                "workspace_id": "ws1",
             }
         )
 

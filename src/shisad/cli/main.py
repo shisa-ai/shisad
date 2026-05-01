@@ -2732,6 +2732,8 @@ def memory_write(
 ) -> None:
     normalized_predicate = _validate_memory_write_predicate(entry_type, predicate)
     owner_scope = _owner_scope_payload(user_id, workspace_id)
+    if supersede.strip() and not owner_scope:
+        raise click.ClickException("--supersede requires --user and --workspace.")
     config = _get_config()
     ingress = rpc_call(
         config,

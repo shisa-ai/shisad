@@ -2401,6 +2401,8 @@ async def test_contract_set_workflow_state_keeps_status_active(
         entry_type="open_thread",
         key="thread:closeable",
         value="close this thread later",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert created.get("kind") == "allow"
@@ -2411,7 +2413,12 @@ async def test_contract_set_workflow_state_keeps_status_active(
 
     updated = await contract_harness.client.call(
         "memory.set_workflow_state",
-        {"entry_id": entry_id, "workflow_state": "closed"},
+        {
+            "entry_id": entry_id,
+            "workflow_state": "closed",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     assert updated.get("changed") is True
     assert updated.get("workflow_state") == "closed"
@@ -2452,6 +2459,8 @@ async def test_contract_set_workflow_state_rejects_closed_reopen(
         key="thread:terminal",
         value="closed thread should stay terminal",
         workflow_state="closed",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert created.get("kind") == "allow"
@@ -2460,7 +2469,12 @@ async def test_contract_set_workflow_state_rejects_closed_reopen(
 
     reopened = await contract_harness.client.call(
         "memory.set_workflow_state",
-        {"entry_id": entry_id, "workflow_state": "active"},
+        {
+            "entry_id": entry_id,
+            "workflow_state": "active",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
 
     assert reopened.get("changed") is False
@@ -2491,6 +2505,8 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
             scope="user",
             confidence=0.41,
             confirmation_satisfied=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["entry_id"] = decision.entry.id
@@ -2531,7 +2547,10 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
         }
         assert chunk_id not in retrieved_ids
 
-        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        review_queue = await harness.client.call(
+            "memory.list_review_queue",
+            {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+        )
         queued_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in review_queue.get("entries", [])
@@ -2983,7 +3002,10 @@ async def test_contract_identity_candidate_cli_surface_and_accept_flow(
         )
         assert "Remembered identity candidate" in str(accepted.get("response", ""))
 
-        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        review_queue = await harness.client.call(
+            "memory.list_review_queue",
+            {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+        )
         queued_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in review_queue.get("entries", [])
@@ -3054,7 +3076,10 @@ async def test_contract_identity_candidate_reject_emits_backoff_and_closes_queue
         )
         assert "Rejected identity candidate" in str(rejected.get("response", ""))
 
-        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        review_queue = await harness.client.call(
+            "memory.list_review_queue",
+            {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+        )
         queued_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in review_queue.get("entries", [])
@@ -3133,7 +3158,10 @@ async def test_contract_identity_candidate_silence_expires_without_rejection_sig
         assert candidate_id in str(second.get("response", ""))
         assert candidate_id not in str(third.get("response", ""))
 
-        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        review_queue = await harness.client.call(
+            "memory.list_review_queue",
+            {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+        )
         queued_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in review_queue.get("entries", [])
@@ -3852,7 +3880,10 @@ async def test_contract_pending_review_skill_requires_promotion_before_invocatio
         assert promoted_id
         assert entry.get("invocation_eligible") is True
 
-        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        review_queue = await harness.client.call(
+            "memory.list_review_queue",
+            {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+        )
         queued_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in review_queue.get("entries", [])
@@ -3931,6 +3962,8 @@ async def test_contract_quarantined_promotion_rpcs_fail_closed_without_binding_o
             {
                 "ingress_context": minted["ingress_context"],
                 "candidate_id": seeded["identity_id"],
+                "user_id": "alice",
+                "workspace_id": "ws1",
             },
         )
         assert rejected_identity.get("kind") == "reject"

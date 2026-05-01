@@ -1122,6 +1122,10 @@ def test_memory_write_supersede_forwards_entry_id(
             "green",
             "--supersede",
             "m-old",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws1",
         ],
     )
 
@@ -1134,8 +1138,52 @@ def test_memory_write_supersede_forwards_entry_id(
             "key": "favorite_color",
             "value": "green",
             "supersedes": "m-old",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         },
     ) in calls
+
+
+def test_memory_write_rejects_supersede_without_owner_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        return {}
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "memory",
+            "write",
+            "--type",
+            "fact",
+            "--key",
+            "favorite_color",
+            "--value",
+            "green",
+            "--supersede",
+            "m-old",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--supersede requires --user and --workspace" in result.output
+    assert calls == []
 
 
 def test_memory_write_forwards_owner_scope_when_supplied(

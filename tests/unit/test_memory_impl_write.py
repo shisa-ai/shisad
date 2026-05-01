@@ -276,6 +276,8 @@ async def test_memory_promote_skill_promotes_pending_review_candidate_from_handl
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     assert candidate.entry is not None
     context = harness._memory_ingress_registry.mint(
@@ -397,6 +399,8 @@ async def test_memory_promote_identity_candidate_rejects_quarantined_candidate_b
         {
             "ingress_context": context.handle_id,
             "candidate_id": candidate.entry.id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -727,6 +731,8 @@ async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
             "entry_type": "note",
             "key": "note:chain",
             "value": "draft one",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
     assert first["entry"] is not None
@@ -746,6 +752,8 @@ async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
             "key": "note:chain",
             "value": "draft two",
             "supersedes": first["entry"]["id"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -753,6 +761,60 @@ async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
     assert second["entry"] is not None
     assert second["entry"]["version"] == 2
     assert second["entry"]["supersedes"] == first["entry"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rejects_cross_owner_supersede_target(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-owner-1",
+        content="alice draft",
+    )
+    first = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:owner-scope",
+            "value": "alice draft",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        }
+    )
+    assert first["entry"] is not None
+
+    next_context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-owner-2",
+        content="bob draft",
+    )
+    rejected = await harness.do_memory_write(
+        {
+            "ingress_context": next_context.handle_id,
+            "entry_type": "note",
+            "key": "note:owner-scope",
+            "value": "bob draft",
+            "supersedes": first["entry"]["id"],
+            "user_id": "bob",
+            "workspace_id": "ws1",
+        }
+    )
+
+    assert rejected["kind"] == "reject"
+    assert rejected["reason"] == "supersedes_target_not_found"
+    original = harness._memory_manager.get_entry(
+        str(first["entry"]["id"]),
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert original is not None
+    assert original.superseded_by is None
 
 
 @pytest.mark.asyncio
@@ -772,6 +834,8 @@ async def test_memory_supersede_impl_reuses_write_path(tmp_path: Path) -> None:
             "entry_type": "note",
             "key": "note:supersede-api",
             "value": "first draft",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -792,6 +856,8 @@ async def test_memory_supersede_impl_reuses_write_path(tmp_path: Path) -> None:
             "key": "note:supersede-api",
             "value": "second draft",
             "supersedes": first["entry"]["id"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -822,6 +888,8 @@ async def test_memory_set_workflow_state_updates_active_agenda_entry(tmp_path: P
             "entry_type": "open_thread",
             "key": "thread:vendor-followup",
             "value": "follow up with vendor tomorrow",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -832,6 +900,8 @@ async def test_memory_set_workflow_state_updates_active_agenda_entry(tmp_path: P
         {
             "entry_id": entry_id,
             "workflow_state": "closed",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -841,6 +911,51 @@ async def test_memory_set_workflow_state_updates_active_agenda_entry(tmp_path: P
     assert entry is not None
     assert entry.workflow_state == "closed"
     assert entry.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_memory_set_workflow_state_rejects_cross_owner_raw_id(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-owner-thread",
+        content="owner scoped thread",
+    )
+
+    created = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "open_thread",
+            "key": "thread:owner-scoped",
+            "value": "owner scoped thread",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        }
+    )
+    assert created["entry"] is not None
+    entry_id = str(created["entry"]["id"])
+
+    updated = await harness.do_memory_set_workflow_state(
+        {
+            "entry_id": entry_id,
+            "workflow_state": "closed",
+            "user_id": "bob",
+            "workspace_id": "ws1",
+        }
+    )
+
+    assert updated["changed"] is False
+    assert updated["reason"] == "entry_not_found"
+    entry = harness._memory_manager.get_entry(
+        entry_id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert entry is not None
+    assert entry.workflow_state == "active"
 
 
 @pytest.mark.asyncio

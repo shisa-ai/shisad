@@ -122,6 +122,13 @@ class MemoryImplMixin(HandlerMixinBase):
         return user_id, workspace_id
 
     @staticmethod
+    def _required_owner_tuple_from_params(params: Mapping[str, Any]) -> tuple[str, str]:
+        user_id, workspace_id = MemoryImplMixin._owner_tuple_from_params(params)
+        if user_id is None or workspace_id is None:
+            raise ValueError("user_id and workspace_id are required")
+        return user_id, workspace_id
+
+    @staticmethod
     def _normalize_owner_value(value: Any) -> str | None:
         if value is None:
             return None
@@ -342,6 +349,10 @@ class MemoryImplMixin(HandlerMixinBase):
             extraction_method=f"ingress.{derivation_path.value}",
         )
         confirmation_satisfied = self._legacy_confirmation_satisfied(params, context)
+        supersedes = str(params.get("supersedes", "")).strip() or None
+        user_id, workspace_id = self._owner_tuple_from_params(params)
+        if supersedes is not None:
+            user_id, workspace_id = self._required_owner_tuple_from_params(params)
         decision = self._memory_manager.write_with_provenance(
             entry_type=entry_type,
             key=key,
@@ -361,11 +372,9 @@ class MemoryImplMixin(HandlerMixinBase):
             content_digest=resolved_digest,
             workflow_state=params.get("workflow_state"),
             invocation_eligible=bool(params.get("invocation_eligible", False)),
-            supersedes=str(params.get("supersedes", "")).strip() or None,
-            user_id=(str(params.get("user_id")) if params.get("user_id") is not None else None),
-            workspace_id=(
-                str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
-            ),
+            supersedes=supersedes,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         return self._with_memory_reject_hint(cast(dict[str, Any], decision.model_dump(mode="json")))
 
@@ -588,7 +597,7 @@ class MemoryImplMixin(HandlerMixinBase):
         if not handle_id:
             raise ValueError("ingress_context is required for memory.promote_identity_candidate")
         candidate_id = str(params.get("candidate_id", "")).strip()
-        user_id, workspace_id = self._owner_tuple_from_params(params)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
         context = self._memory_ingress_registry.resolve(handle_id)
         promoted_value = params.get("value")
         if promoted_value is None:
@@ -643,7 +652,7 @@ class MemoryImplMixin(HandlerMixinBase):
             raise ValueError("ingress_context is required for memory.reject_identity_candidate")
         self._memory_ingress_registry.resolve(handle_id)
         candidate_id = str(params.get("candidate_id", "")).strip()
-        user_id, workspace_id = self._owner_tuple_from_params(params)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
         changed, reason = self._memory_manager.reject_identity_candidate(
             candidate_id,
             ingress_handle_id=handle_id,
@@ -667,7 +676,7 @@ class MemoryImplMixin(HandlerMixinBase):
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
     async def do_memory_list_review_queue(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        user_id, workspace_id = self._owner_tuple_from_params(params)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
         rows = self._memory_manager.list_review_queue(
             limit=int(params.get("limit", 100)),
             user_id=user_id,
@@ -895,8 +904,14 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_memory_set_workflow_state(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
         workflow_state = str(params.get("workflow_state", "")).strip()
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
         try:
-            changed = self._memory_manager.set_workflow_state(entry_id, workflow_state)
+            changed = self._memory_manager.set_workflow_state(
+                entry_id,
+                workflow_state,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
         except ValueError as exc:
             reason = str(exc).split(":", 1)[0].strip() or "invalid_workflow_transition"
             return {
@@ -909,7 +924,7 @@ class MemoryImplMixin(HandlerMixinBase):
             "changed": changed,
             "entry_id": entry_id,
             "workflow_state": workflow_state,
-            "reason": "",
+            "reason": "changed" if changed else "entry_not_found",
         }
 
     async def do_memory_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
