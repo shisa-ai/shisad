@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import hashlib
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1092,19 +1094,25 @@ def test_action_list_empty_message_matches_requested_status(
     monkeypatch.setattr(cli_main, "rpc_call", fake_rpc_call)
     runner = CliRunner()
 
-    rejected = _invoke_ok(runner, ["action", "list", "--status", "rejected"]).output
-    all_statuses = _invoke_ok(runner, ["action", "list", "--status", "all"]).output
+    rejected = _invoke_ok(
+        runner,
+        ["action", "list", "--session", "s-status", "--status", "rejected"],
+    ).output
+    all_statuses = _invoke_ok(
+        runner,
+        ["action", "list", "--session", "s-status", "--status", "all"],
+    ).output
 
     assert "No confirmations with status rejected" in rejected
     assert "No pending confirmations" not in rejected
     assert "No confirmations" in all_statuses
     assert (
         "action.pending",
-        {"session_id": None, "status": "rejected", "limit": 50, "include_ui": True},
+        {"session_id": "s-status", "status": "rejected", "limit": 50, "include_ui": True},
     ) in calls
     assert (
         "action.pending",
-        {"session_id": None, "status": None, "limit": 50, "include_ui": True},
+        {"session_id": "s-status", "status": None, "limit": 50, "include_ui": True},
     ) in calls
 
 
@@ -1613,6 +1621,151 @@ def test_session_message_command_preserves_pending_preview_linebreak_markers(
     assert result.exit_code == 0, result.output
     assert "body: line1\\nline2" in result.output
     assert "body: line1\nline2" not in result.output
+
+
+def test_m9_session_create_and_message_update_current_session_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    cache_path = tmp_path / "config" / "last-session"
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert response_model is not None
+        if method == "session.create":
+            return response_model.model_validate({"session_id": "s-created", "mode": "default"})  # type: ignore[attr-defined]
+        if method == "session.message":
+            assert params == {"session_id": "s-active", "content": "hello"}
+            return response_model.model_validate(  # type: ignore[attr-defined]
+                {"session_id": "s-active", "response": "hi"}
+            )
+        raise AssertionError(method)
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    create = runner.invoke(cli_main.cli, ["session", "create", "--user", "alice"])
+    message = runner.invoke(cli_main.cli, ["session", "message", "s-active", "hello"])
+
+    assert create.exit_code == 0, create.output
+    assert message.exit_code == 0, message.output
+    assert cache_path.read_text(encoding="utf-8") == "s-active\n"
+
+
+def test_m9_session_use_and_current_manage_current_session_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_path = tmp_path / "config" / "last-session"
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    runner = CliRunner()
+
+    use = runner.invoke(cli_main.cli, ["session", "use", "s-42"])
+    current = runner.invoke(cli_main.cli, ["session", "current"])
+
+    assert use.exit_code == 0, use.output
+    assert "s-42" in use.output
+    assert current.exit_code == 0, current.output
+    assert current.output.strip() == "s-42"
+    assert cache_path.read_text(encoding="utf-8") == "s-42\n"
+
+
+def test_m9_state_commands_default_to_current_session_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    cache_path = tmp_path / "config" / "last-session"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("s-cache\n", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        assert response_model is not None
+        if method == "action.pending":
+            return response_model.model_validate({"actions": [], "count": 0})  # type: ignore[attr-defined]
+        if method == "lockdown.status":
+            return response_model.model_validate({"statuses": [], "count": 0})  # type: ignore[attr-defined]
+        raise AssertionError(method)
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    action_result = runner.invoke(cli_main.cli, ["action", "list"])
+    lockdown_result = runner.invoke(cli_main.cli, ["lockdown", "status"])
+
+    assert action_result.exit_code == 0, action_result.output
+    assert lockdown_result.exit_code == 0, lockdown_result.output
+    assert (
+        "action.pending",
+        {"session_id": "s-cache", "status": "pending", "limit": 50, "include_ui": True},
+    ) in calls
+    assert ("lockdown.status", {"session_id": "s-cache", "all": False}) in calls
+
+
+def test_m9_audit_query_defaults_to_current_session_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    cache_path = tmp_path / "config" / "last-session"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("s-cache\n", encoding="utf-8")
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _entry(event_id: str, session_id: str) -> dict[str, object]:
+        data = {"session_id": session_id}
+        data_hash = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+        return {
+            "event_id": event_id,
+            "timestamp": "2026-05-01T00:00:00+00:00",
+            "event_type": "ToolExecuted",
+            "actor": "policy_loop",
+            "action": "ToolExecuted",
+            "target": "fs.read",
+            "decision": "allow",
+            "reasoning": "",
+            "session_id": session_id,
+            "data": data,
+            "data_hash": data_hash,
+            "previous_event_hash": "0" * 64,
+            "previous_hash": "0" * 64,
+        }
+
+    audit_path.write_text(
+        json.dumps(_entry("e-other", "s-other")) + "\n"
+        + json.dumps(_entry("e-cache", "s-cache"))
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["audit", "query"])
+
+    assert result.exit_code == 0, result.output
+    assert "session=s-cache" in result.output
+    assert "session=s-other" not in result.output
 
 
 def test_events_subscribe_uses_rpc_run_wrapper(

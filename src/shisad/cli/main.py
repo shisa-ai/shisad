@@ -140,6 +140,8 @@ _MEMORY_WRITE_ENTRY_TYPES = (
 _MEMORY_PREFERENCE_ENTRY_TYPES = {"preference", "soft_constraint"}
 _MEMORY_PREFERENCE_PREDICATE_RE = re.compile(r"^[a-z][a-z0-9_]*\([^()\n]{1,200}\)$")
 _MEMORY_DISALLOWED_PREFERENCE_PREFIXES = ("always", "never", "ignore", "prioritize")
+_SESSION_ID_ENV = "SHISAD_SESSION_ID"
+_LAST_SESSION_FILENAME = "last-session"
 
 
 def _validate_memory_write_predicate(entry_type: str, predicate: str) -> str:
@@ -231,6 +233,45 @@ def _memory_list_row(item: BaseModel) -> str:
 
 def _get_config() -> DaemonConfig:
     return DaemonConfig()
+
+
+def _last_session_path() -> Path:
+    return Path(click.get_app_dir("shisad")) / _LAST_SESSION_FILENAME
+
+
+def _read_last_session() -> str:
+    env_session = os.environ.get(_SESSION_ID_ENV, "").strip()
+    if env_session:
+        return env_session
+    try:
+        return _last_session_path().read_text(encoding="utf-8").splitlines()[0].strip()
+    except (IndexError, OSError):
+        return ""
+
+
+def _write_last_session(session_id: str) -> None:
+    normalized = session_id.strip()
+    if not normalized:
+        return
+    path = _last_session_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{normalized}\n", encoding="utf-8")
+    except OSError as exc:
+        _echo(f"Warning: could not update current session cache: {exc}", fg="yellow", err=True)
+
+
+def _resolve_session_id(session_id: str | None) -> str:
+    explicit = str(session_id or "").strip()
+    if explicit:
+        return explicit
+    resolved = _read_last_session()
+    if resolved:
+        return resolved
+    raise click.ClickException(
+        "--session is required; pass --session, set SHISAD_SESSION_ID, "
+        "or run 'shisad session use <SESSION_ID>'."
+    )
 
 
 def _colors_enabled() -> bool:
@@ -1089,7 +1130,25 @@ def session_create(user: str, workspace: str, mode: str) -> None:
         {"user_id": user, "workspace_id": workspace, "mode": mode},
         response_model=SessionCreateResult,
     )
+    _write_last_session(result.session_id)
     click.echo(f"Session created: {result.session_id} mode={result.mode}")
+
+
+@session.command("current")
+def session_current() -> None:
+    """Print the current session id."""
+    click.echo(_resolve_session_id(""))
+
+
+@session.command("use")
+@click.argument("session_id")
+def session_use(session_id: str) -> None:
+    """Set the current session id for CLI commands."""
+    resolved = session_id.strip()
+    if not resolved:
+        raise click.ClickException("session_id is required")
+    _write_last_session(resolved)
+    click.echo(f"Current session: {resolved}")
 
 
 @session.command("message")
@@ -1105,6 +1164,7 @@ def session_message(session_id: str, content: str) -> None:
         {"session_id": session_id, "content": content},
         response_model=SessionMessageResult,
     )
+    _write_last_session(result.session_id or session_id)
     click.echo(
         render_evidence_refs_for_terminal(
             result.response,
@@ -1389,7 +1449,11 @@ def audit() -> None:
 @audit.command("query")
 @click.option("--since", help="Show events since (e.g., '1h', '2025-01-01')")
 @click.option("--type", "event_type", help="Filter by event type")
-@click.option("--session", "session_id", help="Filter by session ID")
+@click.option(
+    "--session",
+    "session_id",
+    help="Filter by session ID; defaults to SHISAD_SESSION_ID or last session",
+)
 @click.option("--actor", "actor", help="Filter by actor")
 @click.option("--limit", default=100, help="Maximum results")
 @click.option(
@@ -1421,6 +1485,7 @@ def audit_query(
     config = _get_config()
     data_dir = data_dir_override if data_dir_override is not None else config.data_dir
     audit_path = data_dir / "audit.jsonl"
+    resolved_session_id = _resolve_session_id(session_id)
 
     if not audit_path.exists():
         click.echo(f"No audit log found at {audit_path}")
@@ -1437,7 +1502,7 @@ def audit_query(
     results = log.query(
         since=since_dt,
         event_type=event_type,
-        session_id=session_id,
+        session_id=resolved_session_id,
         actor=actor,
         limit=limit,
     )
@@ -1554,7 +1619,12 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
 
 
 @action.command("list")
-@click.option("--session", "session_id", default="", help="Filter by session id")
+@click.option(
+    "--session",
+    "session_id",
+    default="",
+    help="Filter by session id; defaults to SHISAD_SESSION_ID or last session",
+)
 @click.option("--status", default="", help="Filter by status")
 @click.option("--limit", default=50, help="Maximum rows")
 @click.option("--raw", is_flag=True, help="Disable UI preview payloads")
@@ -1568,12 +1638,13 @@ def action_list(
 ) -> None:
     """List confirmations with optional machine-readable output."""
     config = _get_config()
+    resolved_session_id = _resolve_session_id(session_id)
     status_filter = _action_status_filter(status)
     result = rpc_call(
         config,
         "action.pending",
         {
-            "session_id": session_id or None,
+            "session_id": resolved_session_id,
             "status": status_filter,
             "limit": limit,
             "include_ui": not raw,
@@ -2453,7 +2524,12 @@ def lockdown_set(session_id: str, action_name: str, reason: str) -> None:
 
 
 @lockdown.command("status")
-@click.option("--session", "session_id", default="", help="Show one session")
+@click.option(
+    "--session",
+    "session_id",
+    default="",
+    help="Show one session; defaults to SHISAD_SESSION_ID or last session",
+)
 @click.option(
     "--all",
     "all_sessions",
@@ -2463,13 +2539,12 @@ def lockdown_set(session_id: str, action_name: str, reason: str) -> None:
 @click.option("--json", "output_json", is_flag=True, help="Emit JSON")
 def lockdown_status(session_id: str, all_sessions: bool, output_json: bool) -> None:
     """Show current lockdown state."""
-    if not session_id and not all_sessions:
-        raise click.ClickException("--session or --all is required.")
+    resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
     config = _get_config()
     result = rpc_call(
         config,
         "lockdown.status",
-        {"session_id": session_id or None, "all": bool(all_sessions)},
+        {"session_id": resolved_session_id or None, "all": bool(all_sessions)},
         response_model=LockdownStatusResult,
     )
     if output_json:
