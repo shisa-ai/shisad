@@ -742,6 +742,39 @@ def test_m7_sufficiency_expansion_reapplies_max_token_budget(tmp_path: Path) -> 
     assert "rollback" in pack.sufficiency.missing_terms
 
 
+def test_m7_sufficiency_expansion_recomputes_final_verification_gaps(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    launch = pipeline.ingest(
+        source_id="m7-final-gap-launch",
+        source_type="tool",
+        collection="project_docs",
+        content="Launch checklist includes the canary deploy sequence.",
+    )
+    pipeline.ingest(
+        source_id="m7-final-gap-rollback",
+        source_type="tool",
+        collection="tool_outputs",
+        content="Rollback owner Nina coordinates release rollback escalation.",
+    )
+
+    pack = pipeline.compile_recall(
+        "launch checklist",
+        task="rollback owner",
+        limit=1,
+        max_tokens=6,
+        require_corroboration=True,
+        verify_sufficiency=True,
+        expand_on_insufficient=True,
+    )
+
+    assert [item.chunk_id for item in pack.results] == [launch.chunk_id]
+    assert pack.results[0].verification_gap is True
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.verification_gap_result_ids == [launch.chunk_id]
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:

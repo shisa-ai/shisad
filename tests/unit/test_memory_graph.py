@@ -80,6 +80,11 @@ def test_m5_knowledge_graph_rebuilds_with_stable_evidence_ids(tmp_path: Path) ->
     assert any(node["entity_id"] == shisad_id for node in exported["nodes"])
     assert "Evidence" in graph.export(format="md")
 
+    shisad.importance_weight = 1.7
+    manager._persist_entry(shisad)
+    changed = build_knowledge_graph(manager.list_entries(limit=10))
+    assert changed.build_version != graph.build_version
+
 
 def test_m5_knowledge_graph_current_view_excludes_superseded_entries(
     tmp_path: Path,

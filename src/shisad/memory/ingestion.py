@@ -656,6 +656,8 @@ class IngestionPipeline:
             expand_on_insufficient=expand_on_insufficient,
             min_sufficiency_results=min_sufficiency_results,
             min_sufficiency_coverage=min_sufficiency_coverage,
+            require_corroboration=require_corroboration,
+            terms=terms,
             recall_kwargs={
                 "limit": limit,
                 "capabilities": capabilities,
@@ -730,6 +732,8 @@ class IngestionPipeline:
         expand_on_insufficient: bool,
         min_sufficiency_results: int,
         min_sufficiency_coverage: float,
+        require_corroboration: bool,
+        terms: list[str],
         recall_kwargs: dict[str, Any],
     ) -> tuple[list[RetrievalResult], SufficiencyReport | None]:
         if not verify_sufficiency:
@@ -786,6 +790,11 @@ class IngestionPipeline:
                 expanded_results,
                 max_tokens=max_tokens,
             )
+        expanded_results = self._finalize_recall_annotations(
+            expanded_results,
+            require_corroboration=require_corroboration,
+            terms=terms,
+        )
         expanded_pack = build_recall_pack(
             query=query,
             results=expanded_results,
@@ -802,6 +811,30 @@ class IngestionPipeline:
             expanded_queries=expanded_queries,
         )
         return expanded_results, expanded_report
+
+    @staticmethod
+    def _finalize_recall_annotations(
+        results: list[RetrievalResult],
+        *,
+        require_corroboration: bool,
+        terms: list[str],
+    ) -> list[RetrievalResult]:
+        final_results = results
+        if require_corroboration:
+            source_ids = {record.source_id for record in final_results}
+            tiers = {record.collection for record in final_results}
+            corroborated = len(source_ids) >= 2 and len(tiers) >= 2
+            final_results = [
+                record.model_copy(
+                    update={
+                        "corroborated": corroborated,
+                        "verification_gap": record.trust_band != "elevated"
+                        and not corroborated,
+                    }
+                )
+                for record in final_results
+            ]
+        return IngestionPipeline._mark_conflicting_results(final_results, terms=terms)
 
     @staticmethod
     def _expanded_recall_queries(

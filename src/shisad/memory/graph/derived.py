@@ -551,12 +551,26 @@ def _derived_graph_build_version(entries: list[MemoryEntry]) -> str:
         {
             "id": entry.id,
             "version": entry.version,
+            "entry_type": entry.entry_type,
+            "key": entry.key,
+            "predicate": entry.predicate,
+            "value": entry.value,
             "supersedes": entry.supersedes,
             "superseded_by": entry.superseded_by,
             "status": entry.status,
             "workflow_state": entry.workflow_state,
             "content_digest": entry.content_digest,
             "source_id": entry.source_id,
+            "source_origin": entry.source_origin,
+            "channel_trust": entry.channel_trust,
+            "confirmation_status": entry.confirmation_status,
+            "scope": entry.scope,
+            "created_at": entry.created_at,
+            "valid_from": entry.valid_from,
+            "valid_to": entry.valid_to,
+            "decay_score": entry.decay_score,
+            "importance_weight": entry.importance_weight,
+            "confidence": entry.confidence,
         }
         for entry in sorted(entries, key=lambda item: item.id)
     ]
