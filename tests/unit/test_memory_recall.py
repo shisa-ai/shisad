@@ -905,6 +905,31 @@ def test_m7_task_conflict_annotation_normalizes_punctuation(tmp_path: Path) -> N
     assert {item.conflict for item in rollback_hits} == {True}
 
 
+def test_m7_sufficiency_identifier_query_requires_identifier_coverage(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-identifier-unrelated",
+        source_type="tool",
+        collection="project_docs",
+        content="General release note about rollback owners and deployment checks.",
+    )
+
+    pack = pipeline.compile_recall(
+        "M7",
+        limit=1,
+        verify_sufficiency=True,
+    )
+
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.query_terms == ["m7"]
+    assert pack.sufficiency.coverage == 0.0
+    assert pack.sufficiency.sufficient is False
+    assert pack.sufficiency.reason == "low_coverage"
+    assert pack.sufficiency.missing_terms == ["m7"]
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:

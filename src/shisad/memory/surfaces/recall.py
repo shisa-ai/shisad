@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from shisad.memory.ingestion import RetrievalResult
 
-_RECALL_TERM_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,80}")
+_RECALL_TERM_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,80}")
 _RECALL_TERM_STOPWORDS = {
     "about",
     "and",
@@ -200,6 +200,8 @@ def extract_recall_terms(text: str) -> list[str]:
     terms: list[str] = []
     for match in _RECALL_TERM_RE.finditer(text.lower()):
         term = match.group(0).strip("_-")
+        if len(term) < 3 and not any(character.isdigit() for character in term):
+            continue
         if not term or term in _RECALL_TERM_STOPWORDS or term in seen:
             continue
         seen.add(term)

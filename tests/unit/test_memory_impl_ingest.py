@@ -310,7 +310,7 @@ async def test_c2_memory_retrieve_scopes_user_curated_results_to_owner_tuple(
     assert "other-owner-red" not in scoped_text
     assert "legacy-unowned-green" not in scoped_text
 
-    scoped_with_legacy = await harness.do_memory_retrieve(
+    scoped_with_legacy_flag = await harness.do_memory_retrieve(
         {
             "query": "memory retrieve owner scope token",
             "limit": 10,
@@ -319,10 +319,12 @@ async def test_c2_memory_retrieve_scopes_user_curated_results_to_owner_tuple(
             "include_unowned": True,
         }
     )
-    scoped_with_legacy_text = json.dumps(scoped_with_legacy, sort_keys=True)
+    scoped_with_legacy_flag_text = json.dumps(scoped_with_legacy_flag, sort_keys=True)
 
-    assert legacy_unowned.chunk_id in scoped_with_legacy_text
-    assert "other-owner-red" not in scoped_with_legacy_text
+    assert scoped_with_legacy_flag["count"] == 1
+    assert legacy_unowned.chunk_id not in scoped_with_legacy_flag_text
+    assert "legacy-unowned-green" not in scoped_with_legacy_flag_text
+    assert "other-owner-red" not in scoped_with_legacy_flag_text
 
 
 @pytest.mark.asyncio

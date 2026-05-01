@@ -530,7 +530,10 @@ class MemoryImplMixin(HandlerMixinBase):
             workspace_id=(
                 str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
             ),
-            include_unowned=bool(params.get("include_unowned", False)),
+            # Normal memory.retrieve must not expose maintenance-only unowned
+            # private recall. Low-level maintenance callers can invoke
+            # compile_recall directly with include_unowned=True.
+            include_unowned=False,
         )
         payload = cast(dict[str, Any], pack.legacy_payload())
         self._ingestion.record_citations([item.chunk_id for item in pack.results])

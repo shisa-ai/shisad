@@ -834,6 +834,71 @@ def test_m7_workflow_state_transition_rejects_closed_reopen(tmp_path: Path) -> N
     assert unchanged.workflow_state == "closed"
 
 
+def test_m7_supersede_closed_workflow_entry_does_not_reopen(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    closed = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:closed-supersede",
+        value="Closed release thread",
+        source=MemorySource(origin="user", source_id="msg-closed", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-closed",
+        scope="user",
+        workflow_state="closed",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    assert closed.entry is not None
+
+    replacement = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:closed-supersede",
+        value="Closed release thread with corrected title",
+        source=MemorySource(
+            origin="user",
+            source_id="msg-closed-correction",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-closed-correction",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=closed.entry.id,
+    )
+
+    assert replacement.kind == "allow"
+    assert replacement.entry is not None
+    assert replacement.entry.workflow_state == "closed"
+
+    explicit_reopen = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:closed-supersede",
+        value="Try to reopen through supersede",
+        source=MemorySource(
+            origin="user",
+            source_id="msg-closed-reopen",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-closed-reopen",
+        scope="user",
+        workflow_state="active",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=replacement.entry.id,
+    )
+
+    assert explicit_reopen.kind == "reject"
+    assert explicit_reopen.reason == "invalid_workflow_transition"
+
+
 def test_m1_manager_rehydrates_entries_from_event_snapshots(tmp_path: Path) -> None:
     memory_dir = tmp_path / "memory"
     manager = MemoryManager(memory_dir)

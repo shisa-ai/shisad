@@ -396,7 +396,6 @@ class MemoryRetrieveParams(_StrictParams):
     scope_filter: list[Literal["user", "project", "session", "channel", "workspace"]] | None = None
     user_id: str | None = None
     workspace_id: str | None = None
-    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> MemoryRetrieveParams:

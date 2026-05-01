@@ -609,13 +609,21 @@ class TestApiSchemaValidation:
                 "query": "owner scoped recall",
                 "user_id": "user-1",
                 "workspace_id": "ws-1",
-                "include_unowned": True,
             }
         )
 
         assert params.user_id == "user-1"
         assert params.workspace_id == "ws-1"
-        assert params.include_unowned is True
+
+        with pytest.raises(ValidationError):
+            MemoryRetrieveParams.model_validate(
+                {
+                    "query": "owner scoped recall",
+                    "user_id": "user-1",
+                    "workspace_id": "ws-1",
+                    "include_unowned": True,
+                }
+            )
 
         with pytest.raises(ValidationError):
             MemoryRetrieveParams.model_validate(

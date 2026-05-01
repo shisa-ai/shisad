@@ -374,9 +374,32 @@ class MemoryManager:
                         kind="reject",
                         reason="trust_upgrade_requires_ingress_handle",
                     )
-        resolved_workflow_state = workflow_state or (
-            "active" if entry_type in ACTIVE_AGENDA_ENTRY_TYPES else None
-        )
+        if entry_type in ACTIVE_AGENDA_ENTRY_TYPES:
+            if workflow_state is not None:
+                resolved_workflow_state = workflow_state
+            elif prior_entry is not None:
+                resolved_workflow_state = prior_entry.workflow_state or "active"
+            else:
+                resolved_workflow_state = "active"
+        else:
+            resolved_workflow_state = None
+        if (
+            prior_entry is not None
+            and prior_entry.entry_type in ACTIVE_AGENDA_ENTRY_TYPES
+            and resolved_workflow_state is not None
+            and prior_entry.workflow_state != resolved_workflow_state
+        ):
+            allowed_transitions = _ALLOWED_WORKFLOW_STATE_TRANSITIONS.get(
+                str(prior_entry.workflow_state),
+                set(),
+            )
+            if prior_entry.workflow_state is not None and (
+                resolved_workflow_state not in allowed_transitions
+            ):
+                return MemoryWriteDecision(
+                    kind="reject",
+                    reason="invalid_workflow_transition",
+                )
         entry = MemoryEntry(
             version=(prior_entry.version + 1) if prior_entry is not None else 1,
             supersedes=supersedes,
