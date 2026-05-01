@@ -494,6 +494,7 @@ class IngestionPipeline:
             )
 
         terms = [term for term in query.lower().split() if term]
+        annotation_terms = [term for term in f"{query} {task or ''}".lower().split() if term]
         query_vector = self._embed_text(query)
         rows = self._backend.list_records(
             collections=set(collections),
@@ -641,13 +642,13 @@ class IngestionPipeline:
                 )
                 for record in top
             ]
-        top = self._mark_conflicting_results(top, terms=terms)
+        top = self._mark_conflicting_results(top, terms=annotation_terms)
         if max_tokens is not None:
             top = self._trim_recall_to_token_budget(top, max_tokens=max_tokens)
         top = self._finalize_recall_annotations(
             top,
             require_corroboration=require_corroboration,
-            terms=terms,
+            terms=annotation_terms,
         )
         include_archived_result = used_archived or any(record.archived for record in top)
         top, sufficiency = self._recall_sufficiency_result(
@@ -662,7 +663,7 @@ class IngestionPipeline:
             min_sufficiency_results=min_sufficiency_results,
             min_sufficiency_coverage=min_sufficiency_coverage,
             require_corroboration=require_corroboration,
-            terms=terms,
+            terms=annotation_terms,
             recall_kwargs={
                 "limit": limit,
                 "capabilities": capabilities,
