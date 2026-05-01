@@ -3293,6 +3293,45 @@ async def test_contract_m8_feedback_telemetry_is_bounded_and_observational(
 
 
 @pytest.mark.asyncio
+async def test_contract_m8_trace_policy_allow_and_deny_are_runtime_visible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        disabled_sid = await _create_session(harness.client)
+        disabled_reply = await harness.client.call(
+            "session.message",
+            {"session_id": disabled_sid, "content": "hello"},
+        )
+        disabled_trace = harness.config.data_dir / "traces" / f"{disabled_sid}.jsonl"
+
+    assert disabled_reply.get("lockdown_level") == "normal"
+    assert not disabled_trace.exists()
+
+    def _enable_trace(config: DaemonConfig) -> None:
+        config.trace_enabled = True
+
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        prestart=_enable_trace,
+    ) as harness:
+        enabled_sid = await _create_session(harness.client)
+        enabled_reply = await harness.client.call(
+            "session.message",
+            {"session_id": enabled_sid, "content": "hello"},
+        )
+        enabled_trace = harness.config.data_dir / "traces" / f"{enabled_sid}.jsonl"
+        trace_rows = enabled_trace.read_text(encoding="utf-8").splitlines()
+
+    assert enabled_reply.get("lockdown_level") == "normal"
+    assert trace_rows
+    trace_payload = json.loads(trace_rows[-1])
+    assert trace_payload["persistence_policy"] == "redacted_session_trace"
+    assert trace_payload["promotion_required"] is True
+
+
+@pytest.mark.asyncio
 async def test_contract_identity_candidate_cli_surface_and_accept_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

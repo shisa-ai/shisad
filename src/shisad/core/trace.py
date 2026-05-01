@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from shisad.security.firewall.pii import PIIDetector
 from shisad.security.firewall.secrets import redact_ingress_secrets
@@ -78,6 +78,25 @@ class TracePersistencePolicy(BaseModel, frozen=True):
     persist_tool_arguments: bool = True
     promotion_required: bool = True
     posture: Literal["disabled", "redacted_session_trace"] = "redacted_session_trace"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_posture_from_enabled(cls, payload: Any) -> Any:
+        if isinstance(payload, dict) and "posture" not in payload:
+            updated = dict(payload)
+            updated["posture"] = (
+                "redacted_session_trace" if bool(updated.get("enabled", True)) else "disabled"
+            )
+            return updated
+        return payload
+
+    @model_validator(mode="after")
+    def _validate_posture(self) -> TracePersistencePolicy:
+        if self.enabled and self.posture == "disabled":
+            raise ValueError("posture=disabled requires enabled=False")
+        if not self.enabled and self.posture != "disabled":
+            raise ValueError("disabled trace policy requires posture=disabled")
+        return self
 
 
 class TraceTurn(BaseModel):
@@ -202,8 +221,6 @@ class TraceRecorder:
             trust_level=turn.trust_level,
             taint_labels=list(turn.taint_labels),
             duration_ms=turn.duration_ms,
-            persistence_policy=(
-                "redacted_session_trace" if resolved_policy.enabled else "disabled"
-            ),
+            persistence_policy=resolved_policy.posture,
             promotion_required=resolved_policy.promotion_required,
         )

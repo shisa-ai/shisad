@@ -386,6 +386,178 @@ async def test_m8_channel_feedback_downgrades_spoofed_influence_and_supersedes_r
 
 
 @pytest.mark.asyncio
+async def test_m8_channel_feedback_spoofed_replay_preserves_trusted_current(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-2"},
+    )
+    trusted_metadata = {
+        "interaction_type": "direct",
+        "feedback_signal": "reaction_add",
+        "feedback_target_message_id": "agent-msg-9",
+        "feedback_emoji": ":+1:",
+        "feedback_valence": "positive",
+        "feedback_can_influence_retrieval": True,
+        "feedback_signal_confidence": 0.95,
+        "feedback_policy_allowed": True,
+        "feedback_telemetry_weight": 0.15,
+        "feedback_event_id": "discord:guild-1:chan-2:agent-msg-9:guest-2:+1",
+        "feedback_authenticated_actor": True,
+    }
+    base_message = {
+        "channel": "discord",
+        "external_user_id": "guest-2",
+        "workspace_hint": "guild-1",
+        "reply_target": "chan-2",
+        "content": "thumbs up",
+    }
+    await harness.do_channel_ingest(
+        {"message": {**base_message, "message_id": "msg-40", "metadata": trusted_metadata}}
+    )
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                **base_message,
+                "message_id": "msg-41",
+                "metadata": {
+                    **trusted_metadata,
+                    "feedback_event_id": "",
+                    "feedback_authenticated_actor": False,
+                },
+            }
+        }
+    )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-2",
+    )
+    feedback_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-9",
+        actor_external_user_id="guest-2",
+        signal="reaction_add",
+    )
+    feedback_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.key == feedback_key or entry.key.startswith(f"{feedback_key}:observation:")
+    ]
+    canonical = [entry for entry in feedback_entries if entry.key == feedback_key]
+    downgraded = [entry for entry in feedback_entries if entry.key != feedback_key]
+
+    assert len(canonical) == 1
+    assert canonical[0].superseded_by is None
+    assert canonical[0].value["can_influence_retrieval"] is True
+    assert canonical[0].value["telemetry_weight"] == 0.15
+    assert len(downgraded) == 1
+    assert downgraded[0].supersedes is None
+    assert downgraded[0].value["can_influence_retrieval"] is False
+    assert downgraded[0].value["telemetry_weight"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_m8_channel_ingest_preserves_owner_curated_channel_records(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-curated"},
+    )
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-curated",
+    )
+    note_key = person_note_key(channel_id=channel_binding, external_user_id="guest-curated")
+    summary_key = channel_summary_key(channel_id=channel_binding, summary_kind="digest")
+    curated_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=note_key,
+        value={
+            "external_user_id": "guest-curated",
+            "display_name": "Curated Guest",
+            "channel_id": channel_binding,
+            "interaction_summary": "Owner curated summary.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+        },
+        source=MemorySource(origin="user", source_id="curated-note", extraction_method="manual"),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="curated-note",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    curated_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=summary_key,
+        value={
+            "channel_id": channel_binding,
+            "summary_kind": "digest",
+            "summary_text": "Owner curated digest.",
+            "confidence_source": "observed",
+            "owner_curated": False,
+        },
+        source=MemorySource(origin="user", source_id="curated-summary", extraction_method="manual"),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="curated-summary",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    assert curated_note.entry is not None
+    assert curated_summary.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-curated",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-curated",
+                "message_id": "msg-curated-1",
+                "content": "fresh observed note",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Curated Guest",
+                    "summary_kind": "digest",
+                    "summary_text": "Observed digest.",
+                },
+            }
+        }
+    )
+
+    preserved_note = harness._memory_manager.get_entry(curated_note.entry.id)
+    preserved_summary = harness._memory_manager.get_entry(curated_summary.entry.id)
+    assert preserved_note is not None
+    assert preserved_note.superseded_by is None
+    assert preserved_note.value["owner_curated"] is True
+    assert preserved_summary is not None
+    assert preserved_summary.superseded_by is None
+    assert preserved_summary.source_origin == "user_corrected"
+
+    observed_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.key.startswith(f"{note_key}:observed")
+        or entry.key.startswith(f"{summary_key}:observed")
+    ]
+    assert {entry.entry_type for entry in observed_entries} == {"person_note", "channel_summary"}
+    assert all(entry.supersedes is None for entry in observed_entries)
+    assert all(entry.value["owner_curated"] is False for entry in observed_entries)
+
+
+@pytest.mark.asyncio
 async def test_m3_channel_ingest_observation_updates_participation_without_inbox_item(
     tmp_path: Path,
 ) -> None:

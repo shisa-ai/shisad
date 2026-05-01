@@ -130,6 +130,53 @@ def _metadata_float(
     return value
 
 
+def _is_owner_curated_channel_entry(entry: Any | None) -> bool:
+    if entry is None or not isinstance(getattr(entry, "value", None), Mapping):
+        return False
+    if getattr(entry, "source_origin", None) == "user_corrected":
+        return True
+    if getattr(entry, "confirmation_status", None) == "user_corrected":
+        return True
+    value = cast(Mapping[str, Any], entry.value)
+    confidence_source = str(value.get("confidence_source") or "").strip()
+    return bool(value.get("owner_curated")) or confidence_source in {
+        "owner_curated",
+        "user_corrected",
+    }
+
+
+def _observed_channel_memory_key(key: str) -> str:
+    return f"{key}:observed"
+
+
+def _feedback_trust_rank(value: Mapping[str, Any]) -> int:
+    if bool(value.get("can_influence_retrieval")):
+        return 2
+    if (
+        bool(value.get("authenticated_actor"))
+        and bool(value.get("policy_allowed"))
+        and float(value.get("signal_confidence") or 0.0) >= 0.7
+        and bool(str(value.get("event_id") or "").strip())
+    ):
+        return 1
+    return 0
+
+
+def _feedback_can_supersede_prior(
+    prior_entry: Any | None, incoming_value: Mapping[str, Any]
+) -> bool:
+    if prior_entry is None or not isinstance(getattr(prior_entry, "value", None), Mapping):
+        return True
+    prior_value = cast(Mapping[str, Any], prior_entry.value)
+    prior_rank = _feedback_trust_rank(prior_value)
+    incoming_rank = _feedback_trust_rank(incoming_value)
+    if incoming_rank < prior_rank:
+        return False
+    prior_event_id = str(prior_value.get("event_id") or "").strip()
+    incoming_event_id = str(incoming_value.get("event_id") or "").strip()
+    return not (prior_event_id and not incoming_event_id and prior_rank >= 1)
+
+
 def _is_public_channel_trust(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"public", "trusted_guest"}
 
@@ -653,6 +700,13 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="person_note",
                     key=note_key,
                 )
+                effective_note_key = note_key
+                if _is_owner_curated_channel_entry(prior_note):
+                    effective_note_key = _observed_channel_memory_key(note_key)
+                    prior_note = self._find_current_memory_entry(
+                        entry_type="person_note",
+                        key=effective_note_key,
+                    )
                 if prior_note is None:
                     prior_note = self._find_legacy_channel_memory_entry(
                         entry_type="person_note",
@@ -686,7 +740,7 @@ class AdminImplMixin(HandlerMixinBase):
                 ).model_dump(mode="python")
                 persist_record(
                     entry_type="person_note",
-                    key=note_key,
+                    key=effective_note_key,
                     value=note_value,
                     scope="channel",
                     supersedes=prior_note.id if prior_note is not None else None,
@@ -716,6 +770,13 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="channel_summary",
                     key=summary_key,
                 )
+                effective_summary_key = summary_key
+                if _is_owner_curated_channel_entry(prior_summary):
+                    effective_summary_key = _observed_channel_memory_key(summary_key)
+                    prior_summary = self._find_current_memory_entry(
+                        entry_type="channel_summary",
+                        key=effective_summary_key,
+                    )
                 if prior_summary is None:
                     prior_summary = self._find_legacy_channel_memory_entry(
                         entry_type="channel_summary",
@@ -738,7 +799,7 @@ class AdminImplMixin(HandlerMixinBase):
                 ).model_dump(mode="python")
                 persist_record(
                     entry_type="channel_summary",
-                    key=summary_key,
+                    key=effective_summary_key,
                     value=summary_value,
                     scope="channel",
                     supersedes=prior_summary.id if prior_summary is not None else None,
@@ -831,12 +892,20 @@ class AdminImplMixin(HandlerMixinBase):
                 ),
                 thread_id=thread_id or None,
             ).model_dump(mode="python")
+            feedback_write_key = feedback_key
+            feedback_supersedes = prior_feedback.id if prior_feedback is not None else None
+            if not _feedback_can_supersede_prior(prior_feedback, feedback_value):
+                feedback_write_key = (
+                    f"{feedback_key}:observation:"
+                    f"{_short_hash(message.message_id or json.dumps(feedback_value, default=str))}"
+                )
+                feedback_supersedes = None
             persist_record(
                 entry_type="response_feedback",
-                key=feedback_key,
+                key=feedback_write_key,
                 value=feedback_value,
                 scope="channel",
-                supersedes=prior_feedback.id if prior_feedback is not None else None,
+                supersedes=feedback_supersedes,
             )
 
     def _effective_channel_tools(self, allowed_tools: tuple[str, ...]) -> tuple[str, ...]:

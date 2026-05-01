@@ -131,6 +131,13 @@ class TestTraceRecorderRoundtrip:
         assert turns[0].promotion_required is True
         assert turns[0].tool_calls[0].arguments == {}
 
+    def test_m8_trace_policy_rejects_inconsistent_posture(self) -> None:
+        with pytest.raises(ValidationError, match="posture"):
+            TracePersistencePolicy(enabled=True, posture="disabled")
+
+        with pytest.raises(ValidationError, match="posture"):
+            TracePersistencePolicy(enabled=False, posture="redacted_session_trace")
+
 
 class TestTraceSecretRedaction:
     def test_openai_key_redacted(self, recorder: TraceRecorder) -> None:
