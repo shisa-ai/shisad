@@ -30,6 +30,7 @@ from shisad.memory.surfaces import (
     RecallPack,
     SufficiencyReport,
     build_recall_pack,
+    extract_recall_terms,
     verify_recall_sufficiency,
 )
 from shisad.memory.trust import (
@@ -494,7 +495,9 @@ class IngestionPipeline:
             )
 
         terms = [term for term in query.lower().split() if term]
-        annotation_terms = [term for term in f"{query} {task or ''}".lower().split() if term]
+        annotation_terms = extract_recall_terms(
+            " ".join(part for part in (query, task or "") if part)
+        )
         query_vector = self._embed_text(query)
         rows = self._backend.list_records(
             collections=set(collections),
@@ -992,10 +995,7 @@ class IngestionPipeline:
         negation_markers = (" not ", " never ", " no longer ", " cannot ", " can't ", " isn't ")
         updated = list(results)
         conflict_indexes: set[int] = set()
-        token_sets = [
-            {token for token in record.content_sanitized.lower().replace(".", " ").split() if token}
-            for record in results
-        ]
+        token_sets = [set(extract_recall_terms(record.content_sanitized)) for record in results]
         negated = [
             any(marker in f" {record.content_sanitized.lower()} " for marker in negation_markers)
             for record in results

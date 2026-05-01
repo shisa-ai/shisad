@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from shisad.memory.ingestion import RetrievalResult
 
-_SUFFICIENCY_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,80}")
-_SUFFICIENCY_STOPWORDS = {
+_RECALL_TERM_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,80}")
+_RECALL_TERM_STOPWORDS = {
     "about",
     "and",
     "are",
@@ -138,7 +138,9 @@ def verify_recall_sufficiency(
 
     if not 0.0 <= min_coverage <= 1.0:
         raise ValueError("min_sufficiency_coverage must be between 0.0 and 1.0")
-    query_terms = _sufficiency_terms(" ".join(part for part in (pack.query, task or "") if part))
+    query_terms = extract_recall_terms(
+        " ".join(part for part in (pack.query, task or "") if part)
+    )
     if not query_terms:
         return SufficiencyReport(
             sufficient=pack.count >= max(1, min_results),
@@ -191,12 +193,14 @@ def verify_recall_sufficiency(
     )
 
 
-def _sufficiency_terms(text: str) -> list[str]:
+def extract_recall_terms(text: str) -> list[str]:
+    """Extract normalized recall terms for sufficiency and conflict checks."""
+
     seen: set[str] = set()
     terms: list[str] = []
-    for match in _SUFFICIENCY_TOKEN_RE.finditer(text.lower()):
+    for match in _RECALL_TERM_RE.finditer(text.lower()):
         term = match.group(0).strip("_-")
-        if not term or term in _SUFFICIENCY_STOPWORDS or term in seen:
+        if not term or term in _RECALL_TERM_STOPWORDS or term in seen:
             continue
         seen.add(term)
         terms.append(term)

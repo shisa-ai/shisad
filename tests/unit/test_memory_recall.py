@@ -867,6 +867,44 @@ def test_m7_task_terms_drive_final_conflict_annotation(tmp_path: Path) -> None:
     assert {item.conflict for item in rollback_hits} == {True}
 
 
+def test_m7_task_conflict_annotation_normalizes_punctuation(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-punctuation-conflict-launch",
+        source_type="tool",
+        collection="project_docs",
+        content="Launch checklist includes the canary deploy sequence.",
+    )
+    pipeline.ingest(
+        source_id="m7-punctuation-conflict-owner",
+        source_type="tool",
+        collection="project_docs",
+        content="Rollback owner: Nina handles release rollback.",
+    )
+    pipeline.ingest(
+        source_id="m7-punctuation-conflict-negated",
+        source_type="tool",
+        collection="tool_outputs",
+        content="Rollback owner, not Nina according to the latest runbook.",
+    )
+
+    pack = pipeline.compile_recall(
+        "launch checklist",
+        task="who is the rollback owner?",
+        limit=4,
+        verify_sufficiency=True,
+        expand_on_insufficient=True,
+    )
+
+    conflict_sources = {
+        "m7-punctuation-conflict-owner",
+        "m7-punctuation-conflict-negated",
+    }
+    rollback_hits = [item for item in pack.results if item.source_id in conflict_sources]
+    assert len(rollback_hits) == 2
+    assert {item.conflict for item in rollback_hits} == {True}
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:
