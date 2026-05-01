@@ -696,6 +696,7 @@ class AdminImplMixin(HandlerMixinBase):
                     },
                 )
             else:
+                skip_note_write = False
                 prior_note = self._find_current_memory_entry(
                     entry_type="person_note",
                     key=note_key,
@@ -707,7 +708,21 @@ class AdminImplMixin(HandlerMixinBase):
                         entry_type="person_note",
                         key=effective_note_key,
                     )
-                if prior_note is None:
+                    if self._has_pending_review_memory_entry(
+                        entry_type="person_note",
+                        key=effective_note_key,
+                    ):
+                        logger.warning(
+                            "Skipping structured channel memory write due to "
+                            "pending-review collision",
+                            extra={
+                                "entry_type": "person_note",
+                                "key": effective_note_key,
+                                "channel": message.channel,
+                            },
+                        )
+                        skip_note_write = True
+                if not skip_note_write and prior_note is None and effective_note_key == note_key:
                     prior_note = self._find_legacy_channel_memory_entry(
                         entry_type="person_note",
                         key=person_note_key(
@@ -718,33 +733,38 @@ class AdminImplMixin(HandlerMixinBase):
                         workspace_hint=message.workspace_hint,
                         structured_channel_id=structured_channel_id,
                     )
-                if prior_note is not None:
-                    current_note = PersonNoteValue.model_validate(prior_note.value)
-                else:
-                    current_note = PersonNoteValue(
-                        external_user_id=message.external_user_id,
-                        display_name=sender_display_name or message.external_user_id,
-                        channel_id=structured_channel_id,
+                if not skip_note_write:
+                    if prior_note is not None:
+                        current_note = PersonNoteValue.model_validate(prior_note.value)
+                    else:
+                        current_note = PersonNoteValue(
+                            external_user_id=message.external_user_id,
+                            display_name=sender_display_name or message.external_user_id,
+                            channel_id=structured_channel_id,
+                        )
+                    note_value = current_note.model_copy(
+                        update={
+                            "display_name": sender_display_name or current_note.display_name,
+                            "total_interactions": current_note.total_interactions + 1,
+                            "last_interaction": message.received_at,
+                            "interaction_summary": sanitized_text[:240],
+                            "confidence_source": "observed",
+                            "correction_status": (
+                                "corrected" if prior_note is not None else "current"
+                            ),
+                            "supersedes_entry_id": (
+                                prior_note.id if prior_note is not None else None
+                            ),
+                            "owner_curated": False,
+                        }
+                    ).model_dump(mode="python")
+                    persist_record(
+                        entry_type="person_note",
+                        key=effective_note_key,
+                        value=note_value,
+                        scope="channel",
+                        supersedes=prior_note.id if prior_note is not None else None,
                     )
-                note_value = current_note.model_copy(
-                    update={
-                        "display_name": sender_display_name or current_note.display_name,
-                        "total_interactions": current_note.total_interactions + 1,
-                        "last_interaction": message.received_at,
-                        "interaction_summary": sanitized_text[:240],
-                        "confidence_source": "observed",
-                        "correction_status": "corrected" if prior_note is not None else "current",
-                        "supersedes_entry_id": prior_note.id if prior_note is not None else None,
-                        "owner_curated": False,
-                    }
-                ).model_dump(mode="python")
-                persist_record(
-                    entry_type="person_note",
-                    key=effective_note_key,
-                    value=note_value,
-                    scope="channel",
-                    supersedes=prior_note.id if prior_note is not None else None,
-                )
 
         summary_text = str(metadata.get("summary_text") or "").strip()
         if channel_id and summary_text:
@@ -766,6 +786,7 @@ class AdminImplMixin(HandlerMixinBase):
                     },
                 )
             else:
+                skip_summary_write = False
                 prior_summary = self._find_current_memory_entry(
                     entry_type="channel_summary",
                     key=summary_key,
@@ -777,7 +798,25 @@ class AdminImplMixin(HandlerMixinBase):
                         entry_type="channel_summary",
                         key=effective_summary_key,
                     )
-                if prior_summary is None:
+                    if self._has_pending_review_memory_entry(
+                        entry_type="channel_summary",
+                        key=effective_summary_key,
+                    ):
+                        logger.warning(
+                            "Skipping structured channel memory write due to "
+                            "pending-review collision",
+                            extra={
+                                "entry_type": "channel_summary",
+                                "key": effective_summary_key,
+                                "channel": message.channel,
+                            },
+                        )
+                        skip_summary_write = True
+                if (
+                    not skip_summary_write
+                    and prior_summary is None
+                    and effective_summary_key == summary_key
+                ):
                     prior_summary = self._find_legacy_channel_memory_entry(
                         entry_type="channel_summary",
                         key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
@@ -785,25 +824,30 @@ class AdminImplMixin(HandlerMixinBase):
                         workspace_hint=message.workspace_hint,
                         structured_channel_id=structured_channel_id,
                     )
-                summary_value = ChannelSummaryValue(
-                    channel_id=structured_channel_id,
-                    guild_id=guild_id,
-                    summary_kind=summary_kind,
-                    summary_text=summary_text,
-                    window_end=message.received_at,
-                    source_message_ids=[message.message_id] if message.message_id else [],
-                    confidence_source="observed",
-                    correction_status="corrected" if prior_summary is not None else "current",
-                    supersedes_entry_id=prior_summary.id if prior_summary is not None else None,
-                    owner_curated=False,
-                ).model_dump(mode="python")
-                persist_record(
-                    entry_type="channel_summary",
-                    key=effective_summary_key,
-                    value=summary_value,
-                    scope="channel",
-                    supersedes=prior_summary.id if prior_summary is not None else None,
-                )
+                if not skip_summary_write:
+                    summary_value = ChannelSummaryValue(
+                        channel_id=structured_channel_id,
+                        guild_id=guild_id,
+                        summary_kind=summary_kind,
+                        summary_text=summary_text,
+                        window_end=message.received_at,
+                        source_message_ids=[message.message_id] if message.message_id else [],
+                        confidence_source="observed",
+                        correction_status=(
+                            "corrected" if prior_summary is not None else "current"
+                        ),
+                        supersedes_entry_id=(
+                            prior_summary.id if prior_summary is not None else None
+                        ),
+                        owner_curated=False,
+                    ).model_dump(mode="python")
+                    persist_record(
+                        entry_type="channel_summary",
+                        key=effective_summary_key,
+                        value=summary_value,
+                        scope="channel",
+                        supersedes=prior_summary.id if prior_summary is not None else None,
+                    )
 
         feedback_signal = str(metadata.get("feedback_signal") or "").strip().lower()
         feedback_target_message_id = str(
