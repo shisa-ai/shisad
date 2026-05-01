@@ -170,6 +170,10 @@ def _feedback_can_supersede_prior(
     prior_value = cast(Mapping[str, Any], prior_entry.value)
     prior_rank = _feedback_trust_rank(prior_value)
     incoming_rank = _feedback_trust_rank(incoming_value)
+    prior_signal = str(prior_value.get("signal") or "").strip()
+    incoming_signal = str(incoming_value.get("signal") or "").strip()
+    if incoming_signal == "reaction_remove" and prior_signal == "reaction_add":
+        return incoming_rank >= 1
     if incoming_rank < prior_rank:
         return False
     prior_event_id = str(prior_value.get("event_id") or "").strip()
@@ -739,6 +743,29 @@ class AdminImplMixin(HandlerMixinBase):
                             effective_note_key if effective_note_key != note_key else None
                         ),
                     )
+                    if (
+                        effective_note_key == note_key
+                        and _is_owner_curated_channel_entry(prior_note)
+                    ):
+                        effective_note_key = _observed_channel_memory_key(note_key)
+                        prior_note = self._find_current_memory_entry(
+                            entry_type="person_note",
+                            key=effective_note_key,
+                        )
+                        if self._has_pending_review_memory_entry(
+                            entry_type="person_note",
+                            key=effective_note_key,
+                        ):
+                            logger.warning(
+                                "Skipping structured channel memory write due to "
+                                "pending-review collision",
+                                extra={
+                                    "entry_type": "person_note",
+                                    "key": effective_note_key,
+                                    "channel": message.channel,
+                                },
+                            )
+                            skip_note_write = True
                 if not skip_note_write:
                     if prior_note is not None:
                         current_note = PersonNoteValue.model_validate(prior_note.value)
@@ -829,6 +856,29 @@ class AdminImplMixin(HandlerMixinBase):
                             effective_summary_key if effective_summary_key != summary_key else None
                         ),
                     )
+                    if (
+                        effective_summary_key == summary_key
+                        and _is_owner_curated_channel_entry(prior_summary)
+                    ):
+                        effective_summary_key = _observed_channel_memory_key(summary_key)
+                        prior_summary = self._find_current_memory_entry(
+                            entry_type="channel_summary",
+                            key=effective_summary_key,
+                        )
+                        if self._has_pending_review_memory_entry(
+                            entry_type="channel_summary",
+                            key=effective_summary_key,
+                        ):
+                            logger.warning(
+                                "Skipping structured channel memory write due to "
+                                "pending-review collision",
+                                extra={
+                                    "entry_type": "channel_summary",
+                                    "key": effective_summary_key,
+                                    "channel": message.channel,
+                                },
+                            )
+                            skip_summary_write = True
                 if not skip_summary_write:
                     summary_value = ChannelSummaryValue(
                         channel_id=structured_channel_id,
@@ -911,10 +961,25 @@ class AdminImplMixin(HandlerMixinBase):
                 lower=0.0,
                 upper=1.0,
             )
-            prior_feedback = self._find_current_memory_entry(
-                entry_type="response_feedback",
-                key=feedback_key,
-            )
+            prior_feedback = None
+            if feedback_signal == "reaction_remove":
+                rollback_key = response_feedback_key(
+                    channel_id=structured_channel_id,
+                    message_id=feedback_target_message_id,
+                    actor_external_user_id=message.external_user_id,
+                    signal="reaction_add",
+                )
+                prior_feedback = self._find_current_memory_entry(
+                    entry_type="response_feedback",
+                    key=rollback_key,
+                )
+                if prior_feedback is not None:
+                    feedback_key = rollback_key
+            if prior_feedback is None:
+                prior_feedback = self._find_current_memory_entry(
+                    entry_type="response_feedback",
+                    key=feedback_key,
+                )
             feedback_value = ResponseFeedbackEventValue(
                 channel_id=structured_channel_id,
                 event_id=feedback_event_id,

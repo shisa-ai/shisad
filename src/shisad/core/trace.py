@@ -44,6 +44,27 @@ def _redact_value(value: Any) -> Any:
     return value
 
 
+def _redact_tool_call_payload(value: Any, *, persist_arguments: bool) -> Any:
+    redacted = _redact_value(value)
+    if persist_arguments:
+        return redacted
+    if isinstance(redacted, dict):
+        return {
+            key: (
+                {}
+                if key == "arguments"
+                else _redact_tool_call_payload(child, persist_arguments=False)
+            )
+            for key, child in redacted.items()
+        }
+    if isinstance(redacted, list):
+        return [
+            _redact_tool_call_payload(item, persist_arguments=False)
+            for item in redacted
+        ]
+    return redacted
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models (frozen where possible for safety)
 # ---------------------------------------------------------------------------
@@ -185,7 +206,10 @@ class TraceRecorder:
             TraceMessage(
                 role=msg.role,
                 content=_redact_text(msg.content),
-                tool_calls=_redact_value(msg.tool_calls),
+                tool_calls=_redact_tool_call_payload(
+                    msg.tool_calls,
+                    persist_arguments=resolved_policy.persist_tool_arguments,
+                ),
                 tool_call_id=msg.tool_call_id,
             )
             for msg in turn.messages_sent

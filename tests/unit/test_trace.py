@@ -131,6 +131,44 @@ class TestTraceRecorderRoundtrip:
         assert turns[0].promotion_required is True
         assert turns[0].tool_calls[0].arguments == {}
 
+    def test_m8_trace_policy_redacts_mirrored_message_tool_arguments(
+        self,
+        traces_dir: Path,
+    ) -> None:
+        recorder = TraceRecorder(
+            traces_dir,
+            policy=TracePersistencePolicy(
+                enabled=True,
+                persist_tool_arguments=False,
+                promotion_required=True,
+            ),
+        )
+        turn = _make_turn()
+        turn.messages_sent = [
+            TraceMessage(
+                role="assistant",
+                content="calling tool",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": {"path": "/tmp/plain-argument"},
+                        },
+                    }
+                ],
+            )
+        ]
+        recorder.record(turn)
+
+        turns = recorder.read_turns("sess-1")
+        assert turns[0].messages_sent[0].tool_calls[0]["function"]["arguments"] == {}
+        assert "/tmp/plain-argument" not in json.dumps(
+            turns[0].messages_sent[0].tool_calls,
+            sort_keys=True,
+        )
+
     def test_m8_trace_policy_rejects_inconsistent_posture(self) -> None:
         with pytest.raises(ValidationError, match="posture"):
             TracePersistencePolicy(enabled=True, posture="disabled")
