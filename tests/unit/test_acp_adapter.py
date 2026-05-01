@@ -266,7 +266,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "body": "api_key=sk-body-secret",
                 "headers": "Cookie: sid=secret; csrf=secret2",
                 "json": '{"api_key":"sk-json","Authorization":"Bearer json-token"}',
+                "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
+                "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
                 "pythonish": "{'authorization': 'Bearer py-token'}",
+                "pythonish_list": "{'authorization': ['Bearer py-a', 'Bearer py-b'], 'safe': 'ok'}",
                 "env_detail": "OPENAI_API_KEY=sk-env ANTHROPIC_AUTH_TOKEN=auth-token",
                 "missing_env": ["OPENAI_API_KEY"],
             },
@@ -285,10 +288,16 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
         "json": '{"api_key":"[redacted]","Authorization":"[redacted]"}',
+        "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
+        "json_list": '{"api_key":"[redacted]","safe":"ok"}',
         "pythonish": "{'authorization': '[redacted]'}",
+        "pythonish_list": "{'authorization': '[redacted]', 'safe': 'ok'}",
         "env_detail": "OPENAI_API_KEY=[redacted] ANTHROPIC_AUTH_TOKEN=[redacted]",
         "missing_env": ["OPENAI_API_KEY"],
     }
+    assert "part2" not in repr(payload)
+    assert "sk-b" not in repr(payload)
+    assert "Bearer py-b" not in repr(payload)
 
 
 @pytest.mark.asyncio
