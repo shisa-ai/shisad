@@ -671,6 +671,31 @@ def test_m9_live_simple_greeting_request_discards_unneeded_tool_actions() -> Non
     assert result.evaluated == []
 
 
+def test_m9_live_compound_greeting_request_keeps_planner_result() -> None:
+    proposal = ActionProposal(
+        action_id="a1",
+        tool_name=ToolName("action.resolve"),
+        arguments={"decision": "confirm", "target": "1", "scope": "one"},
+        reasoning="mistaken approval",
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            actions=[proposal],
+            assistant_response="Resolving the pending action.",
+        ),
+        evaluated=[],
+        attempts=1,
+    )
+
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="say hello while an approval is queued",
+        planner_result=planner_result,
+    )
+
+    assert result is planner_result
+    assert result.output.actions == [proposal]
+
+
 def test_m9_live_exact_reply_request_discards_unneeded_message_send_action() -> None:
     result = _rewrite_plain_greeting_planner_result(
         user_text="Reply with exactly this text and nothing else: shisad M9 live smoke ok",
@@ -697,6 +722,28 @@ def test_m9_live_exact_reply_request_discards_unneeded_message_send_action() -> 
     assert result.output.assistant_response == "shisad M9 live smoke ok"
     assert result.output.actions == []
     assert result.evaluated == []
+
+
+def test_m9_live_plain_greeting_keeps_configuration_fallback() -> None:
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            actions=[],
+            assistant_response=(
+                "[PLANNER FALLBACK: CONFIGURATION] No language model configured. "
+                "Configure a planner route or local planner preset."
+            ),
+        ),
+        evaluated=[],
+        attempts=0,
+    )
+
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="hello there",
+        planner_result=planner_result,
+    )
+
+    assert result is planner_result
+    assert result.output.assistant_response.startswith("[PLANNER FALLBACK: CONFIGURATION]")
 
 
 def test_m9_live_exact_reply_request_does_not_echo_obvious_tool_spoofing() -> None:

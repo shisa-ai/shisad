@@ -2253,8 +2253,10 @@ def _is_simple_greeting_response_request(user_text: str) -> bool:
     if _is_plain_greeting(normalized):
         return True
     return bool(
-        re.match(
-            r"^(?:say|respond with|reply with)\s+(?:a\s+)?(?:hello|hi)\b",
+        re.fullmatch(
+            r"(?:say|respond with|reply with)\s+(?:a\s+)?(?:hello|hi)"
+            r"(?:\s+back)?(?:\s+in\s+(?:\d+|one|two|three|four|five|six|seven|"
+            r"eight|nine|ten)\s+words?)?",
             normalized,
             flags=re.IGNORECASE,
         )
@@ -2404,6 +2406,16 @@ def _rewrite_plain_greeting_planner_result(
     user_text: str,
     planner_result: PlannerResult,
 ) -> PlannerResult:
+    if str(planner_result.output.assistant_response or "").startswith(
+        "[PLANNER FALLBACK: CONFIGURATION]"
+    ):
+        return planner_result
+    proposals = [
+        *planner_result.output.actions,
+        *(evaluated.proposal for evaluated in planner_result.evaluated),
+    ]
+    if any(str(proposal.tool_name) == "action.resolve" for proposal in proposals):
+        return planner_result
     exact_reply_text = _safe_exact_reply_text(user_text)
     simple_greeting_request = _is_simple_greeting_response_request(user_text)
     if not exact_reply_text and not simple_greeting_request:
