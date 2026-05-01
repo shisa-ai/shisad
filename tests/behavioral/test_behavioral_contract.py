@@ -2960,6 +2960,8 @@ async def test_contract_identity_candidate_cli_surface_and_accept_flow(
             scope="user",
             confidence=0.62,
             confirmation_satisfied=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["candidate_id"] = decision.entry.id
@@ -3030,6 +3032,8 @@ async def test_contract_identity_candidate_reject_emits_backoff_and_closes_queue
             scope="user",
             confidence=0.62,
             confirmation_satisfied=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["candidate_id"] = decision.entry.id
@@ -3102,6 +3106,8 @@ async def test_contract_identity_candidate_silence_expires_without_rejection_sig
             scope="user",
             confidence=0.62,
             confirmation_satisfied=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["candidate_id"] = decision.entry.id
