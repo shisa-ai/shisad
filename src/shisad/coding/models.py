@@ -52,6 +52,7 @@ class CodingAgentRunOutput:
 
     result: CodingAgentResult
     error_code: str = ""
+    transport_error: dict[str, Any] = field(default_factory=dict)
     stop_reason: str = ""
     session_id: str = ""
     raw_updates: tuple[dict[str, Any], ...] = ()

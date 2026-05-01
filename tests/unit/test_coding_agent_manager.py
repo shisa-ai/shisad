@@ -1,11 +1,39 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
+from shisad.coding.adapter import CodingAgentAdapter
 from shisad.coding.manager import CodingAgentManager
-from shisad.coding.models import CodingAgentConfig
+from shisad.coding.models import CodingAgentConfig, CodingAgentResult, CodingAgentRunOutput
+
+
+class _TransportErrorAdapter(CodingAgentAdapter):
+    async def run(
+        self,
+        *,
+        prompt_text: str,
+        workdir: Path,
+        config: CodingAgentConfig,
+    ) -> CodingAgentRunOutput:
+        _ = (workdir, config)
+        return CodingAgentRunOutput(
+            result=CodingAgentResult(
+                agent="codex",
+                task=prompt_text,
+                success=False,
+                summary="Coding agent failed during ACP negotiation.",
+            ),
+            error_code="protocol_error",
+            transport_error={
+                "kind": "request_error",
+                "code": -32000,
+                "message": "Authentication required",
+                "data": {"missing_env": ["OPENAI_API_KEY"]},
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -99,3 +127,43 @@ def test_m3_manager_budget_warning_is_none_when_cost_or_budget_missing() -> None
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_m9_manager_persists_adapter_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = CodingAgentManager(
+        repo_root=tmp_path,
+        data_dir=tmp_path / "data",
+        registry_overrides={"codex": sys.executable},
+        adapter_factory=lambda _spec: _TransportErrorAdapter(),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_create_worktree",
+        lambda path: path.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(manager, "_remove_worktree", lambda _path: None)
+    monkeypatch.setattr(
+        manager,
+        "_collect_worktree_changes",
+        lambda _path: ([], ""),
+    )
+
+    record = await manager.execute(
+        task_session_id="task-transport-error",
+        task_description="Review the transport failure.",
+        file_refs=("README.md",),
+        config=CodingAgentConfig(preferred_agent="codex", read_only=True),
+    )
+
+    assert record.error_code == "protocol_error"
+    assert isinstance(record.raw_log_payload, dict)
+    assert record.raw_log_payload["transport_error"] == {
+        "kind": "request_error",
+        "code": -32000,
+        "message": "Authentication required",
+        "data": {"missing_env": ["OPENAI_API_KEY"]},
+    }

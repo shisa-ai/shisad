@@ -202,6 +202,8 @@ class CodingAgentManager:
                         for attempt in attempts
                     ],
                 }
+                if adapter_output.transport_error:
+                    raw_log_payload["transport_error"] = dict(adapter_output.transport_error)
                 if budget_warning:
                     raw_log_payload["budget_warning"] = budget_warning
                 result = CodingAgentResult(

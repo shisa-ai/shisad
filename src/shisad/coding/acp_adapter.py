@@ -7,7 +7,7 @@ import inspect
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -72,6 +72,14 @@ _CODING_AGENT_ENV_PREFIXES = (
     "OPENROUTER_",
 )
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
+_TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
+_TRANSPORT_ERROR_SECRET_KEY_PARTS = (
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
 
 
 def _coding_agent_environment() -> dict[str, str]:
@@ -95,6 +103,43 @@ def _bounded_summary(text: str, *, max_chars: int = _CODING_AGENT_SUMMARY_MAX_CH
     if max_chars <= 16:
         return normalized[:max_chars]
     return f"{normalized[: max_chars - 15].rstrip()}... [truncated]"
+
+
+def _is_secret_transport_key(key: object) -> bool:
+    normalized = str(key).strip().lower()
+    return any(part in normalized for part in _TRANSPORT_ERROR_SECRET_KEY_PARTS)
+
+
+def _json_safe_transport_error_data(value: object, *, key: object = "") -> object:
+    if _is_secret_transport_key(key):
+        return "[redacted]"
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str):
+        return _bounded_summary(value, max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _json_safe_transport_error_data(item_value, key=item_key)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [_json_safe_transport_error_data(item) for item in value]
+    return _bounded_summary(repr(value), max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
+
+
+def _request_error_payload(exc: RequestError) -> dict[str, Any]:
+    message = str(exc).strip() or exc.__class__.__name__
+    payload: dict[str, Any] = {
+        "kind": "request_error",
+        "message": message,
+    }
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        payload["code"] = code
+    data = getattr(exc, "data", None)
+    if data is not None:
+        payload["data"] = _json_safe_transport_error_data(data)
+    return payload
 
 
 def _extract_summary(notifications: tuple[dict[str, Any], ...]) -> str:
@@ -473,20 +518,29 @@ class AcpAdapter(CodingAgentAdapter):
             )
         except RequestError as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
+            transport_error = _request_error_payload(exc)
+            error_message = str(transport_error.get("message", "")).strip() or str(exc)
+            summary = (
+                f"Coding agent '{self._spec.name}' failed during ACP negotiation: "
+                f"{error_message}"
+            )
+            code = transport_error.get("code")
+            if isinstance(code, int):
+                summary = f"{summary} (code {code})"
             return CodingAgentRunOutput(
                 result=CodingAgentResult(
                     agent=self._spec.name,
                     task=prompt_text,
                     success=False,
-                    summary=(
-                        f"Coding agent '{self._spec.name}' failed during ACP negotiation: {exc}."
-                    ),
+                    summary=f"{summary}.",
                     duration_ms=duration_ms,
                 ),
                 error_code="protocol_error",
+                transport_error=transport_error,
                 session_id=session_id,
-                selected_mode=selected_mode,
-                applied_config=applied_config,
+                raw_updates=tuple(recorder.notifications),
+                selected_mode=recorder.current_mode or selected_mode,
+                applied_config={**applied_config, **recorder.applied_config},
             )
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)

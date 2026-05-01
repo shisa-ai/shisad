@@ -219,6 +219,36 @@ async def test_m3_acp_adapter_initialize_failure_maps_to_protocol_error(
 
 
 @pytest.mark.asyncio
+async def test_m9_acp_adapter_preserves_request_error_transport_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_env = "SHISAD_TEST_MISSING_ACP_AUTH"
+    monkeypatch.delenv(missing_env, raising=False)
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--require-env", missing_env))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error == {
+        "kind": "request_error",
+        "code": -32000,
+        "message": "Authentication required",
+        "data": {"missing_env": [missing_env]},
+    }
+    assert "code -32000" in result.result.summary
+    assert "Authentication required" in result.result.summary
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_spawn_failure_is_actionable_unavailable(tmp_path: Path) -> None:
     adapter = AcpAdapter(
         spec=AgentCommandSpec(
