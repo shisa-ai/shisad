@@ -648,6 +648,29 @@ def test_m7_sufficiency_uses_configured_coverage_threshold(tmp_path: Path) -> No
     assert strict.sufficiency.reason == "low_coverage"
 
 
+def test_m7_sufficiency_rejects_invalid_coverage_threshold(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-invalid-coverage",
+        source_type="tool",
+        collection="project_docs",
+        content="Release recall threshold validation note.",
+    )
+
+    with pytest.raises(ValueError, match="min_sufficiency_coverage"):
+        pipeline.compile_recall(
+            "release recall",
+            verify_sufficiency=True,
+            min_sufficiency_coverage=-0.1,
+        )
+    with pytest.raises(ValueError, match="min_sufficiency_coverage"):
+        pipeline.compile_recall(
+            "release recall",
+            verify_sufficiency=True,
+            min_sufficiency_coverage=1.1,
+        )
+
+
 def test_m7_sufficiency_reports_early_empty_recall_paths(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
 

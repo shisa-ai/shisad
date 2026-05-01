@@ -136,6 +136,8 @@ def verify_recall_sufficiency(
     is allowed to continue.
     """
 
+    if not 0.0 <= min_coverage <= 1.0:
+        raise ValueError("min_sufficiency_coverage must be between 0.0 and 1.0")
     query_terms = _sufficiency_terms(" ".join(part for part in (pack.query, task or "") if part))
     if not query_terms:
         return SufficiencyReport(

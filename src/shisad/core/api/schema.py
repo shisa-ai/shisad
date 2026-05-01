@@ -389,7 +389,7 @@ class MemoryRetrieveParams(_StrictParams):
     verify_sufficiency: bool = False
     expand_on_insufficient: bool = False
     min_sufficiency_results: int = 1
-    min_sufficiency_coverage: float = 0.8
+    min_sufficiency_coverage: float = Field(default=0.8, ge=0.0, le=1.0)
     max_tokens: int | None = None
     as_of: datetime | None = None
     include_archived: bool = False

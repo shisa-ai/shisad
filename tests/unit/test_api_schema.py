@@ -777,6 +777,25 @@ class TestApiSchemaValidation:
         with pytest.raises(ValidationError):
             MemoryLifecycleParams.model_validate({"entry_id": "entry-1", "reason": ""})
 
+    def test_m7_memory_retrieve_params_bound_sufficiency_coverage(self) -> None:
+        low = MemoryRetrieveParams.model_validate(
+            {"query": "release recall", "min_sufficiency_coverage": 0.0}
+        )
+        high = MemoryRetrieveParams.model_validate(
+            {"query": "release recall", "min_sufficiency_coverage": 1.0}
+        )
+
+        assert low.min_sufficiency_coverage == 0.0
+        assert high.min_sufficiency_coverage == 1.0
+        with pytest.raises(ValidationError):
+            MemoryRetrieveParams.model_validate(
+                {"query": "release recall", "min_sufficiency_coverage": -0.1}
+            )
+        with pytest.raises(ValidationError):
+            MemoryRetrieveParams.model_validate(
+                {"query": "release recall", "min_sufficiency_coverage": 1.1}
+            )
+
     def test_m1_memory_list_params_gate_quarantined_reads_on_confirmation(self) -> None:
         with pytest.raises(ValidationError):
             MemoryListParams.model_validate({"include_quarantined": True})
