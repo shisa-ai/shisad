@@ -989,7 +989,9 @@ class IngestionPipeline:
     ) -> list[RetrievalResult]:
         if len(results) < 2 or not terms:
             return results
-        query_terms = {term for term in terms if len(term) > 2}
+        query_terms = {
+            term for term in terms if len(term) > 2 or any(char.isdigit() for char in term)
+        }
         if not query_terms:
             return results
         negation_markers = (" not ", " never ", " no longer ", " cannot ", " can't ", " isn't ")

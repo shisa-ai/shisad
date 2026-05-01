@@ -4,6 +4,9 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.memory.graph import build_knowledge_graph
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemoryEntry, MemorySource
@@ -20,6 +23,8 @@ def _write_fact(
     source_origin: str = "user_direct",
     channel_trust: str = "command",
     confirmation_status: str = "user_asserted",
+    user_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> MemoryEntry:
     source_type = "user"
     if source_origin.startswith("external_"):
@@ -39,9 +44,79 @@ def _write_fact(
         confidence=0.95,
         confirmation_satisfied=True,
         supersedes=supersedes,
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert decision.entry is not None
     return decision.entry
+
+
+class _GraphHarness(MemoryImplMixin):
+    def __init__(self, manager: MemoryManager) -> None:
+        self._memory_manager = manager
+
+
+@pytest.mark.asyncio
+async def test_m7_graph_surfaces_scope_to_owner_tuple(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    owner_entry = _write_fact(
+        manager,
+        key="project:alpha-owner",
+        value="AlphaGraphToken belongs to owner one.",
+        source_id="graph-owner-one",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_entry = _write_fact(
+        manager,
+        key="project:alpha-other",
+        value="AlphaGraphToken belongs to owner two.",
+        source_id="graph-owner-two",
+        user_id="user-2",
+        workspace_id="ws-1",
+    )
+    harness = _GraphHarness(manager)
+
+    unscoped = await harness.do_graph_export({"format": "json"})
+    unscoped_data = json.loads(str(unscoped["data"]))
+    unscoped_evidence_ids = {
+        evidence_id
+        for node in unscoped_data["nodes"]
+        for evidence_id in node["evidence_entry_ids"]
+    }
+    assert owner_entry.id not in unscoped_evidence_ids
+    assert other_entry.id not in unscoped_evidence_ids
+
+    exported = await harness.do_graph_export(
+        {
+            "format": "json",
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+        }
+    )
+    exported_data = json.loads(str(exported["data"]))
+    evidence_ids = {
+        evidence_id for node in exported_data["nodes"] for evidence_id in node["evidence_entry_ids"]
+    }
+    assert owner_entry.id in evidence_ids
+    assert other_entry.id not in evidence_ids
+
+    queried = await harness.do_graph_query(
+        {
+            "entity": "AlphaGraphToken",
+            "limit": 10,
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+        }
+    )
+    query_evidence_ids = {
+        evidence_id
+        for collection_name in ("nodes", "edges")
+        for item in queried[collection_name]
+        for evidence_id in item["evidence_entry_ids"]
+    }
+    assert owner_entry.id in query_evidence_ids
+    assert other_entry.id not in query_evidence_ids
 
 
 def test_m5_knowledge_graph_rebuilds_with_stable_evidence_ids(tmp_path: Path) -> None:

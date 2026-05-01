@@ -566,9 +566,12 @@ class GraphQueryParams(_StrictParams):
     depth: int = 1
     limit: int = 20
     scope_filter: list[MemoryScope] = Field(default_factory=_default_user_scope_filter)
+    user_id: str | None = None
+    workspace_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_graph_query(self) -> GraphQueryParams:
+        _validate_complete_owner_scope(self)
         if not self.entity.strip():
             raise ValueError("entity is required")
         self.depth = max(1, min(3, int(self.depth)))
@@ -579,6 +582,13 @@ class GraphQueryParams(_StrictParams):
 class GraphExportParams(_StrictParams):
     format: Literal["json", "md"] = "json"
     scope_filter: list[MemoryScope] = Field(default_factory=_default_user_scope_filter)
+    user_id: str | None = None
+    workspace_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> GraphExportParams:
+        _validate_complete_owner_scope(self)
+        return self
 
 
 class MemoryConsolidateParams(_StrictParams):
@@ -587,6 +597,13 @@ class MemoryConsolidateParams(_StrictParams):
     propose_strong_invalidations: bool = True
     accumulate_identity_candidates: bool = True
     scope_filter: list[MemoryScope] = Field(default_factory=_default_user_scope_filter)
+    user_id: str | None = None
+    workspace_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> MemoryConsolidateParams:
+        _validate_complete_owner_scope(self)
+        return self
 
 
 class MemoryRotateKeyParams(_StrictParams):

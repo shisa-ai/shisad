@@ -24,6 +24,8 @@ def _write_entry(
     confirmation_status: str = "user_asserted",
     source_id: str = "consolidation-test",
     scope: str = "user",
+    user_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> MemoryEntry:
     decision = manager.write_with_provenance(
         entry_type=entry_type,
@@ -38,6 +40,8 @@ def _write_entry(
         scope=scope,
         confidence=confidence,
         confirmation_satisfied=True,
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert decision.entry is not None
     return decision.entry
@@ -922,6 +926,69 @@ class _ConsolidationHarness(MemoryImplMixin):
 
 
 @pytest.mark.asyncio
+async def test_m7_memory_consolidate_scopes_to_owner_tuple(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    owner_target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:left-acme",
+        value="I no longer work at ACME.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="left-acme-owner",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:globex",
+        value="I work at Globex as VP Eng.",
+        confidence=0.95,
+        user_id="user-2",
+        workspace_id="ws-1",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:left-globex",
+        value="I no longer work at Globex.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="left-globex-other",
+        user_id="user-2",
+        workspace_id="ws-1",
+    )
+    harness = _ConsolidationHarness(manager)
+
+    unscoped = await harness.do_memory_consolidate({"propose_strong_invalidations": True})
+    assert unscoped["strong_invalidation_count"] == 0
+
+    scoped = await harness.do_memory_consolidate(
+        {
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+            "propose_strong_invalidations": True,
+        }
+    )
+    target_ids = {item["target_entry_id"] for item in scoped["strong_invalidations"]}
+    assert scoped["strong_invalidation_count"] == 1
+    assert owner_target.id in target_ids
+    assert other_target.id not in target_ids
+
+
+@pytest.mark.asyncio
 async def test_m5_partial_consolidation_flags_keep_dedup_and_retention(
     tmp_path: Path,
 ) -> None:
@@ -937,6 +1004,8 @@ async def test_m5_partial_consolidation_flags_keep_dedup_and_retention(
         channel_trust="consolidation",
         confirmation_status="auto_accepted",
         source_id="partial-dup-a",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     duplicate_b = _write_entry(
         manager,
@@ -948,6 +1017,8 @@ async def test_m5_partial_consolidation_flags_keep_dedup_and_retention(
         channel_trust="consolidation",
         confirmation_status="auto_accepted",
         source_id="partial-dup-b",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     stale = _write_entry(
         manager,
@@ -959,13 +1030,19 @@ async def test_m5_partial_consolidation_flags_keep_dedup_and_retention(
         channel_trust="consolidation",
         confirmation_status="auto_accepted",
         source_id="partial-stale",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     stale.created_at = now - timedelta(days=400)
     stale.decay_score = 0.01
     manager._persist_entry(stale)
 
     result = await _ConsolidationHarness(manager).do_memory_consolidate(
-        {"propose_strong_invalidations": False}
+        {
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+            "propose_strong_invalidations": False,
+        }
     )
 
     assert set(result["merged_entry_ids"]) == {duplicate_a.id} or set(

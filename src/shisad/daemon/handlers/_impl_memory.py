@@ -113,19 +113,40 @@ class MemoryImplMixin(HandlerMixinBase):
             return set()
         return {str(item).strip() for item in raw if str(item).strip()}
 
+    @staticmethod
+    def _owner_tuple_from_params(params: Mapping[str, Any]) -> tuple[str | None, str | None]:
+        user_id = MemoryImplMixin._normalize_owner_value(params.get("user_id"))
+        workspace_id = MemoryImplMixin._normalize_owner_value(params.get("workspace_id"))
+        if bool(user_id) != bool(workspace_id):
+            return None, None
+        return user_id, workspace_id
+
+    @staticmethod
+    def _normalize_owner_value(value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
     def _list_memory_entries_for_scope(
         self,
         *,
         scope_filter: set[str] | None,
+        user_id: str | None,
+        workspace_id: str | None,
         include_quarantined: bool = False,
         include_pending_review: bool = False,
     ) -> list[Any]:
+        if user_id is None or workspace_id is None:
+            return []
         entries = cast(
             list[Any],
             self._memory_manager.list_entries(
                 limit=max(1, len(getattr(self._memory_manager, "_entries", {}))),
                 include_quarantined=include_quarantined,
                 include_pending_review=include_pending_review,
+                user_id=user_id,
+                workspace_id=workspace_id,
             ),
         )
         if scope_filter is None:
@@ -739,8 +760,11 @@ class MemoryImplMixin(HandlerMixinBase):
         depth = max(1, min(3, int(params.get("depth", 1))))
         limit = max(1, min(100, int(params.get("limit", 20))))
         scope_filter = self._scope_filter_from_params(params)
+        user_id, workspace_id = self._owner_tuple_from_params(params)
         entries = self._list_memory_entries_for_scope(
             scope_filter=scope_filter,
+            user_id=user_id,
+            workspace_id=workspace_id,
             include_quarantined=False,
         )
         graph = build_knowledge_graph(entries)
@@ -757,8 +781,11 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_graph_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json")).strip().lower() or "json"
         scope_filter = self._scope_filter_from_params(params)
+        user_id, workspace_id = self._owner_tuple_from_params(params)
         entries = self._list_memory_entries_for_scope(
             scope_filter=scope_filter,
+            user_id=user_id,
+            workspace_id=workspace_id,
             include_quarantined=False,
         )
         graph = build_knowledge_graph(entries)
@@ -766,7 +793,14 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_memory_consolidate(self, params: Mapping[str, Any]) -> dict[str, Any]:
         scope_filter = self._scope_filter_from_params(params)
-        worker = ConsolidationWorker(self._memory_manager, scope_filter=scope_filter)
+        user_id, workspace_id = self._owner_tuple_from_params(params)
+        worker = ConsolidationWorker(
+            self._memory_manager,
+            scope_filter=scope_filter,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            require_owner_scope=True,
+        )
         result = None
         if (
             bool(params.get("recompute_scores", True))

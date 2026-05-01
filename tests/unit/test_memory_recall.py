@@ -952,6 +952,54 @@ def test_m7_sufficiency_identifier_query_uses_term_boundaries(tmp_path: Path) ->
     assert pack.sufficiency.missing_terms == ["m7"]
 
 
+def test_m7_sufficiency_version_identifier_uses_full_dotted_token(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-version-adjacent",
+        source_type="tool",
+        collection="project_docs",
+        content="v0.7.1 and v0.7.20 are adjacent release identifiers.",
+    )
+
+    pack = pipeline.compile_recall(
+        "v0.7.2",
+        limit=1,
+        verify_sufficiency=True,
+    )
+
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.query_terms == ["v0.7.2"]
+    assert pack.sufficiency.covered_terms == []
+    assert pack.sufficiency.sufficient is False
+    assert pack.sufficiency.missing_terms == ["v0.7.2"]
+
+
+def test_m7_identifier_terms_drive_conflict_annotation(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-identifier-conflict-owner",
+        source_type="tool",
+        collection="project_docs",
+        content="M7 owner Nina handles the M7 release.",
+    )
+    pipeline.ingest(
+        source_id="m7-identifier-conflict-negated",
+        source_type="tool",
+        collection="tool_outputs",
+        content="M7 owner is not Nina according to the release note.",
+    )
+
+    pack = pipeline.compile_recall(
+        "M7 owner",
+        limit=2,
+    )
+
+    assert len(pack.results) == 2
+    assert {item.conflict for item in pack.results} == {True}
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:

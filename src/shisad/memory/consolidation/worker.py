@@ -162,10 +162,16 @@ class ConsolidationWorker:
         *,
         config: ConsolidationConfig | None = None,
         scope_filter: set[str] | frozenset[str] | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        require_owner_scope: bool = False,
     ) -> None:
         self._manager = manager
         self._config = config or ConsolidationConfig()
         self._scope_filter = frozenset(scope_filter) if scope_filter is not None else None
+        self._user_id = MemoryManager._normalize_owner_value(user_id)
+        self._workspace_id = MemoryManager._normalize_owner_value(workspace_id)
+        self._require_owner_scope = require_owner_scope
 
     def _list_entries(
         self,
@@ -174,11 +180,17 @@ class ConsolidationWorker:
         include_quarantined: bool = False,
         include_pending_review: bool = False,
     ) -> list[MemoryEntry]:
+        if self._require_owner_scope and (
+            self._user_id is None or self._workspace_id is None
+        ):
+            return []
         entries = self._manager.list_entries(
             entry_type=entry_type,
             limit=max(1, len(self._manager._entries)),
             include_quarantined=include_quarantined,
             include_pending_review=include_pending_review,
+            user_id=self._user_id,
+            workspace_id=self._workspace_id,
         )
         if self._scope_filter is None:
             return entries

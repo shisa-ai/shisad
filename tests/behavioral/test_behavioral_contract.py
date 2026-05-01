@@ -3980,6 +3980,8 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
                 scope=scope,
                 confidence=confidence,
                 confirmation_satisfied=True,
+                user_id="contract-user",
+                workspace_id="contract-workspace",
             )
             assert decision.entry is not None
             return decision.entry.id
@@ -4051,7 +4053,13 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
         graph = await harness.client.call(
             "graph.query",
-            {"entity": "Shisad", "depth": 1, "limit": 10},
+            {
+                "entity": "Shisad",
+                "depth": 1,
+                "limit": 10,
+                "user_id": "contract-user",
+                "workspace_id": "contract-workspace",
+            },
         )
         assert graph.get("root_entity_id")
         assert graph.get("derived") is True
@@ -4082,13 +4090,26 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             for edge in graph.get("edges", [])
         )
 
-        exported = await harness.client.call("graph.export", {"format": "md"})
+        exported = await harness.client.call(
+            "graph.export",
+            {
+                "format": "md",
+                "user_id": "contract-user",
+                "workspace_id": "contract-workspace",
+            },
+        )
         assert exported.get("format") == "md"
         assert "Derived Knowledge Graph" in str(exported.get("data", ""))
         assert "schema=shisad.memory.graph.v1" in str(exported.get("data", ""))
         assert "Evidence" in str(exported.get("data", ""))
 
-        consolidated = await harness.client.call("memory.consolidate", {})
+        consolidated = await harness.client.call(
+            "memory.consolidate",
+            {
+                "user_id": "contract-user",
+                "workspace_id": "contract-workspace",
+            },
+        )
         assert consolidated.get("identity_candidate_count") == 1
         assert consolidated.get("strong_invalidation_count") == 1
         assert consolidated.get("capability_scope", {}).get("network") is False
@@ -4116,7 +4137,13 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         )
         assert "Updated memory" in str(accepted.get("response", ""))
 
-        reconsolidated = await harness.client.call("memory.consolidate", {})
+        reconsolidated = await harness.client.call(
+            "memory.consolidate",
+            {
+                "user_id": "contract-user",
+                "workspace_id": "contract-workspace",
+            },
+        )
         assert reconsolidated.get("strong_invalidation_count") == 0
 
         listing = await harness.client.call("memory.list", {"limit": 20})
