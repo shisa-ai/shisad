@@ -440,6 +440,50 @@ class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
         return None
 
 
+class _PepResourceAuthorizationRejectHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self._registry = SimpleNamespace(
+            get_tool=lambda _tool_name: ToolDefinition(
+                name=ToolName("fs.read"),
+                description="read files",
+                capabilities_required=[Capability.FILE_READ],
+            )
+        )
+        self._pep = SimpleNamespace(
+            evaluate=lambda tool_name, _arguments, _context: PEPDecision(
+                kind=PEPDecisionKind.REJECT,
+                reason=(
+                    "Resource authorization failed: 'path' not authorized in "
+                    "current workspace/user scope"
+                ),
+                reason_code="pep:resource_authorization_failed",
+                tool_name=tool_name,
+            )
+        )
+
+    async def _evaluate_action(self, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            decision=ControlDecision.ALLOW,
+            reason_codes=["consensus:threshold_met"],
+            trace_result=SimpleNamespace(
+                allowed=True,
+                reason_code="trace:allowed",
+                risk_tier=RiskTier.LOW,
+            ),
+            consensus=SimpleNamespace(votes=[]),
+            action=SimpleNamespace(
+                action_kind=ActionKind.FS_READ,
+                resource_id="/workspace/INSTALL.LOG",
+                resource_ids=["/workspace/INSTALL.LOG"],
+                origin=SimpleNamespace(model_dump=lambda mode="json": {}),
+            ),
+        )
+
+    async def _observe_pep_reject_signal(self, **_kwargs: object) -> None:
+        return None
+
+
 class _ValidateWritePathHarness(SessionImplMixin):
     def __init__(self, session: Session) -> None:
         self._internal_ingress_marker = object()
@@ -623,6 +667,80 @@ async def test_m9_trace_confirmation_with_resource_block_queues_confirmation() -
     assert result.pending_confirmation_ids == ["c-1"]
     assert result.rejected == 0
     assert harness.plan_violations == []
+
+
+@pytest.mark.asyncio
+async def test_m9_pep_resource_authorization_reject_keeps_granular_reason() -> None:
+    harness = _PepResourceAuthorizationRejectHarness()
+    sid = SessionId("sess-g1")
+    planner_context = SessionMessagePlannerContextResult(
+        validated=_validation_result(
+            params={"session_id": str(sid), "content": "read /workspace/INSTALL.LOG"}
+        ),
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.FILE_READ},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.FILE_READ}, session_id=sid),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "/workspace/INSTALL.LOG"},
+        reasoning="Read the user-requested file.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REJECT,
+                        reason="Resource authorization failed",
+                        reason_code="pep:resource_authorization_failed",
+                        tool_name=proposal.tool_name,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.rejected == 1
+    assert result.pending_confirmation == 0
+    assert result.rejection_reasons_for_user == ["pep:resource_authorization_failed"]
 
 
 @pytest.mark.asyncio

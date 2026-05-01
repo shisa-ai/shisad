@@ -316,6 +316,14 @@ def test_m3_s0b3_blocked_action_feedback_explains_stage2_gate() -> None:
     assert "requires elevated runtime actions" in message
 
 
+def test_m9_blocked_action_feedback_explains_fs_resource_authorization() -> None:
+    message = _blocked_action_feedback(["pep:resource_authorization_failed"])
+
+    assert "filesystem resource scope" in message
+    assert "fs.read" in message
+    assert "session's user/workspace" in message
+
+
 def test_m3_s0b3_blocked_action_feedback_falls_back_to_reason_code() -> None:
     message = _blocked_action_feedback(["rate_limit:too_many_actions"])
     assert "reason: rate_limit:too_many_actions" in message
@@ -330,6 +338,22 @@ def test_m3_s0b3_coerces_generic_blocked_text_to_actionable_feedback() -> None:
         rejection_reasons=["consensus:veto:ExecutionTraceVerifier,trace:stage2_upgrade_required"],
     )
     assert "requires elevated runtime actions" in response
+
+
+def test_m9_coerces_pep_resource_authorization_to_actionable_feedback() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "I could not safely execute the proposed action(s) under current policy "
+            "(reason: pep:resource_authorization_failed)."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["pep:resource_authorization_failed"],
+    )
+
+    assert "filesystem resource scope" in response
+    assert "pep:resource_authorization_failed" not in response
 
 
 def test_rc_lus_coerces_outside_workspace_filesystem_denial() -> None:

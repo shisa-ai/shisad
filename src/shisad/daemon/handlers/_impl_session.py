@@ -3557,6 +3557,15 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             "I couldn't complete that request because the requested path is outside "
             "the configured filesystem roots for this session."
         )
+    if any(code == "pep:resource_authorization_failed" for code in codes):
+        return (
+            "I couldn't run this resource-scoped action because this session's "
+            "user/workspace resource scope does not authorize the requested target. "
+            "For fs.read, check the filesystem resource scope and session binding "
+            "with `shisad session list`; for task-scoped work, include the path in "
+            "the task resource scope or start a normal session with the intended "
+            "`--assistant-fs-root`."
+        )
     if any(code == "session_in_lockdown" for code in codes):
         return (
             "I couldn't complete that request because this session is in lockdown. "
@@ -3582,6 +3591,8 @@ def _coerce_blocked_action_response_text(
         return response_text
     codes = _flatten_rejection_reason_codes(rejection_reasons)
     if any(code == "resource:outside_workspace_root" for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
+    if any(code == "pep:resource_authorization_failed" for code in codes):
         return _blocked_action_feedback(rejection_reasons)
     if "successfully" in response_text.lower():
         return _blocked_action_feedback(rejection_reasons)
@@ -8120,6 +8131,10 @@ class SessionImplMixin(HandlerMixinBase):
             elif cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION and final_kind == "allow":
                 final_kind = "require_confirmation"
                 final_reason = ",".join(cp_user_reason_codes) or "control_plane_confirmation"
+            if final_kind == "reject" and final_reason == "pep_reject":
+                final_reason = (
+                    pep_decision.reason_code.strip() or pep_decision.reason or "pep_reject"
+                )
 
             if self._lockdown_manager.should_block_all_actions(sid):
                 final_kind, final_reason = ("reject", "session_in_lockdown")
