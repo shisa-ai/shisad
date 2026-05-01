@@ -617,6 +617,108 @@ def test_m7_compile_recall_verifies_sufficiency_and_expands_missing_task_terms(
     assert {item.chunk_id for item in pack.results} == {launch.chunk_id, rollback.chunk_id}
 
 
+def test_m7_sufficiency_uses_configured_coverage_threshold(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-coverage",
+        source_type="tool",
+        collection="project_docs",
+        content="Alpha beta gamma are present in the project notes.",
+    )
+
+    relaxed = pipeline.compile_recall(
+        "alpha beta gamma delta epsilon",
+        limit=1,
+        verify_sufficiency=True,
+        min_sufficiency_coverage=0.6,
+    )
+    strict = pipeline.compile_recall(
+        "alpha beta gamma delta epsilon",
+        limit=1,
+        verify_sufficiency=True,
+        min_sufficiency_coverage=0.8,
+    )
+
+    assert relaxed.sufficiency is not None
+    assert relaxed.sufficiency.sufficient is True
+    assert relaxed.sufficiency.reason == "sufficient_partial_coverage"
+    assert relaxed.sufficiency.missing_terms
+    assert strict.sufficiency is not None
+    assert strict.sufficiency.sufficient is False
+    assert strict.sufficiency.reason == "low_coverage"
+
+
+def test_m7_sufficiency_reports_early_empty_recall_paths(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+
+    empty_store = pipeline.compile_recall(
+        "security escalation owner",
+        verify_sufficiency=True,
+    )
+    assert empty_store.sufficiency is not None
+    assert empty_store.sufficiency.sufficient is False
+    assert empty_store.sufficiency.reason == "not_enough_results"
+
+    pipeline.ingest(
+        source_id="m7-empty-paths",
+        source_type="tool",
+        collection="project_docs",
+        content="Deployment notes are indexed.",
+    )
+    empty_collections = pipeline.compile_recall(
+        "deployment notes",
+        allowed_collections=set(),
+        verify_sufficiency=True,
+    )
+    empty_scope = pipeline.compile_recall(
+        "deployment notes",
+        scope_filter=set(),
+        verify_sufficiency=True,
+    )
+    no_rows = pipeline.compile_recall(
+        "deployment notes",
+        allowed_collections={"external_web"},
+        verify_sufficiency=True,
+    )
+
+    for pack in (empty_collections, empty_scope, no_rows):
+        assert pack.sufficiency is not None
+        assert pack.sufficiency.sufficient is False
+        assert pack.sufficiency.reason == "not_enough_results"
+
+
+def test_m7_sufficiency_expansion_reapplies_max_token_budget(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    launch = pipeline.ingest(
+        source_id="m7-budget-launch",
+        source_type="tool",
+        collection="project_docs",
+        content="Launch checklist includes the canary deploy sequence.",
+    )
+    rollback = pipeline.ingest(
+        source_id="m7-budget-rollback",
+        source_type="tool",
+        collection="project_docs",
+        content="Rollback owner Nina coordinates release rollback escalation.",
+    )
+
+    pack = pipeline.compile_recall(
+        "launch checklist",
+        task="rollback owner",
+        limit=1,
+        max_tokens=6,
+        verify_sufficiency=True,
+        expand_on_insufficient=True,
+    )
+
+    assert [item.chunk_id for item in pack.results] == [launch.chunk_id]
+    assert rollback.chunk_id not in {item.chunk_id for item in pack.results}
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.expanded is True
+    assert pack.sufficiency.sufficient is False
+    assert "rollback" in pack.sufficiency.missing_terms
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:

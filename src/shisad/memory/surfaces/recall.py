@@ -162,13 +162,13 @@ def verify_recall_sufficiency(
     missing = sorted(term for term in query_terms if term not in haystack)
     coverage = len(covered) / max(1, len(query_terms))
     needed_results = max(1, min_results)
-    sufficient = pack.count >= needed_results and coverage >= min_coverage and not missing
+    sufficient = pack.count >= needed_results and coverage >= min_coverage
     if pack.count < needed_results:
         reason = "not_enough_results"
-    elif missing:
-        reason = "missing_terms"
     elif coverage < min_coverage:
         reason = "low_coverage"
+    elif missing:
+        reason = "sufficient_partial_coverage"
     else:
         reason = "sufficient"
     return SufficiencyReport(

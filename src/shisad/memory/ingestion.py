@@ -26,7 +26,12 @@ from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
 from shisad.memory.events import MemoryEvent, MemoryEventStore
 from shisad.memory.schema import MemoryScope
-from shisad.memory.surfaces import RecallPack, build_recall_pack, verify_recall_sufficiency
+from shisad.memory.surfaces import (
+    RecallPack,
+    SufficiencyReport,
+    build_recall_pack,
+    verify_recall_sufficiency,
+)
 from shisad.memory.trust import (
     ChannelTrust,
     ConfirmationStatus,
@@ -448,12 +453,15 @@ class IngestionPipeline:
         personal memory or session-derived evidence.
         """
         if self._backend.count_records() == 0:
-            return build_recall_pack(
+            return self._empty_recall_pack(
                 query=query,
-                results=[],
+                task=task,
                 max_tokens=max_tokens,
                 as_of=as_of,
                 include_archived=include_archived,
+                verify_sufficiency=verify_sufficiency,
+                min_sufficiency_results=min_sufficiency_results,
+                min_sufficiency_coverage=min_sufficiency_coverage,
             )
 
         collections = (
@@ -462,21 +470,27 @@ class IngestionPipeline:
         if capabilities is not None and capabilities & _SIDE_EFFECT_CAPABILITIES:
             collections.discard("external_web")
         if not collections:
-            return build_recall_pack(
+            return self._empty_recall_pack(
                 query=query,
-                results=[],
+                task=task,
                 max_tokens=max_tokens,
                 as_of=as_of,
                 include_archived=include_archived,
+                verify_sufficiency=verify_sufficiency,
+                min_sufficiency_results=min_sufficiency_results,
+                min_sufficiency_coverage=min_sufficiency_coverage,
             )
         normalized_scopes = set(scope_filter) if scope_filter is not None else None
         if normalized_scopes is not None and not normalized_scopes:
-            return build_recall_pack(
+            return self._empty_recall_pack(
                 query=query,
-                results=[],
+                task=task,
                 max_tokens=max_tokens,
                 as_of=as_of,
                 include_archived=include_archived,
+                verify_sufficiency=verify_sufficiency,
+                min_sufficiency_results=min_sufficiency_results,
+                min_sufficiency_coverage=min_sufficiency_coverage,
             )
 
         terms = [term for term in query.lower().split() if term]
@@ -486,12 +500,15 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         if not rows:
-            return build_recall_pack(
+            return self._empty_recall_pack(
                 query=query,
-                results=[],
+                task=task,
                 max_tokens=max_tokens,
                 as_of=as_of,
                 include_archived=include_archived,
+                verify_sufficiency=verify_sufficiency,
+                min_sufficiency_results=min_sufficiency_results,
+                min_sufficiency_coverage=min_sufficiency_coverage,
             )
         lexical_matches = self._backend.lexical_match_ids(
             query,
@@ -664,6 +681,42 @@ class IngestionPipeline:
             sufficiency=sufficiency,
         )
 
+    def _empty_recall_pack(
+        self,
+        *,
+        query: str,
+        task: str | None,
+        max_tokens: int | None,
+        as_of: datetime | None,
+        include_archived: bool,
+        verify_sufficiency: bool,
+        min_sufficiency_results: int,
+        min_sufficiency_coverage: float,
+    ) -> RecallPack:
+        pack = build_recall_pack(
+            query=query,
+            results=[],
+            max_tokens=max_tokens,
+            as_of=as_of,
+            include_archived=include_archived,
+        )
+        if not verify_sufficiency:
+            return pack
+        sufficiency = verify_recall_sufficiency(
+            pack,
+            task=task,
+            min_results=min_sufficiency_results,
+            min_coverage=min_sufficiency_coverage,
+        )
+        return build_recall_pack(
+            query=query,
+            results=[],
+            max_tokens=max_tokens,
+            as_of=as_of,
+            include_archived=include_archived,
+            sufficiency=sufficiency,
+        )
+
     def _recall_sufficiency_result(
         self,
         *,
@@ -678,7 +731,7 @@ class IngestionPipeline:
         min_sufficiency_results: int,
         min_sufficiency_coverage: float,
         recall_kwargs: dict[str, Any],
-    ) -> tuple[list[RetrievalResult], Any]:
+    ) -> tuple[list[RetrievalResult], SufficiencyReport | None]:
         if not verify_sufficiency:
             return results, None
         pack = build_recall_pack(
@@ -728,6 +781,11 @@ class IngestionPipeline:
             if len(merged) >= expanded_limit:
                 break
         expanded_results = list(merged.values())[:expanded_limit]
+        if max_tokens is not None:
+            expanded_results = self._trim_recall_to_token_budget(
+                expanded_results,
+                max_tokens=max_tokens,
+            )
         expanded_pack = build_recall_pack(
             query=query,
             results=expanded_results,
