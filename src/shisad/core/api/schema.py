@@ -425,6 +425,7 @@ class MemoryWriteParams(_StrictParams):
     supersedes: str | None = None
     user_id: str | None = None
     workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> MemoryWriteParams:
@@ -458,6 +459,7 @@ class MemoryPromoteIdentityCandidateParams(_StrictParams):
     value: Any = None
     user_id: str | None = None
     workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_candidate_shape(self) -> MemoryPromoteIdentityCandidateParams:
@@ -487,6 +489,7 @@ class MemoryRejectIdentityCandidateParams(_StrictParams):
     candidate_id: str
     user_id: str | None = None
     workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_candidate_shape(self) -> MemoryRejectIdentityCandidateParams:
@@ -527,6 +530,7 @@ class MemoryReviewQueueParams(_StrictParams):
     limit: int = 100
     user_id: str | None = None
     workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> MemoryReviewQueueParams:
@@ -583,6 +587,7 @@ class MemoryWorkflowStateParams(_StrictParams):
     workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"]
     user_id: str | None = None
     workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> MemoryWorkflowStateParams:

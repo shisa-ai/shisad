@@ -233,8 +233,9 @@ class MemoryManager:
         allow_trust_upgrade_without_confirmation: bool = False,
         user_id: str | None = None,
         workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> MemoryWriteDecision:
-        owner_scope_requested = user_id is not None or workspace_id is not None
+        owner_scope_requested = user_id is not None or workspace_id is not None or include_unowned
         owner_user_id = self._normalize_owner_value(user_id)
         owner_workspace_id = self._normalize_owner_value(workspace_id)
         if owner_scope_requested and (owner_user_id is None or owner_workspace_id is None):
@@ -352,7 +353,7 @@ class MemoryManager:
                 prior_entry,
                 user_id=owner_user_id,
                 workspace_id=owner_workspace_id,
-                include_unowned=False,
+                include_unowned=include_unowned,
             ):
                 return MemoryWriteDecision(kind="reject", reason="supersedes_target_not_found")
             if prior_entry.superseded_by is not None:

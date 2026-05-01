@@ -1186,6 +1186,78 @@ def test_memory_write_rejects_supersede_without_owner_scope(
     assert calls == []
 
 
+def test_memory_write_supersede_forwards_include_unowned_when_supplied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if method == "memory.mint_ingress_context":
+            payload = {
+                "ingress_context": "handle-1",
+                "content_digest": "digest-1",
+                "source_origin": "user_direct",
+                "channel_trust": "command",
+                "confirmation_status": "user_asserted",
+                "scope": "user",
+                "source_id": "cli",
+            }
+        else:
+            payload = {"kind": "allow", "entry": {"id": "m-new", "supersedes": "m-old"}}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "memory",
+            "write",
+            "--type",
+            "fact",
+            "--key",
+            "favorite_color",
+            "--value",
+            "green",
+            "--supersede",
+            "m-old",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws1",
+            "--include-unowned",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "memory.write",
+        {
+            "ingress_context": "handle-1",
+            "entry_type": "fact",
+            "key": "favorite_color",
+            "value": "green",
+            "supersedes": "m-old",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        },
+    ) in calls
+
+
 def test_memory_write_forwards_owner_scope_when_supplied(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

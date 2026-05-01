@@ -375,6 +375,7 @@ class MemoryImplMixin(HandlerMixinBase):
             supersedes=supersedes,
             user_id=user_id,
             workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         return self._with_memory_reject_hint(cast(dict[str, Any], decision.model_dump(mode="json")))
 
@@ -640,6 +641,7 @@ class MemoryImplMixin(HandlerMixinBase):
             taint_labels=context.taint_labels,
             user_id=user_id,
             workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
@@ -658,6 +660,7 @@ class MemoryImplMixin(HandlerMixinBase):
             ingress_handle_id=handle_id,
             user_id=user_id,
             workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         return {
             "changed": changed,
@@ -681,6 +684,7 @@ class MemoryImplMixin(HandlerMixinBase):
             limit=int(params.get("limit", 100)),
             user_id=user_id,
             workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
@@ -911,6 +915,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 workflow_state,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                include_unowned=bool(params.get("include_unowned", False)),
             )
         except ValueError as exc:
             reason = str(exc).split(":", 1)[0].strip() or "invalid_workflow_transition"

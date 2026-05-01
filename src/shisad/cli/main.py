@@ -2720,6 +2720,11 @@ def memory_list(limit: int, as_json: bool) -> None:
     default="",
     help="Owner workspace ID for personal memory.",
 )
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Allow explicitly scoped maintenance writes to supersede legacy unowned entries.",
+)
 def memory_write(
     entry_type: str,
     key: str,
@@ -2729,9 +2734,10 @@ def memory_write(
     strength: str,
     user_id: str,
     workspace_id: str,
+    include_unowned: bool,
 ) -> None:
     normalized_predicate = _validate_memory_write_predicate(entry_type, predicate)
-    owner_scope = _owner_scope_payload(user_id, workspace_id)
+    owner_scope = _owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
     if supersede.strip() and not owner_scope:
         raise click.ClickException("--supersede requires --user and --workspace.")
     config = _get_config()

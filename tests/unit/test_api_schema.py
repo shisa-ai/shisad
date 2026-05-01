@@ -665,9 +665,35 @@ class TestApiSchemaValidation:
             ).user_id
             == "alice"
         )
+        assert (
+            MemoryWriteParams.model_validate(
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "note",
+                    "key": "note:chain",
+                    "value": "updated",
+                    "supersedes": "entry-1",
+                    "include_unowned": True,
+                    **owner_scope,
+                }
+            ).include_unowned
+            is True
+        )
+        assert (
+            MemoryWorkflowStateParams.model_validate(
+                {
+                    "entry_id": "entry-1",
+                    "workflow_state": "closed",
+                    "include_unowned": True,
+                    **owner_scope,
+                }
+            ).include_unowned
+            is True
+        )
 
         ownerless_payloads: list[tuple[type[object], dict[str, object]]] = [
             (MemoryReviewQueueParams, {"limit": 10}),
+            (MemoryReviewQueueParams, {"limit": 10, "include_unowned": True}),
             (
                 MemoryPromoteIdentityCandidateParams,
                 {"ingress_context": "handle-1", "candidate_id": "candidate-1"},
@@ -687,6 +713,17 @@ class TestApiSchemaValidation:
                 },
             ),
             (
+                MemoryWriteParams,
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "note",
+                    "key": "note:chain",
+                    "value": "updated",
+                    "supersedes": "entry-1",
+                    "include_unowned": True,
+                },
+            ),
+            (
                 MemorySupersedeParams,
                 {
                     "ingress_context": "handle-1",
@@ -699,6 +736,14 @@ class TestApiSchemaValidation:
             (
                 MemoryWorkflowStateParams,
                 {"entry_id": "entry-1", "workflow_state": "closed"},
+            ),
+            (
+                MemoryWorkflowStateParams,
+                {
+                    "entry_id": "entry-1",
+                    "workflow_state": "closed",
+                    "include_unowned": True,
+                },
             ),
         ]
         for params_type, payload in ownerless_payloads:

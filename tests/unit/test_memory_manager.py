@@ -871,6 +871,38 @@ def test_m7_set_workflow_state_rejects_cross_owner_raw_id(tmp_path: Path) -> Non
     assert unchanged.workflow_state == "active"
 
 
+def test_m7_set_workflow_state_can_explicitly_include_unowned_target(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:legacy-unowned",
+        value="Legacy unowned release thread",
+        source=MemorySource(origin="user", source_id="msg-unowned", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-unowned",
+        scope="user",
+        workflow_state="active",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    assert decision.entry is not None
+
+    changed = manager.set_workflow_state(
+        decision.entry.id,
+        "closed",
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=True,
+    )
+
+    assert changed is True
+    updated = manager.get_entry(decision.entry.id)
+    assert updated is not None
+    assert updated.workflow_state == "closed"
+
+
 def test_m7_supersede_closed_workflow_entry_does_not_reopen(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     closed = manager.write_with_provenance(
@@ -1904,6 +1936,51 @@ def test_m7_supersede_rejects_cross_owner_raw_id(tmp_path: Path) -> None:
     )
     assert original is not None
     assert original.superseded_by is None
+
+
+def test_m7_supersede_can_explicitly_include_unowned_target(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    first = manager.write_with_provenance(
+        entry_type="note",
+        key="note:legacy-unowned",
+        value="legacy draft",
+        source=MemorySource(origin="user", source_id="msg-unowned-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-unowned-1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    assert first.entry is not None
+
+    replacement = manager.write_with_provenance(
+        entry_type="note",
+        key="note:legacy-unowned",
+        value="owner-scoped replacement",
+        source=MemorySource(origin="user", source_id="msg-unowned-2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-unowned-2",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=first.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=True,
+    )
+
+    assert replacement.kind == "allow"
+    assert replacement.entry is not None
+    assert replacement.entry.user_id == "alice"
+    assert replacement.entry.workspace_id == "ws1"
+    original = manager.get_entry(first.entry.id, include_deleted=True)
+    assert original is not None
+    assert original.superseded_by == replacement.entry.id
 
 
 def test_m1_supersede_trust_upgrade_requires_user_confirmation(tmp_path: Path) -> None:

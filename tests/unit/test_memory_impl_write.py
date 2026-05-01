@@ -818,6 +818,57 @@ async def test_memory_write_rejects_cross_owner_supersede_target(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_memory_write_can_supersede_unowned_target_with_explicit_include(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-unowned-1",
+        content="legacy draft",
+    )
+    first = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:legacy-unowned",
+            "value": "legacy draft",
+        }
+    )
+    assert first["entry"] is not None
+
+    next_context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-unowned-2",
+        content="owner replacement",
+    )
+    replacement = await harness.do_memory_write(
+        {
+            "ingress_context": next_context.handle_id,
+            "entry_type": "note",
+            "key": "note:legacy-unowned",
+            "value": "owner replacement",
+            "supersedes": first["entry"]["id"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        }
+    )
+
+    assert replacement["kind"] == "allow"
+    assert replacement["entry"] is not None
+    assert replacement["entry"]["supersedes"] == first["entry"]["id"]
+    assert replacement["entry"]["user_id"] == "alice"
+    assert replacement["entry"]["workspace_id"] == "ws1"
+
+
+@pytest.mark.asyncio
 async def test_memory_supersede_impl_reuses_write_path(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(
@@ -956,6 +1007,45 @@ async def test_memory_set_workflow_state_rejects_cross_owner_raw_id(tmp_path: Pa
     )
     assert entry is not None
     assert entry.workflow_state == "active"
+
+
+@pytest.mark.asyncio
+async def test_memory_set_workflow_state_can_include_unowned_target(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-unowned-thread",
+        content="legacy unowned thread",
+    )
+
+    created = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "open_thread",
+            "key": "thread:legacy-unowned",
+            "value": "legacy unowned thread",
+        }
+    )
+    assert created["entry"] is not None
+    entry_id = str(created["entry"]["id"])
+
+    updated = await harness.do_memory_set_workflow_state(
+        {
+            "entry_id": entry_id,
+            "workflow_state": "closed",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        }
+    )
+
+    assert updated["changed"] is True
+    entry = harness._memory_manager.get_entry(entry_id)
+    assert entry is not None
+    assert entry.workflow_state == "closed"
 
 
 @pytest.mark.asyncio
