@@ -250,14 +250,12 @@ def response_feedback_key(
     message_id: str,
     actor_external_user_id: str,
     signal: str,
+    emoji: str | None = None,
 ) -> str:
-    return _compose_key(
-        "response-feedback",
-        channel_id,
-        message_id,
-        actor_external_user_id,
-        signal,
-    )
+    parts = ["response-feedback", channel_id, message_id, actor_external_user_id, signal]
+    if signal in {"reaction_add", "reaction_remove"} and str(emoji or "").strip():
+        parts.append(str(emoji or "").strip())
+    return _compose_key(*parts)
 
 
 def _compose_key(prefix: str, *parts: str) -> str:

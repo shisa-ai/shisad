@@ -470,6 +470,40 @@ class AdminImplMixin(HandlerMixinBase):
                 return entry
         return None
 
+    def _retire_legacy_channel_memory_duplicates(
+        self,
+        *,
+        entry_type: str,
+        key: str,
+        channel: str,
+        workspace_hint: str,
+        structured_channel_id: str,
+        successor: Any | None,
+    ) -> None:
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager is None or successor is None:
+            return
+        for entry in memory_manager.list_entries(
+            entry_type=entry_type,
+            limit=max(1, len(memory_manager._entries)),
+        ):
+            if entry.key != key or entry.superseded_by is not None:
+                continue
+            if entry.id == getattr(successor, "id", None):
+                continue
+            recovered_workspace = self._legacy_channel_entry_workspace_hint(
+                channel=channel,
+                entry=entry,
+            )
+            if recovered_workspace != workspace_hint:
+                continue
+            if isinstance(entry.value, Mapping):
+                updated_value = dict(entry.value)
+                updated_value["channel_id"] = structured_channel_id
+                entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
+            entry.superseded_by = successor.id
+            memory_manager._persist_entry(entry)
+
     def _persist_channel_memory_records(
         self,
         *,
@@ -708,6 +742,18 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="person_note",
                     key=note_key,
                 )
+                if prior_note is not None:
+                    self._retire_legacy_channel_memory_duplicates(
+                        entry_type="person_note",
+                        key=person_note_key(
+                            channel_id=channel_id,
+                            external_user_id=message.external_user_id,
+                        ),
+                        channel=message.channel,
+                        workspace_hint=message.workspace_hint,
+                        structured_channel_id=structured_channel_id,
+                        successor=prior_note,
+                    )
                 effective_note_key = note_key
                 if _is_owner_curated_channel_entry(prior_note):
                     effective_note_key = _observed_channel_memory_key(note_key)
@@ -824,6 +870,15 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="channel_summary",
                     key=summary_key,
                 )
+                if prior_summary is not None:
+                    self._retire_legacy_channel_memory_duplicates(
+                        entry_type="channel_summary",
+                        key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
+                        channel=message.channel,
+                        workspace_hint=message.workspace_hint,
+                        structured_channel_id=structured_channel_id,
+                        successor=prior_summary,
+                    )
                 effective_summary_key = summary_key
                 if _is_owner_curated_channel_entry(prior_summary):
                     effective_summary_key = _observed_channel_memory_key(summary_key)
@@ -909,11 +964,13 @@ class AdminImplMixin(HandlerMixinBase):
             metadata.get("feedback_target_message_id") or metadata.get("target_message_id") or ""
         ).strip()
         if channel_id and feedback_signal and feedback_target_message_id:
+            feedback_emoji = str(metadata.get("feedback_emoji") or "").strip() or None
             feedback_key = response_feedback_key(
                 channel_id=structured_channel_id,
                 message_id=feedback_target_message_id,
                 actor_external_user_id=message.external_user_id,
                 signal=feedback_signal,
+                emoji=feedback_emoji,
             )
             feedback_event_id = str(metadata.get("feedback_event_id") or "").strip() or None
             feedback_confidence = _metadata_float(
@@ -968,6 +1025,7 @@ class AdminImplMixin(HandlerMixinBase):
                     message_id=feedback_target_message_id,
                     actor_external_user_id=message.external_user_id,
                     signal="reaction_add",
+                    emoji=feedback_emoji,
                 )
                 prior_feedback = self._find_current_memory_entry(
                     entry_type="response_feedback",
@@ -986,7 +1044,7 @@ class AdminImplMixin(HandlerMixinBase):
                 target_message_id=feedback_target_message_id,
                 actor_external_user_id=message.external_user_id,
                 signal=feedback_signal,
-                emoji=str(metadata.get("feedback_emoji") or "").strip() or None,
+                emoji=feedback_emoji,
                 valence=feedback_valence,
                 observed_at=message.received_at,
                 signal_confidence=feedback_confidence,

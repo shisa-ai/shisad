@@ -3274,6 +3274,7 @@ async def test_contract_m8_feedback_telemetry_is_bounded_and_observational(
         message_id="agent-msg-telemetry",
         actor_external_user_id="guest-telemetry",
         signal="reaction_add",
+        emoji=":+1:",
     )
     feedback_entries = [
         entry

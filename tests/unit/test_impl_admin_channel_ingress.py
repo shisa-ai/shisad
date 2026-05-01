@@ -297,6 +297,7 @@ async def test_m3_channel_ingest_persists_summary_and_feedback_records_from_meta
             message_id="agent-msg-9",
             actor_external_user_id="guest-2",
             signal="reaction_add",
+            emoji=":+1:",
         )
     ]
     assert feedback.entry_type == "response_feedback"
@@ -343,6 +344,7 @@ async def test_m8_channel_feedback_downgrades_spoofed_influence_and_supersedes_r
         message_id="agent-msg-9",
         actor_external_user_id="guest-2",
         signal="reaction_add",
+        emoji=":+1:",
     )
     first = next(
         entry
@@ -441,6 +443,7 @@ async def test_m8_channel_feedback_spoofed_replay_preserves_trusted_current(
         message_id="agent-msg-9",
         actor_external_user_id="guest-2",
         signal="reaction_add",
+        emoji=":+1:",
     )
     feedback_entries = [
         entry
@@ -522,12 +525,14 @@ async def test_m8_channel_feedback_reaction_remove_supersedes_trusted_add(
         message_id="agent-msg-remove",
         actor_external_user_id="guest-remove",
         signal="reaction_add",
+        emoji=":+1:",
     )
     remove_key = response_feedback_key(
         channel_id=channel_binding,
         message_id="agent-msg-remove",
         actor_external_user_id="guest-remove",
         signal="reaction_remove",
+        emoji=":+1:",
     )
     current_entries = [
         entry
@@ -543,6 +548,96 @@ async def test_m8_channel_feedback_reaction_remove_supersedes_trusted_add(
     assert current_add[0].value["telemetry_weight"] == 0.0
     assert current_add[0].supersedes is not None
     assert current_remove == []
+
+
+@pytest.mark.asyncio
+async def test_m8_channel_feedback_reaction_remove_preserves_other_emoji_add(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-emoji"},
+    )
+    base_message = {
+        "channel": "discord",
+        "external_user_id": "guest-emoji",
+        "workspace_hint": "guild-1",
+        "reply_target": "chan-emoji",
+        "content": "reaction event",
+    }
+    heart_add = {
+        "interaction_type": "direct",
+        "feedback_signal": "reaction_add",
+        "feedback_target_message_id": "agent-msg-emoji",
+        "feedback_emoji": ":heart:",
+        "feedback_valence": "positive",
+        "feedback_can_influence_retrieval": True,
+        "feedback_signal_confidence": 0.95,
+        "feedback_policy_allowed": True,
+        "feedback_telemetry_weight": 0.15,
+        "feedback_event_id": "discord:guild-1:chan-emoji:agent-msg-emoji:guest-emoji:heart:add",
+        "feedback_authenticated_actor": True,
+    }
+    await harness.do_channel_ingest(
+        {"message": {**base_message, "message_id": "msg-heart", "metadata": heart_add}}
+    )
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                **base_message,
+                "message_id": "msg-thumb-remove",
+                "metadata": {
+                    **heart_add,
+                    "feedback_signal": "reaction_remove",
+                    "feedback_emoji": ":+1:",
+                    "feedback_valence": "none",
+                    "feedback_can_influence_retrieval": False,
+                    "feedback_telemetry_weight": 0.0,
+                    "feedback_event_id": (
+                        "discord:guild-1:chan-emoji:agent-msg-emoji:"
+                        "guest-emoji:+1:remove"
+                    ),
+                },
+            }
+        }
+    )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-emoji",
+    )
+    heart_add_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-emoji",
+        actor_external_user_id="guest-emoji",
+        signal="reaction_add",
+        emoji=":heart:",
+    )
+    thumb_remove_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-emoji",
+        actor_external_user_id="guest-emoji",
+        signal="reaction_remove",
+        emoji=":+1:",
+    )
+    current_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.superseded_by is None
+    ]
+    current_heart_add = [entry for entry in current_entries if entry.key == heart_add_key]
+    current_thumb_remove = [entry for entry in current_entries if entry.key == thumb_remove_key]
+
+    assert len(current_heart_add) == 1
+    assert current_heart_add[0].value["emoji"] == ":heart:"
+    assert current_heart_add[0].value["signal"] == "reaction_add"
+    assert current_heart_add[0].value["can_influence_retrieval"] is True
+    assert current_heart_add[0].superseded_by is None
+    assert len(current_thumb_remove) == 1
+    assert current_thumb_remove[0].value["signal"] == "reaction_remove"
+    assert current_thumb_remove[0].supersedes is None
 
 
 @pytest.mark.asyncio
@@ -815,10 +910,10 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     assert preserved_summary.superseded_by is None
     assert preserved_summary.value["owner_curated"] is True
     assert preserved_legacy_note is not None
-    assert preserved_legacy_note.key == observed_note_key
+    assert preserved_legacy_note.key == legacy_note_key
     assert preserved_legacy_note.superseded_by is not None
     assert preserved_legacy_summary is not None
-    assert preserved_legacy_summary.key == observed_summary_key
+    assert preserved_legacy_summary.key == legacy_summary_key
     assert preserved_legacy_summary.superseded_by is not None
 
     current_entries = harness._memory_manager.list_entries(limit=50)
@@ -839,10 +934,7 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
         "person_note",
         "channel_summary",
     }
-    assert {entry.supersedes for entry in observed_side_entries} == {
-        legacy_note.entry.id,
-        legacy_summary.entry.id,
-    }
+    assert all(entry.supersedes is None for entry in observed_side_entries)
     assert [
         entry
         for entry in current_entries
@@ -993,6 +1085,175 @@ async def test_m8_channel_ingest_preserves_legacy_owner_curated_records(
         "channel_summary",
     }
     assert all(entry.supersedes is None for entry in observed_side_entries)
+
+
+@pytest.mark.asyncio
+async def test_m8_channel_ingest_retires_legacy_duplicates_with_canonical_current(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-duplicate"},
+    )
+    for session_id, message_id in (
+        ("sess-m8-duplicate-note", "legacy-m8-duplicate-note-msg"),
+        ("sess-m8-duplicate-summary", "legacy-m8-duplicate-summary-msg"),
+    ):
+        harness._transcript_store.append(
+            SessionId(session_id),
+            role="user",
+            content=f"legacy duplicate {message_id}",
+            taint_labels=set(),
+            metadata={
+                "channel_message_id": message_id,
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "chan-m8-duplicate",
+                    "workspace_hint": "guild-1",
+                    "thread_id": "",
+                },
+            },
+        )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-m8-duplicate",
+    )
+    canonical_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id=channel_binding, external_user_id="guest-duplicate"),
+        value={
+            "external_user_id": "guest-duplicate",
+            "display_name": "Duplicate Guest",
+            "channel_id": channel_binding,
+            "total_interactions": 3,
+            "interaction_summary": "Canonical observed note.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:canonical-duplicate-note",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:canonical-duplicate-note",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    canonical_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id=channel_binding, summary_kind="digest"),
+        value={
+            "channel_id": channel_binding,
+            "summary_kind": "digest",
+            "summary_text": "Canonical observed digest.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:canonical-duplicate-summary",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:canonical-duplicate-summary",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    legacy_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-m8-duplicate", external_user_id="guest-duplicate"),
+        value={
+            "external_user_id": "guest-duplicate",
+            "display_name": "Duplicate Guest",
+            "channel_id": "chan-m8-duplicate",
+            "total_interactions": 1,
+            "interaction_summary": "Legacy duplicate note.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-m8-duplicate-note-msg",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-m8-duplicate-note-msg",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    legacy_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-m8-duplicate", summary_kind="digest"),
+        value={
+            "channel_id": "chan-m8-duplicate",
+            "summary_kind": "digest",
+            "summary_text": "Legacy duplicate digest.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-m8-duplicate-summary-msg",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-m8-duplicate-summary-msg",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert canonical_note.entry is not None
+    assert canonical_summary.entry is not None
+    assert legacy_note.entry is not None
+    assert legacy_summary.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-duplicate",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-m8-duplicate",
+                "message_id": "msg-m8-duplicate",
+                "content": "fresh canonical duplicate update",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Duplicate Guest",
+                    "summary_kind": "digest",
+                    "summary_text": "Fresh canonical digest.",
+                },
+            }
+        }
+    )
+
+    retired_legacy_note = harness._memory_manager.get_entry(legacy_note.entry.id)
+    retired_legacy_summary = harness._memory_manager.get_entry(legacy_summary.entry.id)
+    assert retired_legacy_note is not None
+    assert retired_legacy_note.superseded_by is not None
+    assert retired_legacy_summary is not None
+    assert retired_legacy_summary.superseded_by is not None
+
+    current_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=50)
+        if entry.superseded_by is None
+    ]
+    assert [
+        entry
+        for entry in current_entries
+        if entry.key
+        in {
+            person_note_key(channel_id="chan-m8-duplicate", external_user_id="guest-duplicate"),
+            channel_summary_key(channel_id="chan-m8-duplicate", summary_kind="digest"),
+        }
+    ] == []
 
 
 @pytest.mark.asyncio
