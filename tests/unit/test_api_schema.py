@@ -619,28 +619,32 @@ class TestApiSchemaValidation:
         owner_scope = {"user_id": "alice", "workspace_id": "ws1"}
 
         assert (
-            MemoryReviewQueueParams.model_validate({"limit": 10, **owner_scope}).user_id
-            == "alice"
+            MemoryReviewQueueParams.model_validate(
+                {"limit": 10, "include_unowned": True, **owner_scope}
+            ).include_unowned
+            is True
         )
         assert (
             MemoryPromoteIdentityCandidateParams.model_validate(
                 {
                     "ingress_context": "handle-1",
                     "candidate_id": "candidate-1",
+                    "include_unowned": True,
                     **owner_scope,
                 }
-            ).workspace_id
-            == "ws1"
+            ).include_unowned
+            is True
         )
         assert (
             MemoryRejectIdentityCandidateParams.model_validate(
                 {
                     "ingress_context": "handle-1",
                     "candidate_id": "candidate-1",
+                    "include_unowned": True,
                     **owner_scope,
                 }
-            ).workspace_id
-            == "ws1"
+            ).include_unowned
+            is True
         )
         assert (
             MemoryWriteParams.model_validate(

@@ -199,7 +199,12 @@ async def test_memory_ingest_and_list_wrappers() -> None:
     )
     listing = await handlers.handle_memory_list(MemoryListParams(limit=10), RequestContext())
     review_queue = await handlers.handle_memory_list_review_queue(
-        MemoryReviewQueueParams(limit=10, user_id="alice", workspace_id="ws1"),
+        MemoryReviewQueueParams(
+            limit=10,
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
+        ),
         RequestContext(),
     )
     assert minted.ingress_context == "handle-1"
@@ -212,6 +217,7 @@ async def test_memory_ingest_and_list_wrappers() -> None:
     assert impl.last_memory_list_review_queue_payload is not None
     assert impl.last_memory_list_review_queue_payload["user_id"] == "alice"
     assert impl.last_memory_list_review_queue_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_list_review_queue_payload["include_unowned"] is True
 
 
 @pytest.mark.asyncio
@@ -254,6 +260,7 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
             value="I prefer green tea.",
             user_id="alice",
             workspace_id="ws1",
+            include_unowned=True,
         ),
         RequestContext(),
     )
@@ -263,6 +270,7 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
             candidate_id="candidate-2",
             user_id="alice",
             workspace_id="ws1",
+            include_unowned=True,
         ),
         RequestContext(),
     )
@@ -274,6 +282,7 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
     assert impl.last_memory_promote_identity_candidate_payload["candidate_id"] == "candidate-1"
     assert impl.last_memory_promote_identity_candidate_payload["user_id"] == "alice"
     assert impl.last_memory_promote_identity_candidate_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_promote_identity_candidate_payload["include_unowned"] is True
     assert (
         impl.last_memory_promote_identity_candidate_payload["_control_api_authenticated_write"]
         is True
@@ -285,6 +294,7 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
     assert impl.last_memory_reject_identity_candidate_payload["candidate_id"] == "candidate-2"
     assert impl.last_memory_reject_identity_candidate_payload["user_id"] == "alice"
     assert impl.last_memory_reject_identity_candidate_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_reject_identity_candidate_payload["include_unowned"] is True
     assert (
         impl.last_memory_reject_identity_candidate_payload["_control_api_authenticated_write"]
         is True
