@@ -43,7 +43,7 @@ from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.trace import TraceRecorder
+from shisad.core.trace import TracePersistencePolicy, TraceRecorder
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, TaintLabel, ToolName
 from shisad.daemon.approval_web import ApprovalWebService
@@ -495,7 +495,14 @@ class DaemonServices:
         )
         trace_recorder: TraceRecorder | None = None
         if config.trace_enabled:
-            trace_recorder = TraceRecorder(config.data_dir / "traces")
+            trace_recorder = TraceRecorder(
+                config.data_dir / "traces",
+                policy=TracePersistencePolicy(
+                    enabled=True,
+                    persist_tool_arguments=True,
+                    promotion_required=True,
+                ),
+            )
         risk_calibrator = RiskCalibrator(
             policy_path=config.data_dir / "risk" / "policy.json",
             observations_path=config.data_dir / "risk" / "observations.jsonl",

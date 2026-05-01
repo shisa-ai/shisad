@@ -261,3 +261,74 @@ def test_m7_response_feedback_cannot_claim_retrieval_influence_without_trust() -
         }
     )
     assert trusted.can_influence_retrieval is True
+
+
+def test_m8_channel_summary_and_person_note_are_correction_tagged() -> None:
+    summary = ChannelSummaryValue(
+        channel_id="discord:guild/general",
+        guild_id="guild-1",
+        summary_kind="digest",
+        summary_text="Updated release-readiness summary.",
+        confidence_source="observed",
+        correction_status="corrected",
+        supersedes_entry_id="summary-old",
+    )
+    note = PersonNoteValue(
+        external_user_id="guest-1",
+        display_name="Guest One",
+        channel_id="discord:guild/general",
+        interaction_summary="Prefers concise release status.",
+        confidence_source="observed",
+        correction_status="corrected",
+        supersedes_entry_id="note-old",
+    )
+
+    assert summary.confidence_source == "observed"
+    assert summary.correction_status == "corrected"
+    assert summary.supersedes_entry_id == "summary-old"
+    assert note.confidence_source == "observed"
+    assert note.correction_status == "corrected"
+    assert note.supersedes_entry_id == "note-old"
+
+    with pytest.raises(ValidationError, match="owner_curated"):
+        PersonNoteValue(
+            external_user_id="guest-2",
+            display_name="Guest Two",
+            channel_id="discord:guild/general",
+            confidence_source="observed",
+            owner_curated=True,
+        )
+
+
+def test_m8_feedback_telemetry_weight_requires_bounded_influence() -> None:
+    base = {
+        "channel_id": "discord:guild/general",
+        "event_id": "evt-1",
+        "target_message_id": "agent-msg-1",
+        "actor_external_user_id": "guest-1",
+        "signal": "reaction_add",
+        "emoji": ":+1:",
+        "valence": "positive",
+        "observed_at": datetime(2026, 4, 22, 12, 45, tzinfo=UTC),
+        "signal_confidence": 0.95,
+        "authenticated_actor": True,
+        "policy_allowed": True,
+        "can_influence_retrieval": True,
+    }
+
+    trusted = ResponseFeedbackEventValue.model_validate({**base, "telemetry_weight": 0.15})
+    assert trusted.can_influence_retrieval is True
+    assert trusted.telemetry_weight == 0.15
+    assert trusted.telemetry_policy == "bounded_retrieval"
+
+    with pytest.raises(ValidationError, match="telemetry_weight"):
+        ResponseFeedbackEventValue.model_validate({**base, "telemetry_weight": 0.35})
+
+    with pytest.raises(ValidationError, match="telemetry_weight"):
+        ResponseFeedbackEventValue.model_validate(
+            {
+                **base,
+                "can_influence_retrieval": False,
+                "telemetry_weight": 0.10,
+            }
+        )

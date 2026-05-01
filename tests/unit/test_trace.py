@@ -10,7 +10,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from shisad.core.trace import TraceMessage, TraceRecorder, TraceToolCall, TraceTurn
+from shisad.core.trace import (
+    TraceMessage,
+    TracePersistencePolicy,
+    TraceRecorder,
+    TraceToolCall,
+    TraceTurn,
+)
 
 
 @pytest.fixture()
@@ -94,6 +100,36 @@ class TestTraceRecorderRoundtrip:
 
     def test_read_empty_session(self, recorder: TraceRecorder) -> None:
         assert recorder.read_turns("nonexistent") == []
+
+    def test_m8_disabled_persistence_policy_does_not_write_trace_file(
+        self,
+        traces_dir: Path,
+    ) -> None:
+        disabled = TraceRecorder(traces_dir, policy=TracePersistencePolicy(enabled=False))
+        disabled.record(_make_turn())
+
+        assert not (traces_dir / "sess-1.jsonl").exists()
+        assert disabled.read_turns("sess-1") == []
+
+    def test_m8_trace_policy_metadata_and_argument_redaction(
+        self,
+        traces_dir: Path,
+    ) -> None:
+        recorder = TraceRecorder(
+            traces_dir,
+            policy=TracePersistencePolicy(
+                enabled=True,
+                persist_tool_arguments=False,
+                promotion_required=True,
+            ),
+        )
+        recorder.record(_make_turn())
+
+        turns = recorder.read_turns("sess-1")
+        assert len(turns) == 1
+        assert turns[0].persistence_policy == "redacted_session_trace"
+        assert turns[0].promotion_required is True
+        assert turns[0].tool_calls[0].arguments == {}
 
 
 class TestTraceSecretRedaction:

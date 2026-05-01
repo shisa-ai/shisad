@@ -14,7 +14,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +71,15 @@ class TraceToolCall(BaseModel, frozen=True):
     execution_success: bool | None = None
 
 
+class TracePersistencePolicy(BaseModel, frozen=True):
+    """Durable trace persistence posture for training/demo artifacts."""
+
+    enabled: bool = True
+    persist_tool_arguments: bool = True
+    promotion_required: bool = True
+    posture: Literal["disabled", "redacted_session_trace"] = "redacted_session_trace"
+
+
 class TraceTurn(BaseModel):
     """One complete turn: user message → planner → tool evaluation → response."""
 
@@ -89,6 +98,8 @@ class TraceTurn(BaseModel):
     trust_level: str = ""
     taint_labels: list[str] = Field(default_factory=list)
     duration_ms: float = 0.0
+    persistence_policy: Literal["disabled", "redacted_session_trace"] = "redacted_session_trace"
+    promotion_required: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +115,21 @@ class TraceRecorder:
     File permissions are restricted to 0o600.
     """
 
-    def __init__(self, traces_dir: Path) -> None:
+    def __init__(
+        self,
+        traces_dir: Path,
+        *,
+        policy: TracePersistencePolicy | None = None,
+    ) -> None:
         self._traces_dir = traces_dir
+        self._policy = policy or TracePersistencePolicy()
         self._traces_dir.mkdir(parents=True, exist_ok=True)
 
     def record(self, turn: TraceTurn) -> None:
         """Redact and append a TraceTurn to the session's trace file."""
-        redacted = self._redact_turn(turn)
+        if not self._policy.enabled:
+            return
+        redacted = self._redact_turn(turn, policy=self._policy)
         path = self._traces_dir / f"{redacted.session_id}.jsonl"
         line = redacted.model_dump_json() + "\n"
 
@@ -136,8 +155,13 @@ class TraceRecorder:
         return turns
 
     @staticmethod
-    def _redact_turn(turn: TraceTurn) -> TraceTurn:
+    def _redact_turn(
+        turn: TraceTurn,
+        *,
+        policy: TracePersistencePolicy | None = None,
+    ) -> TraceTurn:
         """Return a copy of the turn with all content fields redacted."""
+        resolved_policy = policy or TracePersistencePolicy()
         redacted_messages = [
             TraceMessage(
                 role=msg.role,
@@ -150,7 +174,9 @@ class TraceRecorder:
         redacted_tool_calls = [
             TraceToolCall(
                 tool_name=tc.tool_name,
-                arguments=_redact_value(tc.arguments),
+                arguments=(
+                    _redact_value(tc.arguments) if resolved_policy.persist_tool_arguments else {}
+                ),
                 pep_decision=tc.pep_decision,
                 monitor_decision=tc.monitor_decision,
                 control_plane_decision=tc.control_plane_decision,
@@ -176,4 +202,8 @@ class TraceRecorder:
             trust_level=turn.trust_level,
             taint_labels=list(turn.taint_labels),
             duration_ms=turn.duration_ms,
+            persistence_policy=(
+                "redacted_session_trace" if resolved_policy.enabled else "disabled"
+            ),
+            promotion_required=resolved_policy.promotion_required,
         )

@@ -36,7 +36,12 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
-from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
+from shisad.memory.participation import (
+    InboxItemValue,
+    compose_channel_binding,
+    inbox_item_key,
+    response_feedback_key,
+)
 from shisad.memory.remap import legacy_source_view_origin
 from shisad.memory.schema import MemorySource
 from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
@@ -3212,6 +3217,82 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
 
 
 @pytest.mark.asyncio
+async def test_contract_m8_feedback_telemetry_is_bounded_and_observational(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        config.channel_identity_allowlist = {"discord": ["guest-telemetry"]}
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        await harness.client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "guest-telemetry",
+                    "workspace_hint": "guild-telemetry",
+                    "reply_target": "chan-telemetry",
+                    "message_id": "msg-telemetry-1",
+                    "content": "thumbs up",
+                    "metadata": {
+                        "interaction_type": "direct",
+                        "feedback_signal": "reaction_add",
+                        "feedback_target_message_id": "agent-msg-telemetry",
+                        "feedback_emoji": ":+1:",
+                        "feedback_valence": "positive",
+                        "feedback_can_influence_retrieval": True,
+                        "feedback_signal_confidence": 0.95,
+                        "feedback_policy_allowed": True,
+                        "feedback_telemetry_weight": 0.15,
+                    },
+                }
+            },
+        )
+        listed = await harness.client.call(
+            "memory.list",
+            {
+                "limit": 20,
+                "user_id": "guest-telemetry",
+                "workspace_id": "guild-telemetry",
+                "include_unowned": True,
+            },
+        )
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-telemetry",
+        channel_id="chan-telemetry",
+    )
+    feedback_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-telemetry",
+        actor_external_user_id="guest-telemetry",
+        signal="reaction_add",
+    )
+    feedback_entries = [
+        entry
+        for entry in listed.get("entries", [])
+        if isinstance(entry, dict) and entry.get("key") == feedback_key
+    ]
+
+    assert len(feedback_entries) == 1
+    value = feedback_entries[0]["value"]
+    assert value["can_influence_retrieval"] is False
+    assert value["utility_score"] == 1.0
+    assert value["harm_score"] == 0.0
+    assert value["telemetry_weight"] == 0.0
+    assert value["telemetry_policy"] == "observation_only"
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+
+
+@pytest.mark.asyncio
 async def test_contract_identity_candidate_cli_surface_and_accept_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4293,6 +4374,7 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             confirmation_status: str = "user_asserted",
             confidence: float = 0.95,
             scope: str = "user",
+            supersedes: str | None = None,
         ) -> str:
             source_origin_kind = "user"
             if source_origin.startswith("external_"):
@@ -4317,6 +4399,7 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
                 confirmation_satisfied=True,
                 user_id="contract-user",
                 workspace_id="contract-workspace",
+                supersedes=supersedes,
             )
             assert decision.entry is not None
             return decision.entry.id
@@ -4365,6 +4448,19 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             channel_trust="owner_observed",
             confirmation_status="auto_accepted",
             confidence=0.30,
+        )
+        seeded["corrected_old_id"] = _write(
+            entry_type="fact",
+            key="project:acme-corrected",
+            value="AcmeCorrectionToken follows the old channel summary.",
+            source_id="graph-live-corrected-old",
+        )
+        seeded["corrected_new_id"] = _write(
+            entry_type="fact",
+            key="project:acme-corrected",
+            value="AcmeCorrectionToken follows the corrected channel summary.",
+            source_id="graph-live-corrected-new",
+            supersedes=seeded["corrected_old_id"],
         )
         for index, value in enumerate(
             [
@@ -4437,6 +4533,32 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         assert "Derived Knowledge Graph" in str(exported.get("data", ""))
         assert "schema=shisad.memory.graph.v1" in str(exported.get("data", ""))
         assert "Evidence" in str(exported.get("data", ""))
+
+        corrected = await harness.client.call(
+            "graph.query",
+            {
+                "entity": "AcmeCorrectionToken",
+                "depth": 1,
+                "limit": 10,
+                "user_id": "contract-user",
+                "workspace_id": "contract-workspace",
+            },
+        )
+        corrected_evidence = {
+            str(evidence_id)
+            for node in corrected.get("nodes", [])
+            if isinstance(node, dict)
+            for evidence_id in node.get("evidence_entry_ids", [])
+        }
+        corrected_superseded = {
+            str(entry_id)
+            for node in corrected.get("nodes", [])
+            if isinstance(node, dict)
+            for entry_id in node.get("superseded_entry_ids", [])
+        }
+        assert seeded["corrected_new_id"] in corrected_evidence
+        assert seeded["corrected_old_id"] not in corrected_evidence
+        assert seeded["corrected_old_id"] in corrected_superseded
 
         consolidated = await harness.client.call(
             "memory.consolidate",

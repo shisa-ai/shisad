@@ -80,9 +80,7 @@ async def test_m7_graph_surfaces_scope_to_owner_tuple(tmp_path: Path) -> None:
     unscoped = await harness.do_graph_export({"format": "json"})
     unscoped_data = json.loads(str(unscoped["data"]))
     unscoped_evidence_ids = {
-        evidence_id
-        for node in unscoped_data["nodes"]
-        for evidence_id in node["evidence_entry_ids"]
+        evidence_id for node in unscoped_data["nodes"] for evidence_id in node["evidence_entry_ids"]
     }
     assert owner_entry.id not in unscoped_evidence_ids
     assert other_entry.id not in unscoped_evidence_ids
@@ -189,6 +187,35 @@ def test_m5_knowledge_graph_current_view_excludes_superseded_entries(
 
     assert stale.id not in evidence_ids
     assert replacement.id in evidence_ids
+
+
+def test_m8_knowledge_graph_exports_correction_lineage_for_replacements(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    stale = _write_fact(
+        manager,
+        key="project:acme",
+        value="AcmeGraphToken ships the old release plan.",
+        source_id="graph-corrected-old",
+    )
+    replacement = _write_fact(
+        manager,
+        key="project:acme",
+        value="AcmeGraphToken ships the corrected release plan.",
+        source_id="graph-corrected-new",
+        supersedes=stale.id,
+    )
+
+    graph = build_knowledge_graph(manager.list_entries(limit=10))
+    exported = json.loads(graph.export(format="json"))
+    acme_node = next(
+        item for item in exported["nodes"] if item["entity_id"] == graph.entity_id_for("acme")
+    )
+
+    assert stale.id not in acme_node["evidence_entry_ids"]
+    assert replacement.id in acme_node["evidence_entry_ids"]
+    assert acme_node["superseded_entry_ids"] == [stale.id]
 
 
 def test_m5_knowledge_graph_exports_lifecycle_and_provenance_metadata(

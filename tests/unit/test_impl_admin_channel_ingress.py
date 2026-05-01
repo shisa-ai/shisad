@@ -304,6 +304,88 @@ async def test_m3_channel_ingest_persists_summary_and_feedback_records_from_meta
 
 
 @pytest.mark.asyncio
+async def test_m8_channel_feedback_downgrades_spoofed_influence_and_supersedes_replay(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-2"},
+    )
+
+    base_message = {
+        "channel": "discord",
+        "external_user_id": "guest-2",
+        "workspace_hint": "guild-1",
+        "reply_target": "chan-2",
+        "content": "thumbs up",
+        "metadata": {
+            "interaction_type": "direct",
+            "feedback_signal": "reaction_add",
+            "feedback_target_message_id": "agent-msg-9",
+            "feedback_emoji": ":+1:",
+            "feedback_valence": "positive",
+            "feedback_can_influence_retrieval": True,
+            "feedback_signal_confidence": 0.95,
+            "feedback_policy_allowed": True,
+            "feedback_telemetry_weight": 0.15,
+        },
+    }
+    await harness.do_channel_ingest({"message": {**base_message, "message_id": "msg-31"}})
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-2",
+    )
+    feedback_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-9",
+        actor_external_user_id="guest-2",
+        signal="reaction_add",
+    )
+    first = next(
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.key == feedback_key
+    )
+    assert first.value["can_influence_retrieval"] is False
+    assert first.value["utility_score"] == 1.0
+    assert first.value["harm_score"] == 0.0
+    assert first.value["telemetry_weight"] == 0.0
+    assert first.value["telemetry_policy"] == "observation_only"
+
+    trusted_metadata = {
+        **base_message["metadata"],
+        "feedback_event_id": "discord:guild-1:chan-2:agent-msg-9:guest-2:+1",
+        "feedback_authenticated_actor": True,
+    }
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                **base_message,
+                "message_id": "msg-32",
+                "metadata": trusted_metadata,
+            }
+        }
+    )
+
+    feedback_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.key == feedback_key
+    ]
+    current = [entry for entry in feedback_entries if entry.superseded_by is None]
+    assert len(current) == 1
+    assert current[0].supersedes == first.id
+    assert current[0].value["can_influence_retrieval"] is True
+    assert current[0].value["utility_score"] == 1.0
+    assert current[0].value["harm_score"] == 0.0
+    assert current[0].value["telemetry_weight"] == 0.15
+    assert current[0].value["telemetry_policy"] == "bounded_retrieval"
+
+
+@pytest.mark.asyncio
 async def test_m3_channel_ingest_observation_updates_participation_without_inbox_item(
     tmp_path: Path,
 ) -> None:

@@ -95,6 +95,41 @@ def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
+def _metadata_bool(metadata: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
+    if key not in metadata:
+        return default
+    value = metadata.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
+def _metadata_float(
+    metadata: Mapping[str, Any],
+    key: str,
+    *,
+    default: float = 0.0,
+    lower: float | None = None,
+    upper: float | None = None,
+) -> float:
+    try:
+        value = float(metadata.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    if lower is not None:
+        value = max(lower, value)
+    if upper is not None:
+        value = min(upper, value)
+    return value
+
+
 def _is_public_channel_trust(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"public", "trusted_guest"}
 
@@ -643,6 +678,10 @@ class AdminImplMixin(HandlerMixinBase):
                         "total_interactions": current_note.total_interactions + 1,
                         "last_interaction": message.received_at,
                         "interaction_summary": sanitized_text[:240],
+                        "confidence_source": "observed",
+                        "correction_status": "corrected" if prior_note is not None else "current",
+                        "supersedes_entry_id": prior_note.id if prior_note is not None else None,
+                        "owner_curated": False,
                     }
                 ).model_dump(mode="python")
                 persist_record(
@@ -692,6 +731,10 @@ class AdminImplMixin(HandlerMixinBase):
                     summary_text=summary_text,
                     window_end=message.received_at,
                     source_message_ids=[message.message_id] if message.message_id else [],
+                    confidence_source="observed",
+                    correction_status="corrected" if prior_summary is not None else "current",
+                    supersedes_entry_id=prior_summary.id if prior_summary is not None else None,
+                    owner_curated=False,
                 ).model_dump(mode="python")
                 persist_record(
                     entry_type="channel_summary",
@@ -712,14 +755,75 @@ class AdminImplMixin(HandlerMixinBase):
                 actor_external_user_id=message.external_user_id,
                 signal=feedback_signal,
             )
+            feedback_event_id = str(metadata.get("feedback_event_id") or "").strip() or None
+            feedback_confidence = _metadata_float(
+                metadata,
+                "feedback_signal_confidence",
+                default=0.0,
+                lower=0.0,
+                upper=1.0,
+            )
+            feedback_authenticated = _metadata_bool(metadata, "feedback_authenticated_actor")
+            feedback_policy_allowed = _metadata_bool(metadata, "feedback_policy_allowed")
+            requested_influence = _metadata_bool(metadata, "feedback_can_influence_retrieval")
+            influence_eligible = (
+                feedback_authenticated
+                and feedback_policy_allowed
+                and feedback_confidence >= 0.7
+                and bool(feedback_event_id)
+            )
+            can_influence_retrieval = requested_influence and influence_eligible
+            telemetry_weight = (
+                _metadata_float(
+                    metadata,
+                    "feedback_telemetry_weight",
+                    default=0.0,
+                    lower=-0.2,
+                    upper=0.2,
+                )
+                if can_influence_retrieval
+                else 0.0
+            )
+            feedback_valence = str(metadata.get("feedback_valence") or "none").strip() or "none"
+            utility_score = _metadata_float(
+                metadata,
+                "feedback_utility_score",
+                default=1.0 if feedback_valence == "positive" else 0.0,
+                lower=0.0,
+                upper=1.0,
+            )
+            harm_score = _metadata_float(
+                metadata,
+                "feedback_harm_score",
+                default=1.0
+                if feedback_valence == "negative" or feedback_signal == "ignored_response"
+                else 0.0,
+                lower=0.0,
+                upper=1.0,
+            )
+            prior_feedback = self._find_current_memory_entry(
+                entry_type="response_feedback",
+                key=feedback_key,
+            )
             feedback_value = ResponseFeedbackEventValue(
                 channel_id=structured_channel_id,
+                event_id=feedback_event_id,
                 target_message_id=feedback_target_message_id,
                 actor_external_user_id=message.external_user_id,
                 signal=feedback_signal,
                 emoji=str(metadata.get("feedback_emoji") or "").strip() or None,
-                valence=str(metadata.get("feedback_valence") or "none").strip() or "none",
+                valence=feedback_valence,
                 observed_at=message.received_at,
+                signal_confidence=feedback_confidence,
+                authenticated_actor=feedback_authenticated,
+                policy_allowed=feedback_policy_allowed,
+                can_influence_retrieval=can_influence_retrieval,
+                utility_score=utility_score,
+                harm_score=harm_score,
+                telemetry_weight=telemetry_weight,
+                telemetry_policy=(
+                    "bounded_retrieval" if can_influence_retrieval else "observation_only"
+                ),
                 was_proactive=(
                     bool(metadata.get("feedback_was_proactive"))
                     if "feedback_was_proactive" in metadata
@@ -732,6 +836,7 @@ class AdminImplMixin(HandlerMixinBase):
                 key=feedback_key,
                 value=feedback_value,
                 scope="channel",
+                supersedes=prior_feedback.id if prior_feedback is not None else None,
             )
 
     def _effective_channel_tools(self, allowed_tools: tuple[str, ...]) -> tuple[str, ...]:

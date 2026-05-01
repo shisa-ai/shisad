@@ -48,6 +48,7 @@ class GraphNode:
     name: str
     node_type: str = "concept"
     evidence_entry_ids: list[str] = field(default_factory=list)
+    superseded_entry_ids: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
     scopes: list[str] = field(default_factory=list)
     created_at: str | None = None
@@ -65,6 +66,7 @@ class GraphNode:
             "name": self.name,
             "node_type": self.node_type,
             "evidence_entry_ids": list(self.evidence_entry_ids),
+            "superseded_entry_ids": list(self.superseded_entry_ids),
             "source_ids": list(self.source_ids),
             "scopes": list(self.scopes),
             "created_at": self.created_at,
@@ -85,6 +87,7 @@ class GraphEdge:
     target_id: str
     relation: str = "related_to"
     evidence_entry_ids: list[str] = field(default_factory=list)
+    superseded_entry_ids: list[str] = field(default_factory=list)
     axes: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
     scopes: list[str] = field(default_factory=list)
@@ -104,6 +107,7 @@ class GraphEdge:
             "target_id": self.target_id,
             "relation": self.relation,
             "evidence_entry_ids": list(self.evidence_entry_ids),
+            "superseded_entry_ids": list(self.superseded_entry_ids),
             "axes": list(self.axes),
             "source_ids": list(self.source_ids),
             "scopes": list(self.scopes),
@@ -199,12 +203,19 @@ def _max_timestamp(current: str | None, candidate: str | None) -> str | None:
 def _add_entry_metadata(
     *,
     evidence_entry_ids: list[str],
+    superseded_entry_ids: list[str] | None = None,
     source_ids: list[str],
     scopes: list[str],
     entry: MemoryEntry,
 ) -> None:
     if entry.id not in evidence_entry_ids:
         evidence_entry_ids.append(entry.id)
+    if (
+        entry.supersedes
+        and superseded_entry_ids is not None
+        and entry.supersedes not in superseded_entry_ids
+    ):
+        superseded_entry_ids.append(entry.supersedes)
     if entry.source_id and entry.source_id not in source_ids:
         source_ids.append(entry.source_id)
     if entry.scope and entry.scope not in scopes:
@@ -317,6 +328,7 @@ class DerivedKnowledgeGraph:
                     nodes[entity_id] = node
                 _add_entry_metadata(
                     evidence_entry_ids=node.evidence_entry_ids,
+                    superseded_entry_ids=node.superseded_entry_ids,
                     source_ids=node.source_ids,
                     scopes=node.scopes,
                     entry=entry,
@@ -351,6 +363,7 @@ class DerivedKnowledgeGraph:
                     edges[edge_id] = edge
                 _add_entry_metadata(
                     evidence_entry_ids=edge.evidence_entry_ids,
+                    superseded_entry_ids=edge.superseded_entry_ids,
                     source_ids=edge.source_ids,
                     scopes=edge.scopes,
                     entry=entry,

@@ -8,6 +8,19 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+ConfidenceSource = Literal["observed", "owner_curated", "user_corrected", "telemetry"]
+CorrectionStatus = Literal["current", "corrected", "rollback"]
+TelemetryPolicy = Literal["observation_only", "bounded_retrieval"]
+
+
+def _validate_owner_curated_confidence(
+    *,
+    confidence_source: ConfidenceSource,
+    owner_curated: bool,
+) -> None:
+    if owner_curated and confidence_source not in {"owner_curated", "user_corrected"}:
+        raise ValueError("owner_curated records require owner_curated or user_corrected confidence")
+
 
 class AgentResponseSummary(BaseModel):
     """Compact record of one agent response in a shared channel."""
@@ -73,6 +86,18 @@ class ChannelSummaryValue(BaseModel):
     window_start: datetime | None = None
     window_end: datetime | None = None
     source_message_ids: list[str] = Field(default_factory=list)
+    confidence_source: ConfidenceSource = "observed"
+    correction_status: CorrectionStatus = "current"
+    supersedes_entry_id: str | None = None
+    owner_curated: bool = False
+
+    @model_validator(mode="after")
+    def _validate_confidence_source(self) -> ChannelSummaryValue:
+        _validate_owner_curated_confidence(
+            confidence_source=self.confidence_source,
+            owner_curated=self.owner_curated,
+        )
+        return self
 
 
 class PersonNoteValue(BaseModel):
@@ -92,6 +117,18 @@ class PersonNoteValue(BaseModel):
     negative_reactions: int = Field(default=0, ge=0)
     ignored_responses: int = Field(default=0, ge=0)
     thread_starts: int = Field(default=0, ge=0)
+    confidence_source: ConfidenceSource = "observed"
+    correction_status: CorrectionStatus = "current"
+    supersedes_entry_id: str | None = None
+    owner_curated: bool = False
+
+    @model_validator(mode="after")
+    def _validate_confidence_source(self) -> PersonNoteValue:
+        _validate_owner_curated_confidence(
+            confidence_source=self.confidence_source,
+            owner_curated=self.owner_curated,
+        )
+        return self
 
 
 class ChannelParticipationStateValue(BaseModel):
@@ -123,6 +160,10 @@ class ResponseFeedbackEventValue(BaseModel):
     can_influence_retrieval: bool = False
     was_proactive: bool | None = None
     thread_id: str | None = None
+    utility_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    harm_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    telemetry_weight: float = Field(default=0.0, ge=-0.2, le=0.2)
+    telemetry_policy: TelemetryPolicy = "observation_only"
 
     @model_validator(mode="after")
     def _validate_retrieval_influence(self) -> ResponseFeedbackEventValue:
@@ -137,6 +178,16 @@ class ResponseFeedbackEventValue(BaseModel):
                 "retrieval influence requires authenticated actor, policy allowance, "
                 "high confidence, and event_id"
             )
+        if self.telemetry_weight != 0.0 and not self.can_influence_retrieval:
+            raise ValueError("telemetry_weight requires bounded retrieval influence")
+        expected_policy: TelemetryPolicy = (
+            "bounded_retrieval" if self.can_influence_retrieval else "observation_only"
+        )
+        if self.telemetry_policy != expected_policy:
+            if self.telemetry_policy == "observation_only" and self.can_influence_retrieval:
+                self.telemetry_policy = expected_policy
+            else:
+                raise ValueError("telemetry_policy must match retrieval influence posture")
         return self
 
 
