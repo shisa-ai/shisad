@@ -87,13 +87,24 @@ _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "token",
     "x-api-key",
 )
+_TRANSPORT_ERROR_SECRET_LABEL = (
+    r"(?:x-api-key|api[_-]?key|authorization|cookie|set-cookie|"
+    r"[A-Za-z0-9_-]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)"
+    r"[A-Za-z0-9_-]*)"
+)
+_TRANSPORT_ERROR_QUOTED_SECRET_RE = re.compile(
+    rf"(?P<label_quote>['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
+    rf"(?P=label_quote)(?P<sep>\s*[:=]\s*)"
+    rf"(?P<value_quote>['\"])(?P<value>.*?)(?P=value_quote)",
+    flags=re.IGNORECASE,
+)
 _TRANSPORT_ERROR_SECRET_HEADER_RE = re.compile(
     r"(?P<label>\b(?:authorization|cookie|set-cookie)\b)(?P<sep>\s*[:=]\s*)"
-    r"[^,\r\n]+",
+    r"[^\r\n]+",
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?P<label>\b(?:x-api-key|api[_-]?key|token|secret|password|credential)s?\b)"
+    rf"(?P<label>\b{_TRANSPORT_ERROR_SECRET_LABEL}s?\b)"
     r"(?P<sep>\s*[:=]\s*)[^\s,;]+",
     flags=re.IGNORECASE,
 )
@@ -145,9 +156,17 @@ def _json_safe_transport_error_data(value: object, *, key: object = "") -> objec
 
 
 def _redact_transport_error_message(message: str) -> str:
+    redacted = _TRANSPORT_ERROR_QUOTED_SECRET_RE.sub(
+        lambda match: (
+            f"{match.group('label_quote')}{match.group('label')}"
+            f"{match.group('label_quote')}{match.group('sep')}"
+            f"{match.group('value_quote')}[redacted]{match.group('value_quote')}"
+        ),
+        message,
+    )
     redacted = _TRANSPORT_ERROR_SECRET_HEADER_RE.sub(
         lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",
-        message,
+        redacted,
     )
     redacted = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE.sub(
         lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",

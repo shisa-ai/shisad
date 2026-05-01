@@ -255,7 +255,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             -32000,
             (
                 "Authentication failed: api_key=sk-test-secret "
-                "Authorization: Bearer token-value"
+                "Authorization: Bearer token-value OPENAI_API_KEY=sk-env-secret"
             ),
             {
                 "api_key": "sk-test-secret",
@@ -265,6 +265,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "detail": "Authorization: Basic dXNlcjpwYXNz",
                 "body": "api_key=sk-body-secret",
                 "headers": "Cookie: sid=secret; csrf=secret2",
+                "json": '{"api_key":"sk-json","Authorization":"Bearer json-token"}',
+                "pythonish": "{'authorization': 'Bearer py-token'}",
+                "env_detail": "OPENAI_API_KEY=sk-env ANTHROPIC_AUTH_TOKEN=auth-token",
                 "missing_env": ["OPENAI_API_KEY"],
             },
         )
@@ -281,6 +284,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "detail": "Authorization: [redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
+        "json": '{"api_key":"[redacted]","Authorization":"[redacted]"}',
+        "pythonish": "{'authorization': '[redacted]'}",
+        "env_detail": "OPENAI_API_KEY=[redacted] ANTHROPIC_AUTH_TOKEN=[redacted]",
         "missing_env": ["OPENAI_API_KEY"],
     }
 
