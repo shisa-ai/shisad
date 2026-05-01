@@ -464,6 +464,67 @@ async def test_m8_channel_feedback_spoofed_replay_preserves_trusted_current(
 
 
 @pytest.mark.asyncio
+async def test_m8_channel_feedback_duplicate_event_id_is_not_replayed(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-replay"},
+    )
+    metadata = {
+        "interaction_type": "direct",
+        "feedback_signal": "reaction_add",
+        "feedback_target_message_id": "agent-msg-replay",
+        "feedback_emoji": ":+1:",
+        "feedback_valence": "positive",
+        "feedback_can_influence_retrieval": True,
+        "feedback_signal_confidence": 0.95,
+        "feedback_policy_allowed": True,
+        "feedback_telemetry_weight": 0.15,
+        "feedback_event_id": "discord:guild-1:chan-replay:agent-msg-replay:guest-replay:+1",
+        "feedback_authenticated_actor": True,
+    }
+    base_message = {
+        "channel": "discord",
+        "external_user_id": "guest-replay",
+        "workspace_hint": "guild-1",
+        "reply_target": "chan-replay",
+        "content": "thumbs up",
+    }
+    await harness.do_channel_ingest(
+        {"message": {**base_message, "message_id": "msg-replay-1", "metadata": metadata}}
+    )
+    await harness.do_channel_ingest(
+        {"message": {**base_message, "message_id": "msg-replay-2", "metadata": metadata}}
+    )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-replay",
+    )
+    feedback_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-replay",
+        actor_external_user_id="guest-replay",
+        signal="reaction_add",
+        emoji=":+1:",
+    )
+    feedback_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.key == feedback_key
+    ]
+
+    assert len(feedback_entries) == 1
+    assert feedback_entries[0].superseded_by is None
+    assert feedback_entries[0].supersedes is None
+    assert feedback_entries[0].value["event_id"] == metadata["feedback_event_id"]
+    assert feedback_entries[0].value["telemetry_policy"] == "bounded_retrieval"
+
+
+@pytest.mark.asyncio
 async def test_m8_channel_feedback_reaction_remove_supersedes_trusted_add(
     tmp_path: Path,
 ) -> None:
@@ -1659,11 +1720,15 @@ async def test_m8_channel_ingest_promotes_trusted_legacy_over_observed_canonical
     assert promoted_note is not None
     assert promoted_note.key == canonical_note_key
     assert promoted_note.superseded_by is None
+    assert promoted_note.supersedes == observed_note.entry.id
     assert promoted_note.value["owner_curated"] is True
+    assert promoted_note.value["supersedes_entry_id"] == observed_note.entry.id
     assert promoted_summary is not None
     assert promoted_summary.key == canonical_summary_key
     assert promoted_summary.superseded_by is None
+    assert promoted_summary.supersedes == observed_summary.entry.id
     assert promoted_summary.value["owner_curated"] is True
+    assert promoted_summary.value["supersedes_entry_id"] == observed_summary.entry.id
     assert superseded_observed_note is not None
     assert superseded_observed_note.superseded_by == trusted_note.entry.id
     assert superseded_observed_summary is not None

@@ -307,6 +307,37 @@ class AdminImplMixin(HandlerMixinBase):
                 return entry
         return None
 
+    def _find_response_feedback_event_entry(
+        self,
+        *,
+        event_id: str | None,
+        channel_id: str,
+        target_message_id: str,
+        actor_external_user_id: str,
+    ) -> Any | None:
+        normalized_event_id = str(event_id or "").strip()
+        if not normalized_event_id:
+            return None
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager is None:
+            return None
+        for entry in memory_manager.list_entries(
+            entry_type="response_feedback",
+            limit=max(1, len(memory_manager._entries)),
+        ):
+            if not isinstance(entry.value, Mapping):
+                continue
+            value = cast(Mapping[str, Any], entry.value)
+            if (
+                str(value.get("event_id") or "").strip() == normalized_event_id
+                and str(value.get("channel_id") or "").strip() == channel_id
+                and str(value.get("target_message_id") or "").strip() == target_message_id
+                and str(value.get("actor_external_user_id") or "").strip()
+                == actor_external_user_id
+            ):
+                return entry
+        return None
+
     def _has_pending_review_memory_entry(self, *, entry_type: str, key: str) -> bool:
         memory_manager = getattr(self, "_memory_manager", None)
         if memory_manager is None:
@@ -521,6 +552,15 @@ class AdminImplMixin(HandlerMixinBase):
                 and not successor_is_curated
                 and promoted_successor is None
             ):
+                if isinstance(entry.value, Mapping):
+                    updated_value = dict(entry.value)
+                    updated_value["supersedes_entry_id"] = successor.id
+                    updated_value["correction_status"] = "corrected"
+                    entry.value = normalize_structured_memory_value(
+                        entry.entry_type,
+                        updated_value,
+                    )
+                entry.supersedes = successor.id
                 successor.superseded_by = entry.id
                 memory_manager._persist_entry(successor)
                 memory_manager._persist_entry(entry)
@@ -1106,6 +1146,27 @@ class AdminImplMixin(HandlerMixinBase):
                     prior_feedback = legacy_feedback
                     if feedback_signal == "reaction_remove":
                         feedback_key = legacy_feedback.key
+            duplicate_feedback = self._find_response_feedback_event_entry(
+                event_id=feedback_event_id,
+                channel_id=structured_channel_id,
+                target_message_id=feedback_target_message_id,
+                actor_external_user_id=message.external_user_id,
+            )
+            if duplicate_feedback is not None:
+                duplicate_feedback_value = getattr(duplicate_feedback, "value", None)
+                if (
+                    legacy_feedback is not None
+                    and legacy_feedback.id != duplicate_feedback.id
+                    and legacy_feedback.superseded_by is None
+                    and isinstance(duplicate_feedback_value, Mapping)
+                    and _feedback_can_supersede_prior(
+                        legacy_feedback,
+                        cast(Mapping[str, Any], duplicate_feedback_value),
+                    )
+                ):
+                    legacy_feedback.superseded_by = duplicate_feedback.id
+                    memory_manager._persist_entry(legacy_feedback)
+                return
             feedback_value = ResponseFeedbackEventValue(
                 channel_id=structured_channel_id,
                 event_id=feedback_event_id,

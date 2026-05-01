@@ -16,7 +16,7 @@ from shisad.core.events import EventBus, SessionCreated
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelRouter
-from shisad.core.trace import TraceTurn
+from shisad.core.trace import TraceMessage, TraceToolCall, TraceTurn
 from shisad.core.types import Capability, CredentialRef, SessionId, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.services import (
@@ -597,6 +597,52 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert second_ingest.chunk_id
     finally:
         await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_m8_daemon_trace_policy_does_not_persist_tool_arguments(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        trace_enabled=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert services.trace_recorder is not None
+        services.trace_recorder.record(
+            TraceTurn(
+                session_id="sess-m8-trace-policy",
+                messages_sent=[
+                    TraceMessage(
+                        role="assistant",
+                        tool_calls=[
+                            {
+                                "name": "shell.exec",
+                                "arguments": {"command": "cat private.txt"},
+                            }
+                        ],
+                    )
+                ],
+                tool_calls=[
+                    TraceToolCall(
+                        tool_name="shell.exec",
+                        arguments={"command": "cat private.txt"},
+                    )
+                ],
+            )
+        )
+        turns = services.trace_recorder.read_turns("sess-m8-trace-policy")
+    finally:
+        await services.shutdown()
+
+    assert len(turns) == 1
+    assert turns[0].messages_sent[0].tool_calls[0]["arguments"] == {}
+    assert turns[0].tool_calls[0].arguments == {}
 
 
 @pytest.mark.asyncio

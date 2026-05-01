@@ -499,7 +499,7 @@ class DaemonServices:
                 config.data_dir / "traces",
                 policy=TracePersistencePolicy(
                     enabled=True,
-                    persist_tool_arguments=True,
+                    persist_tool_arguments=False,
                     promotion_required=True,
                 ),
             )
