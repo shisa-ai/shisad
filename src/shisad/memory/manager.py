@@ -1573,7 +1573,12 @@ class MemoryManager:
             return False
         if not self._is_quarantined(entry):
             return True
-        if entry.superseded_by is not None or self._has_active_key_collision(entry):
+        if entry.superseded_by is not None or self._has_active_key_collision(
+            entry,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
+            include_unowned=include_unowned,
+        ):
             self._audit(
                 "memory.unquarantine_blocked",
                 {
@@ -2203,11 +2208,21 @@ class MemoryManager:
     def _is_pending_review(entry: MemoryEntry) -> bool:
         return entry.confirmation_status == "pending_review"
 
-    def _has_active_key_collision(self, entry: MemoryEntry) -> bool:
+    def _has_active_key_collision(
+        self,
+        entry: MemoryEntry,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> bool:
         for candidate in self.list_entries(
             entry_type=entry.entry_type,
             include_pending_review=True,
             limit=max(1, len(self._entries)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         ):
             if (
                 candidate.id == entry.id

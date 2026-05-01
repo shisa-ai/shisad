@@ -777,6 +777,76 @@ def test_m1_unquarantine_refuses_active_key_collisions(tmp_path: Path) -> None:
     ] == ["created", "quarantined"]
 
 
+def test_m7_scoped_unquarantine_ignores_other_owner_key_collisions(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    original = manager.write_with_provenance(
+        entry_type="note",
+        key="note:collision",
+        value="Alice quarantined note",
+        source=MemorySource(origin="user", source_id="alice-c1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="alice-c1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert original.entry is not None
+    assert manager.quarantine(
+        original.entry.id,
+        reason="manual-review",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    replacement = manager.write_with_provenance(
+        entry_type="note",
+        key="note:collision",
+        value="Bob active note with the same key",
+        source=MemorySource(origin="user", source_id="bob-c1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="bob-c1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+
+    assert replacement.kind == "allow"
+    assert replacement.entry is not None
+    assert (
+        manager.unquarantine(
+            original.entry.id,
+            reason="review-cleared",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        is True
+    )
+
+    restored = manager.get_entry(
+        original.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    other_owner = manager.get_entry(
+        replacement.entry.id,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+    assert restored is not None
+    assert restored.status == "active"
+    assert other_owner is not None
+    assert other_owner.status == "active"
+
+
 def test_m1_unquarantine_refuses_pending_review_key_collisions(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     original = manager.write_with_provenance(

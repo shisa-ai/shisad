@@ -112,7 +112,9 @@ async def test_todo_export_uses_type_aware_limit_query() -> None:
 async def test_note_export_csv_renders_header_and_row_fields() -> None:
     handler = _StubMemoryHandler()
 
-    payload = await handler.do_note_export({"format": "csv"})
+    payload = await handler.do_note_export(
+        {"format": "csv", "user_id": "user-1", "workspace_id": "ws-1"}
+    )
 
     assert payload["format"] == "csv"
     data = payload["data"].splitlines()
@@ -126,7 +128,9 @@ async def test_note_export_csv_renders_header_and_row_fields() -> None:
 async def test_todo_export_csv_flattens_value_dict_into_title_status_due_date() -> None:
     handler = _StubMemoryHandler()
 
-    payload = await handler.do_todo_export({"format": "csv"})
+    payload = await handler.do_todo_export(
+        {"format": "csv", "user_id": "user-1", "workspace_id": "ws-1"}
+    )
 
     assert payload["format"] == "csv"
     data = payload["data"].splitlines()
@@ -142,4 +146,6 @@ async def test_note_export_rejects_unsupported_format() -> None:
     handler = _StubMemoryHandler()
 
     with pytest.raises(ValueError, match="Unsupported export format"):
-        await handler.do_note_export({"format": "xml"})
+        await handler.do_note_export(
+            {"format": "xml", "user_id": "user-1", "workspace_id": "ws-1"}
+        )
