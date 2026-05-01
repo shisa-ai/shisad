@@ -2834,7 +2834,7 @@ def memory_benchmark(
             fail_over_harm_rate=fail_over_harm_rate,
             fail_over_p95_latency_ms=fail_over_p95_latency_ms,
         )
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     if as_json:
         click.echo(json.dumps(report, indent=2, sort_keys=True))

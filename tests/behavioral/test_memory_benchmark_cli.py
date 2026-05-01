@@ -84,8 +84,20 @@ def test_memory_benchmark_cli_reports_invalid_operator_inputs(tmp_path: Path) ->
         ["memory", "benchmark", "--storage-dir", str(storage_dir)],
     )
     assert storage_result.exit_code != 0
+    assert "Error:" in storage_result.output
     assert "storage directory must be empty" in storage_result.output
     assert "Traceback" not in storage_result.output
+
+    storage_parent_file = tmp_path / "not-a-directory"
+    storage_parent_file.write_text("not a directory", encoding="utf-8")
+    storage_path_result = runner.invoke(
+        cli_main.cli,
+        ["memory", "benchmark", "--storage-dir", str(storage_parent_file / "child")],
+    )
+    assert storage_path_result.exit_code != 0
+    assert "Error:" in storage_path_result.output
+    assert "Not a directory" in storage_path_result.output
+    assert "Traceback" not in storage_path_result.output
 
     threshold_result = runner.invoke(
         cli_main.cli,
