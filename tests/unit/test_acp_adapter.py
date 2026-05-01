@@ -4,8 +4,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from acp import RequestError
 
-from shisad.coding.acp_adapter import AcpAdapter
+from shisad.coding.acp_adapter import AcpAdapter, _request_error_payload
 from shisad.coding.models import CodingAgentConfig
 from shisad.coding.registry import AgentCommandSpec
 
@@ -246,6 +247,36 @@ async def test_m9_acp_adapter_preserves_request_error_transport_payload(
     }
     assert "code -32000" in result.result.summary
     assert "Authentication required" in result.result.summary
+
+
+def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
+    payload = _request_error_payload(
+        RequestError(
+            -32000,
+            (
+                "Authentication failed: api_key=sk-test-secret "
+                "Authorization: Bearer token-value"
+            ),
+            {
+                "api_key": "sk-test-secret",
+                "x-api-key": "header-secret",
+                "cookie": "session=secret",
+                "nested": {"authorization": "Bearer token-value"},
+                "missing_env": ["OPENAI_API_KEY"],
+            },
+        )
+    )
+
+    assert payload["message"] == (
+        "Authentication failed: api_key=[redacted] Authorization: [redacted]"
+    )
+    assert payload["data"] == {
+        "api_key": "[redacted]",
+        "x-api-key": "[redacted]",
+        "cookie": "[redacted]",
+        "nested": {"authorization": "[redacted]"},
+        "missing_env": ["OPENAI_API_KEY"],
+    }
 
 
 @pytest.mark.asyncio

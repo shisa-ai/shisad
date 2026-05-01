@@ -671,6 +671,30 @@ def test_m9_live_simple_greeting_request_discards_unneeded_tool_actions() -> Non
     assert result.evaluated == []
 
 
+def test_m9_live_simple_greeting_request_honors_two_word_count() -> None:
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="Say hello back in two words.",
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                actions=[
+                    ActionProposal(
+                        action_id="a1",
+                        tool_name=ToolName("web.search"),
+                        arguments={"query": "hello"},
+                        reasoning="mistaken tool use",
+                    )
+                ],
+                assistant_response="",
+            ),
+            evaluated=[],
+            attempts=1,
+        ),
+    )
+
+    assert result.output.assistant_response == "Hello there."
+    assert result.output.actions == []
+
+
 def test_m9_live_compound_greeting_request_keeps_planner_result() -> None:
     proposal = ActionProposal(
         action_id="a1",

@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import logging
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -74,11 +75,23 @@ _CODING_AGENT_ENV_PREFIXES = (
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
 _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
+    "api-key",
+    "api_key",
+    "apikey",
     "authorization",
+    "cookie",
     "credential",
     "password",
     "secret",
+    "set-cookie",
     "token",
+    "x-api-key",
+)
+_TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?P<label>\b(?:x-api-key|api[_-]?key|authorization|cookie|set-cookie|"
+    r"token|secret|password|credential)s?\b)(?P<sep>\s*[:=]\s*)"
+    r"(?:Bearer\s+)?[^\s,;]+",
+    flags=re.IGNORECASE,
 )
 
 
@@ -127,8 +140,16 @@ def _json_safe_transport_error_data(value: object, *, key: object = "") -> objec
     return _bounded_summary(repr(value), max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
 
 
+def _redact_transport_error_message(message: str) -> str:
+    redacted = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",
+        message,
+    )
+    return _bounded_summary(redacted, max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
+
+
 def _request_error_payload(exc: RequestError) -> dict[str, Any]:
-    message = str(exc).strip() or exc.__class__.__name__
+    message = _redact_transport_error_message(str(exc).strip() or exc.__class__.__name__)
     payload: dict[str, Any] = {
         "kind": "request_error",
         "message": message,

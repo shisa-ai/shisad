@@ -2263,10 +2263,56 @@ def _is_simple_greeting_response_request(user_text: str) -> bool:
     )
 
 
+_GREETING_WORD_COUNTS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+_GREETING_RESPONSES_BY_WORD_COUNT = {
+    1: "Hello.",
+    2: "Hello there.",
+    3: "Hello, I'm here.",
+    4: "Hello, I'm here now.",
+    5: "Hello! I'm here when needed.",
+    6: "Hello! I'm here and ready now.",
+    7: "Hello! I'm here and ready to help.",
+    8: "Hello! I'm here and ready to help now.",
+    9: "Hello! I'm here and ready to help you now.",
+    10: "Hello! I'm here and ready to help you today anytime.",
+}
+
+
+def _requested_greeting_word_count(user_text: str) -> int | None:
+    normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
+    normalized = normalized.rstrip("!?.")
+    match = re.search(
+        r"\bin\s+(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+words?$",
+        normalized,
+    )
+    if match is None:
+        return None
+    raw_count = str(match.group("count"))
+    count: int | None
+    try:
+        count = int(raw_count)
+    except ValueError:
+        count = _GREETING_WORD_COUNTS.get(raw_count)
+    if count in _GREETING_RESPONSES_BY_WORD_COUNT:
+        return count
+    return None
+
+
 def _simple_greeting_response_text(user_text: str) -> str:
-    normalized = _normalize_explicit_memory_intent_text(user_text).lower()
-    if "five word" in normalized or "5 word" in normalized:
-        return "Hello! I'm here when needed."
+    count = _requested_greeting_word_count(user_text)
+    if count is not None:
+        return _GREETING_RESPONSES_BY_WORD_COUNT[count]
     return "Hello. How can I help?"
 
 

@@ -1452,8 +1452,9 @@ def audit() -> None:
 @click.option(
     "--session",
     "session_id",
-    help="Filter by session ID; defaults to SHISAD_SESSION_ID or last session",
+    help="Filter by session ID; defaults to SHISAD_SESSION_ID or last session unless --all is set",
 )
+@click.option("--all", "all_sessions", is_flag=True, help="Show audit events for all sessions")
 @click.option("--actor", "actor", help="Filter by actor")
 @click.option("--limit", default=100, help="Maximum results")
 @click.option(
@@ -1471,6 +1472,7 @@ def audit_query(
     since: str | None,
     event_type: str | None,
     session_id: str | None,
+    all_sessions: bool,
     actor: str | None,
     limit: int,
     data_dir_override: Path | None,
@@ -1485,7 +1487,9 @@ def audit_query(
     config = _get_config()
     data_dir = data_dir_override if data_dir_override is not None else config.data_dir
     audit_path = data_dir / "audit.jsonl"
-    resolved_session_id = _resolve_session_id(session_id)
+    if all_sessions and session_id:
+        raise click.ClickException("--all cannot be used together with --session")
+    resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
 
     if not audit_path.exists():
         click.echo(f"No audit log found at {audit_path}")
@@ -1502,7 +1506,7 @@ def audit_query(
     results = log.query(
         since=since_dt,
         event_type=event_type,
-        session_id=resolved_session_id,
+        session_id=resolved_session_id or None,
         actor=actor,
         limit=limit,
     )

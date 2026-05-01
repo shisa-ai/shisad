@@ -1768,6 +1768,49 @@ def test_m9_audit_query_defaults_to_current_session_cache(
     assert "session=s-other" not in result.output
 
 
+def test_m9_audit_query_all_preserves_unfiltered_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _entry(event_id: str, session_id: str) -> dict[str, object]:
+        data = {"session_id": session_id}
+        data_hash = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+        return {
+            "event_id": event_id,
+            "timestamp": "2026-05-01T00:00:00+00:00",
+            "event_type": "ToolExecuted",
+            "actor": "policy_loop",
+            "action": "ToolExecuted",
+            "target": "fs.read",
+            "decision": "allow",
+            "reasoning": "",
+            "session_id": session_id,
+            "data": data,
+            "data_hash": data_hash,
+            "previous_event_hash": "0" * 64,
+            "previous_hash": "0" * 64,
+        }
+
+    audit_path.write_text(
+        json.dumps(_entry("e-one", "s-one")) + "\n"
+        + json.dumps(_entry("e-two", "s-two"))
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["audit", "query", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert "session=s-one" in result.output
+    assert "session=s-two" in result.output
+
+
 def test_events_subscribe_uses_rpc_run_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
