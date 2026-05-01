@@ -644,6 +644,11 @@ class IngestionPipeline:
         top = self._mark_conflicting_results(top, terms=terms)
         if max_tokens is not None:
             top = self._trim_recall_to_token_budget(top, max_tokens=max_tokens)
+        top = self._finalize_recall_annotations(
+            top,
+            require_corroboration=require_corroboration,
+            terms=terms,
+        )
         include_archived_result = used_archived or any(record.archived for record in top)
         top, sufficiency = self._recall_sufficiency_result(
             query=query,
@@ -819,7 +824,9 @@ class IngestionPipeline:
         require_corroboration: bool,
         terms: list[str],
     ) -> list[RetrievalResult]:
-        final_results = results
+        final_results = [
+            record.model_copy(update={"conflict": False}) for record in results
+        ]
         if require_corroboration:
             source_ids = {record.source_id for record in final_results}
             tiers = {record.collection for record in final_results}

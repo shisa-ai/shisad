@@ -775,6 +775,60 @@ def test_m7_sufficiency_expansion_recomputes_final_verification_gaps(
     assert pack.sufficiency.verification_gap_result_ids == [launch.chunk_id]
 
 
+def test_m7_recall_finalizes_corroboration_after_token_trim_without_expansion(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    primary = pipeline.ingest(
+        source_id="m7-trim-corrob-primary",
+        source_type="tool",
+        collection="project_docs",
+        content="Feature flag enabled status comes from project notes.",
+    )
+    pipeline.ingest(
+        source_id="m7-trim-corrob-secondary",
+        source_type="tool",
+        collection="tool_outputs",
+        content="Feature flag enabled status comes from tool output.",
+    )
+
+    pack = pipeline.compile_recall(
+        "feature flag enabled",
+        limit=2,
+        max_tokens=7,
+        require_corroboration=True,
+    )
+
+    assert [item.chunk_id for item in pack.results] == [primary.chunk_id]
+    assert pack.results[0].corroborated is False
+    assert pack.results[0].verification_gap is True
+
+
+def test_m7_recall_clears_stale_conflict_after_token_trim(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-trim-conflict-primary",
+        source_type="tool",
+        collection="project_docs",
+        content="Feature flag enabled status comes from project notes.",
+    )
+    pipeline.ingest(
+        source_id="m7-trim-conflict-secondary",
+        source_type="tool",
+        collection="project_docs",
+        content="Feature flag is not enabled according to a stale project note.",
+    )
+
+    pack = pipeline.compile_recall(
+        "feature flag enabled",
+        limit=2,
+        max_tokens=7,
+    )
+
+    assert len(pack.results) == 1
+    assert pack.results[0].conflict is False
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:
