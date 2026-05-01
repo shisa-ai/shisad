@@ -425,6 +425,7 @@ class AdminImplMixin(HandlerMixinBase):
         channel: str,
         workspace_hint: str,
         structured_channel_id: str,
+        migrated_key_override: str | None = None,
     ) -> Any | None:
         memory_manager = getattr(self, "_memory_manager", None)
         if memory_manager is None:
@@ -449,6 +450,8 @@ class AdminImplMixin(HandlerMixinBase):
                         value=updated_value,
                         structured_channel_id=structured_channel_id,
                     )
+                    if migrated_key_override is not None:
+                        migrated_key = migrated_key_override
                     if (
                         entry.entry_type in self._KEYED_CHANNEL_STATE_ENTRY_TYPES
                         and self._has_pending_review_memory_entry(
@@ -722,7 +725,7 @@ class AdminImplMixin(HandlerMixinBase):
                             },
                         )
                         skip_note_write = True
-                if not skip_note_write and prior_note is None and effective_note_key == note_key:
+                if not skip_note_write and prior_note is None:
                     prior_note = self._find_legacy_channel_memory_entry(
                         entry_type="person_note",
                         key=person_note_key(
@@ -732,6 +735,9 @@ class AdminImplMixin(HandlerMixinBase):
                         channel=message.channel,
                         workspace_hint=message.workspace_hint,
                         structured_channel_id=structured_channel_id,
+                        migrated_key_override=(
+                            effective_note_key if effective_note_key != note_key else None
+                        ),
                     )
                 if not skip_note_write:
                     if prior_note is not None:
@@ -812,17 +818,16 @@ class AdminImplMixin(HandlerMixinBase):
                             },
                         )
                         skip_summary_write = True
-                if (
-                    not skip_summary_write
-                    and prior_summary is None
-                    and effective_summary_key == summary_key
-                ):
+                if not skip_summary_write and prior_summary is None:
                     prior_summary = self._find_legacy_channel_memory_entry(
                         entry_type="channel_summary",
                         key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
                         channel=message.channel,
                         workspace_hint=message.workspace_hint,
                         structured_channel_id=structured_channel_id,
+                        migrated_key_override=(
+                            effective_summary_key if effective_summary_key != summary_key else None
+                        ),
                     )
                 if not skip_summary_write:
                     summary_value = ChannelSummaryValue(

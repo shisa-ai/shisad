@@ -721,6 +721,8 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     preserved_summary = harness._memory_manager.get_entry(curated_summary.entry.id)
     preserved_legacy_note = harness._memory_manager.get_entry(legacy_note.entry.id)
     preserved_legacy_summary = harness._memory_manager.get_entry(legacy_summary.entry.id)
+    observed_note_key = f"{canonical_note_key}:observed"
+    observed_summary_key = f"{canonical_summary_key}:observed"
     assert preserved_note is not None
     assert preserved_note.superseded_by is None
     assert preserved_note.value["owner_curated"] is True
@@ -728,11 +730,11 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     assert preserved_summary.superseded_by is None
     assert preserved_summary.value["owner_curated"] is True
     assert preserved_legacy_note is not None
-    assert preserved_legacy_note.key == legacy_note_key
-    assert preserved_legacy_note.superseded_by is None
+    assert preserved_legacy_note.key == observed_note_key
+    assert preserved_legacy_note.superseded_by is not None
     assert preserved_legacy_summary is not None
-    assert preserved_legacy_summary.key == legacy_summary_key
-    assert preserved_legacy_summary.superseded_by is None
+    assert preserved_legacy_summary.key == observed_summary_key
+    assert preserved_legacy_summary.superseded_by is not None
 
     current_entries = harness._memory_manager.list_entries(limit=50)
     canonical_observed = [
@@ -744,14 +746,24 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     observed_side_entries = [
         entry
         for entry in current_entries
-        if entry.key.startswith(f"{canonical_note_key}:observed")
-        or entry.key.startswith(f"{canonical_summary_key}:observed")
+        if entry.key in {observed_note_key, observed_summary_key}
+        and entry.superseded_by is None
     ]
     assert canonical_observed == []
     assert {entry.entry_type for entry in observed_side_entries} == {
         "person_note",
         "channel_summary",
     }
+    assert {entry.supersedes for entry in observed_side_entries} == {
+        legacy_note.entry.id,
+        legacy_summary.entry.id,
+    }
+    assert [
+        entry
+        for entry in current_entries
+        if entry.key in {legacy_note_key, legacy_summary_key}
+        and entry.superseded_by is None
+    ] == []
 
 
 @pytest.mark.asyncio
