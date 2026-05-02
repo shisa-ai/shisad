@@ -1927,7 +1927,11 @@ class HandlerImplementation(
                 return
             normalized_final_reason = final_reason.strip()
             normalized_pep_reason = pep_reason.strip()
-            if normalized_final_reason not in {normalized_pep_reason, "pep_reject"}:
+            normalized_pep_reason_code = pep_reason_code.strip()
+            pep_reject_reasons = {normalized_pep_reason, "pep_reject"}
+            if normalized_pep_reason_code:
+                pep_reject_reasons.add(normalized_pep_reason_code)
+            if normalized_final_reason not in pep_reject_reasons:
                 return
         try:
             findings = await _call_control_plane(
