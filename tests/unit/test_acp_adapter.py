@@ -267,6 +267,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "nested": {"authorization": "Bearer token-value"},
                 "detail": "Authorization: Basic dXNlcjpwYXNz",
                 "space_detail": "API key: sk-detail-space-secret",
+                "space_list_detail": "API keys: sk-list-a, sk-list-b",
+                "space_token_list": "Auth token: tok-a tok-b",
                 "body": "api_key=sk-body-secret",
                 "headers": "Cookie: sid=secret; csrf=secret2",
                 "json": (
@@ -286,7 +288,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     )
 
     assert payload["message"] == (
-        "Authentication failed: api_key=[redacted] Invalid API key: [redacted] "
+        "Authentication failed: api_key=[redacted] API key: [redacted] "
         "Auth token: [redacted] Authorization: [redacted]"
     )
     assert payload["data"] == {
@@ -298,6 +300,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "nested": {"authorization": "[redacted]"},
         "detail": "Authorization: [redacted]",
         "space_detail": "API key: [redacted]",
+        "space_list_detail": "API keys: [redacted]",
+        "space_token_list": "[redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
         "json": (
@@ -321,6 +325,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "sk-space-secret" not in repr(payload)
     assert "auth-space-secret" not in repr(payload)
     assert "sk-detail-space-secret" not in repr(payload)
+    assert "sk-list-b" not in repr(payload)
+    assert "tok-b" not in repr(payload)
 
 
 @pytest.mark.asyncio

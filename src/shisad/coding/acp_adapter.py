@@ -113,9 +113,9 @@ _TRANSPORT_ERROR_SECRET_HEADER_RE = re.compile(
     r"[^\r\n]+",
     flags=re.IGNORECASE,
 )
-_TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE = re.compile(
+_TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE = re.compile(
     rf"(?P<label>\b{_TRANSPORT_ERROR_SECRET_LABEL}s?\b)"
-    r"(?P<sep>\s*[:=]\s*)[^\s,;]+",
+    r"(?P<sep>\s*[:=]\s*)",
     flags=re.IGNORECASE,
 )
 
@@ -233,6 +233,45 @@ def _redact_transport_error_secret_containers(message: str) -> str:
     return "".join(parts)
 
 
+def _redact_transport_error_secret_assignments(message: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    search_pos = 0
+    while match := _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE.search(message, search_pos):
+        value_start = match.end()
+        if value_start >= len(message) or message[value_start] in {"\r", "\n"}:
+            search_pos = match.end()
+            continue
+
+        line_end = len(message)
+        for line_break in ("\r", "\n"):
+            index = message.find(line_break, value_start)
+            if index != -1:
+                line_end = min(line_end, index)
+
+        next_match = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE.search(
+            message,
+            value_start,
+            line_end,
+        )
+        value_end = next_match.start() if next_match else line_end
+        while value_end > value_start and message[value_end - 1].isspace():
+            value_end -= 1
+        if value_end <= value_start:
+            search_pos = match.end()
+            continue
+
+        parts.append(message[cursor:value_start])
+        parts.append("[redacted]")
+        cursor = value_end
+        search_pos = value_end
+
+    if not parts:
+        return message
+    parts.append(message[cursor:])
+    return "".join(parts)
+
+
 def _redact_transport_error_message(message: str) -> str:
     redacted = _redact_transport_error_secret_containers(message)
     redacted = _TRANSPORT_ERROR_QUOTED_SECRET_RE.sub(
@@ -247,10 +286,7 @@ def _redact_transport_error_message(message: str) -> str:
         lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",
         redacted,
     )
-    redacted = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE.sub(
-        lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",
-        redacted,
-    )
+    redacted = _redact_transport_error_secret_assignments(redacted)
     return _bounded_summary(redacted, max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
 
 
