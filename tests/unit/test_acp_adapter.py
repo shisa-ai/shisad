@@ -579,6 +579,24 @@ def test_m9_acp_adapter_redacts_pathological_escaped_container_without_recursion
     assert "secret-piece" not in repr(payload)
 
 
+def test_m9_acp_adapter_redacts_escaped_container_after_branch_mismatch() -> None:
+    payload = _request_error_payload(
+        RequestError(
+            -32000,
+            (
+                'Branch mismatch escaped container: {\\"api_key\\":'
+                '[\\"secret-branch\\\\\\"]\\"},\\"tokenizer\\":\\"gpt2\\"}'
+            ),
+        )
+    )
+
+    assert payload["message"] == (
+        'Branch mismatch escaped container: {\\"api_key\\":\\"[redacted]\\"\\"},'
+        '\\"tokenizer\\":\\"gpt2\\"}'
+    )
+    assert "secret-branch" not in repr(payload)
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_adapter_spawn_failure_is_actionable_unavailable(tmp_path: Path) -> None:
     adapter = AcpAdapter(

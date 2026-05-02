@@ -278,7 +278,7 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
                 closers.append(closer_for[char])
             elif char in {"]", "}"}:
                 if not closers or char != closers[-1]:
-                    return None
+                    break
                 closers.pop()
                 if not closers:
                     return index + 1
