@@ -1678,6 +1678,27 @@ def test_m9_session_use_and_current_manage_current_session_cache(
     assert cache_path.read_text(encoding="utf-8") == "s-42\n"
 
 
+def test_m9_session_use_rejects_hidden_env_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_path = tmp_path / "config" / "last-session"
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    monkeypatch.setenv(cli_main._SESSION_ID_ENV, "s-env")
+    runner = CliRunner()
+
+    use = runner.invoke(cli_main.cli, ["session", "use", "s-42"])
+    current = runner.invoke(cli_main.cli, ["session", "current"])
+
+    assert use.exit_code != 0, use.output
+    assert "SHISAD_SESSION_ID" in use.output
+    assert "s-env" in use.output
+    assert "s-42" in use.output
+    assert current.exit_code == 0, current.output
+    assert current.output.strip() == "s-env"
+    assert not cache_path.exists()
+
+
 def test_m9_state_commands_default_to_current_session_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

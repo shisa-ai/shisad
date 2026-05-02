@@ -159,6 +159,11 @@ def _json_safe_transport_error_data(value: object, *, key: object = "") -> objec
             for item_key, item_value in value.items()
         }
     if isinstance(value, list | tuple):
+        if len(value) == 2 and isinstance(value[0], str) and _is_secret_transport_key(value[0]):
+            return [
+                _json_safe_transport_error_data(value[0]),
+                _json_safe_transport_error_data(value[1], key=value[0]),
+            ]
         return [_json_safe_transport_error_data(item) for item in value]
     return _bounded_summary(repr(value), max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
 

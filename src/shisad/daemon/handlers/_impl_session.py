@@ -2326,7 +2326,7 @@ def _safe_exact_reply_text(user_text: str) -> str:
     )
     if match is None:
         return ""
-    body = str(match.group("body") or "").strip().strip("\"'")
+    body = str(match.group("body") or "").strip()
     if not body or len(body) > 500:
         return ""
     normalized_body = body.lower()

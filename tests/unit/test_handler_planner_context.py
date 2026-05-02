@@ -773,6 +773,35 @@ def test_m9_live_exact_reply_request_discards_unneeded_message_send_action() -> 
     assert result.evaluated == []
 
 
+def test_m9_live_exact_reply_request_preserves_boundary_text() -> None:
+    cases = [
+        ('"hello"', '"hello"'),
+        ("James'", "James'"),
+    ]
+    for body, expected in cases:
+        result = _rewrite_plain_greeting_planner_result(
+            user_text=f"Reply with exactly this text and nothing else: {body}",
+            planner_result=PlannerResult(
+                output=PlannerOutput(
+                    actions=[
+                        ActionProposal(
+                            action_id="a1",
+                            tool_name=ToolName("message.send"),
+                            arguments={"message": body},
+                            reasoning="mistaken external delivery",
+                        )
+                    ],
+                    assistant_response="",
+                ),
+                evaluated=[],
+                attempts=1,
+            ),
+        )
+
+        assert result.output.assistant_response == expected
+        assert result.output.actions == []
+
+
 def test_m9_live_plain_greeting_keeps_configuration_fallback() -> None:
     planner_result = PlannerResult(
         output=PlannerOutput(

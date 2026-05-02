@@ -271,6 +271,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "pythonish": "{'authorization': 'Bearer py-token'}",
                 "pythonish_list": "{'authorization': ['Bearer py-a', 'Bearer py-b'], 'safe': 'ok'}",
                 "env_detail": "OPENAI_API_KEY=sk-env ANTHROPIC_AUTH_TOKEN=auth-token",
+                "header_pairs": [["Authorization", "Bearer pair-token"], ["safe", "ok"]],
+                "env_pairs": [["OPENAI_API_KEY", "sk-pair-secret"]],
                 "missing_env": ["OPENAI_API_KEY"],
             },
         )
@@ -293,11 +295,15 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "pythonish": "{'authorization': '[redacted]'}",
         "pythonish_list": "{'authorization': '[redacted]', 'safe': 'ok'}",
         "env_detail": "OPENAI_API_KEY=[redacted] ANTHROPIC_AUTH_TOKEN=[redacted]",
+        "header_pairs": [["Authorization", "[redacted]"], ["safe", "ok"]],
+        "env_pairs": [["OPENAI_API_KEY", "[redacted]"]],
         "missing_env": ["OPENAI_API_KEY"],
     }
     assert "part2" not in repr(payload)
     assert "sk-b" not in repr(payload)
     assert "Bearer py-b" not in repr(payload)
+    assert "Bearer pair-token" not in repr(payload)
+    assert "sk-pair-secret" not in repr(payload)
 
 
 @pytest.mark.asyncio

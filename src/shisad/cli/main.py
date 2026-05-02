@@ -1147,6 +1147,12 @@ def session_use(session_id: str) -> None:
     resolved = session_id.strip()
     if not resolved:
         raise click.ClickException("session_id is required")
+    env_session = os.environ.get(_SESSION_ID_ENV, "").strip()
+    if env_session and env_session != resolved:
+        raise click.ClickException(
+            f"{_SESSION_ID_ENV} is set to {env_session} and overrides the "
+            f"current-session cache; unset it or pass --session to use {resolved}."
+        )
     _write_last_session(resolved)
     click.echo(f"Current session: {resolved}")
 
