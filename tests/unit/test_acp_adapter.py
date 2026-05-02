@@ -629,6 +629,25 @@ def test_m9_acp_adapter_redacts_malformed_secret_containers_fail_closed() -> Non
     assert "safe diagnostic" not in repr(escaped_payload)
 
 
+def test_m9_acp_adapter_redacts_multiline_key_material_assignments() -> None:
+    payload = _request_error_payload(
+        RequestError(
+            -32000,
+            (
+                "SSH Private Key:\n"
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                "private-key-body\n"
+                "-----END OPENSSH PRIVATE KEY-----\n"
+                "safe diagnostic: tokenizer gpt2"
+            ),
+        )
+    )
+
+    assert payload["message"] == "SSH Private Key:\n[redacted]"
+    assert "private-key-body" not in repr(payload)
+    assert "safe diagnostic" not in repr(payload)
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_adapter_spawn_failure_is_actionable_unavailable(tmp_path: Path) -> None:
     adapter = AcpAdapter(

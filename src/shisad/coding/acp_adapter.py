@@ -172,6 +172,11 @@ def _is_secret_transport_key(key: object) -> bool:
     return bool(normalized and _TRANSPORT_ERROR_SECRET_KEY_RE.fullmatch(normalized))
 
 
+def _is_multiline_key_material_transport_key(key: object) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(key).casefold()).strip()
+    return "private key" in normalized or "secret access key" in normalized
+
+
 def _json_safe_transport_error_data(value: object, *, key: object = "") -> object:
     if _is_secret_transport_key(key):
         return "[redacted]"
@@ -352,7 +357,12 @@ def _redact_transport_error_secret_assignments(message: str) -> str:
     search_pos = 0
     while match := _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE.search(message, search_pos):
         value_start = match.end()
-        if value_start >= len(message) or message[value_start] in {"\r", "\n"}:
+        multiline_key_material = _is_multiline_key_material_transport_key(
+            match.group("label")
+        )
+        if value_start >= len(message) or (
+            message[value_start] in {"\r", "\n"} and not multiline_key_material
+        ):
             search_pos = match.end()
             continue
 
@@ -362,12 +372,15 @@ def _redact_transport_error_secret_assignments(message: str) -> str:
             if index != -1:
                 line_end = min(line_end, index)
 
-        next_match = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE.search(
-            message,
-            value_start,
-            line_end,
-        )
-        value_end = next_match.start() if next_match else line_end
+        if multiline_key_material and line_end < len(message):
+            value_end = len(message)
+        else:
+            next_match = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE.search(
+                message,
+                value_start,
+                line_end,
+            )
+            value_end = next_match.start() if next_match else line_end
         while value_end > value_start and message[value_end - 1].isspace():
             value_end -= 1
         if value_end <= value_start:
