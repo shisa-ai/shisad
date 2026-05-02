@@ -89,8 +89,14 @@ _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "token",
     "x-api-key",
 )
+_TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
+    r"(?:(?!(?:api|auth|tokens?|secrets?|passwords?|credentials?|keys?)\b)"
+    r"[A-Za-z0-9]+[ _]+){0,4}"
+    r"(?:api[ _-]?keys?|auth[ _-]?tokens?|tokens?|secrets?|passwords?|credentials?)"
+)
 _TRANSPORT_ERROR_SECRET_LABEL = (
-    r"(?:x-api-keys?|api[ _-]?keys?|auth[ _-]?tokens?|authorization|cookie|set-cookie|"
+    rf"(?:x-api-keys?|authorization|cookie|set-cookie|"
+    rf"{_TRANSPORT_ERROR_HUMAN_SECRET_LABEL}|"
     r"[A-Za-z0-9_-]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)"
     r"[A-Za-z0-9_-]*)"
 )
@@ -114,7 +120,7 @@ _TRANSPORT_ERROR_SECRET_HEADER_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE = re.compile(
-    rf"(?P<label>\b{_TRANSPORT_ERROR_SECRET_LABEL}s?\b)"
+    rf"(?P<label>(?<!-)\b{_TRANSPORT_ERROR_SECRET_LABEL}s?\b)"
     r"(?P<sep>\s*[:=]\s*)",
     flags=re.IGNORECASE,
 )

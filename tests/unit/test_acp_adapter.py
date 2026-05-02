@@ -256,6 +256,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             (
                 "Authentication failed: api_key=sk-test-secret "
                 "Invalid API key: sk-space-secret Auth token: auth-space-secret "
+                "Access token: access-space-secret OpenAI API key: sk-openai-space-secret "
                 "Authorization: Bearer token-value OPENAI_API_KEY=sk-env-secret"
             ),
             {
@@ -269,6 +270,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "space_detail": "API key: sk-detail-space-secret",
                 "space_list_detail": "API keys: sk-list-a, sk-list-b",
                 "detail_auth_list": "Auth token: tok-a tok-b",
+                "human_detail": "Access token: access-detail-secret",
                 "space_token_list": "Auth token: tok-a tok-b",
                 "body": "api_key=sk-body-secret",
                 "headers": "Cookie: sid=secret; csrf=secret2",
@@ -279,6 +281,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "json_plural": (
                     '{"API keys":["sk-json-a","sk-json-b"],'
                     '"Auth tokens":["tok-json-a","tok-json-b"],"safe":"ok"}'
+                ),
+                "json_human": (
+                    '{"OpenAI API key":"sk-openai-json",'
+                    '"access token":["tok-human-a","tok-human-b"],"safe":"ok"}'
                 ),
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
@@ -293,8 +299,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     )
 
     assert payload["message"] == (
-        "Authentication failed: api_key=[redacted] API key: [redacted] "
-        "Auth token: [redacted] Authorization: [redacted]"
+        "Authentication failed: api_key=[redacted] Invalid API key: [redacted] "
+        "Auth token: [redacted] Access token: [redacted] OpenAI API key: "
+        "[redacted] Authorization: [redacted]"
     )
     assert payload["data"] == {
         "api_key": "[redacted]",
@@ -307,6 +314,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "space_detail": "API key: [redacted]",
         "space_list_detail": "API keys: [redacted]",
         "detail_auth_list": "Auth token: [redacted]",
+        "human_detail": "Access token: [redacted]",
         "space_token_list": "[redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
@@ -317,6 +325,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "json_plural": (
             '{"API keys":"[redacted]",'
             '"Auth tokens":"[redacted]","safe":"ok"}'
+        ),
+        "json_human": (
+            '{"OpenAI API key":"[redacted]",'
+            '"access token":"[redacted]","safe":"ok"}'
         ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
@@ -339,6 +351,11 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "tok-b" not in repr(payload)
     assert "sk-json-b" not in repr(payload)
     assert "tok-json-b" not in repr(payload)
+    assert "access-space-secret" not in repr(payload)
+    assert "sk-openai-space-secret" not in repr(payload)
+    assert "access-detail-secret" not in repr(payload)
+    assert "sk-openai-json" not in repr(payload)
+    assert "tok-human-b" not in repr(payload)
 
 
 @pytest.mark.asyncio
