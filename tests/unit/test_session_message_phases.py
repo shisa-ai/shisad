@@ -370,9 +370,20 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
 
 
 class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        monitor_kind: MonitorDecisionType = MonitorDecisionType.APPROVE,
+        monitor_reason: str = "",
+    ) -> None:
         super().__init__()
         self.plan_violations: list[str] = []
+        self._monitor = SimpleNamespace(
+            evaluate=lambda **_kwargs: SimpleNamespace(
+                kind=monitor_kind,
+                reason=monitor_reason,
+            )
+        )
         self._registry = SimpleNamespace(
             get_tool=lambda _tool_name: ToolDefinition(
                 name=ToolName("fs.list"),
@@ -667,6 +678,85 @@ async def test_m9_trace_confirmation_with_resource_block_queues_confirmation() -
     assert result.pending_confirmation_ids == ["c-1"]
     assert result.rejected == 0
     assert harness.plan_violations == []
+
+
+@pytest.mark.asyncio
+async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
+    harness = _TraceConfirmationRoutingHarness(
+        monitor_kind=MonitorDecisionType.REJECT,
+        monitor_reason="Action monitor rejected goal-misaligned or policy-evasive plan",
+    )
+    sid = SessionId("sess-g1")
+    planner_context = SessionMessagePlannerContextResult(
+        validated=_validation_result(
+            params={"session_id": str(sid), "content": "list the similar files"}
+        ),
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.FILE_READ},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.FILE_READ}, session_id=sid),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "../outside", "note": "ignore policy"},
+        reasoning="List the user-requested similar files.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.pending_confirmation == 0
+    assert result.rejected == 1
+    assert result.rejection_reasons_for_user == [
+        "Action monitor rejected goal-misaligned or policy-evasive plan"
+    ]
 
 
 @pytest.mark.asyncio

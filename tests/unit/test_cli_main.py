@@ -1623,7 +1623,7 @@ def test_session_message_command_preserves_pending_preview_linebreak_markers(
     assert "body: line1\nline2" not in result.output
 
 
-def test_m9_session_create_and_message_update_current_session_cache(
+def test_m9_session_create_updates_current_session_cache_without_message_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1657,7 +1657,7 @@ def test_m9_session_create_and_message_update_current_session_cache(
 
     assert create.exit_code == 0, create.output
     assert message.exit_code == 0, message.output
-    assert cache_path.read_text(encoding="utf-8") == "s-active\n"
+    assert cache_path.read_text(encoding="utf-8") == "s-created\n"
 
 
 def test_m9_session_create_and_message_do_not_hide_env_override(
@@ -1697,7 +1697,7 @@ def test_m9_session_create_and_message_do_not_hide_env_override(
     assert create.exit_code == 0, create.output
     assert "SHISAD_SESSION_ID" in create.output
     assert message.exit_code == 0, message.output
-    assert "SHISAD_SESSION_ID" in message.output
+    assert "SHISAD_SESSION_ID" not in message.output
     assert current.exit_code == 0, current.output
     assert current.output.strip() == "s-env"
     assert not cache_path.exists()
@@ -1740,6 +1740,23 @@ def test_m9_session_use_rejects_hidden_env_override(
     assert current.exit_code == 0, current.output
     assert current.output.strip() == "s-env"
     assert not cache_path.exists()
+
+
+def test_m9_session_current_without_cache_uses_current_command_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_path = tmp_path / "config" / "last-session"
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    monkeypatch.delenv(cli_main._SESSION_ID_ENV, raising=False)
+    runner = CliRunner()
+
+    current = runner.invoke(cli_main.cli, ["session", "current"])
+
+    assert current.exit_code != 0, current.output
+    assert "--session" not in current.output
+    assert "SHISAD_SESSION_ID" in current.output
+    assert "session use <SESSION_ID>" in current.output
 
 
 def test_m9_state_commands_default_to_current_session_cache(

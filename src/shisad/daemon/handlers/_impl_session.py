@@ -8232,8 +8232,12 @@ class SessionImplMixin(HandlerMixinBase):
             if cp_eval.decision == ControlDecision.BLOCK:
                 # Confirmable trace failures can route to confirmation, including
                 # ResourceAccessMonitor corroboration; PEP still enforces hard
-                # policy rejects before any action can run.
-                if trace_confirmation_routable_block and (
+                # policy rejects before any action can run. Local monitor rejects
+                # stay terminal because they identify policy-evasive plan content.
+                if monitor_decision.kind == MonitorDecisionType.REJECT:
+                    final_kind = "reject"
+                    final_reason = monitor_decision.reason or "monitor_reject"
+                elif trace_confirmation_routable_block and (
                     pep_decision.kind.value != "reject" or pep_elevation is not None
                 ):
                     final_kind = "require_confirmation"

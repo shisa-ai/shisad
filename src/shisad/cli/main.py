@@ -1154,7 +1154,13 @@ def session_create(user: str, workspace: str, mode: str) -> None:
 @session.command("current")
 def session_current() -> None:
     """Print the current session id."""
-    click.echo(_resolve_session_id(""))
+    resolved = _read_last_session()
+    if not resolved:
+        raise click.ClickException(
+            "No current session configured; set SHISAD_SESSION_ID or run "
+            "'shisad session use <SESSION_ID>'."
+        )
+    click.echo(resolved)
 
 
 @session.command("use")
@@ -1187,7 +1193,6 @@ def session_message(session_id: str, content: str) -> None:
         {"session_id": session_id, "content": content},
         response_model=SessionMessageResult,
     )
-    _write_last_session(result.session_id or session_id)
     click.echo(
         render_evidence_refs_for_terminal(
             result.response,
