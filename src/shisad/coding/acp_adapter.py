@@ -83,6 +83,7 @@ _TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL = (
     r"(?:"
     r"[A-Za-z0-9_-]*(?:api[_-]?keys?|auth[_-]?tokens?)[A-Za-z0-9_-]*"
     r"|[A-Za-z0-9_-]+[_-](?:tokens?|secrets?|passwords?|credentials?)"
+    r"|(?-i:[A-Za-z0-9]+(?:Tokens?|Secrets?|Passwords?|Credentials?))"
     r"|(?:tokens?|secrets?|passwords?|credentials?)"
     r")"
 )

@@ -256,6 +256,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             (
                 "Authentication failed: tokenizer: gpt2 token_count: 8192 "
                 "api_key=sk-test-secret "
+                "accessToken=access-camel-secret apiCredential=api-credential-camel-secret "
                 "Invalid API key: sk-space-secret Auth token: auth-space-secret "
                 "Access token: access-space-secret OpenAI API key: sk-openai-space-secret "
                 "API token: api-token-space-secret "
@@ -297,6 +298,19 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "model_token_limit": 128000,
                 "json_diagnostic": '{"tokenizer":"gpt2","token_count":8192,"safe":"ok"}',
                 "diagnostic_pairs": [["token_count", 8192], ["tokenizer", "gpt2"]],
+                "apiKey": "sk-camel-key",
+                "authToken": "auth-camel-token",
+                "accessToken": "access-camel-token",
+                "apiToken": "api-camel-token",
+                "apiCredential": "api-camel-credential",
+                "sessionToken": "session-camel-token",
+                "clientSecret": "client-camel-secret",
+                "json_camel": (
+                    '{"accessToken":"access-json-camel",'
+                    '"apiCredential":"api-credential-json-camel",'
+                    '"clientSecret":"client-secret-json-camel","tokenizer":"gpt2"}'
+                ),
+                "camel_pairs": [["clientSecret", "client-pair-secret"]],
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
                 "pythonish": "{'authorization': 'Bearer py-token'}",
@@ -311,9 +325,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
 
     assert payload["message"] == (
         "Authentication failed: tokenizer: gpt2 token_count: 8192 "
-        "api_key=[redacted] Invalid API key: [redacted] Auth token: [redacted] "
-        "Access token: [redacted] OpenAI API key: [redacted] API token: "
-        "[redacted] API credential: [redacted] Authorization: [redacted]"
+        "api_key=[redacted] accessToken=[redacted] apiCredential=[redacted] "
+        "Invalid API key: [redacted] Auth token: [redacted] Access token: "
+        "[redacted] OpenAI API key: [redacted] API token: [redacted] "
+        "API credential: [redacted] Authorization: [redacted]"
     )
     assert payload["data"] == {
         "api_key": "[redacted]",
@@ -350,6 +365,19 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "model_token_limit": 128000,
         "json_diagnostic": '{"tokenizer":"gpt2","token_count":8192,"safe":"ok"}',
         "diagnostic_pairs": [["token_count", 8192], ["tokenizer", "gpt2"]],
+        "apiKey": "[redacted]",
+        "authToken": "[redacted]",
+        "accessToken": "[redacted]",
+        "apiToken": "[redacted]",
+        "apiCredential": "[redacted]",
+        "sessionToken": "[redacted]",
+        "clientSecret": "[redacted]",
+        "json_camel": (
+            '{"accessToken":"[redacted]",'
+            '"apiCredential":"[redacted]",'
+            '"clientSecret":"[redacted]","tokenizer":"gpt2"}'
+        ),
+        "camel_pairs": [["clientSecret", "[redacted]"]],
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
         "pythonish": "{'authorization': '[redacted]'}",
