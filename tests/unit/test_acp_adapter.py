@@ -630,22 +630,29 @@ def test_m9_acp_adapter_redacts_malformed_secret_containers_fail_closed() -> Non
 
 
 def test_m9_acp_adapter_redacts_multiline_key_material_assignments() -> None:
-    payload = _request_error_payload(
-        RequestError(
-            -32000,
-            (
-                "SSH Private Key:\n"
-                "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-                "private-key-body\n"
-                "-----END OPENSSH PRIVATE KEY-----\n"
-                "safe diagnostic: tokenizer gpt2"
-            ),
+    for label in (
+        "SSH Private Key",
+        "privateKey",
+        "SSHPrivateKey",
+        "secretAccessKey",
+        "AWSSecretAccessKey",
+    ):
+        payload = _request_error_payload(
+            RequestError(
+                -32000,
+                (
+                    f"{label}:\n"
+                    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                    "private-key-body\n"
+                    "-----END OPENSSH PRIVATE KEY-----\n"
+                    "safe diagnostic: tokenizer gpt2"
+                ),
+            )
         )
-    )
 
-    assert payload["message"] == "SSH Private Key:\n[redacted]"
-    assert "private-key-body" not in repr(payload)
-    assert "safe diagnostic" not in repr(payload)
+        assert payload["message"] == f"{label}:\n[redacted]"
+        assert "private-key-body" not in repr(payload)
+        assert "safe diagnostic" not in repr(payload)
 
 
 @pytest.mark.asyncio

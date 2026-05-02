@@ -173,8 +173,8 @@ def _is_secret_transport_key(key: object) -> bool:
 
 
 def _is_multiline_key_material_transport_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", " ", str(key).casefold()).strip()
-    return "private key" in normalized or "secret access key" in normalized
+    compact = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
+    return "privatekey" in compact or "secretaccesskey" in compact
 
 
 def _json_safe_transport_error_data(value: object, *, key: object = "") -> object:
