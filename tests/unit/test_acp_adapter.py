@@ -260,6 +260,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "AWS_SECRET_ACCESS_KEY=aws-secret-access-key "
                 "Secret Access Key: aws-space-secret secretAccessKey=aws-camel-secret "
                 "privateKey=private-camel-secret "
+                "AWS Secret Access Key: aws-qualified-space-secret "
+                "SSH Private Key: ssh-qualified-space-secret "
                 "Invalid API key: sk-space-secret Auth token: auth-space-secret "
                 "Access token: access-space-secret OpenAI API key: sk-openai-space-secret "
                 "API token: api-token-space-secret "
@@ -325,6 +327,18 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '"privateKey":"private-json-secret","tokenizer":"gpt2"}'
                 ),
                 "key_material_pairs": [["AWS_SECRET_ACCESS_KEY", "aws-pair-secret"]],
+                "AWS Secret Access Key": "aws-qualified-structured-secret",
+                "SSH Private Key": "ssh-qualified-structured-secret",
+                "Service Account Private Key": "service-private-structured-secret",
+                "json_qualified_key_material": (
+                    '{"AWS Secret Access Key":"aws-qualified-json-secret",'
+                    '"SSH Private Key":"ssh-qualified-json-secret",'
+                    '"Service Account Private Key":"service-private-json-secret",'
+                    '"tokenizer":"gpt2"}'
+                ),
+                "qualified_key_material_pairs": [
+                    ["Service Account Private Key", "service-private-pair-secret"]
+                ],
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
                 "pythonish": "{'authorization': 'Bearer py-token'}",
@@ -342,6 +356,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "api_key=[redacted] accessToken=[redacted] apiCredential=[redacted] "
         "AWS_SECRET_ACCESS_KEY=[redacted] Secret Access Key: [redacted] "
         "secretAccessKey=[redacted] privateKey=[redacted] "
+        "AWS Secret Access Key: [redacted] SSH Private Key: [redacted] "
         "Invalid API key: [redacted] Auth token: [redacted] Access token: "
         "[redacted] OpenAI API key: [redacted] API token: [redacted] "
         "API credential: [redacted] Authorization: [redacted]"
@@ -405,6 +420,18 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '"privateKey":"[redacted]","tokenizer":"gpt2"}'
         ),
         "key_material_pairs": [["AWS_SECRET_ACCESS_KEY", "[redacted]"]],
+        "AWS Secret Access Key": "[redacted]",
+        "SSH Private Key": "[redacted]",
+        "Service Account Private Key": "[redacted]",
+        "json_qualified_key_material": (
+            '{"AWS Secret Access Key":"[redacted]",'
+            '"SSH Private Key":"[redacted]",'
+            '"Service Account Private Key":"[redacted]",'
+            '"tokenizer":"gpt2"}'
+        ),
+        "qualified_key_material_pairs": [
+            ["Service Account Private Key", "[redacted]"]
+        ],
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
         "pythonish": "{'authorization': '[redacted]'}",
