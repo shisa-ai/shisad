@@ -79,6 +79,12 @@ _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
     r"[A-Za-z0-9]+[ _]+){0,4}"
     r"(?:api[ _-]?keys?|auth[ _-]?tokens?|tokens?|secrets?|passwords?|credentials?)"
 )
+_TRANSPORT_ERROR_KEY_MATERIAL_LABEL = (
+    r"(?:"
+    r"secret[ _-]+access[ _-]+keys?|private[ _-]+keys?"
+    r"|[A-Za-z0-9_-]*(?:secret[_-]?access[_-]?keys?|private[_-]?keys?)"
+    r")"
+)
 _TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL = (
     r"(?:"
     r"[A-Za-z0-9_-]*(?:api[_-]?keys?|auth[_-]?tokens?)[A-Za-z0-9_-]*"
@@ -89,6 +95,7 @@ _TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL = (
 )
 _TRANSPORT_ERROR_SECRET_LABEL = (
     rf"(?:x-api-keys?|authorization|cookie|set-cookie|"
+    rf"{_TRANSPORT_ERROR_KEY_MATERIAL_LABEL}|"
     rf"{_TRANSPORT_ERROR_HUMAN_SECRET_LABEL}|"
     rf"{_TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL})"
 )
