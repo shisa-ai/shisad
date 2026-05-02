@@ -90,7 +90,7 @@ _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "x-api-key",
 )
 _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
-    r"(?:(?!(?:api|auth|tokens?|secrets?|passwords?|credentials?|keys?)\b)"
+    r"(?:(?!(?:tokens?|secrets?|passwords?|credentials?|keys?)\b)"
     r"[A-Za-z0-9]+[ _]+){0,4}"
     r"(?:api[ _-]?keys?|auth[ _-]?tokens?|tokens?|secrets?|passwords?|credentials?)"
 )
