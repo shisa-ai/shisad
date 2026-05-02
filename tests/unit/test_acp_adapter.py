@@ -597,6 +597,27 @@ def test_m9_acp_adapter_redacts_escaped_container_after_branch_mismatch() -> Non
     assert "secret-branch" not in repr(payload)
 
 
+def test_m9_acp_adapter_redacts_malformed_secret_containers_fail_closed() -> None:
+    payload = _request_error_payload(
+        RequestError(
+            -32000,
+            (
+                'Plain malformed: api_key=["plain-secret"\n'
+                'Escaped malformed: {\\"api_key\\":[\\"escaped-secret\\"}\n'
+                "safe diagnostic: tokenizer gpt2"
+            ),
+        )
+    )
+
+    assert payload["message"] == (
+        "Plain malformed: api_key=[redacted]\n"
+        'Escaped malformed: {\\"api_key\\":\\"[redacted]\\"\n'
+        "safe diagnostic: tokenizer gpt2"
+    )
+    assert "plain-secret" not in repr(payload)
+    assert "escaped-secret" not in repr(payload)
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_adapter_spawn_failure_is_actionable_unavailable(tmp_path: Path) -> None:
     adapter = AcpAdapter(

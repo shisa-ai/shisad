@@ -287,6 +287,15 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
     return None
 
 
+def _transport_error_malformed_container_end(text: str, start: int) -> int:
+    line_end = len(text)
+    for line_break in ("\r", "\n"):
+        index = text.find(line_break, start)
+        if index != -1:
+            line_end = min(line_end, index)
+    return line_end
+
+
 def _redact_transport_error_secret_containers(message: str) -> str:
     parts: list[str] = []
     cursor = 0
@@ -298,8 +307,7 @@ def _redact_transport_error_secret_containers(message: str) -> str:
             continue
         value_end = _transport_error_container_end(message, value_start)
         if value_end is None:
-            search_pos = match.end()
-            continue
+            value_end = _transport_error_malformed_container_end(message, value_start)
 
         parts.append(message[cursor:value_start])
         value_quote = match.group("label_quote")
@@ -329,8 +337,7 @@ def _redact_transport_error_escaped_secret_containers(message: str) -> str:
             continue
         value_end = _transport_error_escaped_container_end(message, value_start)
         if value_end is None:
-            search_pos = match.end()
-            continue
+            value_end = _transport_error_malformed_container_end(message, value_start)
 
         parts.append(message[cursor:value_start])
         value_quote = match.group("label_quote")
