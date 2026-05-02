@@ -119,6 +119,11 @@ _TRANSPORT_ERROR_ESCAPED_QUOTED_SECRET_RE = re.compile(
     rf"(?P=value_quote)",
     flags=re.IGNORECASE,
 )
+_TRANSPORT_ERROR_ESCAPED_SECRET_CONTAINER_PREFIX_RE = re.compile(
+    rf"(?P<label_quote>\\['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
+    rf"(?P=label_quote)(?P<sep>\s*[:=]\s*)",
+    flags=re.IGNORECASE,
+)
 _TRANSPORT_ERROR_SECRET_CONTAINER_PREFIX_RE = re.compile(
     rf"(?P<label_expr>(?:(?P<label_quote>['\"])(?P<quoted_label>"
     rf"{_TRANSPORT_ERROR_SECRET_LABEL})(?P=label_quote)|"
@@ -222,6 +227,42 @@ def _transport_error_container_end(text: str, start: int) -> int | None:
     return None
 
 
+def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
+    opener = text[start]
+    closer_for = {"[": "]", "{": "}"}
+    if opener not in closer_for:
+        return None
+
+    expected_closers = [closer_for[opener]]
+    quote: str | None = None
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            if char == "\\" and index + 1 < len(text):
+                if text[index + 1] == quote:
+                    quote = None
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if char == "\\" and index + 1 < len(text) and text[index + 1] in {"'", '"'}:
+            quote = text[index + 1]
+            index += 2
+            continue
+        if char in closer_for:
+            expected_closers.append(closer_for[char])
+        elif char in {"]", "}"}:
+            if not expected_closers or char != expected_closers[-1]:
+                return None
+            expected_closers.pop()
+            if not expected_closers:
+                return index + 1
+        index += 1
+    return None
+
+
 def _redact_transport_error_secret_containers(message: str) -> str:
     parts: list[str] = []
     cursor = 0
@@ -242,6 +283,34 @@ def _redact_transport_error_secret_containers(message: str) -> str:
             parts.append("[redacted]")
         else:
             parts.append(f"{value_quote}[redacted]{value_quote}")
+        cursor = value_end
+        search_pos = value_end
+
+    if not parts:
+        return message
+    parts.append(message[cursor:])
+    return "".join(parts)
+
+
+def _redact_transport_error_escaped_secret_containers(message: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    search_pos = 0
+    while match := _TRANSPORT_ERROR_ESCAPED_SECRET_CONTAINER_PREFIX_RE.search(
+        message, search_pos
+    ):
+        value_start = match.end()
+        if value_start >= len(message) or message[value_start] not in {"[", "{"}:
+            search_pos = match.end()
+            continue
+        value_end = _transport_error_escaped_container_end(message, value_start)
+        if value_end is None:
+            search_pos = match.end()
+            continue
+
+        parts.append(message[cursor:value_start])
+        value_quote = match.group("label_quote")
+        parts.append(f"{value_quote}[redacted]{value_quote}")
         cursor = value_end
         search_pos = value_end
 
@@ -292,6 +361,7 @@ def _redact_transport_error_secret_assignments(message: str) -> str:
 
 def _redact_transport_error_message(message: str) -> str:
     redacted = _redact_transport_error_secret_containers(message)
+    redacted = _redact_transport_error_escaped_secret_containers(redacted)
     redacted = _TRANSPORT_ERROR_ESCAPED_QUOTED_SECRET_RE.sub(
         lambda match: (
             f"{match.group('label_quote')}{match.group('label')}"

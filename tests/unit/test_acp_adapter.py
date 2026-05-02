@@ -258,6 +258,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 'Escaped JSON: {\\"api_key\\":\\"sk-escaped-message\\",'
                 '\\"AWS Secret Access Key\\":\\"aws-escaped-message\\",'
                 '\\"tokenizer\\":\\"gpt2\\"} '
+                'Escaped containers: {\\"api_key\\":[\\"sk-escaped-list-a\\",'
+                '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"} '
                 "api_key=sk-test-secret "
                 "accessToken=access-camel-secret apiCredential=api-credential-camel-secret "
                 "AWS_SECRET_ACCESS_KEY=aws-secret-access-key "
@@ -347,6 +349,14 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '\\"AWS Secret Access Key\\":\\"aws-qualified-escaped-json\\",'
                     '\\"tokenizer\\":\\"gpt2\\"}'
                 ),
+                "json_escaped_delimiter_list": (
+                    '{\\"api_key\\":[\\"sk-escaped-list-a\\",'
+                    '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"}'
+                ),
+                "json_escaped_delimiter_object": (
+                    '{\\"AWS Secret Access Key\\":{\\"value\\":\\"aws-escaped-object\\"},'
+                    '\\"tokenizer\\":\\"gpt2\\"}'
+                ),
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
                 "pythonish": "{'authorization': 'Bearer py-token'}",
@@ -363,6 +373,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "Authentication failed: tokenizer: gpt2 token_count: 8192 "
         'Escaped JSON: {\\"api_key\\":\\"[redacted]\\",'
         '\\"AWS Secret Access Key\\":\\"[redacted]\\",'
+        '\\"tokenizer\\":\\"gpt2\\"} '
+        'Escaped containers: {\\"api_key\\":\\"[redacted]\\",'
         '\\"tokenizer\\":\\"gpt2\\"} '
         "api_key=[redacted] accessToken=[redacted] apiCredential=[redacted] "
         "AWS_SECRET_ACCESS_KEY=[redacted] Secret Access Key: [redacted] "
@@ -446,6 +458,13 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "json_escaped_delimiters": (
             '{\\"api_key\\":\\"[redacted]\\",'
             '\\"AWS Secret Access Key\\":\\"[redacted]\\",'
+            '\\"tokenizer\\":\\"gpt2\\"}'
+        ),
+        "json_escaped_delimiter_list": (
+            '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
+        ),
+        "json_escaped_delimiter_object": (
+            '{\\"AWS Secret Access Key\\":\\"[redacted]\\",'
             '\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
