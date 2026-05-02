@@ -227,13 +227,13 @@ def _transport_error_container_end(text: str, start: int) -> int | None:
     return None
 
 
-def _is_escaped_json_quote_delimiter(text: str, index: int) -> bool:
+def _escaped_json_quote_backslash_count(text: str, index: int) -> int:
     backslashes = 0
     cursor = index - 1
     while cursor >= 0 and text[cursor] == "\\":
         backslashes += 1
         cursor -= 1
-    return backslashes > 0 and backslashes % 2 == 1
+    return backslashes
 
 
 def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
@@ -242,31 +242,39 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
     if opener not in closer_for:
         return None
 
-    expected_closers = [closer_for[opener]]
-    quote: str | None = None
-    index = start + 1
-    while index < len(text):
-        char = text[index]
-        if quote is not None:
-            if char == quote and _is_escaped_json_quote_delimiter(text, index):
-                quote = None
-            index += 1
-            continue
+    def scan(index: int, expected_closers: tuple[str, ...], quote: str | None) -> int | None:
+        closers = list(expected_closers)
+        while index < len(text):
+            char = text[index]
+            if quote is not None:
+                if char == quote:
+                    backslashes = _escaped_json_quote_backslash_count(text, index)
+                    if backslashes == 1:
+                        quote = None
+                    elif backslashes > 1 and backslashes % 2 == 1:
+                        content_end = scan(index + 1, tuple(closers), quote)
+                        if content_end is not None:
+                            return content_end
+                        quote = None
+                index += 1
+                continue
 
-        if char in {"'", '"'} and _is_escaped_json_quote_delimiter(text, index):
-            quote = char
+            if char in {"'", '"'} and _escaped_json_quote_backslash_count(text, index) == 1:
+                quote = char
+                index += 1
+                continue
+            if char in closer_for:
+                closers.append(closer_for[char])
+            elif char in {"]", "}"}:
+                if not closers or char != closers[-1]:
+                    return None
+                closers.pop()
+                if not closers:
+                    return index + 1
             index += 1
-            continue
-        if char in closer_for:
-            expected_closers.append(closer_for[char])
-        elif char in {"]", "}"}:
-            if not expected_closers or char != expected_closers[-1]:
-                return None
-            expected_closers.pop()
-            if not expected_closers:
-                return index + 1
-        index += 1
-    return None
+        return None
+
+    return scan(start + 1, (closer_for[opener],), None)
 
 
 def _redact_transport_error_secret_containers(message: str) -> str:

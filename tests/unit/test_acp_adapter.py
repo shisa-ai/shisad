@@ -261,6 +261,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 'Escaped containers: {\\"api_key\\":[\\"sk-escaped-list-a\\",'
                 '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"} '
                 'Escaped quoted containers: {\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"]} '
+                'Escaped odd quoted containers: {\\"api_key\\":'
+                '[\\"sk-escaped-odd-quote\\\\\\\"tail\\"]} '
                 'Escaped backslash containers: {\\"api_key\\":[\\"sk-escaped-backslash\\\\\\"]} '
                 "api_key=sk-test-secret "
                 "SECRET_KEY=secret-key-env-secret Secret Key: secret-key-space-secret "
@@ -365,6 +367,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '{\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"],'
                     '\\"tokenizer\\":\\"gpt2\\"}'
                 ),
+                "json_escaped_delimiter_list_odd_quote": (
+                    '{\\"api_key\\":[\\"sk-escaped-odd-quote\\\\\\\"tail\\"],'
+                    '\\"tokenizer\\":\\"gpt2\\"}'
+                ),
                 "json_escaped_delimiter_list_backslash": (
                     '{\\"api_key\\":[\\"sk-escaped-backslash\\\\\\"],'
                     '\\"tokenizer\\":\\"gpt2\\"}'
@@ -404,6 +410,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         'Escaped containers: {\\"api_key\\":\\"[redacted]\\",'
         '\\"tokenizer\\":\\"gpt2\\"} '
         'Escaped quoted containers: {\\"api_key\\":\\"[redacted]\\"} '
+        'Escaped odd quoted containers: {\\"api_key\\":\\"[redacted]\\"} '
         'Escaped backslash containers: {\\"api_key\\":\\"[redacted]\\"} '
         "api_key=[redacted] SECRET_KEY=[redacted] Secret Key: [redacted] "
         "serviceSecretKey=[redacted] accessToken=[redacted] apiCredential=[redacted] "
@@ -497,6 +504,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped_delimiter_list_quote": (
+            '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
+        ),
+        "json_escaped_delimiter_list_odd_quote": (
             '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped_delimiter_list_backslash": (
