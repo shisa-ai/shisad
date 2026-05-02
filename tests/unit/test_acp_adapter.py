@@ -260,9 +260,11 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 '\\"tokenizer\\":\\"gpt2\\"} '
                 'Escaped containers: {\\"api_key\\":[\\"sk-escaped-list-a\\",'
                 '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"} '
-                'Escaped quoted containers: {\\"api_key\\":[\\"sk-escaped-quote\\\\\\\"tail\\"]} '
+                'Escaped quoted containers: {\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"]} '
                 'Escaped backslash containers: {\\"api_key\\":[\\"sk-escaped-backslash\\\\\\"]} '
                 "api_key=sk-test-secret "
+                "SECRET_KEY=secret-key-env-secret Secret Key: secret-key-space-secret "
+                "serviceSecretKey=service-secret-key-camel "
                 "accessToken=access-camel-secret apiCredential=api-credential-camel-secret "
                 "AWS_SECRET_ACCESS_KEY=aws-secret-access-key "
                 "Secret Access Key: aws-space-secret secretAccessKey=aws-camel-secret "
@@ -351,12 +353,16 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '\\"AWS Secret Access Key\\":\\"aws-qualified-escaped-json\\",'
                     '\\"tokenizer\\":\\"gpt2\\"}'
                 ),
+                "json_escaped_key_payload": (
+                    '{\\"secret_key\\":\\"secret-key-escaped-json\\",'
+                    '\\"tokenizer\\":\\"gpt2\\"}'
+                ),
                 "json_escaped_delimiter_list": (
                     '{\\"api_key\\":[\\"sk-escaped-list-a\\",'
                     '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_list_quote": (
-                    '{\\"api_key\\":[\\"sk-escaped-quote\\\\\\\"tail\\"],'
+                    '{\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"],'
                     '\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_list_backslash": (
@@ -369,6 +375,17 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 ),
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
+                "secret_key": "secret-key-structured-secret",
+                "SECRET_KEY": "secret-key-uppercase-secret",
+                "JWT_SECRET_KEY": "secret-key-jwt-secret",
+                "Secret Key": "secret-key-space-structured-secret",
+                "serviceSecretKey": "service-secret-key-structured-secret",
+                "json_key_payload": (
+                    '{"secret_key":"secret-key-json",'
+                    '"Secret Key":"secret-key-space-json",'
+                    '"JWT_SECRET_KEY":"secret-key-jwt-json","tokenizer":"gpt2"}'
+                ),
+                "secret_key_pairs": [["JWT_SECRET_KEY", "secret-key-pair-secret"]],
                 "pythonish": "{'authorization': 'Bearer py-token'}",
                 "pythonish_list": "{'authorization': ['Bearer py-a', 'Bearer py-b'], 'safe': 'ok'}",
                 "env_detail": "OPENAI_API_KEY=sk-env ANTHROPIC_AUTH_TOKEN=auth-token",
@@ -388,7 +405,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         '\\"tokenizer\\":\\"gpt2\\"} '
         'Escaped quoted containers: {\\"api_key\\":\\"[redacted]\\"} '
         'Escaped backslash containers: {\\"api_key\\":\\"[redacted]\\"} '
-        "api_key=[redacted] accessToken=[redacted] apiCredential=[redacted] "
+        "api_key=[redacted] SECRET_KEY=[redacted] Secret Key: [redacted] "
+        "serviceSecretKey=[redacted] accessToken=[redacted] apiCredential=[redacted] "
         "AWS_SECRET_ACCESS_KEY=[redacted] Secret Access Key: [redacted] "
         "secretAccessKey=[redacted] privateKey=[redacted] "
         "AWS Secret Access Key: [redacted] SSH Private Key: [redacted] "
@@ -472,6 +490,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '\\"AWS Secret Access Key\\":\\"[redacted]\\",'
             '\\"tokenizer\\":\\"gpt2\\"}'
         ),
+        "json_escaped_key_payload": (
+            '{\\"secret_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
+        ),
         "json_escaped_delimiter_list": (
             '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
         ),
@@ -487,6 +508,17 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
+        "secret_key": "[redacted]",
+        "SECRET_KEY": "[redacted]",
+        "JWT_SECRET_KEY": "[redacted]",
+        "Secret Key": "[redacted]",
+        "serviceSecretKey": "[redacted]",
+        "json_key_payload": (
+            '{"secret_key":"[redacted]",'
+            '"Secret Key":"[redacted]",'
+            '"JWT_SECRET_KEY":"[redacted]","tokenizer":"gpt2"}'
+        ),
+        "secret_key_pairs": [["JWT_SECRET_KEY", "[redacted]"]],
         "pythonish": "{'authorization': '[redacted]'}",
         "pythonish_list": "{'authorization': '[redacted]', 'safe': 'ok'}",
         "env_detail": "OPENAI_API_KEY=[redacted] ANTHROPIC_AUTH_TOKEN=[redacted]",

@@ -81,11 +81,11 @@ _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
 )
 _TRANSPORT_ERROR_HUMAN_KEY_MATERIAL_LABEL = (
     r"(?:(?!(?:secret|access|private|keys?)\b)[A-Za-z0-9]+[ _]+){0,4}"
-    r"(?:secret[ _-]+access[ _-]+keys?|private[ _-]+keys?)"
+    r"(?:secret[ _-]+access[ _-]+keys?|secret[ _-]+keys?|private[ _-]+keys?)"
 )
 _TRANSPORT_ERROR_KEY_MATERIAL_LABEL = (
     rf"(?:{_TRANSPORT_ERROR_HUMAN_KEY_MATERIAL_LABEL}|"
-    r"[A-Za-z0-9_-]*(?:secret[_-]?access[_-]?keys?|private[_-]?keys?))"
+    r"[A-Za-z0-9_-]*(?:secret[_-]?access[_-]?keys?|secret[_-]?keys?|private[_-]?keys?))"
 )
 _TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL = (
     r"(?:"
@@ -233,15 +233,7 @@ def _is_escaped_json_quote_delimiter(text: str, index: int) -> bool:
     while cursor >= 0 and text[cursor] == "\\":
         backslashes += 1
         cursor -= 1
-    if backslashes == 1:
-        return True
-    if backslashes <= 1 or backslashes % 2 == 0:
-        return False
-
-    cursor = index + 1
-    while cursor < len(text) and text[cursor].isspace():
-        cursor += 1
-    return cursor >= len(text) or text[cursor] in {",", ":", "]", "}"}
+    return backslashes > 0 and backslashes % 2 == 1
 
 
 def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
