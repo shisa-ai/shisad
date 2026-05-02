@@ -90,7 +90,7 @@ _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "x-api-key",
 )
 _TRANSPORT_ERROR_SECRET_LABEL = (
-    r"(?:x-api-key|api[ _-]?key|auth[ _-]?token|authorization|cookie|set-cookie|"
+    r"(?:x-api-keys?|api[ _-]?keys?|auth[ _-]?tokens?|authorization|cookie|set-cookie|"
     r"[A-Za-z0-9_-]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)"
     r"[A-Za-z0-9_-]*)"
 )

@@ -268,12 +268,17 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "detail": "Authorization: Basic dXNlcjpwYXNz",
                 "space_detail": "API key: sk-detail-space-secret",
                 "space_list_detail": "API keys: sk-list-a, sk-list-b",
+                "detail_auth_list": "Auth token: tok-a tok-b",
                 "space_token_list": "Auth token: tok-a tok-b",
                 "body": "api_key=sk-body-secret",
                 "headers": "Cookie: sid=secret; csrf=secret2",
                 "json": (
                     '{"api_key":"sk-json","API key":"sk-json-space",'
                     '"Authorization":"Bearer json-token"}'
+                ),
+                "json_plural": (
+                    '{"API keys":["sk-json-a","sk-json-b"],'
+                    '"Auth tokens":["tok-json-a","tok-json-b"],"safe":"ok"}'
                 ),
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
@@ -301,12 +306,17 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "detail": "Authorization: [redacted]",
         "space_detail": "API key: [redacted]",
         "space_list_detail": "API keys: [redacted]",
+        "detail_auth_list": "Auth token: [redacted]",
         "space_token_list": "[redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
         "json": (
             '{"api_key":"[redacted]","API key":"[redacted]",'
             '"Authorization":"[redacted]"}'
+        ),
+        "json_plural": (
+            '{"API keys":"[redacted]",'
+            '"Auth tokens":"[redacted]","safe":"ok"}'
         ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
@@ -327,6 +337,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "sk-detail-space-secret" not in repr(payload)
     assert "sk-list-b" not in repr(payload)
     assert "tok-b" not in repr(payload)
+    assert "sk-json-b" not in repr(payload)
+    assert "tok-json-b" not in repr(payload)
 
 
 @pytest.mark.asyncio
