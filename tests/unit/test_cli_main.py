@@ -1660,6 +1660,49 @@ def test_m9_session_create_and_message_update_current_session_cache(
     assert cache_path.read_text(encoding="utf-8") == "s-active\n"
 
 
+def test_m9_session_create_and_message_do_not_hide_env_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    cache_path = tmp_path / "config" / "last-session"
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    monkeypatch.setenv(cli_main._SESSION_ID_ENV, "s-env")
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert response_model is not None
+        if method == "session.create":
+            return response_model.model_validate({"session_id": "s-created", "mode": "default"})  # type: ignore[attr-defined]
+        if method == "session.message":
+            assert params == {"session_id": "s-active", "content": "hello"}
+            return response_model.model_validate(  # type: ignore[attr-defined]
+                {"session_id": "s-active", "response": "hi"}
+            )
+        raise AssertionError(method)
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    create = runner.invoke(cli_main.cli, ["session", "create", "--user", "alice"])
+    message = runner.invoke(cli_main.cli, ["session", "message", "s-active", "hello"])
+    current = runner.invoke(cli_main.cli, ["session", "current"])
+
+    assert create.exit_code == 0, create.output
+    assert "SHISAD_SESSION_ID" in create.output
+    assert message.exit_code == 0, message.output
+    assert "SHISAD_SESSION_ID" in message.output
+    assert current.exit_code == 0, current.output
+    assert current.output.strip() == "s-env"
+    assert not cache_path.exists()
+
+
 def test_m9_session_use_and_current_manage_current_session_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

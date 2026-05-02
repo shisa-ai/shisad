@@ -249,9 +249,26 @@ def _read_last_session() -> str:
         return ""
 
 
+def _session_env_override(session_id: str) -> str:
+    env_session = os.environ.get(_SESSION_ID_ENV, "").strip()
+    normalized = session_id.strip()
+    if env_session and normalized and env_session != normalized:
+        return env_session
+    return ""
+
+
 def _write_last_session(session_id: str) -> None:
     normalized = session_id.strip()
     if not normalized:
+        return
+    env_session = _session_env_override(normalized)
+    if env_session:
+        _echo(
+            f"Warning: {_SESSION_ID_ENV} is set to {env_session}; "
+            f"current-session cache not updated for {normalized}.",
+            fg="yellow",
+            err=True,
+        )
         return
     path = _last_session_path()
     try:
@@ -1147,8 +1164,8 @@ def session_use(session_id: str) -> None:
     resolved = session_id.strip()
     if not resolved:
         raise click.ClickException("session_id is required")
-    env_session = os.environ.get(_SESSION_ID_ENV, "").strip()
-    if env_session and env_session != resolved:
+    env_session = _session_env_override(resolved)
+    if env_session:
         raise click.ClickException(
             f"{_SESSION_ID_ENV} is set to {env_session} and overrides the "
             f"current-session cache; unset it or pass --session to use {resolved}."
