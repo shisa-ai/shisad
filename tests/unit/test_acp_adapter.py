@@ -260,6 +260,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 '\\"tokenizer\\":\\"gpt2\\"} '
                 'Escaped containers: {\\"api_key\\":[\\"sk-escaped-list-a\\",'
                 '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"} '
+                'Escaped quoted containers: {\\"api_key\\":[\\"sk-escaped-quote\\\\\\\"tail\\"]} '
                 "api_key=sk-test-secret "
                 "accessToken=access-camel-secret apiCredential=api-credential-camel-secret "
                 "AWS_SECRET_ACCESS_KEY=aws-secret-access-key "
@@ -353,6 +354,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '{\\"api_key\\":[\\"sk-escaped-list-a\\",'
                     '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"}'
                 ),
+                "json_escaped_delimiter_list_quote": (
+                    '{\\"api_key\\":[\\"sk-escaped-quote\\\\\\\"tail\\"],'
+                    '\\"tokenizer\\":\\"gpt2\\"}'
+                ),
                 "json_escaped_delimiter_object": (
                     '{\\"AWS Secret Access Key\\":{\\"value\\":\\"aws-escaped-object\\"},'
                     '\\"tokenizer\\":\\"gpt2\\"}'
@@ -376,6 +381,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         '\\"tokenizer\\":\\"gpt2\\"} '
         'Escaped containers: {\\"api_key\\":\\"[redacted]\\",'
         '\\"tokenizer\\":\\"gpt2\\"} '
+        'Escaped quoted containers: {\\"api_key\\":\\"[redacted]\\"} '
         "api_key=[redacted] accessToken=[redacted] apiCredential=[redacted] "
         "AWS_SECRET_ACCESS_KEY=[redacted] Secret Access Key: [redacted] "
         "secretAccessKey=[redacted] privateKey=[redacted] "
@@ -461,6 +467,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped_delimiter_list": (
+            '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
+        ),
+        "json_escaped_delimiter_list_quote": (
             '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped_delimiter_object": (

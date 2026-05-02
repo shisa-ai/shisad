@@ -227,6 +227,15 @@ def _transport_error_container_end(text: str, start: int) -> int | None:
     return None
 
 
+def _is_escaped_json_quote_delimiter(text: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes == 1
+
+
 def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
     opener = text[start]
     closer_for = {"[": "]", "{": "}"}
@@ -239,17 +248,14 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
     while index < len(text):
         char = text[index]
         if quote is not None:
-            if char == "\\" and index + 1 < len(text):
-                if text[index + 1] == quote:
-                    quote = None
-                index += 2
-                continue
+            if char == quote and _is_escaped_json_quote_delimiter(text, index):
+                quote = None
             index += 1
             continue
 
-        if char == "\\" and index + 1 < len(text) and text[index + 1] in {"'", '"'}:
-            quote = text[index + 1]
-            index += 2
+        if char in {"'", '"'} and _is_escaped_json_quote_delimiter(text, index):
+            quote = char
+            index += 1
             continue
         if char in closer_for:
             expected_closers.append(closer_for[char])
