@@ -74,31 +74,26 @@ _CODING_AGENT_ENV_PREFIXES = (
 )
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
-_TRANSPORT_ERROR_SECRET_KEY_PARTS = (
-    "api-key",
-    "api key",
-    "api_key",
-    "apikey",
-    "auth token",
-    "authorization",
-    "cookie",
-    "credential",
-    "password",
-    "secret",
-    "set-cookie",
-    "token",
-    "x-api-key",
-)
 _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
     r"(?:(?!(?:tokens?|secrets?|passwords?|credentials?|keys?)\b)"
     r"[A-Za-z0-9]+[ _]+){0,4}"
     r"(?:api[ _-]?keys?|auth[ _-]?tokens?|tokens?|secrets?|passwords?|credentials?)"
 )
+_TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL = (
+    r"(?:"
+    r"[A-Za-z0-9_-]*(?:api[_-]?keys?|auth[_-]?tokens?)[A-Za-z0-9_-]*"
+    r"|[A-Za-z0-9_-]+[_-](?:tokens?|secrets?|passwords?|credentials?)"
+    r"|(?:tokens?|secrets?|passwords?|credentials?)"
+    r")"
+)
 _TRANSPORT_ERROR_SECRET_LABEL = (
     rf"(?:x-api-keys?|authorization|cookie|set-cookie|"
     rf"{_TRANSPORT_ERROR_HUMAN_SECRET_LABEL}|"
-    r"[A-Za-z0-9_-]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)"
-    r"[A-Za-z0-9_-]*)"
+    rf"{_TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL})"
+)
+_TRANSPORT_ERROR_SECRET_KEY_RE = re.compile(
+    rf"{_TRANSPORT_ERROR_SECRET_LABEL}",
+    flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_QUOTED_SECRET_RE = re.compile(
     rf"(?P<label_quote>['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
@@ -150,8 +145,8 @@ def _bounded_summary(text: str, *, max_chars: int = _CODING_AGENT_SUMMARY_MAX_CH
 
 
 def _is_secret_transport_key(key: object) -> bool:
-    normalized = str(key).strip().lower()
-    return any(part in normalized for part in _TRANSPORT_ERROR_SECRET_KEY_PARTS)
+    normalized = str(key).strip()
+    return bool(normalized and _TRANSPORT_ERROR_SECRET_KEY_RE.fullmatch(normalized))
 
 
 def _json_safe_transport_error_data(value: object, *, key: object = "") -> object:

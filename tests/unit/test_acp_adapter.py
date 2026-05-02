@@ -254,7 +254,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         RequestError(
             -32000,
             (
-                "Authentication failed: api_key=sk-test-secret "
+                "Authentication failed: tokenizer: gpt2 token_count: 8192 "
+                "api_key=sk-test-secret "
                 "Invalid API key: sk-space-secret Auth token: auth-space-secret "
                 "Access token: access-space-secret OpenAI API key: sk-openai-space-secret "
                 "API token: api-token-space-secret "
@@ -290,6 +291,12 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '"API credential":"api-credential-json",'
                     '"access token":["tok-human-a","tok-human-b"],"safe":"ok"}'
                 ),
+                "diagnostic": "tokenizer: gpt2 token_count: 8192",
+                "tokenizer": "gpt2",
+                "token_count": 8192,
+                "model_token_limit": 128000,
+                "json_diagnostic": '{"tokenizer":"gpt2","token_count":8192,"safe":"ok"}',
+                "diagnostic_pairs": [["token_count", 8192], ["tokenizer", "gpt2"]],
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
                 "pythonish": "{'authorization': 'Bearer py-token'}",
@@ -303,10 +310,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     )
 
     assert payload["message"] == (
-        "Authentication failed: api_key=[redacted] Invalid API key: [redacted] "
-        "Auth token: [redacted] Access token: [redacted] OpenAI API key: "
-        "[redacted] API token: [redacted] API credential: [redacted] "
-        "Authorization: [redacted]"
+        "Authentication failed: tokenizer: gpt2 token_count: 8192 "
+        "api_key=[redacted] Invalid API key: [redacted] Auth token: [redacted] "
+        "Access token: [redacted] OpenAI API key: [redacted] API token: "
+        "[redacted] API credential: [redacted] Authorization: [redacted]"
     )
     assert payload["data"] == {
         "api_key": "[redacted]",
@@ -320,7 +327,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "space_list_detail": "API keys: [redacted]",
         "detail_auth_list": "Auth token: [redacted]",
         "human_detail": "Access token: [redacted]",
-        "space_token_list": "[redacted]",
+        "space_token_list": "Auth token: [redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
         "json": (
@@ -337,6 +344,12 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '"API credential":"[redacted]",'
             '"access token":"[redacted]","safe":"ok"}'
         ),
+        "diagnostic": "tokenizer: gpt2 token_count: 8192",
+        "tokenizer": "gpt2",
+        "token_count": 8192,
+        "model_token_limit": 128000,
+        "json_diagnostic": '{"tokenizer":"gpt2","token_count":8192,"safe":"ok"}',
+        "diagnostic_pairs": [["token_count", 8192], ["tokenizer", "gpt2"]],
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
         "pythonish": "{'authorization': '[redacted]'}",
