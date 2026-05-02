@@ -8234,7 +8234,14 @@ class SessionImplMixin(HandlerMixinBase):
                 # ResourceAccessMonitor corroboration; PEP still enforces hard
                 # policy rejects before any action can run. Local monitor rejects
                 # stay terminal because they identify policy-evasive plan content.
-                if monitor_decision.kind == MonitorDecisionType.REJECT:
+                if pep_decision.kind.value == "reject" and pep_elevation is None:
+                    final_kind = "reject"
+                    final_reason = (
+                        pep_decision.reason_code.strip()
+                        or pep_decision.reason
+                        or "pep_reject"
+                    )
+                elif monitor_decision.kind == MonitorDecisionType.REJECT:
                     final_kind = "reject"
                     final_reason = monitor_decision.reason or "monitor_reject"
                 elif trace_confirmation_routable_block and (
@@ -8246,7 +8253,11 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 elif pep_decision.kind.value == "reject":
                     final_kind = "reject"
-                    final_reason = pep_decision.reason or "pep_reject"
+                    final_reason = (
+                        pep_decision.reason_code.strip()
+                        or pep_decision.reason
+                        or "pep_reject"
+                    )
                 else:
                     final_kind = "reject"
                     final_reason = ",".join(cp_user_reason_codes) or "control_plane_block"

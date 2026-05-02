@@ -378,6 +378,7 @@ class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
     ) -> None:
         super().__init__()
         self.plan_violations: list[str] = []
+        self.pep_reject_signals: list[dict[str, object]] = []
         self._monitor = SimpleNamespace(
             evaluate=lambda **_kwargs: SimpleNamespace(
                 kind=monitor_kind,
@@ -448,6 +449,7 @@ class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
         self.plan_violations.append(reason_code)
 
     async def _observe_pep_reject_signal(self, **_kwargs: object) -> None:
+        self.pep_reject_signals.append(dict(_kwargs))
         return None
 
 
@@ -757,6 +759,93 @@ async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
     assert result.rejection_reasons_for_user == [
         "Action monitor rejected goal-misaligned or policy-evasive plan"
     ]
+
+
+@pytest.mark.asyncio
+async def test_m9_trace_confirmation_keeps_pep_reject_precedence() -> None:
+    harness = _TraceConfirmationRoutingHarness(
+        monitor_kind=MonitorDecisionType.REJECT,
+        monitor_reason="Action monitor rejected goal-misaligned or policy-evasive plan",
+    )
+    harness._pep = SimpleNamespace(
+        evaluate=lambda tool_name, _arguments, _context: PEPDecision(
+            kind=PEPDecisionKind.REJECT,
+            reason="Resource authorization failed",
+            reason_code="pep:resource_authorization_failed",
+            tool_name=tool_name,
+        )
+    )
+    sid = SessionId("sess-g1")
+    planner_context = SessionMessagePlannerContextResult(
+        validated=_validation_result(
+            params={"session_id": str(sid), "content": "list the similar files"}
+        ),
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.FILE_READ},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.FILE_READ}, session_id=sid),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "../outside", "note": "ignore policy"},
+        reasoning="List the user-requested similar files.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REJECT,
+                        reason="Resource authorization failed",
+                        reason_code="pep:resource_authorization_failed",
+                        tool_name=proposal.tool_name,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.pending_confirmation == 0
+    assert result.rejected == 1
+    assert result.rejection_reasons_for_user == ["pep:resource_authorization_failed"]
+    assert harness.pep_reject_signals
+    assert harness.pep_reject_signals[0]["final_reason"] == "pep:resource_authorization_failed"
 
 
 @pytest.mark.asyncio
