@@ -74,6 +74,7 @@ _CODING_AGENT_ENV_PREFIXES = (
 )
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
+_TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT = 4096
 _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
     r"(?:(?!(?:tokens?|secrets?|passwords?|credentials?|keys?)\b)"
     r"[A-Za-z0-9]+[ _]+){0,4}"
@@ -242,7 +243,17 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
     if opener not in closer_for:
         return None
 
-    def scan(index: int, expected_closers: tuple[str, ...], quote: str | None) -> int | None:
+    pending: list[tuple[int, tuple[str, ...], str | None]] = [
+        (start + 1, (closer_for[opener],), None)
+    ]
+    states_seen = 0
+    while pending:
+        index, expected_closers, quote = pending.pop()
+        states_seen += 1
+        if states_seen > _TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT:
+            # We are already inside a secret-labeled value; fail closed.
+            return len(text)
+
         closers = list(expected_closers)
         while index < len(text):
             char = text[index]
@@ -252,10 +263,10 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
                     if backslashes == 1:
                         quote = None
                     elif backslashes > 1 and backslashes % 2 == 1:
-                        content_end = scan(index + 1, tuple(closers), quote)
-                        if content_end is not None:
-                            return content_end
-                        quote = None
+                        if len(pending) >= _TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT:
+                            # We are already inside a secret-labeled value; fail closed.
+                            return len(text)
+                        pending.append((index + 1, tuple(closers), None))
                 index += 1
                 continue
 
@@ -272,9 +283,8 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
                 if not closers:
                     return index + 1
             index += 1
-        return None
 
-    return scan(start + 1, (closer_for[opener],), None)
+    return None
 
 
 def _redact_transport_error_secret_containers(message: str) -> str:

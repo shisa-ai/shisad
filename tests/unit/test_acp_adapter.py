@@ -559,6 +559,26 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "tok-human-b" not in repr(payload)
 
 
+def test_m9_acp_adapter_redacts_pathological_escaped_container_without_recursion() -> None:
+    ambiguous_value = "secret-piece\\\\\\\"tail" * 1200
+    payload = _request_error_payload(
+        RequestError(
+            -32000,
+            (
+                'Pathological escaped container: {\\"api_key\\":[\\"'
+                f"{ambiguous_value}"
+                '\\"],\\"safe_after\\":\\"ok\\"} done'
+            ),
+        )
+    )
+
+    assert payload["message"] == (
+        'Pathological escaped container: {\\"api_key\\":\\"[redacted]\\",'
+        '\\"safe_after\\":\\"ok\\"} done'
+    )
+    assert "secret-piece" not in repr(payload)
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_adapter_spawn_failure_is_actionable_unavailable(tmp_path: Path) -> None:
     adapter = AcpAdapter(
