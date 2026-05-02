@@ -2566,6 +2566,8 @@ def lockdown_set(session_id: str, action_name: str, reason: str) -> None:
 @click.option("--json", "output_json", is_flag=True, help="Emit JSON")
 def lockdown_status(session_id: str, all_sessions: bool, output_json: bool) -> None:
     """Show current lockdown state."""
+    if all_sessions and session_id.strip():
+        raise click.ClickException("--all cannot be used together with --session")
     resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
     config = _get_config()
     result = rpc_call(

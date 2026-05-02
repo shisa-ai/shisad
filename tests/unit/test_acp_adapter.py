@@ -255,17 +255,24 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             -32000,
             (
                 "Authentication failed: api_key=sk-test-secret "
+                "Invalid API key: sk-space-secret Auth token: auth-space-secret "
                 "Authorization: Bearer token-value OPENAI_API_KEY=sk-env-secret"
             ),
             {
                 "api_key": "sk-test-secret",
                 "x-api-key": "header-secret",
+                "API key": "sk-mapping-space-secret",
+                "auth token": "auth-mapping-space-secret",
                 "cookie": "session=secret",
                 "nested": {"authorization": "Bearer token-value"},
                 "detail": "Authorization: Basic dXNlcjpwYXNz",
+                "space_detail": "API key: sk-detail-space-secret",
                 "body": "api_key=sk-body-secret",
                 "headers": "Cookie: sid=secret; csrf=secret2",
-                "json": '{"api_key":"sk-json","Authorization":"Bearer json-token"}',
+                "json": (
+                    '{"api_key":"sk-json","API key":"sk-json-space",'
+                    '"Authorization":"Bearer json-token"}'
+                ),
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
                 "json_list": '{"api_key":["sk-a","sk-b"],"safe":"ok"}',
                 "pythonish": "{'authorization': 'Bearer py-token'}",
@@ -279,17 +286,24 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     )
 
     assert payload["message"] == (
-        "Authentication failed: api_key=[redacted] Authorization: [redacted]"
+        "Authentication failed: api_key=[redacted] Invalid API key: [redacted] "
+        "Auth token: [redacted] Authorization: [redacted]"
     )
     assert payload["data"] == {
         "api_key": "[redacted]",
         "x-api-key": "[redacted]",
+        "API key": "[redacted]",
+        "auth token": "[redacted]",
         "cookie": "[redacted]",
         "nested": {"authorization": "[redacted]"},
         "detail": "Authorization: [redacted]",
+        "space_detail": "API key: [redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
-        "json": '{"api_key":"[redacted]","Authorization":"[redacted]"}',
+        "json": (
+            '{"api_key":"[redacted]","API key":"[redacted]",'
+            '"Authorization":"[redacted]"}'
+        ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
         "pythonish": "{'authorization': '[redacted]'}",
@@ -304,6 +318,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "Bearer py-b" not in repr(payload)
     assert "Bearer pair-token" not in repr(payload)
     assert "sk-pair-secret" not in repr(payload)
+    assert "sk-space-secret" not in repr(payload)
+    assert "auth-space-secret" not in repr(payload)
+    assert "sk-detail-space-secret" not in repr(payload)
 
 
 @pytest.mark.asyncio

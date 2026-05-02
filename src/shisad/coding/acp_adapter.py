@@ -76,8 +76,10 @@ _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
 _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "api-key",
+    "api key",
     "api_key",
     "apikey",
+    "auth token",
     "authorization",
     "cookie",
     "credential",
@@ -88,7 +90,7 @@ _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "x-api-key",
 )
 _TRANSPORT_ERROR_SECRET_LABEL = (
-    r"(?:x-api-key|api[_-]?key|authorization|cookie|set-cookie|"
+    r"(?:x-api-key|api[ _-]?key|auth[ _-]?token|authorization|cookie|set-cookie|"
     r"[A-Za-z0-9_-]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)"
     r"[A-Za-z0-9_-]*)"
 )

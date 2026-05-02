@@ -1889,6 +1889,20 @@ def test_m9_audit_query_rejects_all_with_session(
     assert "--all cannot be used together with --session" in result.output
 
 
+def test_m9_lockdown_status_rejects_all_with_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["lockdown", "status", "--all", "--session", "s-1"])
+
+    assert result.exit_code != 0
+    assert "--all cannot be used together with --session" in result.output
+
+
 def test_events_subscribe_uses_rpc_run_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
