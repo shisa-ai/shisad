@@ -112,6 +112,13 @@ _TRANSPORT_ERROR_QUOTED_SECRET_RE = re.compile(
     rf"(?P=value_quote)",
     flags=re.IGNORECASE,
 )
+_TRANSPORT_ERROR_ESCAPED_QUOTED_SECRET_RE = re.compile(
+    rf"(?P<label_quote>\\['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
+    rf"(?P=label_quote)(?P<sep>\s*[:=]\s*)"
+    rf"(?P<value_quote>\\['\"])(?P<value>(?:\\\\.|(?!(?P=value_quote)).)*)"
+    rf"(?P=value_quote)",
+    flags=re.IGNORECASE,
+)
 _TRANSPORT_ERROR_SECRET_CONTAINER_PREFIX_RE = re.compile(
     rf"(?P<label_expr>(?:(?P<label_quote>['\"])(?P<quoted_label>"
     rf"{_TRANSPORT_ERROR_SECRET_LABEL})(?P=label_quote)|"
@@ -285,6 +292,14 @@ def _redact_transport_error_secret_assignments(message: str) -> str:
 
 def _redact_transport_error_message(message: str) -> str:
     redacted = _redact_transport_error_secret_containers(message)
+    redacted = _TRANSPORT_ERROR_ESCAPED_QUOTED_SECRET_RE.sub(
+        lambda match: (
+            f"{match.group('label_quote')}{match.group('label')}"
+            f"{match.group('label_quote')}{match.group('sep')}"
+            f"{match.group('value_quote')}[redacted]{match.group('value_quote')}"
+        ),
+        redacted,
+    )
     redacted = _TRANSPORT_ERROR_QUOTED_SECRET_RE.sub(
         lambda match: (
             f"{match.group('label_quote')}{match.group('label')}"
