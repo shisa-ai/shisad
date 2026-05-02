@@ -258,6 +258,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "Invalid API key: sk-space-secret Auth token: auth-space-secret "
                 "Access token: access-space-secret OpenAI API key: sk-openai-space-secret "
                 "API token: api-token-space-secret "
+                "API credential: api-credential-space-secret "
                 "Authorization: Bearer token-value OPENAI_API_KEY=sk-env-secret"
             ),
             {
@@ -286,6 +287,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "json_human": (
                     '{"OpenAI API key":"sk-openai-json",'
                     '"API token":"api-token-json",'
+                    '"API credential":"api-credential-json",'
                     '"access token":["tok-human-a","tok-human-b"],"safe":"ok"}'
                 ),
                 "json_escaped": '{"api_key":"sk-part1\\"part2","safe":"ok"}',
@@ -303,7 +305,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert payload["message"] == (
         "Authentication failed: api_key=[redacted] Invalid API key: [redacted] "
         "Auth token: [redacted] Access token: [redacted] OpenAI API key: "
-        "[redacted] API token: [redacted] Authorization: [redacted]"
+        "[redacted] API token: [redacted] API credential: [redacted] "
+        "Authorization: [redacted]"
     )
     assert payload["data"] == {
         "api_key": "[redacted]",
@@ -331,6 +334,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "json_human": (
             '{"OpenAI API key":"[redacted]",'
             '"API token":"[redacted]",'
+            '"API credential":"[redacted]",'
             '"access token":"[redacted]","safe":"ok"}'
         ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
@@ -357,9 +361,11 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "access-space-secret" not in repr(payload)
     assert "sk-openai-space-secret" not in repr(payload)
     assert "api-token-space-secret" not in repr(payload)
+    assert "api-credential-space-secret" not in repr(payload)
     assert "access-detail-secret" not in repr(payload)
     assert "sk-openai-json" not in repr(payload)
     assert "api-token-json" not in repr(payload)
+    assert "api-credential-json" not in repr(payload)
     assert "tok-human-b" not in repr(payload)
 
 
