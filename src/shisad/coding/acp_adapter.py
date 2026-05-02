@@ -233,7 +233,15 @@ def _is_escaped_json_quote_delimiter(text: str, index: int) -> bool:
     while cursor >= 0 and text[cursor] == "\\":
         backslashes += 1
         cursor -= 1
-    return backslashes == 1
+    if backslashes == 1:
+        return True
+    if backslashes <= 1 or backslashes % 2 == 0:
+        return False
+
+    cursor = index + 1
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    return cursor >= len(text) or text[cursor] in {",", ":", "]", "}"}
 
 
 def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
