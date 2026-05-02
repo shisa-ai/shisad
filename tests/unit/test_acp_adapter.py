@@ -636,6 +636,9 @@ def test_m9_acp_adapter_redacts_multiline_key_material_assignments() -> None:
         "SSHPrivateKey",
         "secretAccessKey",
         "AWSSecretAccessKey",
+        "Secret Key",
+        "secretKey",
+        "JWT_SECRET_KEY",
     ):
         payload = _request_error_payload(
             RequestError(
