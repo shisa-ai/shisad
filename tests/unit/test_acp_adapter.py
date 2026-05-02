@@ -598,24 +598,35 @@ def test_m9_acp_adapter_redacts_escaped_container_after_branch_mismatch() -> Non
 
 
 def test_m9_acp_adapter_redacts_malformed_secret_containers_fail_closed() -> None:
-    payload = _request_error_payload(
+    plain_payload = _request_error_payload(
         RequestError(
             -32000,
             (
-                'Plain malformed: api_key=["plain-secret"\n'
-                'Escaped malformed: {\\"api_key\\":[\\"escaped-secret\\"}\n'
+                'Plain malformed: api_key=[\n'
+                '"plain-secret"\n'
+                "safe diagnostic: tokenizer gpt2"
+            ),
+        )
+    )
+    escaped_payload = _request_error_payload(
+        RequestError(
+            -32000,
+            (
+                'Escaped malformed: {\\"api_key\\":[\n'
+                '\\"escaped-secret\\"\n'
                 "safe diagnostic: tokenizer gpt2"
             ),
         )
     )
 
-    assert payload["message"] == (
-        "Plain malformed: api_key=[redacted]\n"
-        'Escaped malformed: {\\"api_key\\":\\"[redacted]\\"\n'
-        "safe diagnostic: tokenizer gpt2"
+    assert plain_payload["message"] == "Plain malformed: api_key=[redacted]"
+    assert escaped_payload["message"] == (
+        'Escaped malformed: {\\"api_key\\":\\"[redacted]\\"'
     )
-    assert "plain-secret" not in repr(payload)
-    assert "escaped-secret" not in repr(payload)
+    assert "plain-secret" not in repr(plain_payload)
+    assert "escaped-secret" not in repr(escaped_payload)
+    assert "safe diagnostic" not in repr(plain_payload)
+    assert "safe diagnostic" not in repr(escaped_payload)
 
 
 @pytest.mark.asyncio

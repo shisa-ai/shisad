@@ -287,13 +287,8 @@ def _transport_error_escaped_container_end(text: str, start: int) -> int | None:
     return None
 
 
-def _transport_error_malformed_container_end(text: str, start: int) -> int:
-    line_end = len(text)
-    for line_break in ("\r", "\n"):
-        index = text.find(line_break, start)
-        if index != -1:
-            line_end = min(line_end, index)
-    return line_end
+def _transport_error_malformed_container_end(text: str, _start: int) -> int:
+    return len(text)
 
 
 def _redact_transport_error_secret_containers(message: str) -> str:
