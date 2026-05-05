@@ -191,6 +191,96 @@ async def test_gh19_conversation_summarizer_respects_auto_extraction_disabled(
 
 
 @pytest.mark.asyncio
+async def test_gh19_auto_extraction_disabled_subinterval_turns_are_not_backfilled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        summarize_interval=3,
+        memory_auto_extraction_enabled=False,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        session = services.session_manager.create(
+            channel="cli",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="This opted-out demo turn must not be summarized later.",
+            taint_labels={TaintLabel.UNTRUSTED},
+        )
+
+        async def _disabled_summarize(_entries):
+            raise AssertionError("disabled sub-interval turns should not call summarizer")
+
+        monkeypatch.setattr(
+            impl._conversation_summarizer,
+            "summarize_entries",
+            _disabled_summarize,
+        )
+
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+        )
+        assert session.metadata["summarized_entry_count"] == 1
+        assert services.memory_manager.list_entries(limit=10) == []
+
+        impl._config.memory_auto_extraction_enabled = True
+        for content in (
+            "After re-enable turn one.",
+            "After re-enable turn two.",
+            "After re-enable turn three.",
+        ):
+            services.transcript_store.append(
+                session.id,
+                role="user",
+                content=content,
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+
+        async def _reenabled_summarize(entries):
+            assert len(entries) == 3
+            assert all("opted-out demo" not in entry.content_preview for entry in entries)
+            return [
+                MemorySummaryProposal(
+                    entry_type="note",
+                    key="conversation.after_reenable",
+                    value="post opt-out turns only",
+                    confidence=0.9,
+                )
+            ]
+
+        monkeypatch.setattr(
+            impl._conversation_summarizer,
+            "summarize_entries",
+            _reenabled_summarize,
+        )
+
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+        )
+
+        entries = services.memory_manager.list_entries(limit=10)
+        assert [entry.key for entry in entries] == ["conversation.after_reenable"]
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_gh19_conversation_summarizer_skips_below_confidence_threshold(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

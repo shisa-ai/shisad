@@ -11647,13 +11647,16 @@ class SessionImplMixin(HandlerMixinBase):
             summarized_count = 0
         summarized_count = max(0, min(summarized_count, len(conversational_entries)))
         pending_entries = conversational_entries[summarized_count:]
-        if len(pending_entries) < interval:
-            return
         if not self._config.memory_auto_extraction_enabled:
-            session.metadata["summarized_entry_count"] = len(conversational_entries)
-            session.metadata["last_summary_skipped_at"] = datetime.now(UTC).isoformat()
-            session.metadata["last_summary_skipped_reason"] = "memory_auto_extraction_disabled"
-            self._session_manager.persist(sid)
+            if pending_entries:
+                session.metadata["summarized_entry_count"] = len(conversational_entries)
+                session.metadata["last_summary_skipped_at"] = datetime.now(UTC).isoformat()
+                session.metadata["last_summary_skipped_reason"] = (
+                    "memory_auto_extraction_disabled"
+                )
+                self._session_manager.persist(sid)
+            return
+        if len(pending_entries) < interval:
             return
 
         try:
