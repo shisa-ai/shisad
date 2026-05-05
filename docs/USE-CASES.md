@@ -17,9 +17,9 @@ This document catalogs concrete personal AI assistant use cases drawn from real-
 | Status | Count | Description |
 |--------|-------|-------------|
 | **Supported (v0.3)** | 7 | Works today: chat, reminders, lists, web research, shell/fs/git ops, identity routing |
-| **Partial** | 26 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
-| **Planned** | 2 | Architecture designed, not runtime-wired (memory hierarchy, personal knowledge base) |
-| **Missing** | 27 | Needs new connectors, skills, or architectural work |
+| **Partial** | 25 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
+| **Planned** | 1 | Architecture designed, not runtime-wired for full personal knowledge base / RAG |
+| **Missing** | 29 | Needs new connectors, skills, or architectural work |
 
 ### Top 10 Most-Wanted Use Cases (by community frequency)
 
@@ -32,7 +32,7 @@ These are the most commonly cited use cases across all source articles, rank-ord
 | **3** | **Morning briefing (full)** | Partial | Needs email + calendar to be useful | **v0.7** |
 | **4** | **Attachment pipeline (voice + image)** | Partial | Local bounded manifest ingest in `v0.6.6`; STT/OCR/channel download plumbing still needed | **v0.7** |
 | **5** | **Code generation / dev workflows** | Missing | Sandbox + proposal/apply workflow | **v0.4** |
-| **6** | **Memory / preference learning** | Planned | Memory foundation + write-gating/runtime integration | **v0.7** |
+| **6** | **Memory / preference learning** | Partial | Structured memory and configurable extraction exist; richer semantic preference schema/extraction still needed | **v0.7+** |
 | **7** | **Smart home control** | Missing | HomeAssistant / Hue skill | v0.6+ |
 | **8** | **Group chat @mention gating** | Partial | Per-channel routing config + group-scoped policy model | **v0.7 (stretch)** |
 | **9** | **Scheduled task guardrails** | Partial | Task cancellation propagation, output sanitization | **v0.4** |
@@ -46,7 +46,7 @@ These are the most commonly cited use cases across all source articles, rank-ord
    package tracking, morning briefings, weekly reports, job search,
    transcription, OCR, and other downstream assistant workflows.
 
-Some of the 26 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope. Browser automation moved into the `v0.6` baseline once the sandboxed tool surface and confirmation boundaries landed; authenticated/admin-heavy follow-ons remain future work.
+Some of the 25 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope. Browser automation moved into the `v0.6` baseline once the sandboxed tool surface and confirmation boundaries landed; authenticated/admin-heavy follow-ons remain future work.
 
 ---
 
@@ -769,8 +769,8 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Planned (architecture designed): memory hierarchy with semantic search via embeddings |
-| **Gap** | Memory system not yet runtime-wired. No bulk URL ingestion. No web content indexing pipeline. |
+| **shisad support** | Planned (architecture designed): full RAG over ingested URLs/articles/notes with embeddings; memory foundation exists |
+| **Gap** | No bulk URL ingestion. No web content indexing pipeline. No user-facing RAG query workflow over indexed content. |
 | **Needed** | Memory hierarchy implementation. Web content ingestion skill (fetch, parse, chunk, embed). Query interface over personal knowledge base. |
 | **Security notes** | All ingested web content is untrusted. Must go through ContentFirewall before indexing. Taint persists in embeddings. RAG retrieval returns sanitized evidence with provenance + risk score. This is exactly what shisad's memory architecture is designed for. |
 
@@ -929,7 +929,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Use Case | What's Needed | Target | Notes |
 |----------|--------------|--------|-------|
 | Group chat @mention gating | Per-channel routing rules | v0.7 (stretch) | Config-driven, but now coupled to group-scoped policy/routing work |
-| Memory / preference learning | Memory hierarchy implementation | v0.7+ | Core architecture designed but not runtime-wired |
+| Richer preference learning | Dedicated preference schema + high-confidence extraction | v0.7+ | Memory foundation is runtime-wired; richer semantic extraction/schema remains planned |
 | Automatic fact extraction | LLM-driven extraction pipeline | v0.7+ | Effectively part of the memory/extraction lane because the writes need the gated memory stack, not locked `v0.4` |
 | Streaming/chunked replies | TUI/Web UI progress + status streaming over the daemon event stream | v0.8 | Reframed as operator UX for TUI/Web UI, not token streaming for Discord/Telegram-style messaging channels |
 | Voice/speech input (STT) | Local manifest ingest exists; STT + channel plumbing still needed | v0.7 | Adversarial audio is injection vector |
@@ -1076,7 +1076,7 @@ Complete per-use-case breakdown across all 62 cataloged use cases.
 | 12.2 | Remote shell/fs/git ops from mobile | `fs.read/write` + `git.*` + shell (confirmation-gated) |
 | 28.1 | Self-extending agent (skill proposals) | Clean-room proposal workflow (proposal-only, no auto-apply) |
 
-### Partial (Foundation Exists, Needs Skills/Wiring) — 24
+### Partial (Foundation Exists, Needs Skills/Wiring) — 25
 
 | # | Use Case | What Works | What's Missing |
 |---|----------|-----------|---------------|
@@ -1084,6 +1084,7 @@ Complete per-use-case breakdown across all 62 cataloged use cases.
 | 4.2 | Cross-user reminders | Scheduler exists | Cross-user delivery path |
 | 5.1 | Research flights/topics | `web.search` + `web.fetch` | Structured travel APIs |
 | 5.3 | Flight tracking | `web.fetch` can scrape | No structured flight API |
+| 8.1 | Learn user preferences over time | Structured memory, explicit notes/preferences, and configurable extraction | Richer semantic preference schema/extraction |
 | 8.2 | Family context awareness | Notes can store manually | No family-specific relationship schema or high-confidence extraction |
 | 9.1 | Tiered access levels | Per-user trust + PEP | No "named agents" concept |
 | 9.2 | Agent-to-agent escalation | PEP confirmation gates | No explicit escalation protocol |
@@ -1105,11 +1106,10 @@ Complete per-use-case breakdown across all 62 cataloged use cases.
 | 24.3 | Private document assistant (local RAG) | `fs.read` + local model routing | No chunking/embedding pipeline |
 | 25.2 | Household task coordination | Cross-user messaging + reminders | No polling/voting mechanism |
 
-### Planned (Architecture Designed, Not Wired) — 2
+### Planned (Architecture Designed, Not Wired) — 1
 
 | # | Use Case | Design Status |
 |---|----------|--------------|
-| 8.1 | Learn user preferences over time | Memory hierarchy designed |
 | 24.2 | Personal knowledge base / RAG | Memory + embedding architecture designed |
 
 ### Missing (Need New Skills/Connectors) — 29
