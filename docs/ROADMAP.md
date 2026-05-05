@@ -57,7 +57,8 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   blind signing or an opaque review surface.
 - `v0.7.1` is published: the v0.7 line has structured long-term memory with
   separate Identity, Active Attention, Recall, Procedural, and Evidence
-  surfaces; review-gated memory writes; derived graph/consolidation
+  surfaces; provenance-gated memory writes with review/confirmation on
+  high-risk paths; derived graph/consolidation
   foundations; and bug-fix point-release improvements for command-chat,
   lockdown recovery, memory scoping, and state-inspection UX.
 
@@ -262,8 +263,8 @@ TOTP entry remain deferred to `v0.8.0`.
 - Status (2026-04-25): published on GitHub Releases and PyPI.
 - Five memory surfaces land together: Identity, Active Attention, Recall,
   Procedural (manual invoke), and Evidence.
-- Memory writes are versioned, provenance-bearing, review-gated, and stored in
-  the SQLite-backed memory substrate.
+- Memory writes are versioned, provenance-bearing, review/confirmation-gated on
+  high-risk paths, and stored in the SQLite-backed memory substrate.
 - Derived graph query/export and consolidation foundations land with explicit
   user confirmation for promoted identity and strong-update paths.
 

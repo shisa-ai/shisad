@@ -32,7 +32,7 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Features
 
-- **Structured long-term memory** — separate identity, active-attention, recall, procedural, and evidence surfaces share a versioned local store with review-gated writes and auditable provenance
+- **Structured long-term memory** — separate identity, active-attention, recall, procedural, and evidence surfaces share a versioned local store with provenance-gated writes, review gates for high-risk paths, and auditable provenance
 - **COMMAND/TASK orchestration runtime** — persistent COMMAND sessions hand off delegated work to isolated TASK sessions with taint-safe summaries, approval provenance, and explicit task envelopes
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
@@ -53,7 +53,8 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 This repo is public and still pre-alpha. The latest published line is `v0.7.1`
 on GitHub Releases and PyPI. The v0.7 line adds structured long-term memory
 with separate identity, active-attention, recall, procedural-skill, and evidence
-surfaces; review-gated memory writes; derived graph/consolidation foundations;
+surfaces; provenance-gated memory writes with review/confirmation on high-risk
+paths; derived graph/consolidation foundations;
 and bug-fix point-release improvements for command-chat, lockdown recovery,
 memory scoping, and state-inspection UX.
 

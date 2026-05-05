@@ -227,7 +227,14 @@ Memory is a high-value attack surface. Research ([MINJA](https://arxiv.org/abs/2
 shisad's defense is **preventive write gating** — making poisoned entries hard to store in the first place, rather than trying to detect and remove them after the fact:
 
 - **Instruction-like pattern rejection**: deterministic filter rejects content that resembles directives ("always do X", "ignore policy", "never do Y") before it reaches storage. Memory stores facts and preferences, never instructions.
-- **Provenance-gated writes**: every memory write requires structured provenance metadata (source, origin, actor, timestamp, capability snapshot). Writes from untrusted sources (web content, tool output, email) require user confirmation before persisting to durable storage.
+- **Provenance-gated writes**: every memory write requires structured provenance
+  metadata (source, origin, actor, timestamp, capability snapshot). High-risk
+  external-source writes such as web content, tool output, and email route to
+  confirmation or review when the trust matrix requires it. Session-derived
+  conversation-summary extraction is owner-scoped, provenance-marked, and
+  auto-accepted by default; operators can disable it with
+  `SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED=false` or raise
+  `SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD`.
 - **Subagent write restriction**: task agents handling untrusted content cannot write to long-term memory directly — they can only propose writes via structured outputs with provenance pointers. The orchestrating agent reviews proposals in a clean context with no untrusted content present. This structurally breaks the MINJA attack chain where the agent's own reasoning stores malicious entries.
 - **Taint persistence through storage**: provenance and taint labels are immutable properties of stored entries. Processing, summarizing, or combining content does not upgrade its trust level — derived content inherits the most restrictive taint of its sources.
 - **Append-only corrections**: updates create new records referencing what they supersede, preserving full history for audit and rollback. No silent overwrites.
