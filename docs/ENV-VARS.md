@@ -113,7 +113,20 @@ Assistant/persona:
 - `SHISAD_ASSISTANT_PERSONA_SOUL_MAX_BYTES`
 - `SHISAD_CONTEXT_WINDOW`
 - `SHISAD_SUMMARIZE_INTERVAL`
+- `SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED`
+- `SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD`
 - `SHISAD_PLANNER_MEMORY_TOP_K`
+
+Memory auto-extraction notes:
+
+- Session-derived conversation summaries can write durable, owner-scoped memory
+  by default when `memory.write` is available.
+- Set `SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED=false` to keep ordinary chat turns
+  from creating automatic memory writes while leaving explicit memory tools and
+  recall available.
+- Set `SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD` to a value from `0`
+  to `1` to discard lower-confidence automatic extraction proposals before
+  they are written.
 
 SOUL.md notes:
 

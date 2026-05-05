@@ -262,6 +262,13 @@ uv run shisad session list
 uv run shisad session message <session-id> "summarize current priorities"
 ```
 
+Session-derived conversation summaries can create owner-scoped durable memory
+entries by default when the session has `memory.write`. For clean demos or
+workspaces where ordinary chat should not create automatic memory, set
+`SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED=false`. Operators can also raise
+`SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD` from `0` toward `1` to keep
+only higher-confidence automatic extraction proposals.
+
 ### Notes and todos
 
 ```bash

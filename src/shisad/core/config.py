@@ -385,6 +385,21 @@ class DaemonConfig(BaseSettings):
             "summarization to durable memory."
         ),
     )
+    memory_auto_extraction_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable automatic session-derived memory extraction from conversation summaries."
+        ),
+    )
+    memory_auto_extraction_confidence_threshold: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum proposal confidence required before automatic conversation "
+            "summaries are written to memory."
+        ),
+    )
     planner_memory_top_k: int = Field(
         default=5,
         ge=1,

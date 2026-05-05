@@ -38,6 +38,16 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
 
 
+def test_gh19_memory_auto_extraction_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED", "false")
+    monkeypatch.setenv("SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD", "0.85")
+
+    config = DaemonConfig()
+
+    assert config.memory_auto_extraction_enabled is False
+    assert config.memory_auto_extraction_confidence_threshold == pytest.approx(0.85)
+
+
 @pytest.mark.asyncio
 async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
     tmp_path,
@@ -129,5 +139,123 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
             record.chunk_id == summary_records[0].chunk_id for record in alice_recall.results
         )
         assert all(record.chunk_id != summary_records[0].chunk_id for record in bob_recall.results)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh19_conversation_summarizer_respects_auto_extraction_disabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        summarize_interval=1,
+        memory_auto_extraction_enabled=False,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        session = services.session_manager.create(
+            channel="cli",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Hello, just checking the demo workspace.",
+            taint_labels={TaintLabel.UNTRUSTED},
+        )
+
+        async def _summarize(_entries):
+            raise AssertionError("auto-extraction disabled should not call the summarizer")
+
+        monkeypatch.setattr(impl._conversation_summarizer, "summarize_entries", _summarize)
+
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+        )
+
+        assert services.memory_manager.list_entries(limit=10) == []
+        assert services.ingestion.list_records(limit=20) == []
+        assert session.metadata["summarized_entry_count"] == 1
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh19_conversation_summarizer_skips_below_confidence_threshold(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        summarize_interval=1,
+        memory_auto_extraction_confidence_threshold=0.8,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        session = services.session_manager.create(
+            channel="cli",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Remember that I prefer concise daily updates.",
+            taint_labels={TaintLabel.UNTRUSTED},
+        )
+
+        async def _summarize(_entries):
+            return [
+                MemorySummaryProposal(
+                    entry_type="note",
+                    key="conversation.low_confidence_guess",
+                    value="possibly likes demos",
+                    confidence=0.5,
+                ),
+                MemorySummaryProposal(
+                    entry_type="note",
+                    key="conversation.preference.updates",
+                    value="concise daily updates",
+                    confidence=0.95,
+                ),
+            ]
+
+        monkeypatch.setattr(impl._conversation_summarizer, "summarize_entries", _summarize)
+
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+        )
+
+        entries = services.memory_manager.list_entries(limit=10)
+        assert [entry.key for entry in entries] == ["conversation.preference.updates"]
+        assert entries[0].confidence == pytest.approx(0.95)
+
+        summary_records = [
+            record
+            for record in services.ingestion.list_records(limit=20)
+            if record.source_id == entries[0].source_id
+        ]
+        assert len(summary_records) == 1
+        assert (
+            summary_records[0].content_sanitized
+            == "conversation.preference.updates: concise daily updates"
+        )
     finally:
         await services.shutdown()

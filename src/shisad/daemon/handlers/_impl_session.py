@@ -11649,6 +11649,12 @@ class SessionImplMixin(HandlerMixinBase):
         pending_entries = conversational_entries[summarized_count:]
         if len(pending_entries) < interval:
             return
+        if not self._config.memory_auto_extraction_enabled:
+            session.metadata["summarized_entry_count"] = len(conversational_entries)
+            session.metadata["last_summary_skipped_at"] = datetime.now(UTC).isoformat()
+            session.metadata["last_summary_skipped_reason"] = "memory_auto_extraction_disabled"
+            self._session_manager.persist(sid)
+            return
 
         try:
             proposals = await self._conversation_summarizer.summarize_entries(pending_entries)
@@ -11666,9 +11672,15 @@ class SessionImplMixin(HandlerMixinBase):
         allow_count = 0
         confirmation_count = 0
         reject_count = 0
+        skipped_low_confidence_count = 0
+        confidence_threshold = self._config.memory_auto_extraction_confidence_threshold
         summary_source_id = _conversation_summary_source_id(pending_entries)
 
         for proposal in proposals:
+            proposal_confidence = float(proposal.confidence)
+            if proposal_confidence < confidence_threshold:
+                skipped_low_confidence_count += 1
+                continue
             write_context = self._memory_ingress_registry.mint(
                 source_origin="consolidation_derived",
                 channel_trust="consolidation",
@@ -11683,7 +11695,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "entry_type": proposal.entry_type,
                 "key": proposal.key,
                 "value": proposal.value,
-                "confidence": float(proposal.confidence),
+                "confidence": proposal_confidence,
                 "user_id": str(session.user_id),
                 "workspace_id": str(session.workspace_id),
             }
@@ -11721,14 +11733,15 @@ class SessionImplMixin(HandlerMixinBase):
         session.metadata["last_summary_at"] = datetime.now(UTC).isoformat()
         self._session_manager.persist(sid)
 
-        if allow_count or confirmation_count or reject_count:
+        if allow_count or confirmation_count or reject_count or skipped_low_confidence_count:
             self._transcript_store.append(
                 sid,
                 role="summary",
                 content=(
                     "Conversation summarizer processed entries: "
                     f"allow={allow_count}, "
-                    f"require_confirmation={confirmation_count}, reject={reject_count}"
+                    f"require_confirmation={confirmation_count}, reject={reject_count}, "
+                    f"skipped_low_confidence={skipped_low_confidence_count}"
                 ),
                 taint_labels=source_taints,
                 metadata={
