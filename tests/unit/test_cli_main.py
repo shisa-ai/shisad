@@ -1276,6 +1276,9 @@ def test_memory_list_flags_override_owner_scope_env(
     [
         ["--user", "flag-user"],
         ["--workspace", "flag-ws"],
+        ["--user", ""],
+        ["--workspace", ""],
+        ["--user", "", "--workspace", ""],
     ],
 )
 def test_memory_list_rejects_partial_flags_even_with_owner_scope_env(

@@ -207,14 +207,14 @@ def _required_owner_scope_payload(
 
 
 def _required_owner_scope_payload_from_flags_or_env(
-    user_id: str,
-    workspace_id: str,
+    user_id: str | None,
+    workspace_id: str | None,
     *,
     include_unowned: bool = False,
 ) -> dict[str, object]:
-    explicit_user_id = user_id.strip()
-    explicit_workspace_id = workspace_id.strip()
-    if explicit_user_id or explicit_workspace_id:
+    if user_id is not None or workspace_id is not None:
+        explicit_user_id = (user_id or "").strip()
+        explicit_workspace_id = (workspace_id or "").strip()
         owner_user_id = explicit_user_id
         owner_workspace_id = explicit_workspace_id
     else:
@@ -2822,11 +2822,11 @@ def memory() -> None:
 
 @memory.command("list")
 @click.option("--limit", default=100, help="Maximum entries")
-@click.option("--user", "user_id", default="", help="Owner user ID for personal memory.")
+@click.option("--user", "user_id", default=None, help="Owner user ID for personal memory.")
 @click.option(
     "--workspace",
     "workspace_id",
-    default="",
+    default=None,
     help="Owner workspace ID for personal memory.",
 )
 @click.option(
@@ -2842,8 +2842,8 @@ def memory() -> None:
 )
 def memory_list(
     limit: int,
-    user_id: str,
-    workspace_id: str,
+    user_id: str | None,
+    workspace_id: str | None,
     include_unowned: bool,
     as_json: bool,
 ) -> None:
