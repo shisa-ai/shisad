@@ -298,10 +298,10 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Planned (architecture designed): semantic memory, fact extraction, preference storage |
-| **Gap** | Memory consolidation and automatic fact extraction not yet implemented in runtime |
-| **Needed** | Memory hierarchy implementation: working -> short-term -> long-term -> semantic |
-| **Security notes** | Memory is a persistence/poisoning surface. All writes gated. Provenance required. Taint survives summarization. User can inspect, correct, delete memories. |
+| **shisad support** | Partial: structured memory, explicit notes/preferences, and configurable session-summary extraction exist; richer semantic preference extraction remains planned |
+| **Gap** | Session-summary extraction is coarse and write-policy gated; dedicated entity/preference extraction with stronger schemas is not yet complete |
+| **Needed** | Richer semantic memory: working -> short-term -> long-term -> entity/preference graph |
+| **Security notes** | Memory is a persistence/poisoning surface. Writes require provenance and pass write policy; high-risk paths route to confirmation/review. Taint survives summarization. User can inspect, correct, delete memories. |
 
 #### 8.2 Family Context Awareness
 
@@ -309,8 +309,8 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Partial: notes/todos can store this manually; no automatic extraction |
-| **Gap** | No entity/relationship graph, no automatic extraction from conversations |
+| **shisad support** | Partial: notes/todos can store this manually, and coarse session-summary extraction can create memory when enabled |
+| **Gap** | No dedicated entity/relationship graph or high-confidence family-relationship extraction from conversations |
 | **Needed** | Semantic memory with entity-relationship storage (`remember_fact(subject, predicate, object)`) |
 | **Security notes** | Family information is PII. PII redaction must apply to outbound content. Memory stores need access controls per user context. |
 
