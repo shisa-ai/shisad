@@ -212,8 +212,14 @@ def _required_owner_scope_payload_from_flags_or_env(
     *,
     include_unowned: bool = False,
 ) -> dict[str, object]:
-    owner_user_id = user_id.strip() or os.environ.get(_USER_ID_ENV, "").strip()
-    owner_workspace_id = workspace_id.strip() or os.environ.get(_WORKSPACE_ID_ENV, "").strip()
+    explicit_user_id = user_id.strip()
+    explicit_workspace_id = workspace_id.strip()
+    if explicit_user_id or explicit_workspace_id:
+        owner_user_id = explicit_user_id
+        owner_workspace_id = explicit_workspace_id
+    else:
+        owner_user_id = os.environ.get(_USER_ID_ENV, "").strip()
+        owner_workspace_id = os.environ.get(_WORKSPACE_ID_ENV, "").strip()
     if bool(owner_user_id) != bool(owner_workspace_id):
         raise click.ClickException(_OWNER_SCOPE_REQUIRED_HINT)
     if not owner_user_id:
