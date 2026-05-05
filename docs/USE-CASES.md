@@ -310,8 +310,8 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Aspect | Status |
 |--------|--------|
 | **shisad support** | Partial: notes/todos can store this manually, and coarse session-summary extraction can create memory when enabled |
-| **Gap** | No dedicated entity/relationship graph or high-confidence family-relationship extraction from conversations |
-| **Needed** | Semantic memory with entity-relationship storage (`remember_fact(subject, predicate, object)`) |
+| **Gap** | Derived graph query/export exists, but there is no family-specific relationship schema or high-confidence family-relationship extraction from conversations |
+| **Needed** | Family relationship schema and high-confidence extraction on top of semantic memory / derived graph |
 | **Security notes** | Family information is PII. PII redaction must apply to outbound content. Memory stores need access controls per user context. |
 
 ---
@@ -1084,7 +1084,7 @@ Complete per-use-case breakdown across all 62 cataloged use cases.
 | 4.2 | Cross-user reminders | Scheduler exists | Cross-user delivery path |
 | 5.1 | Research flights/topics | `web.search` + `web.fetch` | Structured travel APIs |
 | 5.3 | Flight tracking | `web.fetch` can scrape | No structured flight API |
-| 8.2 | Family context awareness | Notes can store manually | No entity/relationship graph |
+| 8.2 | Family context awareness | Notes can store manually | No family-specific relationship schema or high-confidence extraction |
 | 9.1 | Tiered access levels | Per-user trust + PEP | No "named agents" concept |
 | 9.2 | Agent-to-agent escalation | PEP confirmation gates | No explicit escalation protocol |
 | 10.1 | Morning briefing | Scheduler + delivery | Calendar/email connectors missing |
