@@ -33,6 +33,36 @@ def _invoke_ok(runner: CliRunner, args: list[str]) -> Result:
     return result
 
 
+def _audit_entry(
+    event_id: str,
+    session_id: str,
+    *,
+    event_type: str = "ToolExecuted",
+    actor: str = "policy_loop",
+    timestamp: str = "2026-05-01T00:00:00+00:00",
+    data: dict[str, object] | None = None,
+) -> dict[str, object]:
+    entry_data: dict[str, object] = {"session_id": session_id}
+    if data:
+        entry_data.update(data)
+    data_hash = hashlib.sha256(json.dumps(entry_data, sort_keys=True).encode()).hexdigest()
+    return {
+        "event_id": event_id,
+        "timestamp": timestamp,
+        "event_type": event_type,
+        "actor": actor,
+        "action": event_type,
+        "target": str(entry_data.get("tool_name") or ""),
+        "decision": "allow",
+        "reasoning": "",
+        "session_id": session_id,
+        "data": entry_data,
+        "data_hash": data_hash,
+        "previous_event_hash": "0" * 64,
+        "previous_hash": "0" * 64,
+    }
+
+
 def test_cli_commands_route_through_rpc_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2047,6 +2077,43 @@ def test_m9_audit_query_defaults_to_current_session_cache(
     assert "session=s-other" not in result.output
 
 
+def test_gh18_audit_query_json_defaults_to_current_session_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    cache_path = tmp_path / "config" / "last-session"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("s-cache\n", encoding="utf-8")
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        json.dumps(_audit_entry("e-other", "s-other")) + "\n"
+        + json.dumps(
+            _audit_entry(
+                "e-cache",
+                "s-cache",
+                event_type="ToolRejected",
+                data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["audit", "query", "--json"])
+
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.output)
+    assert [entry["event_id"] for entry in parsed] == ["e-cache"]
+    assert parsed[0]["event_type"] == "ToolRejected"
+    assert parsed[0]["data"]["reason_code"] == "pep:resource_denied"
+    assert "session=s-cache" not in result.output
+
+
 def test_m9_audit_query_all_preserves_unfiltered_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2088,6 +2155,81 @@ def test_m9_audit_query_all_preserves_unfiltered_mode(
     assert result.exit_code == 0, result.output
     assert "session=s-one" in result.output
     assert "session=s-two" in result.output
+
+
+def test_gh18_audit_query_json_preserves_type_and_all_filters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        json.dumps(_audit_entry("e-one", "s-one")) + "\n"
+        + json.dumps(
+            _audit_entry(
+                "e-alert",
+                "s-two",
+                event_type="OutputFirewallAlert",
+                data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["audit", "query", "--all", "--type", "OutputFirewallAlert", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.output)
+    assert len(parsed) == 1
+    assert parsed[0]["event_id"] == "e-alert"
+    assert parsed[0]["session_id"] == "s-two"
+    assert parsed[0]["data"]["reason_codes"] == [
+        "malicious_url",
+        "entropy_secret_redaction",
+    ]
+
+
+def test_gh18_audit_query_json_empty_results_are_array(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    audit_path = config.data_dir / "audit.jsonl"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps(_audit_entry("e-one", "s-one")) + "\n", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["audit", "query", "--all", "--type", "DoesNotExist", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == []
+    assert "No matching events" not in result.output
+
+
+def test_gh18_audit_query_json_missing_log_is_empty_array(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["audit", "query", "--all", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == []
+    assert "No audit log found" not in result.output
 
 
 def test_m9_audit_query_rejects_all_with_session(

@@ -1518,6 +1518,7 @@ def audit() -> None:
 @click.option("--all", "all_sessions", is_flag=True, help="Show audit events for all sessions")
 @click.option("--actor", "actor", help="Filter by actor")
 @click.option("--limit", default=100, help="Maximum results")
+@click.option("--json", "as_json", is_flag=True, help="Print matching audit events as JSON.")
 @click.option(
     "--data-dir",
     "data_dir_override",
@@ -1536,6 +1537,7 @@ def audit_query(
     all_sessions: bool,
     actor: str | None,
     limit: int,
+    as_json: bool,
     data_dir_override: Path | None,
 ) -> None:
     """Query audit log entries.
@@ -1553,6 +1555,9 @@ def audit_query(
     resolved_session_id = "" if all_sessions else _resolve_session_id(session_id)
 
     if not audit_path.exists():
+        if as_json:
+            click.echo(json.dumps([], sort_keys=True))
+            return
         click.echo(f"No audit log found at {audit_path}")
         return
 
@@ -1571,6 +1576,10 @@ def audit_query(
         actor=actor,
         limit=limit,
     )
+
+    if as_json:
+        click.echo(json.dumps(results, sort_keys=True))
+        return
 
     if not results:
         click.echo("No matching events")
