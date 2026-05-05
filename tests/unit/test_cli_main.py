@@ -1116,6 +1116,117 @@ def test_action_list_empty_message_matches_requested_status(
     ) in calls
 
 
+@pytest.mark.parametrize("extra_args", [[], ["--json"]])
+def test_memory_list_requires_owner_scope_before_rpc(
+    extra_args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if response_model is None:
+            return {"entries": [], "count": 0}
+        return response_model.model_validate({"entries": [], "count": 0})  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["memory", "list", *extra_args])
+
+    assert result.exit_code == 1
+    assert (
+        "--user and --workspace are required; pass --user/--workspace "
+        "or set SHISAD_USER/SHISAD_WORKSPACE."
+    ) in result.output
+    assert "MemoryListParams" not in result.output
+    assert "errors.pydantic.dev" not in result.output
+    assert calls == []
+
+
+def test_memory_list_uses_owner_scope_env_before_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setenv("SHISAD_USER", "alice")
+    monkeypatch.setenv("SHISAD_WORKSPACE", "ws-1")
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if response_model is None:
+            return {"entries": [], "count": 0}
+        return response_model.model_validate({"entries": [], "count": 0})  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = _invoke_ok(runner, ["memory", "list", "--limit", "7"])
+
+    assert result.output == ""
+    assert calls == [
+        ("memory.list", {"limit": 7, "user_id": "alice", "workspace_id": "ws-1"})
+    ]
+
+
+def test_memory_list_flags_override_owner_scope_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setenv("SHISAD_USER", "env-user")
+    monkeypatch.setenv("SHISAD_WORKSPACE", "env-ws")
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if response_model is None:
+            return {"entries": [], "count": 0}
+        return response_model.model_validate({"entries": [], "count": 0})  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    _invoke_ok(
+        runner,
+        [
+            "memory",
+            "list",
+            "--limit",
+            "3",
+            "--user",
+            "flag-user",
+            "--workspace",
+            "flag-ws",
+        ],
+    )
+
+    assert calls == [
+        ("memory.list", {"limit": 3, "user_id": "flag-user", "workspace_id": "flag-ws"})
+    ]
+
+
 def test_memory_write_preference_requires_predicate_before_rpc() -> None:
     runner = CliRunner()
 

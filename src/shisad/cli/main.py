@@ -141,7 +141,13 @@ _MEMORY_PREFERENCE_ENTRY_TYPES = {"preference", "soft_constraint"}
 _MEMORY_PREFERENCE_PREDICATE_RE = re.compile(r"^[a-z][a-z0-9_]*\([^()\n]{1,200}\)$")
 _MEMORY_DISALLOWED_PREFERENCE_PREFIXES = ("always", "never", "ignore", "prioritize")
 _SESSION_ID_ENV = "SHISAD_SESSION_ID"
+_USER_ID_ENV = "SHISAD_USER"
+_WORKSPACE_ID_ENV = "SHISAD_WORKSPACE"
 _LAST_SESSION_FILENAME = "last-session"
+_OWNER_SCOPE_REQUIRED_HINT = (
+    "--user and --workspace are required; pass --user/--workspace "
+    "or set SHISAD_USER/SHISAD_WORKSPACE."
+)
 
 
 def _validate_memory_write_predicate(entry_type: str, predicate: str) -> str:
@@ -197,6 +203,27 @@ def _required_owner_scope_payload(
     payload = _owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
     if "user_id" not in payload:
         raise click.ClickException("--user and --workspace are required.")
+    return payload
+
+
+def _required_owner_scope_payload_from_flags_or_env(
+    user_id: str,
+    workspace_id: str,
+    *,
+    include_unowned: bool = False,
+) -> dict[str, object]:
+    owner_user_id = user_id.strip() or os.environ.get(_USER_ID_ENV, "").strip()
+    owner_workspace_id = workspace_id.strip() or os.environ.get(_WORKSPACE_ID_ENV, "").strip()
+    if bool(owner_user_id) != bool(owner_workspace_id):
+        raise click.ClickException(_OWNER_SCOPE_REQUIRED_HINT)
+    if not owner_user_id:
+        raise click.ClickException(_OWNER_SCOPE_REQUIRED_HINT)
+    payload: dict[str, object] = {
+        "user_id": owner_user_id,
+        "workspace_id": owner_workspace_id,
+    }
+    if include_unowned:
+        payload["include_unowned"] = True
     return payload
 
 
@@ -2816,7 +2843,13 @@ def memory_list(
 ) -> None:
     config = _get_config()
     payload: dict[str, object] = {"limit": limit}
-    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
+    payload.update(
+        _required_owner_scope_payload_from_flags_or_env(
+            user_id,
+            workspace_id,
+            include_unowned=include_unowned,
+        )
+    )
     result = rpc_call(config, "memory.list", payload, response_model=MemoryListResult)
     if as_json:
         click.echo(_dump_model(result))
