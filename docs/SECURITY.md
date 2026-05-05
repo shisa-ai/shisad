@@ -231,9 +231,11 @@ shisad's defense is **preventive write gating** — making poisoned entries hard
   metadata (source, origin, actor, timestamp, capability snapshot). High-risk
   external-source writes such as web content, tool output, and email route to
   confirmation or review when the trust matrix requires it. Session-derived
-  conversation-summary extraction is owner-scoped, provenance-marked, and
-  auto-accepted by default; operators can disable it with
-  `SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED=false` or raise
+  conversation-summary extraction is owner-scoped and provenance-marked; by
+  default, the summarizer attempts writes through an auto-accepted ingress path,
+  but each proposed memory write still passes write policy and can be allowed,
+  rejected, or confirmation/review-routed. Operators can disable automatic
+  extraction with `SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED=false` or raise
   `SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD`.
 - **Subagent write restriction**: task agents handling untrusted content cannot write to long-term memory directly — they can only propose writes via structured outputs with provenance pointers. The orchestrating agent reviews proposals in a clean context with no untrusted content present. This structurally breaks the MINJA attack chain where the agent's own reasoning stores malicious entries.
 - **Taint persistence through storage**: provenance and taint labels are immutable properties of stored entries. Processing, summarizing, or combining content does not upgrade its trust level — derived content inherits the most restrictive taint of its sources.
