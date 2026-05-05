@@ -119,8 +119,9 @@ Assistant/persona:
 
 Memory auto-extraction notes:
 
-- Session-derived conversation summaries can write durable, owner-scoped memory
-  by default when `memory.write` is available.
+- Session-derived conversation summaries can write durable memory by default
+  when `memory.write` is available; resulting writes are owner-scoped when the
+  session has a complete user/workspace owner tuple.
 - Set `SHISAD_MEMORY_AUTO_EXTRACTION_ENABLED=false` to keep ordinary chat turns
   from creating automatic memory writes while leaving explicit memory tools and
   recall available.
