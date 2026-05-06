@@ -404,10 +404,15 @@ async def test_m2_t18_output_firewall_alert_is_audited(
         tools: list[dict[str, object]] | None = None,
     ) -> PlannerResult:
         _ = (self, user_content, context, tools)
+        assistant_response = (
+            'Here is the malformed link: http://[2001:db8::1"'
+            if "malformed" in user_content
+            else "Here is the suspicious link: https://evil.com/exfil"
+        )
         return PlannerResult(
             output=PlannerOutput(
                 actions=[],
-                assistant_response="Here is the suspicious link: https://evil.com/exfil",
+                assistant_response=assistant_response,
             ),
             evaluated=[],
             attempts=1,
@@ -466,6 +471,46 @@ async def test_m2_t18_output_firewall_alert_is_audited(
                 break
             await asyncio.sleep(0.02)
         assert events["total"] >= 1
+
+        malformed_created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        malformed_sid = malformed_created["session_id"]
+        malformed_reply = await client.call(
+            "session.message",
+            {
+                "session_id": malformed_sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "summarize this malformed link",
+            },
+        )
+        assert malformed_reply["response"] == (
+            "Response blocked by output policy. (reason: malicious_url; "
+            f"see `shisad audit query --type OutputFirewallAlert --session {malformed_sid} --json` "
+            "for detail.)"
+        )
+        assert "malformed_url" in malformed_reply["output_policy"]["reason_codes"]
+        malformed_events = {"total": 0, "events": []}
+        end = asyncio.get_running_loop().time() + 1.0
+        while asyncio.get_running_loop().time() < end:
+            malformed_events = await client.call(
+                "audit.query",
+                {
+                    "event_type": "OutputFirewallAlert",
+                    "session_id": malformed_sid,
+                    "limit": 10,
+                },
+            )
+            if malformed_events.get("total", 0) >= 1:
+                break
+            await asyncio.sleep(0.02)
+        assert malformed_events["total"] >= 1
+        malformed_reason_codes = malformed_events["events"][0]["data"]["reason_codes"]
+        assert "malformed_url" in malformed_reason_codes
+        assert "malicious_url" in malformed_reason_codes
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

@@ -140,6 +140,8 @@ class OutputFirewall:
         )
         if blocked:
             reason_codes.append("malicious_url")
+            if any(finding.reason == "malformed_url" for finding in url_findings):
+                reason_codes.append("malformed_url")
         elif require_confirmation:
             reason_codes.append("unallowlisted_url")
 
