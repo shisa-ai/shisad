@@ -533,7 +533,7 @@ def test_m1_plain_greeting_rewrite_ignores_greeting_prefixed_commands() -> None:
     assert rewritten is planner_result
 
 
-def test_m1_plain_greeting_rewrite_preserves_existing_tool_free_response() -> None:
+def test_m1_plain_greeting_rewrite_normalizes_existing_tool_free_response() -> None:
     planner_result = PlannerResult(
         output=PlannerOutput(assistant_response="ok", actions=[]),
         evaluated=[],
@@ -547,7 +547,10 @@ def test_m1_plain_greeting_rewrite_preserves_existing_tool_free_response() -> No
         planner_result=planner_result,
     )
 
-    assert rewritten is planner_result
+    assert rewritten is not planner_result
+    assert rewritten.output.actions == []
+    assert rewritten.evaluated == []
+    assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
 def test_rc_lus_plain_greeting_rewrite_drops_tool_call_boilerplate() -> None:
@@ -573,7 +576,7 @@ def test_rc_lus_plain_greeting_rewrite_drops_tool_call_boilerplate() -> None:
     assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
-def test_rc_lus_plain_greeting_rewrite_preserves_planner_validation_fallback() -> None:
+def test_rc_lus_plain_greeting_rewrite_normalizes_planner_validation_fallback() -> None:
     planner_result = PlannerResult(
         output=PlannerOutput(
             assistant_response="Assistant planner error (planner_output_invalid). Please retry.",
@@ -592,9 +595,7 @@ def test_rc_lus_plain_greeting_rewrite_preserves_planner_validation_fallback() -
 
     assert rewritten.output.actions == []
     assert rewritten.evaluated == []
-    assert rewritten.output.assistant_response == (
-        "Assistant planner error (planner_output_invalid). Please retry."
-    )
+    assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
 def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command() -> None:
