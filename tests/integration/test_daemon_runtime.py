@@ -13,26 +13,12 @@ from shisad.core.config import DaemonConfig
 from shisad.core.session import Session
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.daemon.runner import run_daemon
-from tests.helpers.daemon import wait_for_socket as _wait_for_socket
-
-
-def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (
-        "SHISA_API_KEY",
-        "SHISAD_MODEL_API_KEY",
-        "SHISAD_MODEL_PLANNER_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GEMINI_API_KEY",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    for var in (
-        "SHISAD_MODEL_REMOTE_ENABLED",
-        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
-        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
-        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
-    ):
-        monkeypatch.setenv(var, "false")
+from tests.helpers.daemon import (
+    clear_remote_provider_env,
+)
+from tests.helpers.daemon import (
+    wait_for_socket as _wait_for_socket,
+)
 
 
 @pytest.mark.asyncio
@@ -40,7 +26,7 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -54,6 +40,7 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
     client = ControlClient(config.socket_path)
 
     try:
+        await _wait_for_socket(config.socket_path)
         await asyncio.wait_for(started.wait(), timeout=3)
         assert config.socket_path.exists()
         await client.connect()
@@ -71,7 +58,7 @@ async def test_run_daemon_started_callback_error_does_not_stop_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -104,7 +91,7 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
     (tmp_path / "policy.yaml").write_text(
         "\n".join(
             [
@@ -194,7 +181,7 @@ async def test_m3_session_persists_across_daemon_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
