@@ -2612,8 +2612,10 @@ def test_start_debug_routes_to_autoreload_with_debug_log_level(
     def _fake_debug_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert on_started is None
+        assert on_starting is None
         captured["config"] = effective_config
 
     def _fake_foreground_start(_: DaemonConfig) -> None:
@@ -2641,8 +2643,11 @@ def test_start_default_routes_to_foreground_path(
     def _fake_foreground_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         captured["config"] = effective_config
+        if on_starting is not None:
+            on_starting(effective_config)
         if on_started is not None:
             on_started(effective_config)
 
@@ -2686,8 +2691,11 @@ def test_restart_default_shuts_down_then_starts_foreground(
     def _fake_foreground_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         captured["config"] = effective_config
+        if on_starting is not None:
+            on_starting(effective_config)
         if on_started is not None:
             on_started(effective_config)
 
@@ -2735,10 +2743,13 @@ def test_restart_default_prints_operator_confirmation(
         foreground: bool,
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
         assert debug is False
+        assert on_starting is not None
+        on_starting(config)
         assert on_started is not None
         on_started(config)
 
@@ -2790,8 +2801,11 @@ def test_restart_fresh_config_reloads_before_start(
     def _fake_foreground_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         captured["config"] = effective_config
+        if on_starting is not None:
+            on_starting(effective_config)
         if on_started is not None:
             on_started(effective_config)
 
@@ -2856,10 +2870,13 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
         foreground: bool,
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
         assert debug is False
+        assert on_starting is not None
+        on_starting(config)
         assert on_started is not None
         on_started(config)
 
@@ -2907,10 +2924,13 @@ def test_restart_start_failure_prints_partial_status(
         foreground: bool,
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
         assert debug is False
+        assert on_starting is not None
+        on_starting(config)
         assert on_started is not None
         raise click.ClickException("bind failed")
 
@@ -2953,14 +2973,18 @@ def test_restart_debug_prints_operator_confirmation(
     def _fake_autoreload_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert effective_config.log_level == "DEBUG"
+        assert on_starting is not None
+        on_starting(effective_config)
         assert on_started is not None
         on_started(effective_config)
 
     def _fake_foreground_start(
         _config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         raise AssertionError("foreground path should not be used for restart --debug")
 
@@ -3009,6 +3033,7 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
         foreground: bool,
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         raise AssertionError("restart should not start after backup failure")
 
@@ -3023,6 +3048,59 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
     assert (
         f"daemon restart failed: phase=fresh-config pid={os.getpid()} "
         f"data_dir={config.data_dir} socket={config.socket_path} error=backup failed"
+    ) in result.output
+
+
+def test_restart_debug_autoreload_failure_reports_refreshed_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    refreshed_config = _config(tmp_path).model_copy(
+        update={
+            "data_dir": tmp_path / "data-refreshed",
+            "socket_path": tmp_path / "control-refreshed.sock",
+        }
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_autoreload_start(
+        effective_config: DaemonConfig,
+        on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
+    ) -> None:
+        assert effective_config.log_level == "DEBUG"
+        assert on_starting is not None
+        on_starting(refreshed_config)
+        raise click.ClickException("bind failed")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_autoreload_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart", "--debug"])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        f"daemon restart failed: phase=start pid={os.getpid()} "
+        f"data_dir={refreshed_config.data_dir} socket={refreshed_config.socket_path} "
+        "error=bind failed"
     ) in result.output
 
 
@@ -3067,10 +3145,13 @@ def test_restart_fresh_config_creates_backup_before_reload(
         foreground: bool,
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
+        on_starting: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert foreground is False
         assert debug is False
         captured_start["config"] = config
+        if on_starting is not None:
+            on_starting(config)
         if on_started is not None:
             on_started(config)
 

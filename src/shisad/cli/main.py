@@ -652,6 +652,7 @@ async def _run_daemon_with_autoreload(
     poll_interval: float = 0.5,
     daemon_runner: Callable[[DaemonConfig], Coroutine[Any, Any, None]] | None = None,
     on_started: Callable[[DaemonConfig], None] | None = None,
+    on_starting: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     runner = daemon_runner
     if runner is None:
@@ -670,6 +671,8 @@ async def _run_daemon_with_autoreload(
     _echo(f"Debug autoreload watching {len(snapshot)} Python files", fg="cyan")
 
     while True:
+        if on_starting is not None:
+            on_starting(config)
         daemon_task: asyncio.Task[None] = asyncio.create_task(runner(config))
         change_task: asyncio.Task[dict[Path, int]] = asyncio.create_task(
             _wait_for_autoreload_change(
@@ -713,16 +716,26 @@ async def _run_daemon_with_autoreload(
 def _run_daemon_with_autoreload_sync(
     config: DaemonConfig,
     on_started: Callable[[DaemonConfig], None] | None = None,
+    on_starting: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
-    run_async(_run_daemon_with_autoreload(config=config, on_started=on_started))
+    run_async(
+        _run_daemon_with_autoreload(
+            config=config,
+            on_started=on_started,
+            on_starting=on_starting,
+        )
+    )
 
 
 def _run_daemon_foreground(
     config: DaemonConfig,
     on_started: Callable[[DaemonConfig], None] | None = None,
+    on_starting: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     from shisad.daemon.runner import run_daemon
 
+    if on_starting is not None:
+        on_starting(config)
     started_callback = None if on_started is None else lambda: on_started(config)
     run_async(run_daemon(config, on_started=started_callback))
 
@@ -779,6 +792,7 @@ def _start_daemon(
     foreground: bool,
     debug: bool,
     on_started: Callable[[DaemonConfig], None] | None = None,
+    on_starting: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     effective_foreground = foreground or debug
     effective_config = config.model_copy(update={"log_level": "DEBUG"}) if debug else config
@@ -795,9 +809,17 @@ def _start_daemon(
 
     try:
         if debug:
-            _run_daemon_with_autoreload_sync(effective_config, on_started=on_started)
+            _run_daemon_with_autoreload_sync(
+                effective_config,
+                on_started=on_started,
+                on_starting=on_starting,
+            )
         else:
-            _run_daemon_foreground(effective_config, on_started=on_started)
+            _run_daemon_foreground(
+                effective_config,
+                on_started=on_started,
+                on_starting=on_starting,
+            )
     except KeyboardInterrupt:
         _echo("\nShutting down...", fg="yellow")
 
@@ -855,6 +877,12 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
         )
 
     phase = "fresh-config" if fresh_config else "start"
+    status_config = config
+
+    def _mark_starting(starting_config: DaemonConfig) -> None:
+        nonlocal status_config
+        status_config = starting_config
+
     try:
         if fresh_config:
             backup_path = _backup_config_snapshot(config)
@@ -863,6 +891,8 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             _echo("Reloaded configuration from environment", fg="cyan")
 
         def _announce_started(started_config: DaemonConfig) -> None:
+            nonlocal status_config
+            status_config = started_config
             _echo(_format_restart_status("daemon restarted", started_config), fg="green")
 
         phase = "start"
@@ -871,12 +901,13 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             foreground=foreground,
             debug=debug,
             on_started=_announce_started,
+            on_starting=_mark_starting,
         )
     except click.ClickException as exc:
         _echo(
             _format_restart_status(
                 "daemon restart failed",
-                config,
+                status_config,
                 phase=phase,
                 error=exc.message,
             ),
@@ -887,7 +918,7 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
         _echo(
             _format_restart_status(
                 "daemon restart failed",
-                config,
+                status_config,
                 phase=phase,
                 error=exc,
             ),
