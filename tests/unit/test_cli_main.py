@@ -2611,7 +2611,7 @@ def test_start_debug_routes_to_autoreload_with_debug_log_level(
 
     def _fake_debug_start(
         effective_config: DaemonConfig,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert on_started is None
         captured["config"] = effective_config
@@ -2640,11 +2640,11 @@ def test_start_default_routes_to_foreground_path(
 
     def _fake_foreground_start(
         effective_config: DaemonConfig,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         captured["config"] = effective_config
         if on_started is not None:
-            on_started()
+            on_started(effective_config)
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -2685,11 +2685,11 @@ def test_restart_default_shuts_down_then_starts_foreground(
 
     def _fake_foreground_start(
         effective_config: DaemonConfig,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         captured["config"] = effective_config
         if on_started is not None:
-            on_started()
+            on_started(effective_config)
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -2734,13 +2734,13 @@ def test_restart_default_prints_operator_confirmation(
         config: DaemonConfig,
         foreground: bool,
         debug: bool,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
         assert debug is False
         assert on_started is not None
-        on_started()
+        on_started(config)
 
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
     monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
@@ -2789,11 +2789,11 @@ def test_restart_fresh_config_reloads_before_start(
 
     def _fake_foreground_start(
         effective_config: DaemonConfig,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         captured["config"] = effective_config
         if on_started is not None:
-            on_started()
+            on_started(effective_config)
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -2855,13 +2855,13 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
         config: DaemonConfig,
         foreground: bool,
         debug: bool,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
         assert debug is False
         assert on_started is not None
-        on_started()
+        on_started(config)
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
@@ -2906,7 +2906,7 @@ def test_restart_start_failure_prints_partial_status(
         config: DaemonConfig,
         foreground: bool,
         debug: bool,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
@@ -2952,15 +2952,15 @@ def test_restart_debug_prints_operator_confirmation(
 
     def _fake_autoreload_start(
         effective_config: DaemonConfig,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert effective_config.log_level == "DEBUG"
         assert on_started is not None
-        on_started()
+        on_started(effective_config)
 
     def _fake_foreground_start(
         _config: DaemonConfig,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         raise AssertionError("foreground path should not be used for restart --debug")
 
@@ -3008,7 +3008,7 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
         _config: DaemonConfig,
         foreground: bool,
         debug: bool,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         raise AssertionError("restart should not start after backup failure")
 
@@ -3066,13 +3066,13 @@ def test_restart_fresh_config_creates_backup_before_reload(
         config: DaemonConfig,
         foreground: bool,
         debug: bool,
-        on_started: Callable[[], None] | None = None,
+        on_started: Callable[[DaemonConfig], None] | None = None,
     ) -> None:
         assert foreground is False
         assert debug is False
         captured_start["config"] = config
         if on_started is not None:
-            on_started()
+            on_started(config)
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
@@ -3197,6 +3197,75 @@ async def test_run_daemon_with_autoreload_debug_reloads_config_between_restarts(
 
     assert seen_data_dirs == [tmp_path / "data-initial", tmp_path / "data-refreshed"]
     assert seen_log_levels == ["DEBUG", "DEBUG"]
+
+
+async def test_run_daemon_with_autoreload_started_callback_uses_refreshed_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watched_file = tmp_path / "watched.py"
+    watched_file.write_text("value = 1\n", encoding="utf-8")
+    config = _config(tmp_path).model_copy(
+        update={
+            "log_level": "DEBUG",
+            "data_dir": tmp_path / "data-initial",
+        }
+    )
+    refreshed = _config(tmp_path).model_copy(
+        update={
+            "log_level": "INFO",
+            "data_dir": tmp_path / "data-refreshed",
+            "socket_path": tmp_path / "control-refreshed.sock",
+        }
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: refreshed)
+
+    from shisad.daemon import runner as daemon_runner
+
+    started_configs: list[DaemonConfig] = []
+    run_configs: list[DaemonConfig] = []
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+
+    async def _fake_run_daemon(
+        run_config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        run_configs.append(run_config)
+        if on_started is not None:
+            on_started()
+        if len(run_configs) == 1:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+
+    monkeypatch.setattr(daemon_runner, "run_daemon", _fake_run_daemon)
+
+    task = asyncio.create_task(
+        cli_main._run_daemon_with_autoreload(
+            config=config,
+            watch_roots=(tmp_path,),
+            poll_interval=0.01,
+            on_started=started_configs.append,
+        )
+    )
+
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+    watched_file.write_text("value = 2\n", encoding="utf-8")
+    await asyncio.wait_for(first_cancelled.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert [item.data_dir for item in run_configs] == [
+        tmp_path / "data-initial",
+        tmp_path / "data-refreshed",
+    ]
+    assert [item.socket_path for item in started_configs] == [
+        tmp_path / "control.sock",
+        tmp_path / "control-refreshed.sock",
+    ]
 
 
 async def test_run_daemon_with_autoreload_exits_without_restart_when_daemon_stops(

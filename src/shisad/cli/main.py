@@ -651,14 +651,17 @@ async def _run_daemon_with_autoreload(
     watch_roots: tuple[Path, ...] | None = None,
     poll_interval: float = 0.5,
     daemon_runner: Callable[[DaemonConfig], Coroutine[Any, Any, None]] | None = None,
-    on_started: Callable[[], None] | None = None,
+    on_started: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     runner = daemon_runner
     if runner is None:
         from shisad.daemon.runner import run_daemon
 
         async def _default_runner(run_config: DaemonConfig) -> None:
-            await run_daemon(run_config, on_started=on_started)
+            started_callback = (
+                None if on_started is None else lambda: on_started(run_config)
+            )
+            await run_daemon(run_config, on_started=started_callback)
 
         runner = _default_runner
 
@@ -709,18 +712,19 @@ async def _run_daemon_with_autoreload(
 
 def _run_daemon_with_autoreload_sync(
     config: DaemonConfig,
-    on_started: Callable[[], None] | None = None,
+    on_started: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     run_async(_run_daemon_with_autoreload(config=config, on_started=on_started))
 
 
 def _run_daemon_foreground(
     config: DaemonConfig,
-    on_started: Callable[[], None] | None = None,
+    on_started: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     from shisad.daemon.runner import run_daemon
 
-    run_async(run_daemon(config, on_started=on_started))
+    started_callback = None if on_started is None else lambda: on_started(config)
+    run_async(run_daemon(config, on_started=started_callback))
 
 
 def _backup_config_snapshot(config: DaemonConfig) -> Path:
@@ -774,7 +778,7 @@ def _start_daemon(
     config: DaemonConfig,
     foreground: bool,
     debug: bool,
-    on_started: Callable[[], None] | None = None,
+    on_started: Callable[[DaemonConfig], None] | None = None,
 ) -> None:
     effective_foreground = foreground or debug
     effective_config = config.model_copy(update={"log_level": "DEBUG"}) if debug else config
@@ -858,8 +862,8 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             config = _get_config()
             _echo("Reloaded configuration from environment", fg="cyan")
 
-        def _announce_started() -> None:
-            _echo(_format_restart_status("daemon restarted", config), fg="green")
+        def _announce_started(started_config: DaemonConfig) -> None:
+            _echo(_format_restart_status("daemon restarted", started_config), fg="green")
 
         phase = "start"
         _start_daemon(
