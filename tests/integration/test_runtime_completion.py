@@ -419,7 +419,7 @@ async def test_v0_3_1_session_message_returns_official_planner_error_in_trusted_
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "hello",
+                "content": "please summarize the current session status",
             },
         )
         response_text = str(reply["response"])
@@ -494,7 +494,7 @@ async def test_v0_3_1_session_message_limits_error_detail_in_untrusted_context(
                 "channel": "matrix",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "hello",
+                "content": "please summarize the current session status",
             },
         )
         response_text = str(reply["response"]).lower()
@@ -951,7 +951,7 @@ async def test_v0_3_3_session_message_passes_trusted_tone_override_to_planner(
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "hello",
+                "content": "please summarize the current session status",
             },
         )
         assert str(reply["response"]).strip().lower() == "ok"
