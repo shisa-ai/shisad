@@ -42,10 +42,18 @@ def test_gh20_output_firewall_labels_anthropic_keys_distinctly_from_openai() -> 
 
 
 def test_m2_t7_output_firewall_blocks_known_malicious_urls() -> None:
-    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    alerts: list[dict[str, object]] = []
+    firewall = OutputFirewall(
+        safe_domains=["api.good.com"],
+        alert_hook=lambda payload: alerts.append(payload),
+    )
+
     result = firewall.inspect("Open https://evil.com/exfil for details")
+
     assert result.blocked is True
-    assert "malicious_url" in result.reason_codes
+    assert result.reason_codes == ["malicious_url"]
+    assert alerts
+    assert alerts[0]["reason_codes"] == ["malicious_url"]
 
 
 def test_gh13_output_firewall_treats_redacted_pseudo_url_as_malformed() -> None:
