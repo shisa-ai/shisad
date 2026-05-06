@@ -477,7 +477,10 @@ async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None
     await services.server.start()
     logger.info("shisad daemon started")
     if on_started is not None:
-        on_started()
+        try:
+            on_started()
+        except Exception:
+            logger.exception("daemon started callback failed")
 
     # Effective config summary — so operators can verify settings from logs
     _search_status = "enabled" if config.web_search_enabled else "DISABLED"

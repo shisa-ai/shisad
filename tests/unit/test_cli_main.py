@@ -2609,7 +2609,11 @@ def test_start_debug_routes_to_autoreload_with_debug_log_level(
 
     captured: dict[str, DaemonConfig] = {}
 
-    def _fake_debug_start(effective_config: DaemonConfig) -> None:
+    def _fake_debug_start(
+        effective_config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        assert on_started is None
         captured["config"] = effective_config
 
     def _fake_foreground_start(_: DaemonConfig) -> None:
@@ -2920,6 +2924,105 @@ def test_restart_start_failure_prints_partial_status(
     assert (
         f"daemon restart failed: phase=start pid={os.getpid()} "
         f"data_dir={config.data_dir} socket={config.socket_path} error=bind failed"
+    ) in result.output
+
+
+def test_restart_debug_prints_operator_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_autoreload_start(
+        effective_config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        assert effective_config.log_level == "DEBUG"
+        assert on_started is not None
+        on_started()
+
+    def _fake_foreground_start(
+        _config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        raise AssertionError("foreground path should not be used for restart --debug")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_autoreload_start)
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart", "--debug"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        f"daemon restarted: pid={os.getpid()} data_dir={config.data_dir} "
+        f"socket={config.socket_path}"
+    ) in result.output
+
+
+def test_restart_fresh_config_backup_failure_prints_partial_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_backup(_config: DaemonConfig) -> Path:
+        raise OSError("backup failed")
+
+    def _fake_start(
+        _config: DaemonConfig,
+        foreground: bool,
+        debug: bool,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        raise AssertionError("restart should not start after backup failure")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
+    monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart", "--fresh-config"])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        f"daemon restart failed: phase=fresh-config pid={os.getpid()} "
+        f"data_dir={config.data_dir} socket={config.socket_path} error=backup failed"
     ) in result.output
 
 

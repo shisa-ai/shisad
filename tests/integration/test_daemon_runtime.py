@@ -67,6 +67,39 @@ async def test_run_daemon_invokes_started_callback_after_socket_start(
 
 
 @pytest.mark.asyncio
+async def test_run_daemon_started_callback_error_does_not_stop_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    def _broken_callback() -> None:
+        raise BrokenPipeError("output closed")
+
+    daemon_task = asyncio.create_task(run_daemon(config, on_started=_broken_callback))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        status = await client.call("daemon.status")
+        assert status["status"] == "running"
+        assert not daemon_task.done()
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

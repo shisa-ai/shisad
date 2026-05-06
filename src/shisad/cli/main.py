@@ -651,12 +651,16 @@ async def _run_daemon_with_autoreload(
     watch_roots: tuple[Path, ...] | None = None,
     poll_interval: float = 0.5,
     daemon_runner: Callable[[DaemonConfig], Coroutine[Any, Any, None]] | None = None,
+    on_started: Callable[[], None] | None = None,
 ) -> None:
     runner = daemon_runner
     if runner is None:
         from shisad.daemon.runner import run_daemon
 
-        runner = run_daemon
+        async def _default_runner(run_config: DaemonConfig) -> None:
+            await run_daemon(run_config, on_started=on_started)
+
+        runner = _default_runner
 
     roots = watch_roots or _default_autoreload_roots()
     snapshot = _snapshot_autoreload_files(roots)
@@ -703,8 +707,11 @@ async def _run_daemon_with_autoreload(
             _echo("Autoreload reloaded daemon config from environment", fg="cyan")
 
 
-def _run_daemon_with_autoreload_sync(config: DaemonConfig) -> None:
-    run_async(_run_daemon_with_autoreload(config=config))
+def _run_daemon_with_autoreload_sync(
+    config: DaemonConfig,
+    on_started: Callable[[], None] | None = None,
+) -> None:
+    run_async(_run_daemon_with_autoreload(config=config, on_started=on_started))
 
 
 def _run_daemon_foreground(
@@ -784,7 +791,7 @@ def _start_daemon(
 
     try:
         if debug:
-            _run_daemon_with_autoreload_sync(effective_config)
+            _run_daemon_with_autoreload_sync(effective_config, on_started=on_started)
         else:
             _run_daemon_foreground(effective_config, on_started=on_started)
     except KeyboardInterrupt:
@@ -843,16 +850,18 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             fg="yellow",
         )
 
-    if fresh_config:
-        backup_path = _backup_config_snapshot(config)
-        _echo(f"Saved prior config snapshot: {backup_path}", fg="yellow")
-        config = _get_config()
-        _echo("Reloaded configuration from environment", fg="cyan")
-
-    def _announce_started() -> None:
-        _echo(_format_restart_status("daemon restarted", config), fg="green")
-
+    phase = "fresh-config" if fresh_config else "start"
     try:
+        if fresh_config:
+            backup_path = _backup_config_snapshot(config)
+            _echo(f"Saved prior config snapshot: {backup_path}", fg="yellow")
+            config = _get_config()
+            _echo("Reloaded configuration from environment", fg="cyan")
+
+        def _announce_started() -> None:
+            _echo(_format_restart_status("daemon restarted", config), fg="green")
+
+        phase = "start"
         _start_daemon(
             config=config,
             foreground=foreground,
@@ -864,7 +873,7 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             _format_restart_status(
                 "daemon restart failed",
                 config,
-                phase="start",
+                phase=phase,
                 error=exc.message,
             ),
             err=True,
@@ -875,7 +884,7 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             _format_restart_status(
                 "daemon restart failed",
                 config,
-                phase="start",
+                phase=phase,
                 error=exc,
             ),
             err=True,
