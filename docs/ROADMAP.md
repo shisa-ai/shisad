@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-30*
+*Updated: 2026-05-06*
 *Status: Active*
 
 ## Goal
@@ -61,6 +61,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   high-risk paths; derived graph/consolidation
   foundations; and bug-fix point-release improvements for command-chat,
   lockdown recovery, memory scoping, and state-inspection UX.
+- `v0.7.2` is release-prepared: memory benchmark tooling, retrieval
+  sufficiency checks, memory-scope hardening, safer diagnostics, and
+  bug-fix stabilization are ready for release-close review before tag/publish.
 
 ## Milestones
 
@@ -293,6 +296,8 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.2 — Memory hardening and benchmark closure
 
+- Status (2026-05-06): release-prepared for release-close review; not yet
+  tagged or published.
 - Deterministic memory benchmark command path with stage metrics, oracle
   diagnostics, threshold failures, capacity probes, and pinned v0.7.1
   adversarial baseline metrics

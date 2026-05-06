@@ -50,17 +50,15 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. The latest published line is `v0.7.1`
-on GitHub Releases and PyPI. The v0.7 line adds structured long-term memory
-with separate identity, active-attention, recall, procedural-skill, and evidence
-surfaces; provenance-gated memory writes with review/confirmation on high-risk
-paths; derived graph/consolidation foundations;
-and bug-fix point-release improvements for command-chat, lockdown recovery,
-memory scoping, and state-inspection UX.
+This repo is public and still pre-alpha. The latest published line remains
+`v0.7.1`. The `v0.7.2` release content is prepared for release-close review:
+memory benchmark tooling, retrieval sufficiency checks, memory-scope hardening,
+safer diagnostics, and bug-fix stabilization on top of the structured
+long-term memory line.
 
 | Version | Focus |
 |---------|-------|
-| v0.7 | Memory foundation + long-term memory surfaces (latest: `v0.7.1`; next: `v0.7.2` memory hardening) |
+| v0.7 | Memory foundation + long-term memory surfaces (latest published: `v0.7.1`; release-prepared: `v0.7.2` memory hardening) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |

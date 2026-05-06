@@ -9,6 +9,108 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## 0.7.2 Release Content - 2026-05-06
+
+### Added
+
+- **Recall can tell you when it does not have enough to answer.** When you ask
+  the assistant about saved notes and the available entries do not cover the
+  question, recall can report what it found, what is missing, and expand to
+  related entries up to the configured limit instead of answering from partial
+  context. Client requests can also cap how much expansion is allowed.
+
+- **Audit queries support machine-readable output.** `shisad audit query` now
+  accepts a JSON output mode alongside the default human-readable table, which
+  makes it easier to script inspection of audit records. JSON output can include
+  local audit metadata and tool arguments after the usual redaction, so handle
+  it like other local audit-log output.
+
+- **A memory benchmark command is available for evaluating recall quality.**
+  You can run a fixture-driven benchmark against your local memory to measure
+  recall precision, latency, and stage metrics. The optional JSON report is
+  intended for local evaluation records and may reflect the fixture prompts you
+  provide. Invalid fixtures and bad paths now fail with a clear error instead
+  of a traceback.
+
+### Changed
+
+- **Memory listing, review, and promotion require a workspace scope.** CLI and
+  API calls that list personal memory, approve or reject remembered entries,
+  promote entries between private and shared collections, or maintain aliased
+  notes and todos now require an explicit user and workspace scope. Operations
+  without that scope fail closed so memory maintenance cannot accidentally
+  touch another workspace's entries.
+
+- **Debug restart reports what actually happened.** Restart and refresh
+  commands now report the resolved daemon status and path, whether the
+  refreshed process came back up, and any failure details, so you can tell a
+  successful restart apart from a silent failure.
+
+- **Memory auto-extraction stays off when you disable it.** When auto
+  extraction is turned off in configuration, the assistant no longer backfills
+  memory from past sessions on startup or writes derived extraction artifacts.
+
+### Fixed
+
+- **Blocked assistant replies explain themselves inline.** When a reply is
+  blocked by policy, including for secret echoing, a disallowed URL, or a
+  malformed URL, the notice includes a plain-language reason inline, and the
+  original payload is redacted from audit records instead of being stored
+  verbatim.
+
+- **Coding-agent sessions recover from transport hiccups.** The coding-agent
+  bridge preserves transport error details so problems are diagnosable, cleans
+  up greeting replies so they match the rest of the conversation, and keeps the
+  fallback greeting scoped to genuine fallbacks only.
+
+- **Policy-denied tool calls are traced with the right reason.** When a tool
+  call is denied, the denial reason is preserved through the trace and
+  observation path with the correct precedence instead of being overwritten by
+  a later rejection, so audit records reflect why the action was actually
+  blocked.
+
+- **Cross-workspace identifier conflicts no longer produce false positives.**
+  Identifier-conflict checks now respect owner and workspace scope, so notes
+  that share an identifier across unrelated workspaces do not get flagged as
+  conflicting with each other.
+
+- **Filesystem scope rejections surface back to you.** When a file tool rejects
+  a path that falls outside the configured workspace scope, the reason is
+  returned to the chat and CLI instead of being swallowed.
+
+### Security
+
+- **API tokens, credentials, and key material are redacted everywhere errors
+  and diagnostics surface.** Error messages, tool diagnostics, and audit records
+  redact authorization headers, bearer tokens, API keys, key material,
+  human-readable secret labels, and multi-line credentials, including across
+  escaped JSON containers, compact multi-line containers, and malformed
+  containers that previously let values slip through. Malformed secret
+  containers now fail closed instead of being forwarded.
+
+- **The coding-agent bridge scrubs secrets from serialized transport
+  payloads.** Plural and human-readable secret labels, multi-value secrets, and
+  serialized transport messages are redacted before they reach logs or session
+  replay, so credentials pasted into coding-agent sessions do not leak through
+  transport errors or replay paths.
+
+- **Feedback and channel reactions do not replay across retired sessions.**
+  Legacy reaction rows are migrated forward and orphaned feedback is retired,
+  so reactions tied to old sessions or retired channel sides can no longer be
+  replayed to influence trust, memory, or confirmation decisions in current
+  sessions. Derived memory telemetry from these signals is now bounded.
+
+- **Memory review rejects operations without a verified user scope.**
+  Attempting to approve, reject, promote, or modify remembered entries without
+  a user/workspace scope fails closed instead of defaulting to an unowned
+  bucket, so review actions cannot accidentally touch entries attributed to
+  another user.
+
+- **Unowned memory promotion and public-retrieve flows honor provenance.**
+  Public retrieval no longer exposes entries whose provenance is private, and
+  superseding a closed workflow entry no longer reopens it, so shared recall
+  surfaces cannot be coaxed into returning private or retired content.
+
 ## [0.7.1] - 2026-04-30
 
 ### Added
