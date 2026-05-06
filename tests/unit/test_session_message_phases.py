@@ -46,6 +46,7 @@ from shisad.daemon.handlers._impl_session import (
     SessionMessagePlannerDispatchResult,
     SessionMessageValidationResult,
     TaskDelegationRecommendation,
+    TaskSessionHandoff,
 )
 from shisad.memory.consolidation import ConsolidationWorker
 from shisad.memory.ingress import IngressContextRegistry
@@ -1528,6 +1529,7 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
         self._lockdown_manager = SimpleNamespace(
             user_notification=lambda _sid: "",
             state_for=lambda _sid: SimpleNamespace(level=SimpleNamespace(value="none")),
+            apply_capability_restrictions=lambda _sid, capabilities: capabilities,
         )
         self._transcript_store = SimpleNamespace(
             append=lambda *args, **kwargs: None,
@@ -1545,6 +1547,26 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
 
     async def _maybe_run_conversation_summarizer(self, **kwargs) -> None:
         _ = kwargs
+
+
+def _blocked_output_policy_result(
+    text: str,
+    *,
+    reason_codes: list[str] | None = None,
+) -> SimpleNamespace:
+    resolved_reasons = list(reason_codes or ["malicious_url"])
+    return SimpleNamespace(
+        blocked=True,
+        sanitized_text=text,
+        require_confirmation=False,
+        reason_codes=resolved_reasons,
+        model_dump=lambda mode="json": {
+            "blocked": True,
+            "require_confirmation": False,
+            "sanitized_text": text,
+            "reason_codes": list(resolved_reasons),
+        },
+    )
 
 
 def _write_pending_identity_candidate(
@@ -2387,17 +2409,9 @@ async def test_m75_finalize_response_blocks_sensitive_tool_taint_for_public_chan
 async def test_finalize_response_blocked_output_policy_scrubs_tool_outputs() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._output_firewall = SimpleNamespace(
-        inspect=lambda text, context: SimpleNamespace(
-            blocked=True,
-            sanitized_text=text,
-            require_confirmation=False,
-            reason_codes=["malicious_url"],
-            model_dump=lambda mode="json": {
-                "blocked": True,
-                "require_confirmation": False,
-                "sanitized_text": text,
-                "reason_codes": ["malicious_url"],
-            },
+        inspect=lambda text, context: _blocked_output_policy_result(
+            text,
+            reason_codes=["entropy_secret_redaction", "malicious_url"],
         )
     )
     execution = _finalize_execution_result(
@@ -2416,11 +2430,100 @@ async def test_finalize_response_blocked_output_policy_scrubs_tool_outputs() -> 
 
     assert response["response"] == (
         "Response blocked by output policy. (reason: malicious_url; "
-        "see `shisad audit query --type OutputFirewallAlert --session sess-g1` "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
         "for detail.)"
     )
     assert "Blocked URL: http://[2001:db8::1" not in response["response"]
     assert response["tool_outputs"] == []
+
+
+def test_direct_response_blocked_output_policy_includes_reason_hint() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs)
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: _blocked_output_policy_result(text)
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "repeat the blocked URL"},
+        sanitized_text="repeat the blocked URL",
+    )
+
+    response = SessionImplMixin._direct_response_with_transcript(
+        harness,
+        validated=validated,
+        response="Blocked URL: http://[2001:db8::1",
+    )
+
+    assert response["response"] == (
+        "Response blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
+        "for detail.)"
+    )
+    assert "Blocked URL: http://[2001:db8::1" not in response["response"]
+    assert appended["content"] == response["response"]
+
+
+@pytest.mark.asyncio
+async def test_task_handoff_blocked_output_policy_includes_reason_hint() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs),
+        list_entries=lambda _sid: [],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: _blocked_output_policy_result(
+            text,
+            reason_codes=["entropy_secret_redaction", "malicious_url"],
+        )
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "run the task"},
+        sanitized_text="run the task",
+    )
+    handoff = TaskSessionHandoff(
+        task_session_id=SessionId("task-1"),
+        success=True,
+        summary="Summary URL: http://[2001:db8::1",
+        response_text="Response URL: http://[2001:db8::1",
+        files_changed=(),
+        agent="planner",
+        cost=None,
+        duration_ms=12,
+        proposal_ref=None,
+        raw_log_ref=None,
+        handoff_mode="summary_only",
+        command_context="ok",
+        recovery_checkpoint_id=None,
+        reason="completed",
+        plan_hash="plan-g1",
+        executed_actions=1,
+    )
+
+    response = await SessionImplMixin._finalize_task_handoff_response(
+        harness,
+        validated=validated,
+        handoff=handoff,
+    )
+
+    expected_response = (
+        "Response blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
+        "for detail.)"
+    )
+    expected_summary = (
+        "Summary blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
+        "for detail.)"
+    )
+    assert response["response"] == expected_response
+    assert response["task_result"]["summary"] == expected_summary
+    assert "http://[2001:db8::1" not in response["response"]
+    assert "http://[2001:db8::1" not in response["task_result"]["summary"]
+    assert appended["content"] == expected_response
 
 
 def test_rc_lus_direct_result_followup_blocks_sensitive_taint_for_public_channel() -> None:
@@ -4000,17 +4103,9 @@ async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output
     harness._memory_manager = MemoryManager(tmp_path / "memory")
     candidate_id = _write_pending_identity_candidate(harness._memory_manager)
     harness._output_firewall = SimpleNamespace(
-        inspect=lambda text, context: SimpleNamespace(
-            blocked=True,
-            sanitized_text=text,
-            require_confirmation=False,
-            reason_codes=["malicious_url"],
-            model_dump=lambda mode="json": {
-                "blocked": True,
-                "require_confirmation": False,
-                "sanitized_text": text,
-                "reason_codes": ["malicious_url"],
-            },
+        inspect=lambda text, context: _blocked_output_policy_result(
+            text,
+            reason_codes=["entropy_secret_redaction", "malicious_url"],
         )
     )
     execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
@@ -4019,7 +4114,7 @@ async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output
 
     assert response["response"] == (
         "Response blocked by output policy. (reason: malicious_url; "
-        "see `shisad audit query --type OutputFirewallAlert --session sess-g1` "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
         "for detail.)"
     )
     assert (
@@ -4044,17 +4139,9 @@ async def test_m3_finalize_response_does_not_expire_candidate_when_output_blocke
     assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 1)
     assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 2)
     harness._output_firewall = SimpleNamespace(
-        inspect=lambda text, context: SimpleNamespace(
-            blocked=True,
-            sanitized_text=text,
-            require_confirmation=False,
-            reason_codes=["malicious_url"],
-            model_dump=lambda mode="json": {
-                "blocked": True,
-                "require_confirmation": False,
-                "sanitized_text": text,
-                "reason_codes": ["malicious_url"],
-            },
+        inspect=lambda text, context: _blocked_output_policy_result(
+            text,
+            reason_codes=["entropy_secret_redaction", "malicious_url"],
         )
     )
     execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
@@ -4063,7 +4150,7 @@ async def test_m3_finalize_response_does_not_expire_candidate_when_output_blocke
 
     assert response["response"] == (
         "Response blocked by output policy. (reason: malicious_url; "
-        "see `shisad audit query --type OutputFirewallAlert --session sess-g1` "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
         "for detail.)"
     )
     assert (

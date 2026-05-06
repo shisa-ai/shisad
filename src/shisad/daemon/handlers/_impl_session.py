@@ -2914,6 +2914,10 @@ _PENDING_COMPLETED_ACTIONS_RE = re.compile(
     rf"{re.escape(_TOOL_RESULTS_SUMMARY_HEADER)}\s+"
     r"-\s+[^:]{1,128}:\s+(?:success=(?:True|False)|completed\.)"
 )
+_OUTPUT_POLICY_BLOCK_REASON_PRIORITY = (
+    "malicious_url",
+    "outbound_policy_toxicity",
+)
 
 
 def _is_mixed_pending_confirmation_context(text: str) -> bool:
@@ -3065,11 +3069,18 @@ def _output_policy_blocked_response_text(
         for code in getattr(output_result, "reason_codes", []) or []
         if str(code).strip()
     ]
-    reason = reason_codes[0] if reason_codes else "unknown"
+    reason = next(
+        (
+            preferred
+            for preferred in _OUTPUT_POLICY_BLOCK_REASON_PRIORITY
+            if preferred in reason_codes
+        ),
+        reason_codes[0] if reason_codes else "unknown",
+    )
     audit_session = shlex.quote(str(session_id))
     return (
         f"{subject} blocked by output policy. (reason: {reason}; see "
-        f"`shisad audit query --type OutputFirewallAlert --session {audit_session}` "
+        f"`shisad audit query --type OutputFirewallAlert --session {audit_session} --json` "
         "for detail.)"
     )
 

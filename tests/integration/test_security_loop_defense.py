@@ -445,7 +445,7 @@ async def test_m2_t18_output_firewall_alert_is_audited(
         )
         assert reply["response"] == (
             "Response blocked by output policy. (reason: malicious_url; "
-            f"see `shisad audit query --type OutputFirewallAlert --session {sid}` "
+            f"see `shisad audit query --type OutputFirewallAlert --session {sid} --json` "
             "for detail.)"
         )
         events = {"total": 0}
