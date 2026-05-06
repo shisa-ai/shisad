@@ -16,6 +16,12 @@ from typing import Any
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 15.0
 _STRICT_RECYCLE_ENV = "SHISAD_TEST_STRICT_DAEMON_RECYCLE"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_CHANNEL_ENV_PREFIXES = (
+    "SHISAD_MATRIX_",
+    "SHISAD_DISCORD_",
+    "SHISAD_TELEGRAM_",
+    "SHISAD_SLACK_",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +107,22 @@ async def ingest_memory_via_ingress(
     return dict(await client.call("memory.ingest", payload))
 
 
+def clear_channel_env(monkeypatch: Any) -> None:
+    """Clear ambient live-channel env so daemon tests stay hermetic."""
+    for key in list(os.environ):
+        if key.startswith(_CHANNEL_ENV_PREFIXES):
+            monkeypatch.delenv(key, raising=False)
+    for key in (
+        "SHISAD_MATRIX_ENABLED",
+        "SHISAD_DISCORD_ENABLED",
+        "SHISAD_TELEGRAM_ENABLED",
+        "SHISAD_SLACK_ENABLED",
+    ):
+        monkeypatch.setenv(key, "false")
+
+
 def clear_remote_provider_env(monkeypatch: Any) -> None:
-    """Clear all remote-provider env vars so tests run against local fallback.
+    """Clear remote-service env vars so tests run against local fallback.
 
     Extracted from the duplicated helper in many test files.
     """
@@ -122,6 +142,7 @@ def clear_remote_provider_env(monkeypatch: Any) -> None:
         "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
     ):
         monkeypatch.setenv(var, "false")
+    clear_channel_env(monkeypatch)
 
 
 @dataclass

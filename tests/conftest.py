@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from shisad.executors.connect_path import IptablesConnectPathProxy
+from tests.helpers.daemon import clear_channel_env
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -17,8 +16,9 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         (
-            "allow_channel_env: test opts into ambient SHISAD_DISCORD_* / "
-            "SHISAD_TELEGRAM_* environment variables"
+            "allow_channel_env: test opts into ambient SHISAD_MATRIX_* / "
+            "SHISAD_DISCORD_* / SHISAD_TELEGRAM_* / SHISAD_SLACK_* "
+            "environment variables"
         ),
     )
 
@@ -43,9 +43,4 @@ def _scrub_channel_env_for_hermetic_tests(
     if request.node.get_closest_marker("allow_channel_env") is not None:
         return
 
-    for key in list(os.environ):
-        if key.startswith("SHISAD_DISCORD_") or key.startswith("SHISAD_TELEGRAM_"):
-            monkeypatch.delenv(key, raising=False)
-
-    monkeypatch.setenv("SHISAD_DISCORD_ENABLED", "0")
-    monkeypatch.setenv("SHISAD_TELEGRAM_ENABLED", "0")
+    clear_channel_env(monkeypatch)
