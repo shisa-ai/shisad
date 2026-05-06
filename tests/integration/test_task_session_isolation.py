@@ -474,7 +474,7 @@ async def test_u8_task_session_rejects_implicit_fs_git_defaults_outside_scope(
             )
             for event in rejected.get("events", [])
         }
-        assert "Resource authorization failed" in reasons_by_tool.get(tool_name, "")
+        assert reasons_by_tool.get(tool_name) == "pep:resource_authorization_failed"
     finally:
         await _shutdown_daemon(daemon_task, client)
 
