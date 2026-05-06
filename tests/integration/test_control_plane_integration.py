@@ -405,7 +405,7 @@ async def test_h4_missing_path_read_routes_to_confirmation(
         proposal = ActionProposal(
             action_id="h4-unjustified-read",
             tool_name=ToolName("fs.read"),
-            arguments={"path": "README.md"},
+            arguments={"path": "H4-missing-read.txt"},
             reasoning="attempt a read with no dependency path back to the user goal",
             data_sources=[],
         )
@@ -434,7 +434,7 @@ async def test_h4_missing_path_read_routes_to_confirmation(
         sid = created["session_id"]
         response = await client.call(
             "session.message",
-            {"session_id": sid, "content": "say hello"},
+            {"session_id": sid, "content": "summarize the project status"},
         )
         assert int(response.get("blocked_actions", 0)) == 0
         assert int(response.get("confirmation_required_actions", 0)) >= 1
@@ -507,7 +507,7 @@ async def test_h4_missing_path_side_effect_stays_blocked(
         sid = created["session_id"]
         response = await client.call(
             "session.message",
-            {"session_id": sid, "content": "say hello"},
+            {"session_id": sid, "content": "summarize the project status"},
         )
         assert int(response.get("blocked_actions", 0)) == 1
         assert int(response.get("confirmation_required_actions", 0)) == 0
@@ -874,7 +874,7 @@ async def test_h3_session_message_repeated_pep_rejects_emit_warning_without_lock
         for attempt in range(3):
             reply = await client.call(
                 "session.message",
-                {"session_id": sid, "content": "say hello"},
+                {"session_id": sid, "content": "summarize the project status"},
             )
             assert int(reply.get("blocked_actions", 0)) >= 1
             anomalies = await client.call(
@@ -957,7 +957,7 @@ async def test_h3_trace_only_stage2_capability_elevation_still_records_underlyin
         for attempt in range(3):
             reply = await client.call(
                 "session.message",
-                {"session_id": sid, "content": "say hello"},
+                {"session_id": sid, "content": "summarize the project status"},
             )
             assert int(reply.get("blocked_actions", 0)) == 0
             assert int(reply.get("confirmation_required_actions", 0)) >= 1
