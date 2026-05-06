@@ -3054,6 +3054,26 @@ def _should_prefix_output_confirmation(
     return True
 
 
+def _output_policy_blocked_response_text(
+    *,
+    session_id: Any,
+    output_result: Any,
+    subject: str = "Response",
+) -> str:
+    reason_codes = [
+        str(code).strip()
+        for code in getattr(output_result, "reason_codes", []) or []
+        if str(code).strip()
+    ]
+    reason = reason_codes[0] if reason_codes else "unknown"
+    audit_session = shlex.quote(str(session_id))
+    return (
+        f"{subject} blocked by output policy. (reason: {reason}; see "
+        f"`shisad audit query --type OutputFirewallAlert --session {audit_session}` "
+        "for detail.)"
+    )
+
+
 def _intermediate_tool_summary_response(tool_output_summary: str) -> str:
     summary = str(tool_output_summary or "").strip()
     if not summary:
@@ -6078,7 +6098,10 @@ class SessionImplMixin(HandlerMixinBase):
                 context={"session_id": sid, "actor": "assistant"},
             )
             if output_result.blocked:
-                response_text = "Response blocked by output policy."
+                response_text = _output_policy_blocked_response_text(
+                    session_id=sid,
+                    output_result=output_result,
+                )
                 returned_tool_outputs = []
             else:
                 response_text = output_result.sanitized_text
@@ -9049,7 +9072,10 @@ class SessionImplMixin(HandlerMixinBase):
             context={"session_id": str(validated.sid), "actor": "assistant"},
         )
         response_text = (
-            "Response blocked by output policy."
+            _output_policy_blocked_response_text(
+                session_id=validated.sid,
+                output_result=output_result,
+            )
             if output_result.blocked
             else output_result.sanitized_text
         )
@@ -9827,7 +9853,10 @@ class SessionImplMixin(HandlerMixinBase):
             context={"session_id": sid, "actor": "assistant"},
         )
         if output_result.blocked:
-            response_text = "Response blocked by output policy."
+            response_text = _output_policy_blocked_response_text(
+                session_id=sid,
+                output_result=output_result,
+            )
             returned_tool_outputs = []
         else:
             response_text = output_result.sanitized_text
@@ -10784,7 +10813,10 @@ class SessionImplMixin(HandlerMixinBase):
             context={"session_id": sid, "actor": "assistant"},
         )
         if output_result.blocked:
-            response_text = "Response blocked by output policy."
+            response_text = _output_policy_blocked_response_text(
+                session_id=sid,
+                output_result=output_result,
+            )
         else:
             response_text = output_result.sanitized_text
             if _should_prefix_output_confirmation(output_result=output_result):
@@ -10800,7 +10832,11 @@ class SessionImplMixin(HandlerMixinBase):
             context={"session_id": sid, "actor": "assistant_task_summary"},
         )
         if summary_output_result.blocked:
-            summary_text = "Summary blocked by output policy."
+            summary_text = _output_policy_blocked_response_text(
+                session_id=sid,
+                output_result=summary_output_result,
+                subject="Summary",
+            )
         else:
             summary_text = summary_output_result.sanitized_text
             if _should_prefix_output_confirmation(output_result=summary_output_result):

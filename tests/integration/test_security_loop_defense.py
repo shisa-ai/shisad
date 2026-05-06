@@ -443,7 +443,11 @@ async def test_m2_t18_output_firewall_alert_is_audited(
                 "content": "summarize this link https://evil.com/exfil",
             },
         )
-        assert reply["response"] == "Response blocked by output policy."
+        assert reply["response"] == (
+            "Response blocked by output policy. (reason: malicious_url; "
+            f"see `shisad audit query --type OutputFirewallAlert --session {sid}` "
+            "for detail.)"
+        )
         events = {"total": 0}
         end = asyncio.get_running_loop().time() + 1.0
         while asyncio.get_running_loop().time() < end:

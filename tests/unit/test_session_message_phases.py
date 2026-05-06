@@ -2391,10 +2391,12 @@ async def test_finalize_response_blocked_output_policy_scrubs_tool_outputs() -> 
             blocked=True,
             sanitized_text=text,
             require_confirmation=False,
+            reason_codes=["malicious_url"],
             model_dump=lambda mode="json": {
                 "blocked": True,
                 "require_confirmation": False,
                 "sanitized_text": text,
+                "reason_codes": ["malicious_url"],
             },
         )
     )
@@ -2412,7 +2414,12 @@ async def test_finalize_response_blocked_output_policy_scrubs_tool_outputs() -> 
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert response["response"] == "Response blocked by output policy."
+    assert response["response"] == (
+        "Response blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1` "
+        "for detail.)"
+    )
+    assert "Blocked URL: http://[2001:db8::1" not in response["response"]
     assert response["tool_outputs"] == []
 
 
@@ -3997,10 +4004,12 @@ async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output
             blocked=True,
             sanitized_text=text,
             require_confirmation=False,
+            reason_codes=["malicious_url"],
             model_dump=lambda mode="json": {
                 "blocked": True,
                 "require_confirmation": False,
                 "sanitized_text": text,
+                "reason_codes": ["malicious_url"],
             },
         )
     )
@@ -4008,7 +4017,11 @@ async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert response["response"] == "Response blocked by output policy."
+    assert response["response"] == (
+        "Response blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1` "
+        "for detail.)"
+    )
     assert (
         harness._memory_manager.list_events(
             entry_id=candidate_id,
@@ -4035,10 +4048,12 @@ async def test_m3_finalize_response_does_not_expire_candidate_when_output_blocke
             blocked=True,
             sanitized_text=text,
             require_confirmation=False,
+            reason_codes=["malicious_url"],
             model_dump=lambda mode="json": {
                 "blocked": True,
                 "require_confirmation": False,
                 "sanitized_text": text,
+                "reason_codes": ["malicious_url"],
             },
         )
     )
@@ -4046,7 +4061,11 @@ async def test_m3_finalize_response_does_not_expire_candidate_when_output_blocke
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert response["response"] == "Response blocked by output policy."
+    assert response["response"] == (
+        "Response blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1` "
+        "for detail.)"
+    )
     assert (
         harness._memory_manager.list_events(
             entry_id=candidate_id,

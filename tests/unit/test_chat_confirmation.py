@@ -989,7 +989,11 @@ async def test_chat_confirmation_blocked_output_policy_scrubs_tool_outputs(
     )
 
     assert result is not None
-    assert result["response"] == "Response blocked by output policy."
+    assert result["response"] == (
+        "Response blocked by output policy. (reason: malicious_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-chat` "
+        "for detail.)"
+    )
     assert result["tool_outputs"] == []
 
 
