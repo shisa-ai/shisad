@@ -78,11 +78,11 @@ subprocess environment plus any explicit `env` overrides you configure per
 server.
 
 A2A ingress is included in the base install; no extra dependency group is
-required. Configure it via `SHISAD_A2A` (JSON) or `DaemonConfig.a2a`. The
-current `v0.6.5` A2A surface is signed inbound ingress over direct socket or
-HTTP transports, with fail-closed `allowed_intents` grants, per-fingerprint
-sliding-window rate limits, and `A2aIngressEvaluated` audit events for
-success and rejection outcomes.
+required. Configure it via `SHISAD_A2A` (JSON) or `DaemonConfig.a2a`. The A2A
+surface is signed inbound ingress over direct socket or HTTP transports, with
+fail-closed `allowed_intents` grants, per-fingerprint sliding-window rate
+limits, and `A2aIngressEvaluated` audit events for success and rejection
+outcomes.
 
 Generate the local daemon identity first:
 
