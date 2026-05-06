@@ -951,6 +951,15 @@ async def test_chat_confirmation_blocked_output_policy_scrubs_tool_outputs(
             sanitized_text=text,
             blocked=True,
             reason_codes=["malicious_url"],
+            url_findings=[
+                UrlFinding(
+                    url="https://malware.example/payload",
+                    host="malware.example",
+                    allowed=False,
+                    suspicious=True,
+                    reason="malicious_host",
+                )
+            ],
         )
     )
 
@@ -995,6 +1004,10 @@ async def test_chat_confirmation_blocked_output_policy_scrubs_tool_outputs(
         "for detail.)"
     )
     assert result["tool_outputs"] == []
+    output_policy_json = json.dumps(result["output_policy"], sort_keys=True)
+    assert result["output_policy"]["sanitized_text"] == ""
+    assert result["output_policy"]["url_findings"][0]["url"] == "[REDACTED]"
+    assert "https://malware.example/payload" not in output_policy_json
 
 
 @pytest.mark.asyncio

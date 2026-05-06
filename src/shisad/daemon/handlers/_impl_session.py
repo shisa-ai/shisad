@@ -3085,6 +3085,49 @@ def _output_policy_blocked_response_text(
     )
 
 
+def _output_policy_response_payload(output_result: Any) -> dict[str, Any]:
+    model_dump = getattr(output_result, "model_dump", None)
+    payload: dict[str, Any]
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        payload = dict(dumped) if isinstance(dumped, Mapping) else {}
+    else:
+        payload = {
+            "blocked": bool(getattr(output_result, "blocked", False)),
+            "require_confirmation": bool(getattr(output_result, "require_confirmation", False)),
+            "sanitized_text": str(getattr(output_result, "sanitized_text", "")),
+            "reason_codes": list(getattr(output_result, "reason_codes", []) or []),
+        }
+
+    if not bool(payload.get("blocked", False)):
+        return payload
+
+    redacted_payload = dict(payload)
+    redacted_payload["sanitized_text"] = ""
+    redacted_payload["details_redacted"] = True
+    redacted_payload["url_findings"] = [
+        _redacted_output_policy_url_finding(item)
+        for item in list(payload.get("url_findings") or [])
+    ]
+    return redacted_payload
+
+
+def _redacted_output_policy_url_finding(item: Any) -> dict[str, Any]:
+    if isinstance(item, Mapping):
+        payload = item
+    else:
+        model_dump = getattr(item, "model_dump", None)
+        dumped = model_dump(mode="json") if callable(model_dump) else {}
+        payload = dumped if isinstance(dumped, Mapping) else {}
+    return {
+        "url": "[REDACTED]",
+        "host": "[REDACTED]",
+        "allowed": bool(payload.get("allowed", False)),
+        "suspicious": bool(payload.get("suspicious", False)),
+        "reason": str(payload.get("reason", "")),
+    }
+
+
 def _intermediate_tool_summary_response(tool_output_summary: str) -> str:
     summary = str(tool_output_summary or "").strip()
     if not summary:
@@ -6208,7 +6251,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "proposals": [],
                 "cleanroom_block_reasons": [],
                 "pending_confirmation_ids": returned_pending_confirmation_ids,
-                "output_policy": output_result.model_dump(mode="json"),
+                "output_policy": _output_policy_response_payload(output_result),
                 "planner_error": "",
                 "tool_outputs": returned_tool_outputs,
             }
@@ -10040,7 +10083,7 @@ class SessionImplMixin(HandlerMixinBase):
             ),
             "cleanroom_block_reasons": sorted(set(execution.cleanroom_block_reasons)),
             "pending_confirmation_ids": returned_pending_confirmation_ids,
-            "output_policy": output_result.model_dump(mode="json"),
+            "output_policy": _output_policy_response_payload(output_result),
             "planner_error": planner_dispatch.planner_failure_code,
             "tool_outputs": returned_tool_outputs,
         }
@@ -10924,7 +10967,7 @@ class SessionImplMixin(HandlerMixinBase):
             "proposals": [],
             "cleanroom_block_reasons": [],
             "pending_confirmation_ids": [],
-            "output_policy": output_result.model_dump(mode="json"),
+            "output_policy": _output_policy_response_payload(output_result),
             "planner_error": "",
             "tool_outputs": [],
             "delivery": {},

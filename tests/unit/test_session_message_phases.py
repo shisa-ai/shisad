@@ -1565,6 +1565,15 @@ def _blocked_output_policy_result(
             "require_confirmation": False,
             "sanitized_text": text,
             "reason_codes": list(resolved_reasons),
+            "url_findings": [
+                {
+                    "url": "http://[2001:db8::1",
+                    "host": "",
+                    "allowed": False,
+                    "suspicious": True,
+                    "reason": "malformed_url",
+                }
+            ],
         },
     )
 
@@ -2435,6 +2444,10 @@ async def test_finalize_response_blocked_output_policy_scrubs_tool_outputs() -> 
     )
     assert "Blocked URL: http://[2001:db8::1" not in response["response"]
     assert response["tool_outputs"] == []
+    output_policy_json = json.dumps(response["output_policy"], sort_keys=True)
+    assert response["output_policy"]["sanitized_text"] == ""
+    assert response["output_policy"]["url_findings"][0]["url"] == "[REDACTED]"
+    assert "http://[2001:db8::1" not in output_policy_json
 
 
 def test_direct_response_blocked_output_policy_includes_reason_hint() -> None:
@@ -2523,6 +2536,10 @@ async def test_task_handoff_blocked_output_policy_includes_reason_hint() -> None
     assert response["task_result"]["summary"] == expected_summary
     assert "http://[2001:db8::1" not in response["response"]
     assert "http://[2001:db8::1" not in response["task_result"]["summary"]
+    output_policy_json = json.dumps(response["output_policy"], sort_keys=True)
+    assert response["output_policy"]["sanitized_text"] == ""
+    assert response["output_policy"]["url_findings"][0]["url"] == "[REDACTED]"
+    assert "http://[2001:db8::1" not in output_policy_json
     assert appended["content"] == expected_response
 
 

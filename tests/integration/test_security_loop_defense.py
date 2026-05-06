@@ -448,6 +448,10 @@ async def test_m2_t18_output_firewall_alert_is_audited(
             f"see `shisad audit query --type OutputFirewallAlert --session {sid} --json` "
             "for detail.)"
         )
+        output_policy_json = json.dumps(reply["output_policy"], sort_keys=True)
+        assert reply["output_policy"]["sanitized_text"] == ""
+        assert reply["output_policy"]["url_findings"][0]["url"] == "[REDACTED]"
+        assert "https://evil.com/exfil" not in output_policy_json
         events = {"total": 0}
         end = asyncio.get_running_loop().time() + 1.0
         while asyncio.get_running_loop().time() < end:
