@@ -568,8 +568,7 @@ async def test_m8_channel_feedback_reaction_remove_supersedes_trusted_add(
                     "feedback_can_influence_retrieval": False,
                     "feedback_telemetry_weight": 0.0,
                     "feedback_event_id": (
-                        "discord:guild-1:chan-remove:agent-msg-remove:"
-                        "guest-remove:+1:remove"
+                        "discord:guild-1:chan-remove:agent-msg-remove:guest-remove:+1:remove"
                     ),
                 },
             }
@@ -656,8 +655,7 @@ async def test_m8_channel_feedback_reaction_remove_preserves_other_emoji_add(
                     "feedback_can_influence_retrieval": False,
                     "feedback_telemetry_weight": 0.0,
                     "feedback_event_id": (
-                        "discord:guild-1:chan-emoji:agent-msg-emoji:"
-                        "guest-emoji:+1:remove"
+                        "discord:guild-1:chan-emoji:agent-msg-emoji:guest-emoji:+1:remove"
                     ),
                 },
             }
@@ -1227,8 +1225,7 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     observed_side_entries = [
         entry
         for entry in current_entries
-        if entry.key in {observed_note_key, observed_summary_key}
-        and entry.superseded_by is None
+        if entry.key in {observed_note_key, observed_summary_key} and entry.superseded_by is None
     ]
     assert canonical_observed == []
     assert {entry.entry_type for entry in observed_side_entries} == {
@@ -1239,8 +1236,7 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     assert [
         entry
         for entry in current_entries
-        if entry.key in {legacy_note_key, legacy_summary_key}
-        and entry.superseded_by is None
+        if entry.key in {legacy_note_key, legacy_summary_key} and entry.superseded_by is None
     ] == []
 
 

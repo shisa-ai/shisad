@@ -1254,9 +1254,7 @@ def test_memory_list_uses_owner_scope_env_before_rpc(
     result = _invoke_ok(runner, ["memory", "list", "--limit", "7"])
 
     assert result.output == ""
-    assert calls == [
-        ("memory.list", {"limit": 7, "user_id": "alice", "workspace_id": "ws-1"})
-    ]
+    assert calls == [("memory.list", {"limit": 7, "user_id": "alice", "workspace_id": "ws-1"})]
 
 
 def test_memory_list_flags_override_owner_scope_env(
@@ -2063,7 +2061,8 @@ def test_m9_audit_query_defaults_to_current_session_cache(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-other", "s-other")) + "\n"
+        json.dumps(_entry("e-other", "s-other"))
+        + "\n"
         + json.dumps(_entry("e-cache", "s-cache"))
         + "\n",
         encoding="utf-8",
@@ -2090,7 +2089,8 @@ def test_gh18_audit_query_json_defaults_to_current_session_cache(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-other", "s-other")) + "\n"
+        json.dumps(_audit_entry("e-other", "s-other"))
+        + "\n"
         + json.dumps(
             _audit_entry(
                 "e-cache",
@@ -2144,9 +2144,7 @@ def test_m9_audit_query_all_preserves_unfiltered_mode(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-one", "s-one")) + "\n"
-        + json.dumps(_entry("e-two", "s-two"))
-        + "\n",
+        json.dumps(_entry("e-one", "s-one")) + "\n" + json.dumps(_entry("e-two", "s-two")) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
@@ -2167,7 +2165,8 @@ def test_gh18_audit_query_json_preserves_type_and_all_filters(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-one", "s-one")) + "\n"
+        json.dumps(_audit_entry("e-one", "s-one"))
+        + "\n"
         + json.dumps(
             _audit_entry(
                 "e-alert",

@@ -146,6 +146,4 @@ async def test_note_export_rejects_unsupported_format() -> None:
     handler = _StubMemoryHandler()
 
     with pytest.raises(ValueError, match="Unsupported export format"):
-        await handler.do_note_export(
-            {"format": "xml", "user_id": "user-1", "workspace_id": "ws-1"}
-        )
+        await handler.do_note_export({"format": "xml", "user_id": "user-1", "workspace_id": "ws-1"})

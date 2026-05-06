@@ -262,7 +262,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"} '
                 'Escaped quoted containers: {\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"]} '
                 'Escaped odd quoted containers: {\\"api_key\\":'
-                '[\\"sk-escaped-odd-quote\\\\\\\"tail\\"]} '
+                '[\\"sk-escaped-odd-quote\\\\\\"tail\\"]} '
                 'Escaped backslash containers: {\\"api_key\\":[\\"sk-escaped-backslash\\\\\\"]} '
                 "api_key=sk-test-secret "
                 "SECRET_KEY=secret-key-env-secret Secret Key: secret-key-space-secret "
@@ -356,24 +356,21 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_key_payload": (
-                    '{\\"secret_key\\":\\"secret-key-escaped-json\\",'
-                    '\\"tokenizer\\":\\"gpt2\\"}'
+                    '{\\"secret_key\\":\\"secret-key-escaped-json\\",\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_list": (
                     '{\\"api_key\\":[\\"sk-escaped-list-a\\",'
                     '\\"sk-escaped-list-b\\"],\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_list_quote": (
-                    '{\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"],'
-                    '\\"tokenizer\\":\\"gpt2\\"}'
+                    '{\\"api_key\\":[\\"sk-escaped-quote\\\\",tail\\"],\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_list_odd_quote": (
-                    '{\\"api_key\\":[\\"sk-escaped-odd-quote\\\\\\\"tail\\"],'
+                    '{\\"api_key\\":[\\"sk-escaped-odd-quote\\\\\\"tail\\"],'
                     '\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_list_backslash": (
-                    '{\\"api_key\\":[\\"sk-escaped-backslash\\\\\\"],'
-                    '\\"tokenizer\\":\\"gpt2\\"}'
+                    '{\\"api_key\\":[\\"sk-escaped-backslash\\\\\\"],\\"tokenizer\\":\\"gpt2\\"}'
                 ),
                 "json_escaped_delimiter_object": (
                     '{\\"AWS Secret Access Key\\":{\\"value\\":\\"aws-escaped-object\\"},'
@@ -436,14 +433,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "space_token_list": "Auth token: [redacted]",
         "body": "api_key=[redacted]",
         "headers": "Cookie: [redacted]",
-        "json": (
-            '{"api_key":"[redacted]","API key":"[redacted]",'
-            '"Authorization":"[redacted]"}'
-        ),
-        "json_plural": (
-            '{"API keys":"[redacted]",'
-            '"Auth tokens":"[redacted]","safe":"ok"}'
-        ),
+        "json": ('{"api_key":"[redacted]","API key":"[redacted]","Authorization":"[redacted]"}'),
+        "json_plural": ('{"API keys":"[redacted]","Auth tokens":"[redacted]","safe":"ok"}'),
         "json_human": (
             '{"OpenAI API key":"[redacted]",'
             '"API token":"[redacted]",'
@@ -489,9 +480,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '"Service Account Private Key":"[redacted]",'
             '"tokenizer":"gpt2"}'
         ),
-        "qualified_key_material_pairs": [
-            ["Service Account Private Key", "[redacted]"]
-        ],
+        "qualified_key_material_pairs": [["Service Account Private Key", "[redacted]"]],
         "json_escaped_delimiters": (
             '{\\"api_key\\":\\"[redacted]\\",'
             '\\"AWS Secret Access Key\\":\\"[redacted]\\",'
@@ -513,8 +502,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '{\\"api_key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped_delimiter_object": (
-            '{\\"AWS Secret Access Key\\":\\"[redacted]\\",'
-            '\\"tokenizer\\":\\"gpt2\\"}'
+            '{\\"AWS Secret Access Key\\":\\"[redacted]\\",\\"tokenizer\\":\\"gpt2\\"}'
         ),
         "json_escaped": '{"api_key":"[redacted]","safe":"ok"}',
         "json_list": '{"api_key":"[redacted]","safe":"ok"}',
@@ -560,7 +548,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
 
 
 def test_m9_acp_adapter_redacts_pathological_escaped_container_without_recursion() -> None:
-    ambiguous_value = "secret-piece\\\\\\\"tail" * 1200
+    ambiguous_value = 'secret-piece\\\\\\"tail' * 1200
     payload = _request_error_payload(
         RequestError(
             -32000,
@@ -601,11 +589,7 @@ def test_m9_acp_adapter_redacts_malformed_secret_containers_fail_closed() -> Non
     plain_payload = _request_error_payload(
         RequestError(
             -32000,
-            (
-                'Plain malformed: api_key=[\n'
-                '"plain-secret"\n'
-                "safe diagnostic: tokenizer gpt2"
-            ),
+            ('Plain malformed: api_key=[\n"plain-secret"\nsafe diagnostic: tokenizer gpt2'),
         )
     )
     escaped_payload = _request_error_payload(
@@ -620,9 +604,7 @@ def test_m9_acp_adapter_redacts_malformed_secret_containers_fail_closed() -> Non
     )
 
     assert plain_payload["message"] == "Plain malformed: api_key=[redacted]"
-    assert escaped_payload["message"] == (
-        'Escaped malformed: {\\"api_key\\":\\"[redacted]\\"'
-    )
+    assert escaped_payload["message"] == ('Escaped malformed: {\\"api_key\\":\\"[redacted]\\"')
     assert "plain-secret" not in repr(plain_payload)
     assert "escaped-secret" not in repr(escaped_payload)
     assert "safe diagnostic" not in repr(plain_payload)

@@ -8314,9 +8314,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if pep_decision.kind.value == "reject" and pep_elevation is None:
                     final_kind = "reject"
                     final_reason = (
-                        pep_decision.reason_code.strip()
-                        or pep_decision.reason
-                        or "pep_reject"
+                        pep_decision.reason_code.strip() or pep_decision.reason or "pep_reject"
                     )
                 elif monitor_decision.kind == MonitorDecisionType.REJECT:
                     final_kind = "reject"
@@ -8331,9 +8329,7 @@ class SessionImplMixin(HandlerMixinBase):
                 elif pep_decision.kind.value == "reject":
                     final_kind = "reject"
                     final_reason = (
-                        pep_decision.reason_code.strip()
-                        or pep_decision.reason
-                        or "pep_reject"
+                        pep_decision.reason_code.strip() or pep_decision.reason or "pep_reject"
                     )
                 else:
                     final_kind = "reject"
@@ -8761,9 +8757,7 @@ class SessionImplMixin(HandlerMixinBase):
             content_digest=ingress_context.content_digest,
             user_id=str(validated.user_id).strip() if validated.user_id is not None else None,
             workspace_id=(
-                str(validated.workspace_id).strip()
-                if validated.workspace_id is not None
-                else None
+                str(validated.workspace_id).strip() if validated.workspace_id is not None else None
             ),
         )
         if decision.kind != "allow" or decision.entry is None:
@@ -11741,9 +11735,7 @@ class SessionImplMixin(HandlerMixinBase):
             if pending_entries:
                 session.metadata["summarized_entry_count"] = len(conversational_entries)
                 session.metadata["last_summary_skipped_at"] = datetime.now(UTC).isoformat()
-                session.metadata["last_summary_skipped_reason"] = (
-                    "memory_auto_extraction_disabled"
-                )
+                session.metadata["last_summary_skipped_reason"] = "memory_auto_extraction_disabled"
                 self._session_manager.persist(sid)
             return
         if len(pending_entries) < interval:

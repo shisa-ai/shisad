@@ -659,9 +659,7 @@ async def _run_daemon_with_autoreload(
         from shisad.daemon.runner import run_daemon
 
         async def _default_runner(run_config: DaemonConfig) -> None:
-            started_callback = (
-                None if on_started is None else lambda: on_started(run_config)
-            )
+            started_callback = None if on_started is None else lambda: on_started(run_config)
             await run_daemon(run_config, on_started=started_callback)
 
         runner = _default_runner

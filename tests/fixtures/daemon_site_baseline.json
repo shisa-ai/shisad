@@ -6,13 +6,12 @@
       "tests/integration/test_a2a_ingress.py": 1,
       "tests/integration/test_chat_confirmation_e2e.py": 6,
       "tests/integration/test_context_scaffold_degraded.py": 3,
-      "tests/unit/test_daemon_services.py": 24,
-      "tests/unit/test_session_memory_summarizer.py": 1
+      "tests/unit/test_daemon_services.py": 25,
+      "tests/unit/test_session_memory_summarizer.py": 4
     },
     "run_daemon": {
       "tests/adversarial/test_adversarial_cleanroom.py": 1,
       "tests/adversarial/test_pairing_artifact_parser.py": 3,
-      "tests/behavioral/test_behavioral_contract.py": 1,
       "tests/behavioral/test_behavioral_contract_live_model.py": 1,
       "tests/behavioral/test_evidence_behavioral.py": 1,
       "tests/behavioral/test_no_model_configured_behavioral.py": 1,
@@ -25,7 +24,7 @@
       "tests/integration/test_cleanroom_workflow.py": 1,
       "tests/integration/test_coding_agent_tasks.py": 1,
       "tests/integration/test_control_plane_integration.py": 1,
-      "tests/integration/test_daemon_runtime.py": 6,
+      "tests/integration/test_daemon_runtime.py": 8,
       "tests/integration/test_dev_commands.py": 1,
       "tests/integration/test_m3_scope_enforcement.py": 1,
       "tests/integration/test_runtime_completion.py": 19,
@@ -43,7 +42,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 39,
-    "run_daemon": 97
+    "DaemonServices.build": 43,
+    "run_daemon": 98
   }
 }

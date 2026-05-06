@@ -174,11 +174,7 @@ def _is_secret_transport_key(key: object) -> bool:
 
 def _is_multiline_key_material_transport_key(key: object) -> bool:
     compact = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
-    return (
-        "privatekey" in compact
-        or "secretaccesskey" in compact
-        or "secretkey" in compact
-    )
+    return "privatekey" in compact or "secretaccesskey" in compact or "secretkey" in compact
 
 
 def _json_safe_transport_error_data(value: object, *, key: object = "") -> object:
@@ -332,9 +328,7 @@ def _redact_transport_error_escaped_secret_containers(message: str) -> str:
     parts: list[str] = []
     cursor = 0
     search_pos = 0
-    while match := _TRANSPORT_ERROR_ESCAPED_SECRET_CONTAINER_PREFIX_RE.search(
-        message, search_pos
-    ):
+    while match := _TRANSPORT_ERROR_ESCAPED_SECRET_CONTAINER_PREFIX_RE.search(message, search_pos):
         value_start = match.end()
         if value_start >= len(message) or message[value_start] not in {"[", "{"}:
             search_pos = match.end()
@@ -361,9 +355,7 @@ def _redact_transport_error_secret_assignments(message: str) -> str:
     search_pos = 0
     while match := _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE.search(message, search_pos):
         value_start = match.end()
-        multiline_key_material = _is_multiline_key_material_transport_key(
-            match.group("label")
-        )
+        multiline_key_material = _is_multiline_key_material_transport_key(match.group("label"))
         if value_start >= len(message) or (
             message[value_start] in {"\r", "\n"} and not multiline_key_material
         ):
@@ -823,8 +815,7 @@ class AcpAdapter(CodingAgentAdapter):
             transport_error = _request_error_payload(exc)
             error_message = str(transport_error.get("message", "")).strip() or str(exc)
             summary = (
-                f"Coding agent '{self._spec.name}' failed during ACP negotiation: "
-                f"{error_message}"
+                f"Coding agent '{self._spec.name}' failed during ACP negotiation: {error_message}"
             )
             code = transport_error.get("code")
             if isinstance(code, int):

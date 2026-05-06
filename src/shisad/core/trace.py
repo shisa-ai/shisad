@@ -58,10 +58,7 @@ def _redact_tool_call_payload(value: Any, *, persist_arguments: bool) -> Any:
             for key, child in redacted.items()
         }
     if isinstance(redacted, list):
-        return [
-            _redact_tool_call_payload(item, persist_arguments=False)
-            for item in redacted
-        ]
+        return [_redact_tool_call_payload(item, persist_arguments=False) for item in redacted]
     return redacted
 
 

@@ -382,10 +382,7 @@ class IngestionPipeline:
         quarantined = inspection.risk_score >= self._quarantine_threshold
         owner_user_id = self._normalize_owner_value(user_id)
         owner_workspace_id = self._normalize_owner_value(workspace_id)
-        if (
-            private_user_public_collection
-            and (owner_user_id is None or owner_workspace_id is None)
-        ):
+        if private_user_public_collection and (owner_user_id is None or owner_workspace_id is None):
             raise ValueError(
                 "owner scope is required before private user content can be indexed "
                 "outside user_curated"
@@ -841,9 +838,7 @@ class IngestionPipeline:
         require_corroboration: bool,
         terms: list[str],
     ) -> list[RetrievalResult]:
-        final_results = [
-            record.model_copy(update={"conflict": False}) for record in results
-        ]
+        final_results = [record.model_copy(update={"conflict": False}) for record in results]
         if require_corroboration:
             source_ids = {record.source_id for record in final_results}
             tiers = {record.collection for record in final_results}
@@ -852,8 +847,7 @@ class IngestionPipeline:
                 record.model_copy(
                     update={
                         "corroborated": corroborated,
-                        "verification_gap": record.trust_band != "elevated"
-                        and not corroborated,
+                        "verification_gap": record.trust_band != "elevated" and not corroborated,
                     }
                 )
                 for record in final_results

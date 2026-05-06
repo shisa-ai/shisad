@@ -341,8 +341,7 @@ class AdminImplMixin(HandlerMixinBase):
                 str(value.get("event_id") or "").strip() == normalized_event_id
                 and str(value.get("channel_id") or "").strip() == channel_id
                 and str(value.get("target_message_id") or "").strip() == target_message_id
-                and str(value.get("actor_external_user_id") or "").strip()
-                == actor_external_user_id
+                and str(value.get("actor_external_user_id") or "").strip() == actor_external_user_id
             ):
                 return entry
         return None
@@ -880,9 +879,8 @@ class AdminImplMixin(HandlerMixinBase):
                             effective_note_key if effective_note_key != note_key else None
                         ),
                     )
-                    if (
-                        effective_note_key == note_key
-                        and _is_owner_curated_channel_entry(prior_note)
+                    if effective_note_key == note_key and _is_owner_curated_channel_entry(
+                        prior_note
                     ):
                         effective_note_key = _observed_channel_memory_key(note_key)
                         prior_note = self._find_current_memory_entry(
@@ -1004,9 +1002,8 @@ class AdminImplMixin(HandlerMixinBase):
                             effective_summary_key if effective_summary_key != summary_key else None
                         ),
                     )
-                    if (
-                        effective_summary_key == summary_key
-                        and _is_owner_curated_channel_entry(prior_summary)
+                    if effective_summary_key == summary_key and _is_owner_curated_channel_entry(
+                        prior_summary
                     ):
                         effective_summary_key = _observed_channel_memory_key(summary_key)
                         prior_summary = self._find_current_memory_entry(
@@ -1036,9 +1033,7 @@ class AdminImplMixin(HandlerMixinBase):
                         window_end=message.received_at,
                         source_message_ids=[message.message_id] if message.message_id else [],
                         confidence_source="observed",
-                        correction_status=(
-                            "corrected" if prior_summary is not None else "current"
-                        ),
+                        correction_status=("corrected" if prior_summary is not None else "current"),
                         supersedes_entry_id=(
                             prior_summary.id if prior_summary is not None else None
                         ),
