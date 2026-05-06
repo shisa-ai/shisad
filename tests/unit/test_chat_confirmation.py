@@ -1005,9 +1005,12 @@ async def test_chat_confirmation_blocked_output_policy_scrubs_tool_outputs(
     )
     assert result["tool_outputs"] == []
     output_policy_json = json.dumps(result["output_policy"], sort_keys=True)
+    assert result["output_policy"]["details_redacted"] is True
     assert result["output_policy"]["sanitized_text"] == ""
     assert result["output_policy"]["url_findings"][0]["url"] == "[REDACTED]"
+    assert result["output_policy"]["url_findings"][0]["host"] == "[REDACTED]"
     assert "https://malware.example/payload" not in output_policy_json
+    assert "malware.example" not in output_policy_json
 
 
 @pytest.mark.asyncio
