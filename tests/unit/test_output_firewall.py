@@ -22,6 +22,25 @@ def test_m2_t6_output_firewall_redacts_oauth_tokens() -> None:
     assert "oauth_token" in result.secret_findings
 
 
+def test_gh20_output_firewall_still_labels_openai_keys() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    result = firewall.inspect("OPENAI_API_KEY=sk-abc123def456ghi789jkl012")
+
+    assert "[REDACTED:openai_key]" in result.sanitized_text
+    assert "openai_key" in result.secret_findings
+
+
+def test_gh20_output_firewall_labels_anthropic_keys_distinctly_from_openai() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    result = firewall.inspect("ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012")
+
+    assert "[REDACTED:anthropic_key]" in result.sanitized_text
+    assert "[REDACTED:openai_key]" not in result.sanitized_text
+    assert "anthropic_key" in result.secret_findings
+    assert "openai_key" not in result.secret_findings
+    assert "secret_redaction" in result.reason_codes
+
+
 def test_m2_t7_output_firewall_blocks_known_malicious_urls() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     result = firewall.inspect("Open https://evil.com/exfil for details")

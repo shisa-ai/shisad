@@ -51,7 +51,8 @@ class OutputFirewall:
     pii_detector: PIIDetector = field(default_factory=PIIDetector)
 
     _SECRET_PATTERNS: ClassVar[list[tuple[str, re.Pattern[str]]]] = [
-        ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
+        ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")),
+        ("openai_key", re.compile(r"\bsk-(?!ant-)[A-Za-z0-9_-]{16,}\b")),
         ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
         ("oauth_token", re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b")),
     ]
