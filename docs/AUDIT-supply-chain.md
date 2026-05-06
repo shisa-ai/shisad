@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-30 (v0.7.1 release-close Ledger uuid recheck)*
+*Updated: 2026-05-06 (v0.7.2 release-close python-multipart remediation)*
 *Status: In Progress*  
-*Snapshot basis: v0.7.1 C2 review-refresh target on `main`; historical v0.7.0 release evidence is retained where explicitly labeled.*
+*Snapshot basis: v0.7.2 release-close candidate on `main`; historical v0.7.0/v0.7.1 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
@@ -38,6 +38,27 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-05-06 — v0.7.2 python-multipart pip-audit remediation
+
+- Scope: remediate the Python dependency-audit blocker found during v0.7.2
+  release-close preflight.
+- Audit result:
+  - `uvx pip-audit --require-hashes --disable-pip -r <(uv export --all-groups
+    --frozen --format requirements.txt --no-emit-project --directory
+    /home/ubuntu/shisad)` initially reported `CVE-2026-42561` in transitive
+    `python-multipart 0.0.26` via `mcp`.
+  - `uv lock --directory /home/ubuntu/shisad --upgrade-package
+    python-multipart` -> `Updated python-multipart v0.0.26 -> v0.0.27`.
+  - `uv lock --check --directory /home/ubuntu/shisad` passed.
+  - The same `pip-audit` command then returned `No known vulnerabilities
+    found`.
+  - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo
+    /home/ubuntu/shisad` returned `Supply-chain audit parity: OK`.
+- Risk disposition:
+  - The Python release-close audit blocker is closed for this candidate.
+  - `python-multipart` remains a transitive interop/dev dependency through
+    `mcp`, not a base-runtime default dependency.
 
 ### 2026-04-30 — v0.7.1 Ledger bridge uuid recheck
 
@@ -609,7 +630,7 @@ pytest==9.0.3
 pytest-asyncio==1.3.0
 pytest-cov==6.3.0
 python-dotenv==1.2.2
-python-multipart==0.0.26
+python-multipart==0.0.27
 python-olm==3.2.16
 python-socks==2.8.0
 python-telegram-bot==21.11.1
@@ -927,7 +948,7 @@ pytest-asyncio==1.3.0
 pytest-cov==6.3.0
 python-dotenv==1.2.2
     # via pydantic-settings
-python-multipart==0.0.26
+python-multipart==0.0.27
     # via mcp
 python-olm==3.2.16
     # via matrix-nio
