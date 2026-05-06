@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -451,7 +452,7 @@ async def _reminder_delivery_pump(
             continue
 
 
-async def run_daemon(config: DaemonConfig) -> None:
+async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None = None) -> None:
     """Run the shisad daemon."""
     setup_logging(level=config.log_level)
     services = await DaemonServices.build(config)
@@ -475,6 +476,8 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     await services.server.start()
     logger.info("shisad daemon started")
+    if on_started is not None:
+        on_started()
 
     # Effective config summary — so operators can verify settings from logs
     _search_status = "enabled" if config.web_search_enabled else "DISABLED"

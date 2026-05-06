@@ -36,6 +36,37 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_daemon_invokes_started_callback_after_socket_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    started = asyncio.Event()
+
+    daemon_task = asyncio.create_task(run_daemon(config, on_started=started.set))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await asyncio.wait_for(started.wait(), timeout=3)
+        assert config.socket_path.exists()
+        await client.connect()
+        status = await client.call("daemon.status")
+        assert status["status"] == "running"
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

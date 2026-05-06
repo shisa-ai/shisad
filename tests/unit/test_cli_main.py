@@ -6,7 +6,9 @@ import asyncio
 import builtins
 import hashlib
 import json
+import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -2632,8 +2634,13 @@ def test_start_default_routes_to_foreground_path(
 
     captured: dict[str, DaemonConfig] = {}
 
-    def _fake_foreground_start(effective_config: DaemonConfig) -> None:
+    def _fake_foreground_start(
+        effective_config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
         captured["config"] = effective_config
+        if on_started is not None:
+            on_started()
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -2672,8 +2679,13 @@ def test_restart_default_shuts_down_then_starts_foreground(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_foreground_start(effective_config: DaemonConfig) -> None:
+    def _fake_foreground_start(
+        effective_config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
         captured["config"] = effective_config
+        if on_started is not None:
+            on_started()
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -2688,6 +2700,55 @@ def test_restart_default_shuts_down_then_starts_foreground(
     assert result.exit_code == 0, result.output
     assert shutdown_calls == [("daemon.shutdown", None)]
     assert captured["config"] is config
+
+
+def test_restart_default_prints_operator_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    expected_config = config
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_start(
+        config: DaemonConfig,
+        foreground: bool,
+        debug: bool,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        assert config is expected_config
+        assert foreground is False
+        assert debug is False
+        assert on_started is not None
+        on_started()
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        f"daemon restarted: pid={os.getpid()} data_dir={config.data_dir} "
+        f"socket={config.socket_path}"
+    ) in result.output
 
 
 def test_restart_fresh_config_reloads_before_start(
@@ -2722,8 +2783,13 @@ def test_restart_fresh_config_reloads_before_start(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_foreground_start(effective_config: DaemonConfig) -> None:
+    def _fake_foreground_start(
+        effective_config: DaemonConfig,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
         captured["config"] = effective_config
+        if on_started is not None:
+            on_started()
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -2739,6 +2805,122 @@ def test_restart_fresh_config_reloads_before_start(
     assert result.exit_code == 0, result.output
     assert config_calls["count"] == 2
     assert captured["config"] is refreshed_config
+
+
+def test_restart_fresh_config_prints_refreshed_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_config = _config(tmp_path)
+    initial_config.socket_path.touch()
+    refreshed_config = _config(tmp_path).model_copy(
+        update={
+            "data_dir": tmp_path / "data-refreshed",
+            "socket_path": tmp_path / "control-refreshed.sock",
+        }
+    )
+    expected_config = refreshed_config
+    config_calls = {"count": 0}
+
+    def _fake_get_config() -> DaemonConfig:
+        config_calls["count"] += 1
+        if config_calls["count"] == 1:
+            return initial_config
+        return refreshed_config
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is initial_config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_backup(config: DaemonConfig) -> Path:
+        assert config is initial_config
+        return tmp_path / "config-backups" / "20260302-120000.json"
+
+    def _fake_start(
+        config: DaemonConfig,
+        foreground: bool,
+        debug: bool,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        assert config is expected_config
+        assert foreground is False
+        assert debug is False
+        assert on_started is not None
+        on_started()
+
+    monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
+    monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart", "--fresh-config"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        f"daemon restarted: pid={os.getpid()} data_dir={refreshed_config.data_dir} "
+        f"socket={refreshed_config.socket_path}"
+    ) in result.output
+
+
+def test_restart_start_failure_prints_partial_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    expected_config = config
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_start(
+        config: DaemonConfig,
+        foreground: bool,
+        debug: bool,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        assert config is expected_config
+        assert foreground is False
+        assert debug is False
+        assert on_started is not None
+        raise click.ClickException("bind failed")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart"])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        f"daemon restart failed: phase=start pid={os.getpid()} "
+        f"data_dir={config.data_dir} socket={config.socket_path} error=bind failed"
+    ) in result.output
 
 
 def test_restart_fresh_config_creates_backup_before_reload(
@@ -2777,10 +2959,17 @@ def test_restart_fresh_config_creates_backup_before_reload(
         captured_backup["config"] = config
         return tmp_path / "config-backups" / "20260302-120000.json"
 
-    def _fake_start(config: DaemonConfig, foreground: bool, debug: bool) -> None:
+    def _fake_start(
+        config: DaemonConfig,
+        foreground: bool,
+        debug: bool,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
         assert foreground is False
         assert debug is False
         captured_start["config"] = config
+        if on_started is not None:
+            on_started()
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
