@@ -245,8 +245,8 @@ A2A interop:
 A2A notes:
 
 - `SHISAD_A2A` accepts a JSON object for signed A2A listener, identity, and
-  static remote-agent registry configuration. The current `v0.6.5` surface is
-  inbound signed external-ingress over direct socket or HTTP transports.
+  static remote-agent registry configuration. The A2A surface is inbound
+  signed external-ingress over direct socket or HTTP transports.
 - A minimal config object includes `enabled`, `identity.agent_id`,
   `identity.private_key_path`, `identity.public_key_path`, `listen`, and
   `agents`. Each configured remote agent must provide a fingerprint plus either
