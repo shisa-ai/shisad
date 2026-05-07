@@ -325,6 +325,7 @@ def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
         value="Follow up on the active session thread.",
         scope="session",
         workflow_state="active",
+        source_id="sid-current:thread:session-followup",
     )
     waiting_channel = _write_entry(
         manager,
@@ -374,6 +375,7 @@ def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
         max_tokens=64,
         scope_filter={"session", "channel"},
         allowed_channel_trusts={"command", "owner_observed"},
+        session_scope_id="sid-current",
     )
 
     assert {entry.id for entry in pack.entries} == {
@@ -383,6 +385,44 @@ def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
     assert pack.count == 2
     assert pack.scope_filter == {"session", "channel"}
     assert {entry.workflow_state for entry in pack.entries} == {"active", "waiting"}
+
+
+def test_m3_compile_active_attention_binds_session_scope_to_current_session(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    old_session = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:old-session",
+        value="Old session thread must not enter a new session.",
+        scope="session",
+        workflow_state="active",
+        source_id="sid-old:thread:old-session",
+    )
+    current_session = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:current-session",
+        value="Current session thread can surface.",
+        scope="session",
+        workflow_state="active",
+        source_id="sid-current:thread:current-session",
+    )
+
+    pack = manager.compile_active_attention(
+        max_tokens=64,
+        scope_filter={"session"},
+        session_scope_id="sid-current",
+    )
+    no_binding_pack = manager.compile_active_attention(
+        max_tokens=64,
+        scope_filter={"session"},
+    )
+
+    assert [entry.id for entry in pack.entries] == [current_session.id]
+    assert old_session.id not in {entry.id for entry in pack.entries}
+    assert no_binding_pack.entries == []
 
 
 def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entries(
@@ -401,6 +441,7 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
         value="Follow up on the current conversation.",
         scope="session",
         workflow_state="active",
+        source_id="sid-current:thread:session-followup",
     )
     user_thread = _write_entry(
         manager,
@@ -466,6 +507,7 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
         max_tokens=128,
         scope_filter={"session", "user", "channel"},
         channel_binding=current_binding,
+        session_scope_id="sid-current",
     )
 
     assert {entry.id for entry in pack.entries} == {
@@ -693,12 +735,14 @@ def test_m3_surface_compiler_citation_ids_drive_usage_updates(tmp_path: Path) ->
         value="Follow up on the current conversation.",
         scope="session",
         workflow_state="active",
+        source_id="sid-current:thread:session-followup",
     )
 
     identity_pack = manager.compile_identity(max_tokens=64)
     attention_pack = manager.compile_active_attention(
         max_tokens=64,
         scope_filter={"session"},
+        session_scope_id="sid-current",
     )
     cited_at = datetime(2026, 4, 22, 22, 15, tzinfo=UTC)
 
@@ -781,6 +825,36 @@ def test_m1_compile_thread_resume_selects_named_prior_thread(tmp_path: Path) -> 
     assert pack.packet.evidence_refs == ["ev-nebula-rollback"]
     assert "Mara accepted rollback ownership" in "\n".join(pack.packet.evidence_snippets)
     assert pack.confidence >= 0.70
+
+
+def test_m1_compile_thread_resume_selects_prior_thread_by_entry_id(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    thread = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-launch-review",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Nebula launch review covered release risks.",
+            "evidence_refs": ["ev-nebula-rollback"],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.85,
+    )
+
+    pack = manager.compile_thread_resume(
+        f"Please resume prior thread {thread.id}.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert pack.status == "selected"
+    assert pack.selected is not None
+    assert pack.selected.entry.id == thread.id
+    assert "entry_id_match" in pack.selected.rationale
 
 
 def test_m1_compile_thread_resume_excludes_owner_mismatch_and_closed_or_stale(

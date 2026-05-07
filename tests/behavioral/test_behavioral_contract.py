@@ -3315,6 +3315,73 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
 
 
 @pytest.mark.asyncio
+async def test_contract_cross_session_topic_resume_accepts_thread_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+    stored_thread_id: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:nebula-launch-review",
+            value={
+                "title": "Nebula launch review",
+                "summary": "Nebula launch review covered release risks and rollback ownership.",
+                "evidence_refs": ["ev-nebula-rollback"],
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="thread-nebula",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="thread-nebula",
+            scope="user",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+        assert decision.entry is not None
+        stored_thread_id["id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": f"Please resume prior thread {stored_thread_id['id']}.",
+            },
+        )
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+
+    assert "thread_resume_status=selected" in trusted_section
+    assert f"thread_resume_selected_id={stored_thread_id['id']}" in trusted_section
+    assert "Nebula launch review covered release risks" in planner_input
+
+
+@pytest.mark.asyncio
 async def test_contract_topic_resume_avoids_wrong_thread_after_topic_switch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3599,6 +3666,65 @@ async def test_contract_topic_resume_signal_does_not_persist_to_later_turn(
     assert "thread_resume_status=" not in trusted_section
     assert "THREAD RESUME PACKET" not in planner_input
     assert "THREAD RESUME SELECTION" not in planner_input
+
+
+@pytest.mark.asyncio
+async def test_contract_active_attention_excludes_other_session_threads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:old-session-followup",
+            value={
+                "title": "Old session follow-up",
+                "summary": "Old session Active Attention must not enter the new session.",
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="sid-old:thread:old-session-followup",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="sid-old:thread:old-session-followup",
+            scope="session",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+
+    assert "active_attention_total=" not in trusted_section
+    assert "Old session Active Attention must not enter the new session." not in planner_input
 
 
 @pytest.mark.asyncio

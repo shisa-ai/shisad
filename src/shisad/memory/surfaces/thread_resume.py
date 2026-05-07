@@ -233,9 +233,13 @@ def _score_thread_entry(
     title_phrase = _normalized_phrase(title)
     key_phrase = _normalized_phrase(entry.key.replace(":", " ").replace("-", " "))
     normalized_query = _normalized_phrase(query)
+    entry_id_match = _normalized_identifier(entry.id) in _normalized_identifier(query)
 
     score = 0.15
     rationale = ["explicit_continuation_signal"]
+    if entry_id_match:
+        score += 0.55
+        rationale.append("entry_id_match")
     if title_phrase and title_phrase in normalized_query:
         score += 0.45
         rationale.append("title_phrase_match")
@@ -261,6 +265,7 @@ def _score_thread_entry(
 
     if (
         not matched_terms
+        and "entry_id_match" not in rationale
         and "title_phrase_match" not in rationale
         and "key_phrase_match" not in rationale
     ):
@@ -465,6 +470,10 @@ def _content_terms(text: str) -> list[str]:
 def _normalized_phrase(text: str) -> str:
     terms = _content_terms(text)
     return " ".join(terms)
+
+
+def _normalized_identifier(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 def _scope_priority(scope: str) -> int:

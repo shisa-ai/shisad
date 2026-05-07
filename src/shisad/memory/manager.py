@@ -679,6 +679,7 @@ class MemoryManager:
         scope_filter: set[str] | None = None,
         allowed_channel_trusts: set[str] | None = None,
         channel_binding: str | None = None,
+        session_scope_id: str | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
@@ -689,8 +690,12 @@ class MemoryManager:
             workspace_id=workspace_id,
             include_unowned=include_unowned,
         )
+        visible_entries = self._filter_session_scoped_entries(
+            entries,
+            session_scope_id=session_scope_id,
+        )
         return build_active_attention_pack(
-            entries=entries,
+            entries=visible_entries,
             max_tokens=max_tokens,
             scope_filter=scope_filter,
             allowed_channel_trusts=allowed_channel_trusts,
@@ -713,8 +718,24 @@ class MemoryManager:
             workspace_id=workspace_id,
             include_unowned=include_unowned,
         )
+        visible_entries = self._filter_session_scoped_entries(
+            entries,
+            session_scope_id=session_scope_id,
+        )
+        return build_thread_resume_pack(
+            entries=visible_entries,
+            query=query,
+            max_tokens=max_tokens,
+        )
+
+    def _filter_session_scoped_entries(
+        self,
+        entries: list[MemoryEntry],
+        *,
+        session_scope_id: str | None,
+    ) -> list[MemoryEntry]:
         normalized_session_scope_id = (session_scope_id or "").strip()
-        visible_entries = [
+        return [
             entry
             for entry in entries
             if str(entry.scope) != "session"
@@ -723,11 +744,6 @@ class MemoryManager:
                 and self._session_scope_binding(entry.source_id) == normalized_session_scope_id
             )
         ]
-        return build_thread_resume_pack(
-            entries=visible_entries,
-            query=query,
-            max_tokens=max_tokens,
-        )
 
     def list_invocable_skills(
         self,

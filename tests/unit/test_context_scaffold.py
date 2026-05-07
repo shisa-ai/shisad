@@ -250,13 +250,13 @@ def test_m3_active_attention_scaffold_splits_metadata_and_content(tmp_path: Path
         value="Follow up on the active session thread.",
         source=MemorySource(
             origin="user",
-            source_id="thread:session-followup",
+            source_id="sess-m3-attention:thread:session-followup",
             extraction_method="manual",
         ),
         source_origin="user_direct",
         channel_trust="command",
         confirmation_status="user_asserted",
-        source_id="thread:session-followup",
+        source_id="sess-m3-attention:thread:session-followup",
         scope="session",
         workflow_state="active",
     )
@@ -299,6 +299,7 @@ def test_m3_active_attention_scaffold_splits_metadata_and_content(tmp_path: Path
     active_attention_entries = manager.compile_active_attention(
         scope_filter={"session", "project", "user", "channel"},
         allowed_channel_trusts={"command", "owner_observed"},
+        session_scope_id="sess-m3-attention",
     ).entries
     session = Session(
         id=SessionId("sess-m3-attention"),

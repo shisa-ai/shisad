@@ -7223,6 +7223,7 @@ class SessionImplMixin(HandlerMixinBase):
                         if active_attention_defaults.allowed_channel_trusts is not None
                         else None,
                         channel_binding=active_attention_defaults.channel_binding,
+                        session_scope_id=str(validated.sid),
                         user_id=str(session.user_id),
                         workspace_id=str(session.workspace_id),
                     )
