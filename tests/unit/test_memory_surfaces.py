@@ -8,7 +8,11 @@ import pytest
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
 from shisad.memory.schema import MemoryEntry, MemorySource
-from shisad.memory.surfaces.active_attention import _estimate_attention_tokens
+from shisad.memory.surfaces.active_attention import (
+    _estimate_attention_tokens,
+    active_attention_entry_metadata,
+)
+from shisad.memory.surfaces.thread_resume import build_thread_packet
 
 
 def _write_entry(
@@ -772,6 +776,119 @@ def test_m3_surface_compiler_citation_ids_drive_usage_updates(tmp_path: Path) ->
     assert len(attention_events) == 1
     assert identity_events[0].metadata_json["cited_at"] == cited_at.isoformat()
     assert attention_events[0].metadata_json["cited_at"] == cited_at.isoformat()
+
+
+def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    high_priority = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:launch-approval",
+        value={
+            "title": "Launch approval",
+            "summary": "Launch approval is waiting on Mara.",
+            "next_action": "Ask Mara to confirm the launch approval.",
+            "deadline_at": "2026-05-08T12:00:00Z",
+            "external_response_expected": True,
+        },
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.86,
+    )
+    newer_low_confidence = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:low-confidence-followup",
+        value={
+            "title": "Low confidence follow-up",
+            "summary": "This follow-up has only weak evidence.",
+            "next_action": "Maybe ask about the weak follow-up.",
+        },
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.52,
+    )
+
+    pack = manager.compile_active_attention(max_tokens=128, scope_filter={"user"})
+    high_metadata = active_attention_entry_metadata(high_priority)
+    low_metadata = active_attention_entry_metadata(newer_low_confidence)
+
+    assert pack.entries[0].id == high_priority.id
+    assert high_metadata["priority"] == "high"
+    assert high_metadata["cues"] == [
+        "deadline",
+        "external_response_expected",
+        "next_action",
+        "waiting",
+    ]
+    assert low_metadata["priority"] == "normal"
+
+
+def test_m3_thread_packet_reports_budget_staleness_and_verification_caveats(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    thread = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:stale-launch-review",
+        value={
+            "title": "Stale launch review",
+            "summary": " ".join(["Launch review stale evidence"] * 12),
+            "unresolved_state": "The rollback owner still needs verification.",
+            "evidence_refs": ["ev-stale-launch-review"],
+            "packet_max_tokens": 12,
+        },
+        scope="user",
+        workflow_state="stale",
+        confidence=0.82,
+    )
+
+    packet = build_thread_packet(thread, max_tokens=80)
+
+    assert packet.max_tokens == 12
+    assert packet.token_cost <= 12
+    assert packet.verification_gap is True
+    assert packet.staleness["stale"] is True
+    assert any("verification" in caveat.lower() for caveat in packet.caveats)
+    assert any("stale" in caveat.lower() for caveat in packet.caveats)
+
+
+def test_m3_thread_resume_metadata_exposes_selection_metrics(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-launch-review",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Nebula launch review covered release risks.",
+            "unresolved_state": "Mara owns the rollback follow-up.",
+            "evidence_refs": ["ev-nebula"],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.88,
+    )
+
+    pack = manager.compile_thread_resume(
+        "Please resume the Nebula launch review thread.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    metadata = pack.metadata()
+    metrics = metadata["metrics"]
+
+    assert pack.status == "selected"
+    assert metrics["selection_precision_estimate"] == pytest.approx(pack.confidence)
+    assert metrics["wrong_thread_risk"] == pytest.approx(0.0)
+    assert metrics["evidence_coverage"] > 0.0
+    assert metrics["token_cost"] == pack.packet.token_cost
+    assert metrics["abstention_correctness_signal"] == pytest.approx(0.0)
 
 
 def test_m1_compile_thread_resume_selects_named_prior_thread(tmp_path: Path) -> None:

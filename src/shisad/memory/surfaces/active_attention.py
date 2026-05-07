@@ -6,7 +6,7 @@ import json
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shisad.memory.remap import ACTIVE_AGENDA_ENTRY_TYPES
 
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from shisad.memory.schema import MemoryEntry
 
 DEFAULT_ACTIVE_ATTENTION_MAX_TOKENS = 750
+ACTIVE_ATTENTION_HIGH_PRIORITY_CONFIDENCE = 0.7
 ACTIVE_ATTENTION_WORKFLOW_STATES = {"active", "waiting", "blocked"}
 ACTIVE_ATTENTION_CLASS_PRIORITY = (
     "waiting_on",
@@ -29,6 +30,9 @@ CHANNEL_AFFINED_ENTRY_TYPES = {
     "channel_participation",
     "response_feedback",
 }
+_NEXT_ACTION_KEYS = ("next_action", "next_user_action")
+_DEADLINE_KEYS = ("deadline_at", "due_at")
+_BLOCKED_KEYS = ("blocked_on", "dependency", "missing_dependency")
 
 
 def _estimate_attention_tokens(entry: MemoryEntry) -> int:
@@ -38,6 +42,24 @@ def _estimate_attention_tokens(entry: MemoryEntry) -> int:
     else:
         rendered = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
     return max(1, len(f"{entry.key} {rendered}".split()))
+
+
+def active_attention_entry_metadata(entry: MemoryEntry) -> dict[str, Any]:
+    """Return trusted, derived selection metadata for an Active Attention entry."""
+
+    cues = _attention_cues(entry)
+    high_signal = (
+        entry.workflow_state in {"waiting", "blocked"}
+        and entry.confidence >= ACTIVE_ATTENTION_HIGH_PRIORITY_CONFIDENCE
+        and bool(cues)
+    )
+    return {
+        "priority": "high" if high_signal else "normal",
+        "cues": cues,
+        "confidence": round(float(entry.confidence), 4),
+        "workflow_state": entry.workflow_state or "",
+        "token_estimate": _estimate_attention_tokens(entry),
+    }
 
 
 @dataclass(slots=True)
@@ -78,7 +100,10 @@ def build_active_attention_pack(
                 channel_binding=channel_binding,
             )
         ),
-        key=lambda entry: entry.created_at,
+        key=lambda entry: (
+            active_attention_entry_metadata(entry)["priority"] == "high",
+            entry.created_at,
+        ),
         reverse=True,
     )
     budgeted = _class_balance_attention_entries(selected)
@@ -101,6 +126,32 @@ def build_active_attention_pack(
         scope_filter=set(scope_filter) if scope_filter is not None else None,
         channel_binding=channel_binding.strip() if channel_binding else None,
     )
+
+
+def _attention_cues(entry: MemoryEntry) -> list[str]:
+    value = entry.value
+    cues: list[str] = []
+    if isinstance(value, Mapping):
+        if any(_has_text_value(value, key) for key in _DEADLINE_KEYS):
+            cues.append("deadline")
+        if bool(value.get("external_response_expected")):
+            cues.append("external_response_expected")
+        if any(_has_text_value(value, key) for key in _NEXT_ACTION_KEYS):
+            cues.append("next_action")
+        if any(_has_text_value(value, key) for key in _BLOCKED_KEYS):
+            cues.append("blocked_dependency")
+    if entry.workflow_state == "waiting":
+        cues.append("waiting")
+    elif entry.workflow_state == "blocked":
+        cues.append("blocked")
+    return cues
+
+
+def _has_text_value(value: Mapping[str, Any], key: str) -> bool:
+    raw = value.get(key)
+    if isinstance(raw, str):
+        return bool(raw.strip())
+    return raw is not None
 
 
 def entry_passes_context_filters(

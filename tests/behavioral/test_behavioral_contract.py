@@ -3279,6 +3279,83 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
 
 
 @pytest.mark.asyncio
+async def test_contract_active_attention_surfaces_priority_cues_as_untrusted_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:launch-approval",
+            value={
+                "title": "Launch approval",
+                "summary": "Launch approval is waiting on Mara.",
+                "next_action": "Ask Mara to confirm the launch approval.",
+                "deadline_at": "2026-05-08T12:00:00Z",
+                "external_response_expected": True,
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="attention-launch-approval",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="attention-launch-approval",
+            scope="user",
+            workflow_state="waiting",
+            confidence=0.9,
+            confirmation_satisfied=True,
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _priority_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                planner_input = str(messages[-1].content)
+                captured_inputs.append(planner_input)
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content="The Launch approval thread is waiting on Mara.",
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _priority_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+
+    assert str(reply.get("response", "")).strip()
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+    data_evidence = _extract_data_evidence_context(planner_input)
+
+    assert "active_attention_total=1" in trusted_section
+    assert "priority:high" in trusted_section
+    assert "cues:deadline,external_response_expected,next_action,waiting" in trusted_section
+    assert "Ask Mara to confirm the launch approval." not in trusted_section
+    assert "Ask Mara to confirm the launch approval." in data_evidence
+
+
+@pytest.mark.asyncio
 async def test_contract_discord_channel_context_binds_active_attention_to_current_channel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3486,8 +3563,14 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
     assert "thread_resume_status=selected" in trusted_section
     assert "thread_resume_selected_id=" in trusted_section
     assert "thread_resume_confidence=" in trusted_section
+    assert "thread_resume_packet_tokens=" in trusted_section
+    assert "thread_resume_packet_max_tokens=" in trusted_section
+    assert "thread_resume_verification_gap=true" in trusted_section
+    assert "thread_resume_metrics=" in trusted_section
     assert "policy_taint_labels=untrusted" in trusted_section
     assert "THREAD RESUME PACKET" in thread_context
+    assert "staleness=" in thread_context
+    assert "verification_gap=true" in thread_context
     assert "Mara accepted rollback ownership" in thread_context
     assert "Mara accepted rollback ownership" not in trusted_section
     assert "cannot authorize current side effects" in planner_input
@@ -3498,6 +3581,81 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
     assert suppressed_entry is not None
     assert selected_entry.citation_count == 1
     assert suppressed_entry.citation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_contract_stale_thread_resume_abstains_without_packet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:nebula-launch-review",
+            value={
+                "title": "Nebula launch review",
+                "summary": "Stale Nebula launch evidence must not be injected.",
+                "evidence_refs": ["ev-stale-nebula"],
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="thread-stale-nebula",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="thread-stale-nebula",
+            scope="user",
+            confidence=0.9,
+            confirmation_satisfied=True,
+            workflow_state="stale",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content="I do not have enough active thread evidence to resume that.",
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "Please resume the Nebula launch review thread."},
+        )
+
+    assert str(reply.get("response", "")).strip()
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+    thread_context = _extract_thread_resume_context(planner_input)
+    data_evidence = _extract_data_evidence_context(planner_input)
+
+    assert "thread_resume_status=no_match" in trusted_section
+    assert "thread_resume_missing_evidence=matching_thread" in trusted_section
+    assert "THREAD RESUME SELECTION" in thread_context
+    assert "THREAD RESUME PACKET" not in data_evidence
+    assert "Stale Nebula launch evidence must not be injected." not in planner_input
 
 
 @pytest.mark.asyncio
