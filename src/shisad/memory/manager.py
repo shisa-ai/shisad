@@ -1174,12 +1174,16 @@ class MemoryManager:
                 kind="reject",
                 reason="procedure_candidate_promotion_requires_install_triple",
             )
+        effective_user_id = user_id if user_id is not None else candidate.user_id
+        effective_workspace_id = (
+            workspace_id if workspace_id is not None else candidate.workspace_id
+        )
         packet = self._backfill_legacy_procedure_candidate_packet(
             candidate,
             packet,
             scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
         )
         if not packet["trace_ids"] or not str(packet["trace_pool_hash"]).strip():
@@ -1203,8 +1207,8 @@ class MemoryManager:
             target_entry_type=target_entry_type,
             target_key=target_key,
             scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
         )
         if not packet["diff_preview"] or packet["diff_preview"] != expected_diff_preview:
@@ -1213,8 +1217,8 @@ class MemoryManager:
             target_entry_type=target_entry_type,
             target_key=target_key,
             scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
         )
         rollback_entry_id = prior_entry.id if prior_entry is not None else ""
@@ -1236,8 +1240,8 @@ class MemoryManager:
             invocation_eligible=True,
             supersedes=rollback_entry_id or None,
             allow_trust_upgrade_without_confirmation=True,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
         )
         if decision.kind != "allow" or decision.entry is None:
