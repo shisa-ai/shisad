@@ -475,15 +475,22 @@ class TestApiSchemaValidation:
             MemoryReadOriginalParams.model_validate({"chunk_id": "   "})
 
     def test_m4_memory_invoke_skill_params_require_skill_id(self) -> None:
-        params = MemoryInvokeSkillParams.model_validate({"skill_id": "skill-1"})
+        params = MemoryInvokeSkillParams.model_validate(
+            {"skill_id": "skill-1", "user_id": "alice", "workspace_id": "ws1"}
+        )
 
         assert params.skill_id == "skill-1"
+        assert params.user_id == "alice"
+        assert params.workspace_id == "ws1"
 
         with pytest.raises(ValidationError):
             MemoryInvokeSkillParams.model_validate({})
 
         with pytest.raises(ValidationError):
             MemoryInvokeSkillParams.model_validate({"skill_id": "   "})
+
+        with pytest.raises(ValidationError):
+            MemoryInvokeSkillParams.model_validate({"skill_id": "skill-1"})
 
     def test_m4_memory_promote_skill_params_require_handle_and_entry_id(self) -> None:
         params = MemoryPromoteSkillParams.model_validate(

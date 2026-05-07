@@ -558,11 +558,15 @@ class MemoryReadOriginalParams(_StrictParams):
 
 class MemoryInvokeSkillParams(_StrictParams):
     skill_id: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_skill_id(self) -> MemoryInvokeSkillParams:
         if not self.skill_id.strip():
             raise ValueError("skill_id is required")
+        _require_complete_owner_scope(self)
         return self
 
 

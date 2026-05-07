@@ -701,7 +701,15 @@ class MemoryImplMixin(HandlerMixinBase):
         rpc_peer = params.get("_rpc_peer")
         if isinstance(rpc_peer, Mapping):
             caller_context["rpc_peer"] = dict(rpc_peer)
-        result = self._memory_manager.invoke_skill(skill_id, audit_context=caller_context)
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        include_unowned = bool(params.get("include_unowned", False))
+        result = self._memory_manager.invoke_skill(
+            skill_id,
+            audit_context=caller_context,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         artifact = None
         if result.artifact is not None:
             artifact = {

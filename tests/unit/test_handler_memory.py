@@ -440,7 +440,7 @@ async def test_memory_invoke_skill_wrapper_forwards_rpc_peer() -> None:
     handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
 
     result = await handlers.handle_memory_invoke_skill(
-        MemoryInvokeSkillParams(skill_id="skill-1"),
+        MemoryInvokeSkillParams(skill_id="skill-1", user_id="alice", workspace_id="ws1"),
         RequestContext(rpc_peer={"host": "127.0.0.1", "port": 31337}),
     )
 
@@ -451,6 +451,8 @@ async def test_memory_invoke_skill_wrapper_forwards_rpc_peer() -> None:
     assert result.artifact.id == "skill-1"
     assert impl.last_memory_invoke_skill_payload is not None
     assert impl.last_memory_invoke_skill_payload["skill_id"] == "skill-1"
+    assert impl.last_memory_invoke_skill_payload["user_id"] == "alice"
+    assert impl.last_memory_invoke_skill_payload["workspace_id"] == "ws1"
     assert impl.last_memory_invoke_skill_payload["_rpc_peer"] == {
         "host": "127.0.0.1",
         "port": 31337,
@@ -463,7 +465,12 @@ async def test_memory_promote_skill_wrapper_marks_authenticated_write() -> None:
     handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
 
     result = await handlers.handle_memory_promote_skill(
-        MemoryPromoteSkillParams(ingress_context="handle-1", entry_id="skill-1"),
+        MemoryPromoteSkillParams(
+            ingress_context="handle-1",
+            entry_id="skill-1",
+            user_id="alice",
+            workspace_id="ws1",
+        ),
         RequestContext(),
     )
 
@@ -473,6 +480,8 @@ async def test_memory_promote_skill_wrapper_marks_authenticated_write() -> None:
     assert impl.last_memory_promote_skill_payload is not None
     assert impl.last_memory_promote_skill_payload["ingress_context"] == "handle-1"
     assert impl.last_memory_promote_skill_payload["entry_id"] == "skill-1"
+    assert impl.last_memory_promote_skill_payload["user_id"] == "alice"
+    assert impl.last_memory_promote_skill_payload["workspace_id"] == "ws1"
     assert impl.last_memory_promote_skill_payload["_control_api_authenticated_write"] is True
 
 

@@ -1507,6 +1507,8 @@ def test_m4_invoke_skill_denied_when_entry_is_not_invocation_eligible(tmp_path: 
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=False,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert decision.entry is not None
@@ -1578,6 +1580,8 @@ def test_m4_list_invocable_skills_filters_by_query_and_exposes_preview_metadata(
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=False,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert release.entry is not None
@@ -1637,6 +1641,8 @@ def test_m4_list_invocable_skills_hides_stale_same_key_entries(tmp_path: Path) -
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=False,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert stale.entry is not None
@@ -1660,6 +1666,8 @@ def test_m4_describe_skill_can_preview_pending_review_candidate_and_diff(tmp_pat
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     candidate = manager.write_with_provenance(
         entry_type="skill",
@@ -1854,6 +1862,47 @@ def test_m7_promote_to_skill_does_not_supersede_cross_owner_active_skill(
     )
     assert other_owner_after is not None
     assert other_owner_after.superseded_by is None
+    assert [
+        item.id for item in manager.list_invocable_skills(user_id="alice", workspace_id="ws1")
+    ] == [decision.entry.id]
+    assert [
+        item.id for item in manager.list_invocable_skills(user_id="bob", workspace_id="ws1")
+    ] == [other_owner_current.entry.id]
+    assert (
+        manager.describe_skill(
+            decision.entry.id,
+            user_id="bob",
+            workspace_id="ws1",
+        )
+        is None
+    )
+    assert (
+        manager.describe_skill(
+            decision.entry.id,
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        is not None
+    )
+    cross_owner_invocation = manager.invoke_skill(
+        decision.entry.id,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+    assert cross_owner_invocation.found is False
+    assert cross_owner_invocation.reason == "skill_not_found"
+    same_owner_invocation = manager.invoke_skill(
+        decision.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert same_owner_invocation.found is True
+    other_owner_invocation = manager.invoke_skill(
+        other_owner_current.entry.id,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+    assert other_owner_invocation.found is True
 
 
 def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:

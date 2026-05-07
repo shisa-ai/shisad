@@ -8805,10 +8805,13 @@ class SessionImplMixin(HandlerMixinBase):
             return PreparedSkillSuggestion()
         allowed_skill_scopes = {"user", "session"}
         session_scope_id = str(validated.sid)
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
         for skill in memory_manager.list_invocable_skills(
             limit=20,
             allowed_scopes=allowed_skill_scopes,
             session_scope_id=session_scope_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
         ):
             variants = {
                 str(skill.name).strip().lower(),
@@ -8854,6 +8857,7 @@ class SessionImplMixin(HandlerMixinBase):
                 session_manager.persist(validated.session.id)
             allowed_skill_scopes = {"user", "session"}
             session_scope_id = str(validated.sid)
+            user_id, workspace_id = self._owner_tuple_from_validated(validated)
             result = memory_manager.invoke_skill(
                 pending_skill_id,
                 audit_context={
@@ -8863,6 +8867,8 @@ class SessionImplMixin(HandlerMixinBase):
                 },
                 allowed_scopes=allowed_skill_scopes,
                 session_scope_id=session_scope_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if not result.found:
                 return self._skill_command_response(
@@ -8952,6 +8958,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
         allowed_skill_scopes = {"user", "session"}
         session_scope_id = str(validated.sid)
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
 
         if text == "/skills" or text.startswith("/skills "):
             body = text[len("/skills") :].strip()
@@ -8960,6 +8967,8 @@ class SessionImplMixin(HandlerMixinBase):
                     limit=20,
                     allowed_scopes=allowed_skill_scopes,
                     session_scope_id=session_scope_id,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
                 )
                 if not skills:
                     return self._skill_command_response(
@@ -8989,6 +8998,8 @@ class SessionImplMixin(HandlerMixinBase):
                 limit=20,
                 allowed_scopes=allowed_skill_scopes,
                 session_scope_id=session_scope_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if not matches:
                 return self._skill_command_response(
@@ -9021,6 +9032,8 @@ class SessionImplMixin(HandlerMixinBase):
                 include_pending_review=True,
                 allowed_scopes=allowed_skill_scopes,
                 session_scope_id=session_scope_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if artifact is None:
                 return self._skill_command_response(
@@ -9060,6 +9073,8 @@ class SessionImplMixin(HandlerMixinBase):
             },
             allowed_scopes=allowed_skill_scopes,
             session_scope_id=session_scope_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         if not result.found:
             return self._skill_command_response(

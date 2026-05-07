@@ -702,10 +702,18 @@ class MemoryManager:
         limit: int = 100,
         allowed_scopes: set[str] | None = None,
         session_scope_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> list[ProceduralArtifactSummary]:
         self.purge_expired()
         normalized_query = (query or "").strip().lower()
-        latest_by_group: dict[tuple[str, str, str, str], MemoryEntry] = {}
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return []
+        latest_by_group: dict[tuple[str, str, str, str, str, str], MemoryEntry] = {}
         for entry in self._entries.values():
             if (
                 entry.entry_type not in PROCEDURAL_ENTRY_TYPES
@@ -713,6 +721,13 @@ class MemoryManager:
                 or self._is_quarantined(entry)
                 or self._is_pending_review(entry)
                 or entry.superseded_by is not None
+            ):
+                continue
+            if not self._entry_matches_owner(
+                entry,
+                user_id=owner_user_id,
+                workspace_id=owner_workspace_id,
+                include_unowned=include_unowned,
             ):
                 continue
             refreshed = self._refresh_ttl(entry)
@@ -752,12 +767,18 @@ class MemoryManager:
         include_pending_review: bool = False,
         allowed_scopes: set[str] | None = None,
         session_scope_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> ProceduralArtifact | None:
         entry, _reason = self._resolve_procedural_entry(
             skill_id,
             include_pending_review=include_pending_review,
             allowed_scopes=allowed_scopes,
             session_scope_id=session_scope_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if entry is None:
             return None
@@ -766,6 +787,9 @@ class MemoryManager:
             entry,
             allowed_scopes=allowed_scopes,
             session_scope_id=session_scope_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if prior_entry is not None:
             artifact.prior_entry_id = prior_entry.id
@@ -877,6 +901,9 @@ class MemoryManager:
         audit_context: dict[str, Any] | None = None,
         allowed_scopes: set[str] | None = None,
         session_scope_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> ProceduralInvocation:
         caller_context = dict(audit_context or {})
         entry, reason = self._resolve_procedural_entry(
@@ -884,6 +911,9 @@ class MemoryManager:
             include_pending_review=True,
             allowed_scopes=allowed_scopes,
             session_scope_id=session_scope_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if entry is None:
             self._audit(
@@ -928,7 +958,12 @@ class MemoryManager:
 
         timestamp = datetime.now(UTC)
         self.record_citations([entry.id], cited_at=timestamp)
-        refreshed = self.get_entry(entry.id)
+        refreshed = self.get_entry(
+            entry.id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         if refreshed is None:
             refreshed = entry
         self._record_event(
@@ -2119,11 +2154,21 @@ class MemoryManager:
             return ""
         return normalized.split(":", 1)[0]
 
-    def _procedural_group_key(self, entry: MemoryEntry) -> tuple[str, str, str, str]:
+    def _procedural_group_key(self, entry: MemoryEntry) -> tuple[str, str, str, str, str, str]:
+        entry_scope = str(entry.scope)
         session_binding = (
-            self._session_scope_binding(entry.source_id) if str(entry.scope) == "session" else ""
+            self._session_scope_binding(entry.source_id) if entry_scope == "session" else ""
         )
-        return (str(entry.scope), session_binding, str(entry.entry_type), str(entry.key))
+        owner_user = self._normalize_owner_value(entry.user_id) or ""
+        owner_workspace = self._normalize_owner_value(entry.workspace_id) or ""
+        return (
+            entry_scope,
+            session_binding,
+            owner_user,
+            owner_workspace,
+            str(entry.entry_type),
+            str(entry.key),
+        )
 
     def _procedural_scope_visible(
         self,

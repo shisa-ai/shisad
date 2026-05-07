@@ -4150,6 +4150,86 @@ async def test_contract_skill_command_invokes_without_confirmation_and_emits_aud
 
 
 @pytest.mark.asyncio
+async def test_contract_skill_commands_are_owner_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        alice = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nAlice-only version",
+            source=MemorySource(
+                origin="user", source_id="alice-skill-1", extraction_method="manual"
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="alice-skill-1",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        bob = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nBob-only version",
+            source=MemorySource(origin="user", source_id="bob-skill-1", extraction_method="manual"),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="bob-skill-1",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+            user_id="bob",
+            workspace_id="ws1",
+        )
+        assert alice.entry is not None
+        assert bob.entry is not None
+        seeded["alice_id"] = alice.entry.id
+        seeded["bob_id"] = bob.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        alice_sid = await _create_session(harness.client, user_id="alice", workspace_id="ws1")
+        bob_sid = await _create_session(harness.client, user_id="bob", workspace_id="ws1")
+
+        alice_list = await harness.client.call(
+            "session.message",
+            {"session_id": alice_sid, "content": "/skills"},
+        )
+        assert seeded["alice_id"] in str(alice_list.get("response", ""))
+        assert seeded["bob_id"] not in str(alice_list.get("response", ""))
+
+        bob_list = await harness.client.call(
+            "session.message",
+            {"session_id": bob_sid, "content": "/skills"},
+        )
+        assert seeded["bob_id"] in str(bob_list.get("response", ""))
+        assert seeded["alice_id"] not in str(bob_list.get("response", ""))
+
+        cross_owner = await harness.client.call(
+            "session.message",
+            {"session_id": bob_sid, "content": f"/skill {seeded['alice_id']}"},
+        )
+        assert "was not found" in str(cross_owner.get("response", ""))
+
+        same_owner = await harness.client.call(
+            "session.message",
+            {"session_id": alice_sid, "content": f"/skill {seeded['alice_id']}"},
+        )
+        assert "Loaded skill" in str(same_owner.get("response", ""))
+        assert "Alice-only version" in str(same_owner.get("response", ""))
+
+
+@pytest.mark.asyncio
 async def test_contract_skills_browse_search_and_info_surface_invocable_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4175,6 +4255,8 @@ async def test_contract_skills_browse_search_and_info_surface_invocable_entries(
             confidence=0.95,
             confirmation_satisfied=True,
             invocation_eligible=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         hidden = manager.write_with_provenance(
             entry_type="skill",
@@ -4193,6 +4275,8 @@ async def test_contract_skills_browse_search_and_info_surface_invocable_entries(
             confidence=0.95,
             confirmation_satisfied=True,
             invocation_eligible=False,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert release.entry is not None
         assert hidden.entry is not None
@@ -4254,6 +4338,8 @@ async def test_contract_untrusted_but_invocable_tool_skill_stays_out_of_identity
             confidence=0.70,
             confirmation_satisfied=True,
             invocation_eligible=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["skill_id"] = decision.entry.id
@@ -4263,7 +4349,7 @@ async def test_contract_untrusted_but_invocable_tool_skill_stays_out_of_identity
 
         invoked = await harness.client.call(
             "memory.invoke_skill",
-            {"skill_id": skill_id},
+            {"skill_id": skill_id, "user_id": "alice", "workspace_id": "ws1"},
         )
         assert invoked.get("found") is True
         assert invoked.get("invoked") is True
@@ -4301,6 +4387,8 @@ async def test_contract_skill_suggestion_waits_for_explicit_user_yes(
             confidence=0.95,
             confirmation_satisfied=True,
             invocation_eligible=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["skill_id"] = decision.entry.id
@@ -4363,6 +4451,8 @@ async def test_contract_pending_review_skill_requires_promotion_before_invocatio
             confidence=0.95,
             confirmation_satisfied=True,
             invocation_eligible=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         candidate = manager.write_with_provenance(
             entry_type="skill",

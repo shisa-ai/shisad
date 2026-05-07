@@ -224,12 +224,16 @@ async def test_memory_invoke_skill_routes_through_manager_and_forwards_rpc_peer(
             "key": "skill:release-close",
             "value": "Release close checklist\nRun behavioral validation before release close.",
             "invocation_eligible": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
     result = await harness.do_memory_invoke_skill(
         {
             "skill_id": written["entry"]["id"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
             "_rpc_peer": {"host": "127.0.0.1", "port": 31337},
         }
     )
