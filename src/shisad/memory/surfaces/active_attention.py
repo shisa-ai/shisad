@@ -101,13 +101,20 @@ def build_active_attention_pack(
                 channel_binding=channel_binding,
             )
         ),
-        key=lambda entry: (
-            active_attention_entry_metadata(entry)["priority"] == "high",
-            entry.created_at,
-        ),
+        key=lambda entry: entry.created_at,
         reverse=True,
     )
-    budgeted = _class_balance_attention_entries(selected)
+    high_priority_entries: list[MemoryEntry] = []
+    normal_priority_entries: list[MemoryEntry] = []
+    for entry in selected:
+        if active_attention_entry_metadata(entry)["priority"] == "high":
+            high_priority_entries.append(entry)
+        else:
+            normal_priority_entries.append(entry)
+    budgeted = [
+        *_class_balance_attention_entries(high_priority_entries),
+        *_class_balance_attention_entries(normal_priority_entries),
+    ]
 
     kept: list[MemoryEntry] = []
     used_tokens = 0

@@ -863,6 +863,18 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
         workflow_state="blocked",
         confidence=0.94,
     )
+    normal_waiting_on = _write_entry(
+        manager,
+        entry_type="waiting_on",
+        key="waiting:mara-status",
+        value={
+            "title": "Mara status",
+            "summary": "Normal waiting-on row should not outrank high-priority thread.",
+        },
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.51,
+    )
 
     pack = manager.compile_active_attention(max_tokens=128, scope_filter={"user"})
     high_metadata = active_attention_entry_metadata(high_priority)
@@ -871,6 +883,7 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
     bare_blocked_metadata = active_attention_entry_metadata(bare_blocked)
     placeholder_waiting_metadata = active_attention_entry_metadata(placeholder_waiting)
     placeholder_blocked_metadata = active_attention_entry_metadata(placeholder_blocked)
+    normal_waiting_on_metadata = active_attention_entry_metadata(normal_waiting_on)
 
     assert pack.entries[0].id == high_priority.id
     assert high_metadata["priority"] == "high"
@@ -889,6 +902,7 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
     assert placeholder_waiting_metadata["cues"] == ["waiting"]
     assert placeholder_blocked_metadata["priority"] == "normal"
     assert placeholder_blocked_metadata["cues"] == ["blocked"]
+    assert normal_waiting_on_metadata["priority"] == "normal"
 
 
 def test_m3_thread_packet_reports_budget_staleness_and_verification_caveats(
