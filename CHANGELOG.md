@@ -9,7 +9,7 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
-## 0.7.2 Release Content - 2026-05-06
+## 0.7.2 Release Content - 2026-05-07
 
 ### Added
 

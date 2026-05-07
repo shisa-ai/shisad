@@ -2011,6 +2011,132 @@ def test_m7_promote_to_skill_can_supersede_legacy_unowned_predecessor(
     ] == [decision.entry.id]
 
 
+def test_m7_include_unowned_prefers_owner_scoped_skill_predecessor(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    owner_current = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nAlice current version",
+        source=MemorySource(
+            origin="user",
+            source_id="alice-skill-2",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="alice-skill-2",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    legacy_current = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nNewer legacy ownerless version",
+        source=MemorySource(
+            origin="user",
+            source_id="legacy-skill-2",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="legacy-skill-2",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nAlice candidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="alice-candidate-mixed-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="alice-candidate-mixed-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert owner_current.entry is not None
+    assert legacy_current.entry is not None
+    assert candidate.entry is not None
+    preview = manager.describe_skill(
+        candidate.entry.id,
+        include_pending_review=True,
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=True,
+    )
+
+    assert preview is not None
+    assert preview.prior_entry_id == owner_current.entry.id
+    assert preview.diff_preview is not None
+    assert "Alice current version" in preview.diff_preview
+    assert "Newer legacy ownerless version" not in preview.diff_preview
+    legacy_invocation = manager.invoke_skill(
+        legacy_current.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=True,
+    )
+    assert legacy_invocation.found is False
+    assert legacy_invocation.reason == "skill_not_found"
+
+    decision = manager.promote_to_skill(
+        entry_id=candidate.entry.id,
+        source=MemorySource(
+            origin="user",
+            source_id="turn-promote-alice-mixed-1",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="turn-promote-alice-mixed-1",
+        scope="user",
+        ingress_handle_id="handle-promote-alice-mixed-1",
+        content_digest="digest-promote-alice-mixed-1",
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.supersedes == owner_current.entry.id
+    owner_after = manager.get_entry(
+        owner_current.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    legacy_after = manager.get_entry(
+        legacy_current.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=True,
+    )
+    assert owner_after is not None
+    assert owner_after.superseded_by == decision.entry.id
+    assert legacy_after is not None
+    assert legacy_after.superseded_by is None
+
+
 def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     candidate = manager.write_with_provenance(

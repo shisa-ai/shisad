@@ -2223,6 +2223,8 @@ class MemoryManager:
             self._procedural_group_key_without_owner(entry) if include_legacy_unowned else None
         )
         latest: MemoryEntry | None = None
+        latest_owned: MemoryEntry | None = None
+        latest_unowned: MemoryEntry | None = None
         for candidate in self._entries.values():
             if include_legacy_unowned:
                 if self._procedural_group_key_without_owner(candidate) != legacy_group_key:
@@ -2250,10 +2252,26 @@ class MemoryManager:
                 session_scope_id=session_scope_id,
             ):
                 continue
+            if include_legacy_unowned:
+                candidate_user_id = self._normalize_owner_value(refreshed.user_id)
+                candidate_workspace_id = self._normalize_owner_value(refreshed.workspace_id)
+                candidate_unowned = candidate_user_id is None and candidate_workspace_id is None
+                if candidate_unowned:
+                    if latest_unowned is None or self._procedural_sort_key(
+                        refreshed
+                    ) > self._procedural_sort_key(latest_unowned):
+                        latest_unowned = refreshed
+                elif latest_owned is None or self._procedural_sort_key(
+                    refreshed
+                ) > self._procedural_sort_key(latest_owned):
+                    latest_owned = refreshed
+                continue
             if latest is None or self._procedural_sort_key(refreshed) > self._procedural_sort_key(
                 latest
             ):
                 latest = refreshed
+        if include_legacy_unowned:
+            return latest_owned or latest_unowned
         return latest
 
     def _find_active_procedural_predecessor(
