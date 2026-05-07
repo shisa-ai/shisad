@@ -265,7 +265,7 @@ def _method_specs(
         (
             "memory.review_procedure_candidate",
             handlers.handle_memory_review_procedure_candidate,
-            False,
+            True,
             MemoryProcedureCandidateParams,
         ),
         (
