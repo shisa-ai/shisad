@@ -1030,6 +1030,14 @@ class MemoryManager:
         if candidate is None or candidate.entry_type not in PROCEDURE_EXPERIENCE_ENTRY_TYPES:
             return {"found": False, "reason": "procedure_candidate_not_found", "candidate": None}
         packet = self._procedure_candidate_packet(candidate)
+        packet = self._backfill_legacy_procedure_candidate_packet(
+            candidate,
+            packet,
+            scope=str(candidate.scope),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         return {
             "found": True,
             "reason": "",
@@ -1046,11 +1054,13 @@ class MemoryManager:
                 "trace_ids": packet["trace_ids"],
                 "trace_pool_hash": packet["trace_pool_hash"],
                 "trace_pool_hash_verified": packet["trace_pool_hash_verified"],
+                "producer_trace_pool_hash": packet["producer_trace_pool_hash"],
                 "scanner": packet["scanner"],
                 "review": packet["review"],
                 "promotion": packet["promotion"],
                 "diff_preview": packet["diff_preview"],
                 "producer_diff_preview": packet["producer_diff_preview"],
+                "review_packet_backfill_reason": packet["review_packet_backfill_reason"],
             },
         }
 
@@ -1142,6 +1152,14 @@ class MemoryManager:
         if candidate is None:
             return MemoryWriteDecision(kind="reject", reason=reason)
         packet = self._procedure_candidate_packet(candidate)
+        packet = self._backfill_legacy_procedure_candidate_packet(
+            candidate,
+            packet,
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         scanner = packet["scanner"]
         if scanner.get("verdict") != "pass":
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_scan_not_passed")
@@ -2712,7 +2730,64 @@ class MemoryManager:
             },
             "diff_preview": str(value.get("diff_preview", "")),
             "producer_diff_preview": str(value.get("producer_diff_preview", "")),
+            "producer_trace_pool_hash": str(value.get("producer_trace_pool_hash", "")).strip(),
+            "review_packet_backfill_reason": str(
+                value.get("review_packet_backfill_reason", "")
+            ).strip(),
         }
+
+    def _backfill_legacy_procedure_candidate_packet(
+        self,
+        candidate: MemoryEntry,
+        packet: dict[str, Any],
+        *,
+        scope: str,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool,
+    ) -> dict[str, Any]:
+        value = candidate.value if isinstance(candidate.value, dict) else {}
+        legacy_packet = (
+            "trace_pool_hash_verified" not in value
+            and "producer_diff_preview" not in value
+            and candidate.entry_type in PROCEDURE_EXPERIENCE_ENTRY_TYPES
+        )
+        if not legacy_packet:
+            return packet
+
+        updated = dict(value)
+        if packet["trace_ids"]:
+            expected_trace_pool_hash = build_procedure_trace_pool_hash(
+                packet["artifact"],
+                packet["trace_ids"],
+            )
+            original_hash = str(updated.get("trace_pool_hash", "")).strip()
+            if original_hash and original_hash != expected_trace_pool_hash:
+                updated["producer_trace_pool_hash"] = original_hash
+            updated["trace_pool_hash"] = expected_trace_pool_hash
+            updated["trace_pool_hash_verified"] = True
+
+        expected_diff_preview = self._procedure_candidate_diff_preview(
+            artifact=packet["artifact"],
+            target_entry_type=str(packet["target_entry_type"]),
+            target_key=str(packet["target_key"]),
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        original_diff_preview = str(updated.get("diff_preview", ""))
+        if original_diff_preview and original_diff_preview != expected_diff_preview:
+            updated["producer_diff_preview"] = original_diff_preview
+        else:
+            updated["producer_diff_preview"] = ""
+        if expected_diff_preview:
+            updated["diff_preview"] = expected_diff_preview
+        updated["review_packet_backfill_reason"] = "legacy_procedure_candidate_review_packet"
+
+        candidate.value = updated
+        self._persist_entry(candidate)
+        return self._procedure_candidate_packet(candidate)
 
     @staticmethod
     def _procedural_sort_key(entry: MemoryEntry) -> tuple[int, datetime, str]:
