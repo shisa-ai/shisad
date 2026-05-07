@@ -904,6 +904,7 @@ async def _structured_thread_list(
         {
             "limit": _argument_int(arguments, "limit", default=20, minimum=1),
             "state": _argument_string(arguments, "state") or "open",
+            **_thread_context_filter_payload(context),
             "user_id": str(context.user_id),
             "workspace_id": str(context.workspace_id),
         }
@@ -922,6 +923,7 @@ async def _structured_thread_inspect(
     payload = await handler.do_thread_inspect(
         {
             "thread_id": thread_id,
+            **_thread_context_filter_payload(context),
             "user_id": str(context.user_id),
             "workspace_id": str(context.workspace_id),
         }
@@ -940,6 +942,7 @@ async def _structured_thread_resume(
     payload = await handler.do_thread_resume(
         {
             "thread_id": thread_id,
+            **_thread_context_filter_payload(context),
             "user_id": str(context.user_id),
             "workspace_id": str(context.workspace_id),
         }
@@ -959,6 +962,7 @@ async def _structured_thread_close(
         {
             "thread_id": thread_id,
             "reason": _argument_string(arguments, "reason"),
+            **_thread_context_filter_payload(context),
             "user_id": str(context.user_id),
             "workspace_id": str(context.workspace_id),
         }

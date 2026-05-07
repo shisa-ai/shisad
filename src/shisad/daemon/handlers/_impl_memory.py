@@ -25,6 +25,7 @@ from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _DEFAULT_MEMORY_GRAPH_SCOPES = frozenset({"user"})
+_THREAD_CONTEXT_DEFAULT_SCOPE_FILTER = frozenset({"session", "project", "user", "channel"})
 _THREAD_OPEN_STATES = frozenset({"active", "waiting", "blocked"})
 _THREAD_LIST_STATES = frozenset({"open", "active", "waiting", "blocked", "stale", "closed", "all"})
 logger = logging.getLogger(__name__)
@@ -393,6 +394,45 @@ class MemoryImplMixin(HandlerMixinBase):
         if not isinstance(raw, list):
             return set()
         return {str(item).strip() for item in raw if str(item).strip()}
+
+    def _thread_context_filters_from_params(
+        self,
+        params: Mapping[str, Any],
+    ) -> tuple[set[str] | None, set[str] | None, str | None, str | None]:
+        channel_binding = self._optional_string_param(params, "channel_binding")
+        allowed_channel_trusts = self._string_set_param(params, "allowed_channel_trusts")
+        if channel_binding is None and allowed_channel_trusts is None:
+            allowed_channel_trusts = {"command", "owner_observed"}
+        scope_filter = self._scope_filter_from_params(
+            params,
+            default=_THREAD_CONTEXT_DEFAULT_SCOPE_FILTER,
+        )
+        session_scope_id = self._optional_string_param(params, "session_scope_id")
+        return scope_filter, allowed_channel_trusts, channel_binding, session_scope_id
+
+    def _filter_thread_entries_by_context(
+        self,
+        entries: list[MemoryEntry],
+        *,
+        scope_filter: set[str] | None,
+        allowed_channel_trusts: set[str] | None,
+        channel_binding: str | None,
+        session_scope_id: str | None,
+    ) -> list[MemoryEntry]:
+        session_visible = self._memory_manager._filter_session_scoped_entries(
+            entries,
+            session_scope_id=session_scope_id,
+        )
+        return [
+            entry
+            for entry in session_visible
+            if entry_passes_context_filters(
+                entry=entry,
+                scope_filter=scope_filter,
+                allowed_channel_trusts=allowed_channel_trusts,
+                channel_binding=channel_binding,
+            )
+        ]
 
     def _get_visible_thread(
         self,
@@ -1011,12 +1051,22 @@ class MemoryImplMixin(HandlerMixinBase):
         include_unowned = bool(params.get("include_unowned", False))
         state, allowed_states = self._thread_state_filter(params.get("state"))
         limit = max(1, int(params.get("limit", 20)))
+        scope_filter, allowed_channel_trusts, channel_binding, session_scope_id = (
+            self._thread_context_filters_from_params(params)
+        )
         entries = self._memory_manager.list_entries(
             entry_type="open_thread",
             limit=max(limit, len(getattr(self._memory_manager, "_entries", {})), 1),
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
+        )
+        entries = self._filter_thread_entries_by_context(
+            entries,
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=session_scope_id,
         )
         if allowed_states is not None:
             entries = [entry for entry in entries if str(entry.workflow_state) in allowed_states]
@@ -1029,6 +1079,12 @@ class MemoryImplMixin(HandlerMixinBase):
                 "user_id": user_id,
                 "workspace_id": workspace_id,
                 "include_unowned": include_unowned,
+                "scope_filter": sorted(scope_filter) if scope_filter is not None else None,
+                "allowed_channel_trusts": sorted(allowed_channel_trusts)
+                if allowed_channel_trusts is not None
+                else None,
+                "channel_binding": channel_binding,
+                "session_scope_id": session_scope_id,
             },
         }
 
@@ -1042,6 +1098,18 @@ class MemoryImplMixin(HandlerMixinBase):
             workspace_id=workspace_id,
             include_unowned=include_unowned,
         )
+        if entry is not None:
+            scope_filter, allowed_channel_trusts, channel_binding, session_scope_id = (
+                self._thread_context_filters_from_params(params)
+            )
+            visible_entries = self._filter_thread_entries_by_context(
+                [entry],
+                scope_filter=scope_filter,
+                allowed_channel_trusts=allowed_channel_trusts,
+                channel_binding=channel_binding,
+                session_scope_id=session_scope_id,
+            )
+            entry = visible_entries[0] if visible_entries else None
         if entry is None:
             return {
                 "found": False,
@@ -1089,6 +1157,18 @@ class MemoryImplMixin(HandlerMixinBase):
             workspace_id=workspace_id,
             include_unowned=include_unowned,
         )
+        if entry is not None:
+            scope_filter, allowed_channel_trusts, channel_binding, session_scope_id = (
+                self._thread_context_filters_from_params(params)
+            )
+            visible_entries = self._filter_thread_entries_by_context(
+                [entry],
+                scope_filter=scope_filter,
+                allowed_channel_trusts=allowed_channel_trusts,
+                channel_binding=channel_binding,
+                session_scope_id=session_scope_id,
+            )
+            entry = visible_entries[0] if visible_entries else None
         if entry is None:
             return {
                 "changed": False,
@@ -1147,15 +1227,9 @@ class MemoryImplMixin(HandlerMixinBase):
         thread_id = str(params.get("thread_id", "") or params.get("entry_id", "")).strip()
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         include_unowned = bool(params.get("include_unowned", False))
-        channel_binding = self._optional_string_param(params, "channel_binding")
-        allowed_channel_trusts = self._string_set_param(params, "allowed_channel_trusts")
-        if channel_binding is None and allowed_channel_trusts is None:
-            allowed_channel_trusts = {"command", "owner_observed"}
-        scope_filter = self._scope_filter_from_params(
-            params,
-            default=frozenset({"session", "project", "user", "channel"}),
+        scope_filter, allowed_channel_trusts, channel_binding, session_scope_id = (
+            self._thread_context_filters_from_params(params)
         )
-        session_scope_id = self._optional_string_param(params, "session_scope_id")
         visible_thread = (
             self._get_visible_thread(
                 thread_id=thread_id,
@@ -1167,17 +1241,14 @@ class MemoryImplMixin(HandlerMixinBase):
             else None
         )
         if visible_thread is not None:
-            session_visible = self._memory_manager._filter_session_scoped_entries(
+            visible_entries = self._filter_thread_entries_by_context(
                 [visible_thread],
-                session_scope_id=session_scope_id,
-            )
-            if not session_visible or not entry_passes_context_filters(
-                entry=visible_thread,
                 scope_filter=scope_filter,
                 allowed_channel_trusts=allowed_channel_trusts,
                 channel_binding=channel_binding,
-            ):
-                visible_thread = None
+                session_scope_id=session_scope_id,
+            )
+            visible_thread = visible_entries[0] if visible_entries else None
         pack = self._memory_manager.compile_thread_resume(
             query,
             max_tokens=max(1, int(params.get("max_tokens", 700))),

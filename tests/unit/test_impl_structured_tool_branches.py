@@ -790,12 +790,57 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     )
     assert listed.success is True
     assert listed.tool_output is not None
+    assert listed.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
     listed_payload = json.loads(listed.tool_output.content)
     listed_text = json.dumps(listed_payload, sort_keys=True)
     assert visible.id in listed_text
     assert "Nebula launch" in listed_text
+    assert session_scoped_decision.entry.id in listed_text
+    assert "Session review" in listed_text
+    assert other_session_scoped_decision.entry.id not in listed_text
+    assert "Other session review" not in listed_text
     assert hidden.id not in listed_text
     assert "Atlas budget" not in listed_text
+
+    other_session_inspect = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.inspect"),
+        arguments={"thread_id": other_session_scoped_decision.entry.id},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert other_session_inspect.success is False
+    assert other_session_inspect.tool_output is not None
+    assert other_session_inspect.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
+    other_session_inspect_payload = json.loads(other_session_inspect.tool_output.content)
+    assert other_session_inspect_payload["found"] is False
+    assert other_session_inspect_payload["thread"] is None
+
+    other_session_close = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.close"),
+        arguments={
+            "thread_id": other_session_scoped_decision.entry.id,
+            "reason": "should stay hidden",
+        },
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+    assert other_session_close.success is False
+    assert other_session_close.tool_output is not None
+    other_session_close_payload = json.loads(other_session_close.tool_output.content)
+    assert other_session_close_payload["changed"] is False
+    other_session_after_close = harness._memory_manager.get_entry(
+        other_session_scoped_decision.entry.id,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    assert other_session_after_close is not None
+    assert other_session_after_close.workflow_state == "active"
 
     closed = await HandlerImplementation._execute_approved_action(
         harness,  # type: ignore[arg-type]
@@ -863,6 +908,7 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     )
     assert session_why.success is True
     assert session_why.tool_output is not None
+    assert session_why.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
     session_why_payload = json.loads(session_why.tool_output.content)
     assert session_why_payload["selected"] is True
     assert session_why_payload["selection"]["selected_id"] == session_scoped_decision.entry.id
@@ -884,11 +930,45 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     other_session_payload = json.loads(other_session_why.tool_output.content)
     assert other_session_payload["selected"] is False
     assert other_session_payload["thread"] is None
-    assert other_session_scoped_decision.entry.id not in other_session_payload["selection"][
-        "candidate_ids"
-    ]
+    assert (
+        other_session_scoped_decision.entry.id
+        not in other_session_payload["selection"]["candidate_ids"]
+    )
 
     harness._session.channel = "a2a"
+    unsupported_channel_list = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.list"),
+        arguments={"state": "all"},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert unsupported_channel_list.success is True
+    assert unsupported_channel_list.tool_output is not None
+    unsupported_channel_list_payload = json.loads(unsupported_channel_list.tool_output.content)
+    unsupported_channel_list_text = json.dumps(unsupported_channel_list_payload, sort_keys=True)
+    assert channel_scoped_decision.entry.id not in unsupported_channel_list_text
+    assert "Channel review" not in unsupported_channel_list_text
+
+    unsupported_channel_inspect = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.inspect"),
+        arguments={"thread_id": channel_scoped_decision.entry.id},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert unsupported_channel_inspect.success is False
+    assert unsupported_channel_inspect.tool_output is not None
+    unsupported_channel_inspect_payload = json.loads(
+        unsupported_channel_inspect.tool_output.content
+    )
+    assert unsupported_channel_inspect_payload["found"] is False
+    assert unsupported_channel_inspect_payload["thread"] is None
+
     unsupported_channel_why = await HandlerImplementation._execute_approved_action(
         harness,  # type: ignore[arg-type]
         sid=harness.session_id,
@@ -906,9 +986,10 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     unsupported_channel_payload = json.loads(unsupported_channel_why.tool_output.content)
     assert unsupported_channel_payload["selected"] is False
     assert unsupported_channel_payload["thread"] is None
-    assert channel_scoped_decision.entry.id not in unsupported_channel_payload["selection"][
-        "candidate_ids"
-    ]
+    assert (
+        channel_scoped_decision.entry.id
+        not in unsupported_channel_payload["selection"]["candidate_ids"]
+    )
 
 
 @pytest.mark.asyncio
