@@ -2681,12 +2681,24 @@ class MemoryManager:
         declared_verdict = str(scanner_verdict or automatic["verdict"]).strip().lower()
         if declared_verdict not in {"pass", "fail"}:
             return None
-        findings = {
+        declared_findings = {
             str(item).strip()
-            for item in list(scanner_findings or []) + list(automatic.get("findings", []))
+            for item in list(scanner_findings or [])
             if str(item).strip()
         }
-        verdict = "fail" if declared_verdict == "fail" or automatic["verdict"] == "fail" else "pass"
+        automatic_findings = {
+            str(item).strip()
+            for item in list(automatic.get("findings", []))
+            if str(item).strip()
+        }
+        findings = declared_findings | automatic_findings
+        verdict = (
+            "fail"
+            if declared_verdict == "fail"
+            or automatic["verdict"] == "fail"
+            or declared_findings
+            else "pass"
+        )
         return {"verdict": verdict, "findings": sorted(findings)}
 
     @staticmethod

@@ -2989,6 +2989,66 @@ def test_m4_procedure_experience_promotion_rejects_failed_scan(
     assert manager.list_invocable_skills(user_id="alice", workspace_id="ws1") == []
 
 
+def test_m4_procedure_experience_external_scanner_findings_fail_closed(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    artifact = "Release close checklist"
+    candidate = manager.ingest_procedure_candidate(
+        key="procedure:external-scanner-finding",
+        artifact=artifact,
+        target_entry_type="skill",
+        target_key="skill:external-scanner-finding",
+        trace_ids=["trace-external-scanner"],
+        trace_pool_hash=build_procedure_trace_pool_hash(
+            artifact,
+            ["trace-external-scanner"],
+        ),
+        scanner_verdict="pass",
+        scanner_findings=["external_scanner_risk"],
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-external-scanner",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+        source_id="trace2skill-external-scanner",
+        scope="user",
+        ingress_handle_id="handle-procedure-external-scanner",
+        content_digest="digest-procedure-external-scanner",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert candidate.kind == "allow"
+    assert candidate.entry is not None
+    reviewed = manager.describe_procedure_candidate(
+        candidate.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert reviewed["candidate"]["scanner"]["verdict"] == "fail"
+    assert reviewed["candidate"]["scanner"]["findings"] == ["external_scanner_risk"]
+
+    promoted = manager.promote_procedure_candidate(
+        candidate_id=candidate.entry.id,
+        source=MemorySource(origin="user", source_id="operator-approval", extraction_method="test"),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="operator-approval",
+        scope="user",
+        ingress_handle_id="handle-procedure-promote-external-scanner",
+        content_digest="digest-procedure-promote-external-scanner",
+        user_id="alice",
+        workspace_id="ws1",
+        reviewer="operator",
+    )
+    assert promoted.kind == "reject"
+    assert promoted.reason == "procedure_candidate_scan_not_passed"
+
+
 def test_m4_procedure_experience_ingest_requires_trace_provenance(
     tmp_path: Path,
 ) -> None:
