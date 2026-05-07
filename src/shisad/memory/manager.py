@@ -1153,7 +1153,13 @@ class MemoryManager:
             return MemoryWriteDecision(kind="reject", reason=reason)
         packet = self._procedure_candidate_packet(candidate)
         scanner = packet["scanner"]
-        if scanner.get("verdict") != "pass":
+        scanner_findings = scanner.get("findings", [])
+        promotion_scanner = self._procedure_candidate_scanner_packet(
+            packet["artifact"],
+            scanner_verdict=str(scanner.get("verdict", "")).strip().lower(),
+            scanner_findings=scanner_findings if isinstance(scanner_findings, list) else [],
+        )
+        if promotion_scanner is None or promotion_scanner.get("verdict") != "pass":
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_scan_not_passed")
         if scope != "user":
             return MemoryWriteDecision(
