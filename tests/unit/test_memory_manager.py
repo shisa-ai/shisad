@@ -2628,6 +2628,116 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
     assert promoted.entry.supersedes == current.entry.id
 
 
+def test_m4_legacy_procedure_experience_bad_scope_does_not_brick_candidate(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    current = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCurrent version",
+        source=MemorySource(origin="user", source_id="skill-current", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="skill-current",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert current.entry is not None
+    artifact = "Release close checklist\nCandidate version"
+    legacy_candidate = manager.write_with_provenance(
+        entry_type="procedure_experience",
+        key="procedure:legacy-release-close",
+        value={
+            "artifact": artifact,
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+            "trace_ids": ["trace-legacy"],
+            "trace_pool_hash": "legacy-producer-hash",
+            "scanner": {"verdict": "pass", "findings": []},
+            "review": {
+                "status": "pending",
+                "reviewer": "",
+                "approved_at": None,
+                "rejected_at": None,
+                "rejected_reason": "",
+            },
+            "promotion": {
+                "status": "candidate",
+                "promoted_entry_id": "",
+                "rollback_entry_id": "",
+            },
+            "diff_preview": "+ producer supplied legacy diff",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-legacy",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pending_review",
+        source_id="trace2skill-legacy",
+        scope="user",
+        confirmation_satisfied=False,
+        ingress_handle_id="handle-procedure-legacy",
+        content_digest="digest-procedure-legacy",
+        invocation_eligible=False,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert legacy_candidate.entry is not None
+
+    bad_scope = manager.promote_procedure_candidate(
+        candidate_id=legacy_candidate.entry.id,
+        source=MemorySource(origin="user", source_id="operator-approval", extraction_method="test"),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="operator-approval",
+        scope="session",
+        ingress_handle_id="handle-procedure-promote-legacy-session",
+        content_digest="digest-procedure-promote-legacy-session",
+        user_id="alice",
+        workspace_id="ws1",
+        reviewer="operator",
+    )
+    assert bad_scope.kind == "reject"
+    assert bad_scope.reason == "procedure_candidate_promotion_requires_user_scope"
+    stored_after_bad_scope = manager.get_entry(
+        legacy_candidate.entry.id,
+        include_pending_review=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert stored_after_bad_scope is not None
+    assert "trace_pool_hash_verified" not in stored_after_bad_scope.value
+    assert "producer_diff_preview" not in stored_after_bad_scope.value
+
+    promoted = manager.promote_procedure_candidate(
+        candidate_id=legacy_candidate.entry.id,
+        source=MemorySource(origin="user", source_id="operator-approval", extraction_method="test"),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="operator-approval",
+        scope="user",
+        ingress_handle_id="handle-procedure-promote-legacy-user",
+        content_digest="digest-procedure-promote-legacy-user",
+        user_id="alice",
+        workspace_id="ws1",
+        reviewer="operator",
+    )
+    assert promoted.kind == "allow"
+    assert promoted.entry is not None
+    assert promoted.entry.supersedes == current.entry.id
+
+
 def test_m4_procedure_experience_promotion_rejects_tampered_trace_hash(
     tmp_path: Path,
 ) -> None:

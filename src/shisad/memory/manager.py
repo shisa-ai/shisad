@@ -1152,31 +1152,9 @@ class MemoryManager:
         if candidate is None:
             return MemoryWriteDecision(kind="reject", reason=reason)
         packet = self._procedure_candidate_packet(candidate)
-        packet = self._backfill_legacy_procedure_candidate_packet(
-            candidate,
-            packet,
-            scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            include_unowned=include_unowned,
-        )
         scanner = packet["scanner"]
         if scanner.get("verdict") != "pass":
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_scan_not_passed")
-        if not packet["trace_ids"] or not str(packet["trace_pool_hash"]).strip():
-            return MemoryWriteDecision(
-                kind="reject",
-                reason="procedure_candidate_trace_provenance_required",
-            )
-        expected_trace_pool_hash = build_procedure_trace_pool_hash(
-            packet["artifact"],
-            packet["trace_ids"],
-        )
-        if packet["trace_pool_hash"] != expected_trace_pool_hash:
-            return MemoryWriteDecision(
-                kind="reject",
-                reason="procedure_candidate_trace_provenance_unverified",
-            )
         if scope != "user":
             return MemoryWriteDecision(
                 kind="reject",
@@ -1195,6 +1173,28 @@ class MemoryManager:
             return MemoryWriteDecision(
                 kind="reject",
                 reason="procedure_candidate_promotion_requires_install_triple",
+            )
+        packet = self._backfill_legacy_procedure_candidate_packet(
+            candidate,
+            packet,
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if not packet["trace_ids"] or not str(packet["trace_pool_hash"]).strip():
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_trace_provenance_required",
+            )
+        expected_trace_pool_hash = build_procedure_trace_pool_hash(
+            packet["artifact"],
+            packet["trace_ids"],
+        )
+        if packet["trace_pool_hash"] != expected_trace_pool_hash:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_trace_provenance_unverified",
             )
         target_entry_type = str(packet["target_entry_type"])
         target_key = str(packet["target_key"])
@@ -2767,13 +2767,17 @@ class MemoryManager:
             updated["trace_pool_hash"] = expected_trace_pool_hash
             updated["trace_pool_hash_verified"] = True
 
+        effective_user_id = user_id if user_id is not None else candidate.user_id
+        effective_workspace_id = (
+            workspace_id if workspace_id is not None else candidate.workspace_id
+        )
         expected_diff_preview = self._procedure_candidate_diff_preview(
             artifact=packet["artifact"],
             target_entry_type=str(packet["target_entry_type"]),
             target_key=str(packet["target_key"]),
             scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
         )
         original_diff_preview = str(updated.get("diff_preview", ""))
