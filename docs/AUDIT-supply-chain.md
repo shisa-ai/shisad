@@ -3,7 +3,7 @@
 *Created: 2026-03-31*  
 *Updated: 2026-05-07 (Dependabot 21 Ledger bridge uuid override)*
 *Status: In Progress*  
-*Snapshot basis: v0.7.2 release-close candidate on `main`; historical v0.7.0/v0.7.1 release evidence is retained where explicitly labeled.*
+*Snapshot basis: current `main` at `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation and current risk summary; historical v0.7.0-v0.7.2 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
