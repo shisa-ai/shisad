@@ -725,6 +725,33 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     )
     assert session_scoped_decision.kind == "allow"
     assert session_scoped_decision.entry is not None
+    channel_scoped_decision = harness._memory_manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:channel-review",
+        value={
+            "title": "Channel review",
+            "summary": "Channel-scoped thread should be hidden without live defaults.",
+            "evidence_refs": ["ev-channel-review"],
+            "channel_id": "a2a:workspace-1:room-7",
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="thread:channel-review",
+            extraction_method="test",
+        ),
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="thread:channel-review",
+        scope="channel",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        workflow_state="active",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    assert channel_scoped_decision.kind == "allow"
+    assert channel_scoped_decision.entry is not None
 
     listed = await HandlerImplementation._execute_approved_action(
         harness,  # type: ignore[arg-type]
@@ -813,6 +840,28 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     session_why_payload = json.loads(session_why.tool_output.content)
     assert session_why_payload["selected"] is True
     assert session_why_payload["selection"]["selected_id"] == session_scoped_decision.entry.id
+
+    harness._session.channel = "a2a"
+    unsupported_channel_why = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.why"),
+        arguments={
+            "query": "Please resume the Channel review thread.",
+            "thread_id": channel_scoped_decision.entry.id,
+        },
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert unsupported_channel_why.success is True
+    assert unsupported_channel_why.tool_output is not None
+    unsupported_channel_payload = json.loads(unsupported_channel_why.tool_output.content)
+    assert unsupported_channel_payload["selected"] is False
+    assert unsupported_channel_payload["thread"] is None
+    assert channel_scoped_decision.entry.id not in unsupported_channel_payload["selection"][
+        "candidate_ids"
+    ]
 
 
 @pytest.mark.asyncio

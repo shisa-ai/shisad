@@ -670,6 +670,9 @@ def _resolve_session_delivery_target(
     return {"channel": "session", "recipient": str(session_id)}
 
 
+_THREAD_CONTEXT_FALLBACK_SCOPE_FILTER = frozenset({"session", "project", "user"})
+
+
 def _thread_context_filter_payload(context: StructuredToolContext) -> dict[str, Any]:
     payload: dict[str, Any] = {"session_scope_id": str(context.session_id)}
     raw_target = _resolve_session_delivery_target(context.session, session_id=context.session_id)
@@ -682,6 +685,7 @@ def _thread_context_filter_payload(context: StructuredToolContext) -> dict[str, 
         delivery_target=delivery_target,
     )
     if defaults is None:
+        payload["scope_filter"] = sorted(_THREAD_CONTEXT_FALLBACK_SCOPE_FILTER)
         return payload
     payload["scope_filter"] = sorted(defaults.scope_filter)
     if defaults.allowed_channel_trusts is not None:

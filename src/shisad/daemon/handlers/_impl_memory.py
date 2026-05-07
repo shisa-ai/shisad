@@ -20,6 +20,7 @@ from shisad.memory.remap import (
     resolve_legacy_source_origin,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource
+from shisad.memory.surfaces.active_attention import entry_passes_context_filters
 from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
@@ -1146,6 +1147,14 @@ class MemoryImplMixin(HandlerMixinBase):
         thread_id = str(params.get("thread_id", "") or params.get("entry_id", "")).strip()
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         include_unowned = bool(params.get("include_unowned", False))
+        channel_binding = self._optional_string_param(params, "channel_binding")
+        allowed_channel_trusts = self._string_set_param(params, "allowed_channel_trusts")
+        if channel_binding is None and allowed_channel_trusts is None:
+            allowed_channel_trusts = {"command", "owner_observed"}
+        scope_filter = self._scope_filter_from_params(
+            params,
+            default=frozenset({"session", "project", "user", "channel"}),
+        )
         visible_thread = (
             self._get_visible_thread(
                 thread_id=thread_id,
@@ -1156,17 +1165,17 @@ class MemoryImplMixin(HandlerMixinBase):
             if thread_id
             else None
         )
-        channel_binding = self._optional_string_param(params, "channel_binding")
-        allowed_channel_trusts = self._string_set_param(params, "allowed_channel_trusts")
-        if channel_binding is None and allowed_channel_trusts is None:
-            allowed_channel_trusts = {"command", "owner_observed"}
+        if visible_thread is not None and not entry_passes_context_filters(
+            entry=visible_thread,
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+        ):
+            visible_thread = None
         pack = self._memory_manager.compile_thread_resume(
             query,
             max_tokens=max(1, int(params.get("max_tokens", 700))),
-            scope_filter=self._scope_filter_from_params(
-                params,
-                default=frozenset({"session", "project", "user", "channel"}),
-            ),
+            scope_filter=scope_filter,
             allowed_channel_trusts=allowed_channel_trusts,
             channel_binding=channel_binding,
             session_scope_id=self._optional_string_param(params, "session_scope_id"),
