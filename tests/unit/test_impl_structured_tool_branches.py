@@ -725,6 +725,32 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     )
     assert session_scoped_decision.kind == "allow"
     assert session_scoped_decision.entry is not None
+    other_session_scoped_decision = harness._memory_manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:other-session-review",
+        value={
+            "title": "Other session review",
+            "summary": "Different session thread should be hidden in this session.",
+            "evidence_refs": ["ev-other-session-review"],
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="other-session:thread:other-session-review",
+            extraction_method="test",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="other-session:thread:other-session-review",
+        scope="session",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        workflow_state="active",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    assert other_session_scoped_decision.kind == "allow"
+    assert other_session_scoped_decision.entry is not None
     channel_scoped_decision = harness._memory_manager.write_with_provenance(
         entry_type="open_thread",
         key="thread:channel-review",
@@ -840,6 +866,27 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     session_why_payload = json.loads(session_why.tool_output.content)
     assert session_why_payload["selected"] is True
     assert session_why_payload["selection"]["selected_id"] == session_scoped_decision.entry.id
+
+    other_session_why = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.why"),
+        arguments={
+            "query": "Please resume the Other session review thread.",
+            "thread_id": other_session_scoped_decision.entry.id,
+        },
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert other_session_why.success is True
+    assert other_session_why.tool_output is not None
+    other_session_payload = json.loads(other_session_why.tool_output.content)
+    assert other_session_payload["selected"] is False
+    assert other_session_payload["thread"] is None
+    assert other_session_scoped_decision.entry.id not in other_session_payload["selection"][
+        "candidate_ids"
+    ]
 
     harness._session.channel = "a2a"
     unsupported_channel_why = await HandlerImplementation._execute_approved_action(
