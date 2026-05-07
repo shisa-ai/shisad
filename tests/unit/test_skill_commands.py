@@ -111,6 +111,8 @@ def _write_skill(
     key: str,
     value: str,
     invocation_eligible: bool = True,
+    user_id: str | None = "user-skill",
+    workspace_id: str | None = "workspace-skill",
 ) -> str:
     decision = manager.write_with_provenance(
         entry_type="skill",
@@ -125,6 +127,8 @@ def _write_skill(
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=invocation_eligible,
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert decision.entry is not None
     return decision.entry.id
@@ -188,6 +192,8 @@ async def test_m4_skills_command_hides_stale_same_key_entries(tmp_path: Path) ->
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=False,
+        user_id="user-skill",
+        workspace_id="workspace-skill",
     )
     assert latest.entry is not None
 
@@ -286,6 +292,8 @@ async def test_m4_skill_info_command_previews_pending_review_candidate(tmp_path:
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="user-skill",
+        workspace_id="workspace-skill",
     )
     assert candidate.entry is not None
 
@@ -345,6 +353,8 @@ async def test_m4_pending_review_skill_refuses_invocation_until_promoted(tmp_pat
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="user-skill",
+        workspace_id="workspace-skill",
     )
     assert candidate.entry is not None
 
@@ -397,6 +407,8 @@ async def test_m4_skill_suggestion_yes_followup_loads_same_session_skill(tmp_pat
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=True,
+        user_id="user-skill",
+        workspace_id="workspace-skill",
     )
     assert decision.entry is not None
     harness.session.metadata[_PENDING_SKILL_SUGGESTION_ID_KEY] = decision.entry.id
