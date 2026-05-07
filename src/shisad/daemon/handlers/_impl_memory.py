@@ -21,7 +21,7 @@ from shisad.memory.remap import (
 )
 from shisad.memory.schema import MemoryEntry, MemorySource
 from shisad.memory.surfaces.active_attention import entry_passes_context_filters
-from shisad.memory.surfaces.thread_resume import build_thread_packet
+from shisad.memory.surfaces.thread_resume import build_thread_packet, thread_selection_metrics
 from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
@@ -295,6 +295,10 @@ class MemoryImplMixin(HandlerMixinBase):
     @staticmethod
     def _thread_packet_payload(entry: MemoryEntry) -> dict[str, Any]:
         packet = build_thread_packet(entry)
+        return MemoryImplMixin._thread_packet_payload_from_packet(packet)
+
+    @staticmethod
+    def _thread_packet_payload_from_packet(packet: Any) -> dict[str, Any]:
         return {
             "entry_id": packet.entry_id,
             "title": packet.title,
@@ -340,6 +344,14 @@ class MemoryImplMixin(HandlerMixinBase):
 
     @staticmethod
     def _thread_selection_payload(pack: Any) -> dict[str, Any]:
+        metadata: Mapping[str, Any] = {}
+        metadata_method = getattr(pack, "metadata", None)
+        if callable(metadata_method):
+            raw_metadata = metadata_method()
+            if isinstance(raw_metadata, Mapping):
+                metadata = raw_metadata
+        raw_metrics = metadata.get("metrics", {})
+        metrics = dict(raw_metrics) if isinstance(raw_metrics, Mapping) else {}
         return {
             "status": str(getattr(pack, "status", "")),
             "selected_id": (
@@ -354,6 +366,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 pack.packet.token_cost if getattr(pack, "packet", None) is not None else 0
             ),
             "max_tokens": int(getattr(pack, "max_tokens", 0)),
+            "metrics": metrics,
         }
 
     @staticmethod
@@ -1111,21 +1124,36 @@ class MemoryImplMixin(HandlerMixinBase):
                     "confidence": 0.0,
                     "rationale": [],
                     "missing_evidence": ["thread_not_found"],
+                    "metrics": thread_selection_metrics(
+                        status="not_found",
+                        confidence=0.0,
+                        alternatives=(),
+                        packet=None,
+                        missing_evidence=["thread_not_found"],
+                    ),
                 },
             }
+        packet_obj = build_thread_packet(entry)
+        packet = self._thread_packet_payload_from_packet(packet_obj)
+        missing_evidence = packet["sufficiency"]["missing_evidence"]
         return {
             "found": True,
             "thread": self._thread_summary_payload(entry),
-            "packet": self._thread_packet_payload(entry),
+            "packet": packet,
             "selection": {
                 "status": "inspect_only",
                 "selected_id": "",
                 "candidate_ids": [entry.id],
                 "confidence": entry.confidence,
                 "rationale": ["explicit_thread_inspect"],
-                "missing_evidence": self._thread_packet_payload(entry)["sufficiency"][
-                    "missing_evidence"
-                ],
+                "missing_evidence": missing_evidence,
+                "metrics": thread_selection_metrics(
+                    status="inspect_only",
+                    confidence=entry.confidence,
+                    alternatives=(),
+                    packet=packet_obj,
+                    missing_evidence=missing_evidence,
+                ),
             },
         }
 
@@ -1255,21 +1283,7 @@ class MemoryImplMixin(HandlerMixinBase):
         packet = None
         packet_obj = getattr(pack, "packet", None)
         if packet_obj is not None:
-            packet = {
-                "entry_id": packet_obj.entry_id,
-                "title": packet_obj.title,
-                "summary": packet_obj.summary,
-                "unresolved_state": packet_obj.unresolved_state,
-                "evidence_refs": list(packet_obj.evidence_refs),
-                "evidence_snippets": list(packet_obj.evidence_snippets),
-                "caveats": list(packet_obj.caveats),
-                "source_taints": list(packet_obj.source_taints),
-                "sufficiency": dict(packet_obj.sufficiency),
-                "token_cost": packet_obj.token_cost,
-                "max_tokens": packet_obj.max_tokens,
-                "staleness": dict(packet_obj.staleness),
-                "verification_gap": packet_obj.verification_gap,
-            }
+            packet = self._thread_packet_payload_from_packet(packet_obj)
         return {
             "selected": selected,
             "thread": self._thread_summary_payload(visible_thread) if visible_thread else None,

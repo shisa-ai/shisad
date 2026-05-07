@@ -810,10 +810,36 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
         workflow_state="waiting",
         confidence=0.52,
     )
+    bare_waiting = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:bare-waiting",
+        value={
+            "title": "Bare waiting",
+            "summary": "Bare waiting has no actionable cue fields.",
+        },
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.93,
+    )
+    bare_blocked = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:bare-blocked",
+        value={
+            "title": "Bare blocked",
+            "summary": "Bare blocked has no dependency details.",
+        },
+        scope="user",
+        workflow_state="blocked",
+        confidence=0.93,
+    )
 
     pack = manager.compile_active_attention(max_tokens=128, scope_filter={"user"})
     high_metadata = active_attention_entry_metadata(high_priority)
     low_metadata = active_attention_entry_metadata(newer_low_confidence)
+    bare_waiting_metadata = active_attention_entry_metadata(bare_waiting)
+    bare_blocked_metadata = active_attention_entry_metadata(bare_blocked)
 
     assert pack.entries[0].id == high_priority.id
     assert high_metadata["priority"] == "high"
@@ -824,6 +850,10 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
         "waiting",
     ]
     assert low_metadata["priority"] == "normal"
+    assert bare_waiting_metadata["priority"] == "normal"
+    assert bare_waiting_metadata["cues"] == ["waiting"]
+    assert bare_blocked_metadata["priority"] == "normal"
+    assert bare_blocked_metadata["cues"] == ["blocked"]
 
 
 def test_m3_thread_packet_reports_budget_staleness_and_verification_caveats(

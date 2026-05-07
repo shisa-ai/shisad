@@ -94,7 +94,7 @@ class ThreadResumePack:
         return [candidate.entry.id for candidate in self.alternatives]
 
     def metadata(self) -> dict[str, Any]:
-        metrics = _thread_selection_metrics(
+        metrics = thread_selection_metrics(
             status=self.status,
             confidence=self.confidence,
             alternatives=self.alternatives,
@@ -517,7 +517,7 @@ def _thread_verification_gap(entry: MemoryEntry) -> bool:
     return entry.last_verified_at is None
 
 
-def _thread_selection_metrics(
+def thread_selection_metrics(
     *,
     status: str,
     confidence: float,

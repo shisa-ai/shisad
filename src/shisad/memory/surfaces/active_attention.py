@@ -47,11 +47,12 @@ def _estimate_attention_tokens(entry: MemoryEntry) -> int:
 def active_attention_entry_metadata(entry: MemoryEntry) -> dict[str, Any]:
     """Return trusted, derived selection metadata for an Active Attention entry."""
 
-    cues = _attention_cues(entry)
+    actionable_cues = _actionable_attention_cues(entry)
+    cues = _attention_cues(entry, actionable_cues=actionable_cues)
     high_signal = (
         entry.workflow_state in {"waiting", "blocked"}
         and entry.confidence >= ACTIVE_ATTENTION_HIGH_PRIORITY_CONFIDENCE
-        and bool(cues)
+        and bool(actionable_cues)
     )
     return {
         "priority": "high" if high_signal else "normal",
@@ -128,7 +129,23 @@ def build_active_attention_pack(
     )
 
 
-def _attention_cues(entry: MemoryEntry) -> list[str]:
+def _attention_cues(
+    entry: MemoryEntry,
+    *,
+    actionable_cues: list[str] | None = None,
+) -> list[str]:
+    cues = (
+        list(actionable_cues)
+        if actionable_cues is not None
+        else _actionable_attention_cues(entry)
+    )
+    workflow_cue = _workflow_attention_cue(entry)
+    if workflow_cue:
+        cues.append(workflow_cue)
+    return cues
+
+
+def _actionable_attention_cues(entry: MemoryEntry) -> list[str]:
     value = entry.value
     cues: list[str] = []
     if isinstance(value, Mapping):
@@ -140,11 +157,15 @@ def _attention_cues(entry: MemoryEntry) -> list[str]:
             cues.append("next_action")
         if any(_has_text_value(value, key) for key in _BLOCKED_KEYS):
             cues.append("blocked_dependency")
-    if entry.workflow_state == "waiting":
-        cues.append("waiting")
-    elif entry.workflow_state == "blocked":
-        cues.append("blocked")
     return cues
+
+
+def _workflow_attention_cue(entry: MemoryEntry) -> str:
+    if entry.workflow_state == "waiting":
+        return "waiting"
+    if entry.workflow_state == "blocked":
+        return "blocked"
+    return ""
 
 
 def _has_text_value(value: Mapping[str, Any], key: str) -> bool:

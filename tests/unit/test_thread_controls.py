@@ -126,6 +126,11 @@ async def test_m2_thread_inspect_returns_packet_for_closed_thread(tmp_path: Path
     assert result["packet"]["title"] == "Closed audit"
     assert "Closed audit remains inspectable" in result["packet"]["summary"]
     assert result["selection"]["status"] == "inspect_only"
+    metrics = result["selection"]["metrics"]
+    assert metrics["selection_precision_estimate"] == 0.0
+    assert metrics["evidence_coverage"] == 1.0
+    assert metrics["stale_thread_answer_risk"] == 0.0
+    assert metrics["token_cost"] == result["packet"]["token_cost"]
 
 
 @pytest.mark.asyncio
@@ -261,6 +266,7 @@ async def test_m2_thread_why_scopes_selector_to_owner(tmp_path: Path) -> None:
     assert hidden_result["selected"] is False
     assert hidden_result["selection"]["status"] == "no_match"
     assert hidden.id not in hidden_result["selection"]["candidate_ids"]
+    assert hidden_result["selection"]["metrics"]["token_cost"] == 0
 
     visible_result = await harness.do_thread_why(
         {
@@ -274,6 +280,13 @@ async def test_m2_thread_why_scopes_selector_to_owner(tmp_path: Path) -> None:
     assert visible_result["selection"]["selected_id"] == visible.id
     assert visible_result["selection"]["confidence"] >= 0.55
     assert "explicit_continuation_signal" in visible_result["selection"]["rationale"]
+    metrics = visible_result["selection"]["metrics"]
+    assert metrics["selection_precision_estimate"] == pytest.approx(
+        visible_result["selection"]["confidence"]
+    )
+    assert metrics["evidence_coverage"] == 1.0
+    assert metrics["stale_thread_answer_risk"] == 0.0
+    assert metrics["token_cost"] == visible_result["packet"]["token_cost"]
 
 
 @pytest.mark.asyncio
