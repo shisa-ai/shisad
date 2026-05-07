@@ -47,10 +47,12 @@ from shisad.daemon.handlers._impl_session import (
     SessionMessageValidationResult,
     TaskDelegationRecommendation,
     TaskSessionHandoff,
+    _active_attention_defaults_for_validated,
 )
 from shisad.memory.consolidation import ConsolidationWorker
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
+from shisad.memory.participation import compose_channel_binding
 from shisad.memory.schema import MemorySource
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import FirewallResult
@@ -1036,6 +1038,49 @@ async def test_validation_internal_ingress_user_row_uses_stored_delivery_target_
     assert validated.delivery_target is None
     assert harness.appended_metadata["delivery_target"] == target.model_dump(mode="json")
     assert harness.persisted_session_ids == []
+
+
+def test_m1_context_defaults_use_stored_delivery_target_for_internal_ingress() -> None:
+    target = DeliveryTarget(
+        channel="discord",
+        recipient="chan-b",
+        workspace_hint="guild-g1",
+    )
+    session = Session(
+        id=SessionId("sess-g1"),
+        channel="discord",
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("guild-g1"),
+        state=SessionState.ACTIVE,
+        mode=SessionMode.DEFAULT,
+        metadata={
+            "trust_level": "trusted",
+            "delivery_target": target.model_dump(mode="json"),
+        },
+    )
+    validated = _validation_result(
+        params={
+            "session_id": str(session.id),
+            "channel": "discord",
+            "content": "resume the Nebula thread",
+        },
+    )
+    validated.session = session
+    validated.sid = session.id
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = None
+
+    defaults = _active_attention_defaults_for_validated(validated)
+
+    assert defaults is not None
+    assert defaults.scope_filter == frozenset({"session", "user", "channel"})
+    assert defaults.allowed_channel_trusts is None
+    assert defaults.channel_binding == compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-g1",
+        channel_id="chan-b",
+    )
 
 
 @pytest.mark.asyncio

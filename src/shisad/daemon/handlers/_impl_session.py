@@ -106,7 +106,10 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.consolidation import ConsolidationConfig, ConsolidationWorker
-from shisad.memory.context_defaults import resolve_active_attention_defaults
+from shisad.memory.context_defaults import (
+    ActiveAttentionDefaults,
+    resolve_active_attention_defaults,
+)
 from shisad.memory.identity_candidates import (
     build_identity_observation_key,
     detect_identity_observation,
@@ -1276,6 +1279,19 @@ def _stored_delivery_target_from_session(session: Any) -> DeliveryTarget | None:
         except ValidationError:
             return None
     return None
+
+
+def _active_attention_defaults_for_validated(
+    validated: Any,
+) -> ActiveAttentionDefaults | None:
+    delivery_target = getattr(validated, "delivery_target", None)
+    if delivery_target is None and bool(getattr(validated, "is_internal_ingress", False)):
+        delivery_target = _stored_delivery_target_from_session(getattr(validated, "session", None))
+    session = getattr(validated, "session", None)
+    return resolve_active_attention_defaults(
+        channel=str(getattr(session, "channel", "cli")),
+        delivery_target=delivery_target,
+    )
 
 
 def _transcript_entry_delivery_target(entry: TranscriptEntry) -> DeliveryTarget | None:
@@ -7212,10 +7228,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if identity_pack.citation_ids:
                     self._memory_manager.record_citations(identity_pack.citation_ids)
                 trusted_identity_context = _build_trusted_identity_memory_context(identity_entries)
-                active_attention_defaults = resolve_active_attention_defaults(
-                    channel=str(getattr(session, "channel", "cli")),
-                    delivery_target=validated.delivery_target,
-                )
+                active_attention_defaults = _active_attention_defaults_for_validated(validated)
                 active_scope_filter = (
                     set(active_attention_defaults.scope_filter)
                     if active_attention_defaults is not None
