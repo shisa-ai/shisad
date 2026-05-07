@@ -1037,6 +1037,7 @@ class MemoryManager:
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
+            persist=False,
         )
         return {
             "found": True,
@@ -2767,6 +2768,7 @@ class MemoryManager:
         user_id: str | None,
         workspace_id: str | None,
         include_unowned: bool,
+        persist: bool = True,
     ) -> dict[str, Any]:
         value = candidate.value if isinstance(candidate.value, dict) else {}
         legacy_packet = (
@@ -2810,6 +2812,14 @@ class MemoryManager:
         if expected_diff_preview:
             updated["diff_preview"] = expected_diff_preview
         updated["review_packet_backfill_reason"] = "legacy_procedure_candidate_review_packet"
+
+        if not persist:
+            original_value = candidate.value
+            candidate.value = updated
+            try:
+                return self._procedure_candidate_packet(candidate)
+            finally:
+                candidate.value = original_value
 
         candidate.value = updated
         self._persist_entry(candidate)

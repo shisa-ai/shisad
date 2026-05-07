@@ -2608,6 +2608,15 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
     assert reviewed_candidate["producer_diff_preview"] == "+ producer supplied legacy diff"
     assert "-Current version" in reviewed_candidate["diff_preview"]
     assert "+Candidate version" in reviewed_candidate["diff_preview"]
+    stored_after_review = manager.get_entry(
+        legacy_candidate.entry.id,
+        include_pending_review=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert stored_after_review is not None
+    assert "trace_pool_hash_verified" not in stored_after_review.value
+    assert "producer_diff_preview" not in stored_after_review.value
 
     promoted = manager.promote_procedure_candidate(
         candidate_id=legacy_candidate.entry.id,

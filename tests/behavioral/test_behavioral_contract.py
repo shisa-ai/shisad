@@ -5704,6 +5704,63 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     assert review_candidate.get("scanner", {}).get("verdict") == "pass"
     assert marker in str(review_candidate.get("diff_preview", ""))
 
+    rejected_artifact = f"Release close checklist\nReject {marker} candidate."
+    rejected_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=rejected_artifact,
+        source_type="tool",
+        source_id="trace2skill-reject-contract",
+    )
+    rejected_candidate = await contract_harness.client.call(
+        "memory.ingest_procedure_candidate",
+        {
+            "ingress_context": rejected_ingress["ingress_context"],
+            "artifact": rejected_artifact,
+            "key": "procedure:reject-contract",
+            "target_entry_type": "skill",
+            "target_key": "skill:reject-contract",
+            "trace_ids": ["trace-reject-1"],
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                rejected_artifact,
+                ["trace-reject-1"],
+            ),
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+    rejected_candidate_id = str((rejected_candidate.get("entry") or {}).get("id", "")).strip()
+    assert rejected_candidate_id
+    rejection_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=rejected_artifact,
+        source_type="user",
+        source_id="operator-reject-contract",
+        user_confirmed=True,
+    )
+    rejected = await contract_harness.client.call(
+        "memory.reject_procedure_candidate",
+        {
+            "ingress_context": rejection_ingress["ingress_context"],
+            "candidate_id": rejected_candidate_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "reviewer": "operator",
+            "reason": "operator_rejected",
+        },
+    )
+    assert rejected.get("changed") is True
+    assert rejected.get("reason") == "procedure_candidate_rejected"
+    post_reject_queue = await contract_harness.client.call(
+        "memory.list_review_queue",
+        {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+    )
+    rejected_ids = {
+        str(item.get("id") or item.get("entry_id") or "").strip()
+        for item in post_reject_queue.get("entries", [])
+        if isinstance(item, dict)
+    }
+    assert rejected_candidate_id not in rejected_ids
+
     unapproved_ingress = await _mint_memory_ingress_context(
         contract_harness.client,
         content=artifact,
@@ -5722,6 +5779,26 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     )
     assert unapproved.get("kind") == "reject"
     assert unapproved.get("reason") == "procedure_candidate_promotion_requires_operator_approval"
+
+    mismatched_approval = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content="operator approved different content",
+        source_type="user",
+        source_id="operator-approval-mismatched-contract",
+        user_confirmed=True,
+    )
+    with pytest.raises(JsonRpcCallError, match="content digest does not match ingress context"):
+        await contract_harness.client.call(
+            "memory.promote_procedure_candidate",
+            {
+                "ingress_context": mismatched_approval["ingress_context"],
+                "candidate_id": candidate_id,
+                "content_digest": mismatched_approval["content_digest"],
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "reviewer": "operator",
+            },
+        )
 
     approval_ingress = await _mint_memory_ingress_context(
         contract_harness.client,

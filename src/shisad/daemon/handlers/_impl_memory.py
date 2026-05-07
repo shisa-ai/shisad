@@ -1091,9 +1091,9 @@ class MemoryImplMixin(HandlerMixinBase):
             }
         artifact = candidate.value.get("artifact")
         context = self._memory_ingress_registry.resolve(handle_id)
-        content_digest = str(params.get("content_digest", "")).strip() or None
-        if content_digest is None and not isinstance(artifact, (str, bytes)):
-            content_digest = digest_memory_value(artifact)
+        content_digest = (
+            None if isinstance(artifact, (str, bytes)) else digest_memory_value(artifact)
+        )
         resolved_digest = self._memory_ingress_registry.validate_binding(
             handle_id,
             content=artifact if isinstance(artifact, (str, bytes)) else None,
