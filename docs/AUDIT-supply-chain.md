@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-05-07 (v0.7.2 release-close python-multipart and Ledger bridge rechecks)*
+*Updated: 2026-05-07 (Dependabot 21 Ledger bridge uuid override)*
 *Status: In Progress*  
 *Snapshot basis: v0.7.2 release-close candidate on `main`; historical v0.7.0/v0.7.1 release evidence is retained where explicitly labeled.*
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2`; the v0.7.2 release-close recheck still shows only the residual moderate Ledger SDK `uuid <14` advisory family, with the high/critical npm audit gate clean and no compatible upstream fix available today |
+| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07 |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,44 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-05-07 — Dependabot 21 Ledger bridge uuid remediation
+
+- Scope: remediate Dependabot alert `21` for the optional Ledger bridge runtime
+  transitive `uuid` advisory.
+- Investigation:
+  - `gh api repos/shisa-ai/shisad/dependabot/alerts/21 --jq ...` returned
+    open alert `21`, GHSA `GHSA-w5hq-g745-h8pq`, vulnerable range
+    `>= 11.0.0, < 11.1.1`, and patched version `11.1.1`.
+  - `npm view @ledgerhq/device-management-kit@latest version
+    dependencies.uuid --json` returned latest `1.4.0` with
+    `dependencies.uuid = 11.0.3`.
+  - `npm view @ledgerhq/device-transport-kit-node-hid@latest version
+    dependencies.uuid --json` returned latest `1.0.1` with
+    `dependencies.uuid = 11.0.3`.
+  - A direct Ledger package refresh alone therefore does not clear the alert
+    today.
+- Change:
+  - Added a local npm override from `uuid 11.0.3` to patched `uuid 11.1.1`
+    beside the existing `axios` override and regenerated the Ledger bridge
+    lockfile with `npm install --package-lock-only --ignore-scripts`.
+  - The lockfile now resolves `uuid 11.1.1` with integrity
+    `sha512-vIYxrBCC/N/K+Js3qSN88go7kIfNPssr/hHCesKCQNAjmgvYS2oqr69kIufEG+O4+PfezOH4EbIeHCfFov8ZgQ==`.
+  - `npm ls uuid --all` shows both `@ledgerhq/device-management-kit@1.2.0`
+    and `@ledgerhq/device-transport-kit-node-hid@1.0.1` resolving
+    `uuid@11.1.1`.
+- Validation:
+  - `npm ci --ignore-scripts` exited 0 from a fresh lockfile install and
+    reported `found 0 vulnerabilities`.
+  - `npm audit --json` exited 0 with `0` vulnerabilities.
+  - `npm audit --omit=dev --json` exited 0 with `0` vulnerabilities.
+  - `npm audit --omit=dev --audit-level=high` exited 0.
+  - `npm test` passed all Ledger bridge tests: 6 passed / 0 failed.
+  - `npx tsc --noEmit` passed.
+- Disposition:
+  - Close `SC-v0.7.0-ledger-uuid` locally. If Dependabot does not auto-close
+    after this lockfile lands and GitHub rescans, the follow-up should be alert
+    state investigation rather than a Ledger SDK downgrade.
 
 ### 2026-05-07 — v0.7.2 Ledger bridge uuid recheck
 
@@ -379,9 +417,13 @@ New packages should meet a higher bar than upgrades:
 
 ## DEFERRALS
 
-| ID | Rationale | Risk | Target milestone |
+No open supply-chain deferrals as of 2026-05-07.
+
+### Closed Deferrals
+
+| ID | Closure evidence | Residual risk | Closed in |
 |---|---|---|---|
-| SC-v0.7.0-ledger-uuid | After the `v0.7.0` axios override refresh, the optional Ledger bridge audit still reports the moderate `uuid <14` buffer-bounds advisory through Ledger SDK packages, and npm does not offer a compatible non-breaking fix for the accepted bridge tree. The v0.7.2 release-close recheck on 2026-05-07 found the same residual moderate-only advisory set: 6 moderate, 0 high, 0 critical, with the high/critical npm audit gate clean. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries residual moderate `uuid`-advised transitive code until Ledger publishes compatible fixed packages. Current high/critical audit gate is clean (`npm audit --omit=dev --audit-level=high` exits 0 on 2026-05-07). | Carry forward to the post-v0.7.2 Ledger bridge dependency refresh, or the next release-close supply-chain sweep, whichever comes first. Drop the exception only when a compatible clean Ledger package set exists. |
+| SC-v0.7.0-ledger-uuid | Added an npm override for the optional Ledger bridge so Ledger SDK packages resolve patched `uuid@11.1.1`; regenerated `contrib/ledger-bridge/package-lock.json`; `npm audit --json`, `npm audit --omit=dev --json`, and `npm audit --omit=dev --audit-level=high` all exit 0. | Low. The bridge remains optional and disabled by default. Future Ledger SDK updates may remove the need for the override or change compatibility constraints; recheck during the next Ledger bridge dependency refresh. | 2026-05-07 Dependabot 21 remediation |
 
 ## Immediate Hardening Applied (2026-03-31)
 
