@@ -844,9 +844,24 @@ def test_m1_compile_thread_resume_selects_prior_thread_by_entry_id(tmp_path: Pat
         workspace_id="ws1",
         confidence=0.85,
     )
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:atlas-budget",
+        value={
+            "title": "Atlas budget",
+            "summary": "Atlas budget covered procurement timing.",
+            "evidence_refs": ["ev-atlas-budget"],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.85,
+    )
 
     pack = manager.compile_thread_resume(
-        f"Please resume prior thread {thread.id}.",
+        f"Please resume prior thread {thread.id} about Atlas budget.",
         user_id="alice",
         workspace_id="ws1",
     )

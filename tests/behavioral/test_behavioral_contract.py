@@ -3351,6 +3351,31 @@ async def test_contract_cross_session_topic_resume_accepts_thread_id(
         assert decision.kind == "allow"
         assert decision.entry is not None
         stored_thread_id["id"] = decision.entry.id
+        other = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:atlas-budget",
+            value={
+                "title": "Atlas budget",
+                "summary": "Atlas budget covered procurement timing.",
+                "evidence_refs": ["ev-atlas-budget"],
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="thread-atlas-budget",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="thread-atlas-budget",
+            scope="user",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert other.kind == "allow"
 
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
 
@@ -3369,7 +3394,9 @@ async def test_contract_cross_session_topic_resume_accepts_thread_id(
             "session.message",
             {
                 "session_id": sid,
-                "content": f"Please resume prior thread {stored_thread_id['id']}.",
+                "content": (
+                    f"Please resume prior thread {stored_thread_id['id']} about Atlas budget."
+                ),
             },
         )
 
@@ -3379,6 +3406,7 @@ async def test_contract_cross_session_topic_resume_accepts_thread_id(
     assert "thread_resume_status=selected" in trusted_section
     assert f"thread_resume_selected_id={stored_thread_id['id']}" in trusted_section
     assert "Nebula launch review covered release risks" in planner_input
+    assert "Atlas budget covered procurement timing" not in planner_input
 
 
 @pytest.mark.asyncio

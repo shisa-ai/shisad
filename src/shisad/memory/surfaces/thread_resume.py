@@ -131,6 +131,11 @@ def build_thread_resume_pack(
         )
         if candidate is not None
     ]
+    id_matched_candidates = [
+        candidate for candidate in candidates if "entry_id_match" in candidate.rationale
+    ]
+    if id_matched_candidates:
+        candidates = id_matched_candidates
     candidates.sort(
         key=lambda candidate: (
             candidate.confidence,
@@ -233,7 +238,7 @@ def _score_thread_entry(
     title_phrase = _normalized_phrase(title)
     key_phrase = _normalized_phrase(entry.key.replace(":", " ").replace("-", " "))
     normalized_query = _normalized_phrase(query)
-    entry_id_match = _normalized_identifier(entry.id) in _normalized_identifier(query)
+    entry_id_match = _entry_id_matches_query(entry.id, query)
 
     score = 0.15
     rationale = ["explicit_continuation_signal"]
@@ -470,6 +475,16 @@ def _content_terms(text: str) -> list[str]:
 def _normalized_phrase(text: str) -> str:
     terms = _content_terms(text)
     return " ".join(terms)
+
+
+def _entry_id_matches_query(entry_id: str, query: str) -> bool:
+    normalized_entry_id = _normalized_identifier(entry_id)
+    if not normalized_entry_id:
+        return False
+    return any(
+        _normalized_identifier(token) == normalized_entry_id
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", query)
+    )
 
 
 def _normalized_identifier(text: str) -> str:
