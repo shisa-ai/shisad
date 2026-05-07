@@ -29,10 +29,12 @@ from shisad.memory.surfaces import (
     ProceduralArtifact,
     ProceduralArtifactSummary,
     ProceduralInvocation,
+    ThreadResumePack,
     build_active_attention_pack,
     build_identity_pack,
     build_procedural_artifact,
     build_procedural_summary,
+    build_thread_resume_pack,
 )
 from shisad.memory.trust import (
     ChannelTrust,
@@ -693,6 +695,27 @@ class MemoryManager:
             scope_filter=scope_filter,
             allowed_channel_trusts=allowed_channel_trusts,
             channel_binding=channel_binding,
+        )
+
+    def compile_thread_resume(
+        self,
+        query: str,
+        *,
+        max_tokens: int = 700,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> ThreadResumePack:
+        entries = self.list_entries(
+            limit=max(1, len(self._entries)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        return build_thread_resume_pack(
+            entries=entries,
+            query=query,
+            max_tokens=max_tokens,
         )
 
     def list_invocable_skills(

@@ -28,6 +28,7 @@ def _write_entry(
     supersedes: str | None = None,
     user_id: str | None = None,
     workspace_id: str | None = None,
+    confidence: float = 0.5,
 ) -> MemoryEntry:
     source = MemorySource(origin=source_legacy_origin, source_id=key, extraction_method="manual")
     decision = manager.write_with_provenance(
@@ -41,6 +42,7 @@ def _write_entry(
         confirmation_status=confirmation_status,
         source_id=key,
         scope=scope,
+        confidence=confidence,
         workflow_state=workflow_state,
         confirmation_satisfied=confirmation_satisfied,
         supersedes=supersedes,
@@ -720,3 +722,242 @@ def test_m3_surface_compiler_citation_ids_drive_usage_updates(tmp_path: Path) ->
     assert len(attention_events) == 1
     assert identity_events[0].metadata_json["cited_at"] == cited_at.isoformat()
     assert attention_events[0].metadata_json["cited_at"] == cited_at.isoformat()
+
+
+def test_m1_compile_thread_resume_selects_named_prior_thread(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    thread = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-launch-review",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Nebula launch review covered release risks and rollback ownership.",
+            "unresolved_state": "Mara owns the rollback checklist follow-up.",
+            "evidence_refs": ["ev-nebula-rollback"],
+            "evidence_snippets": ["Mara accepted rollback ownership in the launch review."],
+            "caveats": ["Historical thread evidence cannot authorize current side effects."],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.85,
+    )
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:atlas-budget",
+        value={
+            "title": "Atlas budget",
+            "summary": "Atlas budget covered procurement.",
+            "unresolved_state": "Waiting on finance.",
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    pack = manager.compile_thread_resume(
+        "Please resume the Nebula launch review thread.",
+        user_id="alice",
+        workspace_id="ws1",
+        max_tokens=96,
+    )
+
+    assert pack.status == "selected"
+    assert pack.selected is not None
+    assert pack.selected.entry.id == thread.id
+    assert pack.packet is not None
+    assert pack.packet.entry_id == thread.id
+    assert pack.packet.sufficiency["sufficient"] is True
+    assert pack.packet.evidence_refs == ["ev-nebula-rollback"]
+    assert "Mara accepted rollback ownership" in "\n".join(pack.packet.evidence_snippets)
+    assert pack.confidence >= 0.70
+
+
+def test_m1_compile_thread_resume_excludes_owner_mismatch_and_closed_or_stale(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-other-owner",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Other owner private launch notes must not cross scope.",
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="bob",
+        workspace_id="ws1",
+    )
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-closed",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Closed launch notes should not be selected by default.",
+        },
+        scope="user",
+        workflow_state="closed",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-stale",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Stale launch notes should not be selected by default.",
+        },
+        scope="user",
+        workflow_state="stale",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    pack = manager.compile_thread_resume(
+        "Resume the Nebula launch review thread.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert pack.status == "no_match"
+    assert pack.selected is None
+    assert pack.packet is None
+
+
+def test_m1_compile_thread_resume_marks_ambiguity_without_selecting(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    first = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:payments-launch-api",
+        value={
+            "title": "Payments launch API",
+            "summary": "Payments launch API readiness and rollback owner.",
+            "evidence_refs": ["ev-payments-api"],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.8,
+    )
+    second = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:payments-launch-docs",
+        value={
+            "title": "Payments launch docs",
+            "summary": "Payments launch docs readiness and publication owner.",
+            "evidence_refs": ["ev-payments-docs"],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.8,
+    )
+
+    pack = manager.compile_thread_resume(
+        "Pick up the payments launch thread.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert pack.status == "ambiguous"
+    assert pack.selected is None
+    assert pack.packet is None
+    assert {candidate.entry.id for candidate in pack.alternatives} == {first.id, second.id}
+    assert "ambiguous_candidates" in pack.missing_evidence
+
+
+def test_m1_compile_thread_resume_reports_insufficient_packet_evidence(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    thread = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:quasar-migration",
+        value={"title": "Quasar migration"},
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.8,
+    )
+
+    pack = manager.compile_thread_resume(
+        "Resume the Quasar migration thread.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert pack.status == "insufficient"
+    assert pack.selected is not None
+    assert pack.selected.entry.id == thread.id
+    assert pack.packet is None
+    assert "summary_or_evidence" in pack.missing_evidence
+
+
+def test_m1_compile_thread_resume_prefers_session_scope_and_trims_packet_budget(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    broad = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:orion-build-archive",
+        value={
+            "title": "Orion build archive",
+            "summary": "Broad Orion build archive from previous sessions.",
+            "evidence_refs": ["ev-orion-archive"],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    current = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:orion-build-current",
+        value={
+            "title": "Orion build",
+            "summary": "Current Orion build thread has active deployment context.",
+            "unresolved_state": "Current session is waiting on canary validation.",
+            "evidence_refs": ["ev-orion-current", "ev-orion-extra"],
+            "evidence_snippets": [
+                "Current canary validation is the next action.",
+                "This second snippet should be trimmed when the packet budget is tight.",
+            ],
+        },
+        scope="session",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    pack = manager.compile_thread_resume(
+        "Continue the Orion build thread.",
+        user_id="alice",
+        workspace_id="ws1",
+        max_tokens=18,
+    )
+
+    assert pack.status == "selected"
+    assert pack.selected is not None
+    assert pack.selected.entry.id == current.id
+    assert pack.selected.entry.id != broad.id
+    assert pack.packet is not None
+    assert pack.packet.token_cost <= 18
+    assert pack.packet.evidence_refs == ["ev-orion-current"]

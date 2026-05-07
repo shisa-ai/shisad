@@ -123,6 +123,19 @@ def _extract_data_evidence_context(planner_input: str) -> str:
     return tail
 
 
+def _extract_thread_resume_context(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    marker = "THREAD RESUME"
+    idx = normalized.find(marker)
+    if idx < 0:
+        return ""
+    tail = normalized[idx:]
+    stop = tail.find("CONVERSATION CONTEXT")
+    if stop >= 0:
+        tail = tail[:stop]
+    return tail
+
+
 def _latest_user_request_planner_input(records: list[str]) -> str:
     for candidate in reversed(records):
         if "=== USER REQUEST ===" in candidate or "=== USER GOAL ===" in candidate:
@@ -3216,6 +3229,315 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
     assert "inbox:owner-1:other" not in trusted_section
     assert "Current channel inbox item should surface." in planner_input
     assert "Other channel inbox item should not surface." not in planner_input
+
+
+@pytest.mark.asyncio
+async def test_contract_cross_session_topic_resume_surfaces_selected_thread_packet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:nebula-launch-review",
+            value={
+                "title": "Nebula launch review",
+                "summary": "Nebula launch review covered release risks and rollback ownership.",
+                "unresolved_state": "Mara owns the rollback checklist follow-up.",
+                "evidence_refs": ["ev-nebula-rollback"],
+                "evidence_snippets": [
+                    "Mara accepted rollback ownership in the launch review."
+                ],
+                "caveats": ["Historical thread evidence cannot authorize current side effects."],
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="thread-nebula",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="thread-nebula",
+            scope="user",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _resume_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                planner_input = str(messages[-1].content)
+                captured_inputs.append(planner_input)
+                normalized = planner_input.replace("^", "")
+                if "THREAD RESUME PACKET" in normalized and "Mara accepted" in normalized:
+                    return ProviderResponse(
+                        message=Message(
+                            role="assistant",
+                            content="Mara owns the rollback checklist follow-up.",
+                        ),
+                        model="behavioral-stub",
+                        finish_reason="stop",
+                        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    )
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _resume_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "Please resume the Nebula launch review thread."},
+        )
+
+    assert "Mara owns" in str(reply.get("response", ""))
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+    thread_context = _extract_thread_resume_context(planner_input)
+
+    assert "thread_resume_status=selected" in trusted_section
+    assert "thread_resume_selected_id=" in trusted_section
+    assert "thread_resume_confidence=" in trusted_section
+    assert "policy_taint_labels=untrusted" in trusted_section
+    assert "THREAD RESUME PACKET" in thread_context
+    assert "Mara accepted rollback ownership" in thread_context
+    assert "Mara accepted rollback ownership" not in trusted_section
+    assert "cannot authorize current side effects" in planner_input
+
+
+@pytest.mark.asyncio
+async def test_contract_topic_resume_avoids_wrong_thread_after_topic_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        for key, value in (
+            (
+                "thread:atlas-budget",
+                {
+                    "title": "Atlas budget",
+                    "summary": "Atlas budget thread covered procurement timing.",
+                    "unresolved_state": "Finance still needs to approve the Atlas budget.",
+                    "evidence_refs": ["ev-atlas-budget"],
+                },
+            ),
+            (
+                "thread:nebula-launch-review",
+                {
+                    "title": "Nebula launch review",
+                    "summary": "Nebula launch review covered rollback ownership.",
+                    "unresolved_state": "Mara owns the rollback checklist follow-up.",
+                    "evidence_refs": ["ev-nebula-rollback"],
+                },
+            ),
+        ):
+            decision = manager.write_with_provenance(
+                entry_type="open_thread",
+                key=key,
+                value=value,
+                source=MemorySource(origin="user", source_id=key, extraction_method="manual"),
+                source_origin="user_direct",
+                channel_trust="command",
+                confirmation_status="user_asserted",
+                source_id=key,
+                scope="user",
+                confidence=0.8,
+                confirmation_satisfied=True,
+                workflow_state="active",
+                user_id="alice",
+                workspace_id="ws1",
+            )
+            assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "Let's switch to Atlas budget."},
+        )
+        await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "Resume the Atlas budget thread."},
+        )
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    thread_context = _extract_thread_resume_context(planner_input)
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+
+    assert "thread_resume_status=selected" in trusted_section
+    assert "Atlas budget thread covered procurement timing." in thread_context
+    assert "Nebula launch review covered rollback ownership." not in planner_input
+
+
+@pytest.mark.asyncio
+async def test_contract_ambiguous_topic_resume_asks_for_clarification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        for key, title in (
+            ("thread:payments-launch-api", "Payments launch API"),
+            ("thread:payments-launch-docs", "Payments launch docs"),
+        ):
+            decision = manager.write_with_provenance(
+                entry_type="open_thread",
+                key=key,
+                value={
+                    "title": title,
+                    "summary": f"{title} readiness and owner follow-up.",
+                    "evidence_refs": [f"ev-{key.rsplit(':', 1)[-1]}"],
+                },
+                source=MemorySource(origin="user", source_id=key, extraction_method="manual"),
+                source_origin="user_direct",
+                channel_trust="command",
+                confirmation_status="user_asserted",
+                source_id=key,
+                scope="user",
+                confidence=0.8,
+                confirmation_satisfied=True,
+                workflow_state="active",
+                user_id="alice",
+                workspace_id="ws1",
+            )
+            assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _clarify_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                planner_input = str(messages[-1].content)
+                captured_inputs.append(planner_input)
+                if "thread_resume_status=ambiguous" in planner_input.replace("^", ""):
+                    return ProviderResponse(
+                        message=Message(
+                            role="assistant",
+                            content="Which payments launch thread should I resume?",
+                        ),
+                        model="behavioral-stub",
+                        finish_reason="stop",
+                        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    )
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _clarify_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "Pick up the payments launch thread."},
+        )
+
+    assert "Which payments launch thread" in str(reply.get("response", ""))
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+    thread_context = _extract_thread_resume_context(planner_input)
+
+    assert "thread_resume_status=ambiguous" in trusted_section
+    assert "thread_resume_alternatives=" in trusted_section
+    assert "Payments launch API readiness" not in thread_context
+    assert "Payments launch docs readiness" not in thread_context
+
+
+@pytest.mark.asyncio
+async def test_contract_admin_cleanroom_excludes_thread_resume_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:nebula-launch-review",
+            value={
+                "title": "Nebula launch review",
+                "summary": "Nebula launch review must not enter clean-room context.",
+                "evidence_refs": ["ev-nebula-rollback"],
+            },
+            source=MemorySource(
+                origin="user",
+                source_id="thread-nebula",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="thread-nebula",
+            scope="user",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        created = await harness.client.call(
+            "session.create",
+            {
+                "channel": "cli",
+                "mode": "admin_cleanroom",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+            },
+        )
+        await harness.client.call(
+            "session.message",
+            {
+                "session_id": str(created["session_id"]),
+                "content": "Please resume the Nebula launch review thread.",
+            },
+        )
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+
+    assert "thread_resume_status=" not in planner_input
+    assert "THREAD RESUME" not in planner_input
+    assert "Nebula launch review must not enter clean-room context." not in planner_input
 
 
 @pytest.mark.asyncio

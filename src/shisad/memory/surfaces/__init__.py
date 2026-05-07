@@ -19,6 +19,12 @@ from .recall import (
     extract_recall_terms,
     verify_recall_sufficiency,
 )
+from .thread_resume import (
+    ThreadResumeCandidate,
+    ThreadResumePack,
+    ThreadResumePacket,
+    build_thread_resume_pack,
+)
 
 __all__ = [
     "ActiveAttentionPack",
@@ -28,11 +34,15 @@ __all__ = [
     "ProceduralInvocation",
     "RecallPack",
     "SufficiencyReport",
+    "ThreadResumeCandidate",
+    "ThreadResumePack",
+    "ThreadResumePacket",
     "build_active_attention_pack",
     "build_identity_pack",
     "build_procedural_artifact",
     "build_procedural_summary",
     "build_recall_pack",
+    "build_thread_resume_pack",
     "extract_recall_terms",
     "verify_recall_sufficiency",
 ]
