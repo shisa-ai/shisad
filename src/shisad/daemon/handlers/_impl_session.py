@@ -4474,9 +4474,7 @@ def _build_thread_resume_context(pack: ThreadResumePack | None) -> str:
         if packet.unresolved_state:
             lines.append(f"unresolved_state={packet.unresolved_state}")
         if packet.evidence_refs:
-            lines.append(
-                f"evidence_refs={json.dumps(packet.evidence_refs, ensure_ascii=True)}"
-            )
+            lines.append(f"evidence_refs={json.dumps(packet.evidence_refs, ensure_ascii=True)}")
         for index, snippet in enumerate(packet.evidence_snippets, start=1):
             lines.append(f"evidence_snippet_{index}={snippet}")
         for index, caveat in enumerate(packet.caveats, start=1):
@@ -4779,8 +4777,7 @@ def _build_session_frontmatter(
                 candidate.entry.id for candidate in thread_resume_pack.alternatives
             )
             lines.append(
-                "thread_resume_alternatives="
-                f"{_sanitize_frontmatter_value(alternative_ids)}"
+                f"thread_resume_alternatives={_sanitize_frontmatter_value(alternative_ids)}"
             )
         if thread_resume_pack.missing_evidence:
             lines.append(
@@ -7239,8 +7236,9 @@ class SessionImplMixin(HandlerMixinBase):
                     active_attention_entries = []
                     active_attention_context = ""
                 thread_resume_pack = self._memory_manager.compile_thread_resume(
-                    memory_query,
+                    firewall_result.sanitized_text,
                     max_tokens=_THREAD_RESUME_CONTEXT_MAX_TOKENS,
+                    session_scope_id=str(validated.sid),
                     user_id=str(session.user_id),
                     workspace_id=str(session.workspace_id),
                 )
@@ -8094,6 +8092,7 @@ class SessionImplMixin(HandlerMixinBase):
         session_tainted = (
             self._session_has_tainted_user_history(sid)
             or planner_context.memory_context_tainted_for_amv
+            or TaintLabel.UNTRUSTED in planner_context.context.taint_labels
         )
         action_resolve_requires_explicit_intent = True
         clean_trusted_input = _has_clean_trusted_turn_privileges(validated)

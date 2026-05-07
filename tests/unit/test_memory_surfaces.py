@@ -29,8 +29,14 @@ def _write_entry(
     user_id: str | None = None,
     workspace_id: str | None = None,
     confidence: float = 0.5,
+    source_id: str | None = None,
 ) -> MemoryEntry:
-    source = MemorySource(origin=source_legacy_origin, source_id=key, extraction_method="manual")
+    resolved_source_id = source_id or key
+    source = MemorySource(
+        origin=source_legacy_origin,
+        source_id=resolved_source_id,
+        extraction_method="manual",
+    )
     decision = manager.write_with_provenance(
         entry_type=entry_type,
         key=key,
@@ -40,7 +46,7 @@ def _write_entry(
         source_origin=source_origin,
         channel_trust=channel_trust,
         confirmation_status=confirmation_status,
-        source_id=key,
+        source_id=resolved_source_id,
         scope=scope,
         confidence=confidence,
         workflow_state=workflow_state,
@@ -927,6 +933,21 @@ def test_m1_compile_thread_resume_prefers_session_scope_and_trims_packet_budget(
         user_id="alice",
         workspace_id="ws1",
     )
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:orion-build-old-session",
+        value={
+            "title": "Orion build",
+            "summary": "Older Orion build session context should not be visible here.",
+            "evidence_refs": ["ev-orion-old-session"],
+        },
+        scope="session",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        source_id="sid-old:thread:orion-build-old-session",
+    )
     current = _write_entry(
         manager,
         entry_type="open_thread",
@@ -945,10 +966,12 @@ def test_m1_compile_thread_resume_prefers_session_scope_and_trims_packet_budget(
         workflow_state="active",
         user_id="alice",
         workspace_id="ws1",
+        source_id="sid-current:thread:orion-build-current",
     )
 
     pack = manager.compile_thread_resume(
         "Continue the Orion build thread.",
+        session_scope_id="sid-current",
         user_id="alice",
         workspace_id="ws1",
         max_tokens=18,
@@ -961,3 +984,51 @@ def test_m1_compile_thread_resume_prefers_session_scope_and_trims_packet_budget(
     assert pack.packet is not None
     assert pack.packet.token_cost <= 18
     assert pack.packet.evidence_refs == ["ev-orion-current"]
+
+
+def test_m1_compile_thread_resume_truncates_oversized_base_fields(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    long_summary = " ".join(f"summary{i}" for i in range(40))
+    long_caveat = " ".join(f"caveat{i}" for i in range(40))
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:lyra-launch",
+        value={
+            "title": "Lyra launch",
+            "summary": long_summary,
+            "unresolved_state": " ".join(f"state{i}" for i in range(20)),
+            "caveats": [long_caveat],
+        },
+        scope="user",
+        workflow_state="active",
+        user_id="alice",
+        workspace_id="ws1",
+        confidence=0.85,
+    )
+
+    pack = manager.compile_thread_resume(
+        "Resume the Lyra launch thread.",
+        user_id="alice",
+        workspace_id="ws1",
+        max_tokens=12,
+    )
+
+    assert pack.status == "selected"
+    assert pack.packet is not None
+    rendered_words = " ".join(
+        [
+            pack.packet.title,
+            pack.packet.summary,
+            pack.packet.unresolved_state,
+            *pack.packet.evidence_refs,
+            *pack.packet.evidence_snippets,
+            *pack.packet.caveats,
+        ]
+    ).split()
+    assert pack.packet.token_cost <= 12
+    assert len(rendered_words) <= 12
+    assert "summary_trimmed" in pack.packet.sufficiency["missing_evidence"]
+    assert "caveats_trimmed" in pack.packet.sufficiency["missing_evidence"]

@@ -702,6 +702,7 @@ class MemoryManager:
         query: str,
         *,
         max_tokens: int = 700,
+        session_scope_id: str | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
@@ -712,8 +713,18 @@ class MemoryManager:
             workspace_id=workspace_id,
             include_unowned=include_unowned,
         )
+        normalized_session_scope_id = (session_scope_id or "").strip()
+        visible_entries = [
+            entry
+            for entry in entries
+            if str(entry.scope) != "session"
+            or (
+                normalized_session_scope_id
+                and self._session_scope_binding(entry.source_id) == normalized_session_scope_id
+            )
+        ]
         return build_thread_resume_pack(
-            entries=entries,
+            entries=visible_entries,
             query=query,
             max_tokens=max_tokens,
         )
