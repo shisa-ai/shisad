@@ -54,7 +54,7 @@ _ALLOWED_WORKFLOW_STATE_TRANSITIONS: dict[str, set[str]] = {
     "waiting": {"active", "blocked", "stale", "closed"},
     "blocked": {"active", "waiting", "stale", "closed"},
     "stale": {"active", "closed"},
-    "closed": set(),
+    "closed": {"active"},
 }
 
 
@@ -1721,6 +1721,7 @@ class MemoryManager:
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
+        reason: str = "",
     ) -> bool:
         owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
         owner_user_id = self._normalize_owner_value(user_id)
@@ -1749,15 +1750,18 @@ class MemoryManager:
             )
         entry.workflow_state = workflow_state
         self._persist_entry(entry)
+        event_metadata: dict[str, Any] = {
+            "from": previous_state,
+            "to": workflow_state,
+            "status": entry.status,
+        }
+        if reason.strip():
+            event_metadata["reason"] = reason.strip()
         self._record_event(
             entry=entry,
             event_type="workflow_state_changed",
             ingress_handle_id=entry.ingress_handle_id,
-            metadata={
-                "from": previous_state,
-                "to": workflow_state,
-                "status": entry.status,
-            },
+            metadata=event_metadata,
         )
         self._audit(
             "memory.workflow_state_changed",
@@ -1766,6 +1770,7 @@ class MemoryManager:
                 "from": previous_state,
                 "to": workflow_state,
                 "status": entry.status,
+                "reason": reason.strip(),
             },
         )
         return True

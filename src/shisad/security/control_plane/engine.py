@@ -62,6 +62,8 @@ _INTENT_DIGEST_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
     "note.create": ("content",),
     "todo.create": ("title",),
     "todo.complete": ("selector",),
+    "thread.resume": ("thread_id",),
+    "thread.close": ("thread_id", "reason"),
     "reminder.create": ("message", "when"),
 }
 

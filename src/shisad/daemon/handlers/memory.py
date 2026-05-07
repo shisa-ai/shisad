@@ -52,6 +52,14 @@ from shisad.core.api.schema import (
     NoteSearchParams,
     NoteSearchResult,
     NoteVerifyResult,
+    ThreadCloseParams,
+    ThreadEntryParams,
+    ThreadInspectResult,
+    ThreadListParams,
+    ThreadListResult,
+    ThreadMutationResult,
+    ThreadWhyParams,
+    ThreadWhyResult,
     TodoCompleteParams,
     TodoCompleteResult,
     TodoCreateParams,
@@ -378,6 +386,66 @@ class MemoryHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return MemoryRotateKeyResult.model_validate(await self._impl.do_memory_rotate_key(payload))
+
+    async def handle_thread_list(
+        self,
+        params: ThreadListParams,
+        ctx: RequestContext,
+    ) -> ThreadListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ThreadListResult.model_validate(await self._impl.do_thread_list(payload))
+
+    async def handle_thread_inspect(
+        self,
+        params: ThreadEntryParams,
+        ctx: RequestContext,
+    ) -> ThreadInspectResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ThreadInspectResult.model_validate(await self._impl.do_thread_inspect(payload))
+
+    async def handle_thread_resume(
+        self,
+        params: ThreadEntryParams,
+        ctx: RequestContext,
+    ) -> ThreadMutationResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ThreadMutationResult.model_validate(await self._impl.do_thread_resume(payload))
+
+    async def handle_thread_close(
+        self,
+        params: ThreadCloseParams,
+        ctx: RequestContext,
+    ) -> ThreadMutationResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ThreadMutationResult.model_validate(await self._impl.do_thread_close(payload))
+
+    async def handle_thread_why(
+        self,
+        params: ThreadWhyParams,
+        ctx: RequestContext,
+    ) -> ThreadWhyResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ThreadWhyResult.model_validate(await self._impl.do_thread_why(payload))
 
     async def handle_note_create(
         self,

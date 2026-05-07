@@ -869,6 +869,96 @@ async def _structured_todo_complete(
     return _wrap_structured_payload(payload, ok=bool(payload.get("completed", False)))
 
 
+async def _structured_thread_list(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    payload = await handler.do_thread_list(
+        {
+            "limit": _argument_int(arguments, "limit", default=20, minimum=1),
+            "state": _argument_string(arguments, "state") or "open",
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
+    )
+    return _wrap_structured_payload(payload)
+
+
+async def _structured_thread_inspect(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    thread_id = _argument_string(arguments, "thread_id")
+    if not thread_id:
+        return {"ok": False, "found": False, "error": "thread_id_required"}
+    payload = await handler.do_thread_inspect(
+        {
+            "thread_id": thread_id,
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
+    )
+    return _wrap_structured_payload(payload, ok=bool(payload.get("found", False)))
+
+
+async def _structured_thread_resume(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    thread_id = _argument_string(arguments, "thread_id")
+    if not thread_id:
+        return {"ok": False, "changed": False, "error": "thread_id_required"}
+    payload = await handler.do_thread_resume(
+        {
+            "thread_id": thread_id,
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
+    )
+    return _wrap_structured_payload(payload, ok=bool(payload.get("changed", False)))
+
+
+async def _structured_thread_close(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    thread_id = _argument_string(arguments, "thread_id")
+    if not thread_id:
+        return {"ok": False, "changed": False, "error": "thread_id_required"}
+    payload = await handler.do_thread_close(
+        {
+            "thread_id": thread_id,
+            "reason": _argument_string(arguments, "reason"),
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
+    )
+    return _wrap_structured_payload(payload, ok=bool(payload.get("changed", False)))
+
+
+async def _structured_thread_why(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    query = _argument_string(arguments, "query")
+    if not query:
+        return {"ok": False, "selected": False, "error": "thread_query_required"}
+    payload = await handler.do_thread_why(
+        {
+            "query": query,
+            "thread_id": _argument_string(arguments, "thread_id"),
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
+    )
+    return _wrap_structured_payload(payload)
+
+
 async def _structured_reminder_create(
     handler: Any,
     arguments: Mapping[str, Any],
@@ -3582,6 +3672,11 @@ class HandlerImplementation(
             "todo.create": (_structured_todo_create, "todo_create_failed"),
             "todo.list": (_structured_todo_list, "todo_list_failed"),
             "todo.complete": (_structured_todo_complete, "todo_complete_failed"),
+            "thread.list": (_structured_thread_list, "thread_list_failed"),
+            "thread.inspect": (_structured_thread_inspect, "thread_inspect_failed"),
+            "thread.resume": (_structured_thread_resume, "thread_resume_failed"),
+            "thread.close": (_structured_thread_close, "thread_close_failed"),
+            "thread.why": (_structured_thread_why, "thread_why_failed"),
             "reminder.create": (_structured_reminder_create, "reminder_create_failed"),
             "reminder.list": (_structured_reminder_list, "reminder_list_failed"),
             "evidence.read": (_structured_evidence_read, "evidence_read_failed"),

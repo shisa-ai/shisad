@@ -392,6 +392,45 @@ def test_cli_commands_route_through_rpc_wrapper(
             "identity_candidate_ids": ["m-2"],
             "capability_scope": {},
         },
+        "thread.list": {
+            "threads": [
+                {
+                    "id": "thr-1",
+                    "title": "Launch review",
+                    "workflow_state": "active",
+                    "scope": "user",
+                    "channel_trust": "command",
+                    "confidence": 0.9,
+                    "last_relevant_at": "2026-02-13T00:00:00Z",
+                }
+            ],
+            "count": 1,
+            "filters": {"state": "open"},
+        },
+        "thread.inspect": {
+            "found": True,
+            "thread": {"id": "thr-1", "workflow_state": "active"},
+            "packet": {"title": "Launch review", "summary": "Review summary"},
+            "selection": {"status": "inspect_only"},
+        },
+        "thread.resume": {
+            "changed": True,
+            "thread_id": "thr-1",
+            "thread": {"id": "thr-1", "workflow_state": "active"},
+            "reason": "changed",
+        },
+        "thread.close": {
+            "changed": True,
+            "thread_id": "thr-1",
+            "thread": {"id": "thr-1", "workflow_state": "closed"},
+            "reason": "changed",
+        },
+        "thread.why": {
+            "selected": True,
+            "thread": {"id": "thr-1"},
+            "selection": {"status": "selected", "selected_id": "thr-1"},
+            "packet": {"title": "Launch review"},
+        },
         "note.create": {"kind": "allow", "entry": {"id": "n-1"}},
         "note.list": {
             "entries": [{"id": "n-1", "entry_type": "note", "key": "meeting"}],
@@ -797,6 +836,43 @@ def test_cli_commands_route_through_rpc_wrapper(
             ["memory", "consolidate", "--user", "alice", "--workspace", "ws-1"],
         ).output
     )
+    assert (
+        "thr-1 state=active"
+        in _invoke_ok(
+            runner,
+            ["thread", "list", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
+    _invoke_ok(runner, ["thread", "inspect", "thr-1", "--user", "alice", "--workspace", "ws-1"])
+    _invoke_ok(runner, ["thread", "resume", "thr-1", "--user", "alice", "--workspace", "ws-1"])
+    _invoke_ok(
+        runner,
+        [
+            "thread",
+            "close",
+            "thr-1",
+            "--reason",
+            "done",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws-1",
+        ],
+    )
+    _invoke_ok(
+        runner,
+        [
+            "thread",
+            "why",
+            "resume Launch review thread",
+            "--thread-id",
+            "thr-1",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws-1",
+        ],
+    )
     _invoke_ok(
         runner,
         [
@@ -990,6 +1066,36 @@ def test_cli_commands_route_through_rpc_wrapper(
         {"format": "md", "user_id": "alice", "workspace_id": "ws-1"},
     ) in calls
     assert ("memory.consolidate", {"user_id": "alice", "workspace_id": "ws-1"}) in calls
+    assert (
+        "thread.list",
+        {"limit": 20, "state": "open", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "thread.inspect",
+        {"thread_id": "thr-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "thread.resume",
+        {"thread_id": "thr-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "thread.close",
+        {
+            "thread_id": "thr-1",
+            "reason": "done",
+            "user_id": "alice",
+            "workspace_id": "ws-1",
+        },
+    ) in calls
+    assert (
+        "thread.why",
+        {
+            "query": "resume Launch review thread",
+            "thread_id": "thr-1",
+            "user_id": "alice",
+            "workspace_id": "ws-1",
+        },
+    ) in calls
     assert (
         "note.create",
         {"key": "meeting", "content": "prep", "user_id": "alice", "workspace_id": "ws-1"},

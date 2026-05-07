@@ -24,6 +24,10 @@ from shisad.core.api.schema import (
     NoteExportParams,
     NoteListParams,
     NoteSearchParams,
+    ThreadCloseParams,
+    ThreadEntryParams,
+    ThreadListParams,
+    ThreadWhyParams,
     TodoCompleteParams,
     TodoEntryParams,
     TodoExportParams,
@@ -52,6 +56,11 @@ class _StubImpl:
         self.last_memory_quarantine_payload: dict[str, object] | None = None
         self.last_memory_unquarantine_payload: dict[str, object] | None = None
         self.last_memory_set_workflow_state_payload: dict[str, object] | None = None
+        self.last_thread_list_payload: dict[str, object] | None = None
+        self.last_thread_inspect_payload: dict[str, object] | None = None
+        self.last_thread_resume_payload: dict[str, object] | None = None
+        self.last_thread_close_payload: dict[str, object] | None = None
+        self.last_thread_why_payload: dict[str, object] | None = None
         self.last_note_list_payload: dict[str, object] | None = None
         self.last_note_search_payload: dict[str, object] | None = None
         self.last_note_get_payload: dict[str, object] | None = None
@@ -209,6 +218,50 @@ class _StubImpl:
             "changed": True,
             "entry_id": str(payload["entry_id"]),
             "workflow_state": str(payload["workflow_state"]),
+        }
+
+    async def do_thread_list(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_thread_list_payload = payload
+        return {
+            "threads": [{"id": "thread-1", "title": "Launch", "workflow_state": "active"}],
+            "count": 1,
+            "filters": {"state": str(payload["state"])},
+        }
+
+    async def do_thread_inspect(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_thread_inspect_payload = payload
+        return {
+            "found": True,
+            "thread": {"id": str(payload["thread_id"]), "workflow_state": "closed"},
+            "packet": {"title": "Launch"},
+            "selection": {"status": "inspect_only"},
+        }
+
+    async def do_thread_resume(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_thread_resume_payload = payload
+        return {
+            "changed": True,
+            "thread_id": str(payload["thread_id"]),
+            "thread": {"id": str(payload["thread_id"]), "workflow_state": "active"},
+            "reason": "changed",
+        }
+
+    async def do_thread_close(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_thread_close_payload = payload
+        return {
+            "changed": True,
+            "thread_id": str(payload["thread_id"]),
+            "thread": {"id": str(payload["thread_id"]), "workflow_state": "closed"},
+            "reason": str(payload["reason"]),
+        }
+
+    async def do_thread_why(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_thread_why_payload = payload
+        return {
+            "selected": True,
+            "thread": {"id": str(payload["thread_id"])},
+            "selection": {"status": "selected", "selected_id": str(payload["thread_id"])},
+            "packet": {"title": "Launch"},
         }
 
     async def do_note_list(self, payload: dict[str, object]) -> dict[str, object]:
@@ -533,6 +586,68 @@ async def test_memory_lifecycle_wrappers_forward_payloads() -> None:
     assert impl.last_memory_set_workflow_state_payload["workflow_state"] == "closed"
     assert impl.last_memory_set_workflow_state_payload["user_id"] == "alice"
     assert impl.last_memory_set_workflow_state_payload["workspace_id"] == "ws1"
+
+
+@pytest.mark.asyncio
+async def test_thread_control_wrappers_forward_owner_scope() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    listing = await handlers.handle_thread_list(
+        ThreadListParams(
+            state="stale",
+            limit=5,
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
+        ),
+        RequestContext(),
+    )
+    inspected = await handlers.handle_thread_inspect(
+        ThreadEntryParams(thread_id="thread-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    resumed = await handlers.handle_thread_resume(
+        ThreadEntryParams(thread_id="thread-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    closed = await handlers.handle_thread_close(
+        ThreadCloseParams(
+            thread_id="thread-1",
+            reason="done",
+            user_id="alice",
+            workspace_id="ws1",
+        ),
+        RequestContext(),
+    )
+    why = await handlers.handle_thread_why(
+        ThreadWhyParams(
+            query="resume Launch thread",
+            thread_id="thread-1",
+            user_id="alice",
+            workspace_id="ws1",
+        ),
+        RequestContext(),
+    )
+
+    assert listing.count == 1
+    assert inspected.found is True
+    assert resumed.changed is True
+    assert closed.changed is True
+    assert why.selected is True
+    assert impl.last_thread_list_payload is not None
+    assert impl.last_thread_list_payload["state"] == "stale"
+    assert impl.last_thread_list_payload["user_id"] == "alice"
+    assert impl.last_thread_list_payload["workspace_id"] == "ws1"
+    assert impl.last_thread_list_payload["include_unowned"] is True
+    assert impl.last_thread_inspect_payload is not None
+    assert impl.last_thread_inspect_payload["thread_id"] == "thread-1"
+    assert impl.last_thread_resume_payload is not None
+    assert impl.last_thread_resume_payload["thread_id"] == "thread-1"
+    assert impl.last_thread_close_payload is not None
+    assert impl.last_thread_close_payload["reason"] == "done"
+    assert impl.last_thread_why_payload is not None
+    assert impl.last_thread_why_payload["query"] == "resume Launch thread"
 
 
 @pytest.mark.asyncio

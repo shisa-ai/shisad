@@ -615,6 +615,62 @@ class MemoryWorkflowStateParams(_StrictParams):
         return self
 
 
+ThreadStateFilter = Literal["open", "active", "waiting", "blocked", "stale", "closed", "all"]
+
+
+class ThreadListParams(_StrictParams):
+    limit: int = 20
+    state: ThreadStateFilter = "open"
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> ThreadListParams:
+        _require_complete_owner_scope(self)
+        return self
+
+
+class ThreadEntryParams(_StrictParams):
+    thread_id: str = Field(validation_alias=AliasChoices("thread_id", "entry_id"))
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> ThreadEntryParams:
+        _require_complete_owner_scope(self)
+        if not self.thread_id.strip():
+            raise ValueError("thread_id is required")
+        return self
+
+
+class ThreadCloseParams(ThreadEntryParams):
+    reason: str = ""
+
+
+class ThreadWhyParams(_StrictParams):
+    query: str
+    thread_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("thread_id", "entry_id"),
+    )
+    max_tokens: int = 700
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope_and_query(self) -> ThreadWhyParams:
+        _require_complete_owner_scope(self)
+        if not self.query.strip():
+            raise ValueError("query is required")
+        if self.thread_id is not None:
+            self.thread_id = self.thread_id.strip() or None
+        self.max_tokens = max(1, int(self.max_tokens))
+        return self
+
+
 class MemoryExportParams(_StrictParams):
     format: str = "json"
     user_id: str | None = None
@@ -808,6 +864,33 @@ class MemoryWorkflowStateResult(BaseModel):
     entry_id: str
     workflow_state: str = ""
     reason: str = ""
+
+
+class ThreadListResult(BaseModel):
+    threads: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ThreadInspectResult(BaseModel):
+    found: bool = False
+    thread: dict[str, Any] | None = None
+    packet: dict[str, Any] | None = None
+    selection: dict[str, Any] = Field(default_factory=dict)
+
+
+class ThreadMutationResult(BaseModel):
+    changed: bool = False
+    thread_id: str = ""
+    thread: dict[str, Any] | None = None
+    reason: str = ""
+
+
+class ThreadWhyResult(BaseModel):
+    selected: bool = False
+    thread: dict[str, Any] | None = None
+    selection: dict[str, Any] = Field(default_factory=dict)
+    packet: dict[str, Any] | None = None
 
 
 class MemoryExportResult(BaseModel):

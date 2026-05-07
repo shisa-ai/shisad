@@ -230,6 +230,11 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
         "todo.create",
         "todo.list",
         "todo.complete",
+        "thread.list",
+        "thread.inspect",
+        "thread.resume",
+        "thread.close",
+        "thread.why",
         "reminder.create",
         "reminder.list",
     }.issubset(set(registry))
@@ -663,6 +668,107 @@ async def test_c2_execute_approved_action_retrieve_rag_blank_owner_fails_closed(
     assert preview_rows == []
     assert "blank-owner-blue" not in preview_text
     assert "explicit-owner-red" not in preview_text
+
+
+@pytest.mark.asyncio
+async def test_m2_execute_approved_action_thread_controls_scope_owner(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryStructuredExecutionHarness(tmp_path / "memory")
+    visible = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="open_thread",
+        key="thread:nebula-launch",
+        value={
+            "title": "Nebula launch",
+            "summary": "Nebula launch readiness and rollback ownership.",
+            "evidence_refs": ["ev-nebula"],
+        },
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    hidden = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="open_thread",
+        key="thread:atlas-budget",
+        value={
+            "title": "Atlas budget",
+            "summary": "Atlas budget belongs to another owner.",
+            "evidence_refs": ["ev-atlas"],
+        },
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    listed = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.list"),
+        arguments={"state": "all"},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert listed.success is True
+    assert listed.tool_output is not None
+    listed_payload = json.loads(listed.tool_output.content)
+    listed_text = json.dumps(listed_payload, sort_keys=True)
+    assert visible.id in listed_text
+    assert "Nebula launch" in listed_text
+    assert hidden.id not in listed_text
+    assert "Atlas budget" not in listed_text
+
+    closed = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.close"),
+        arguments={"thread_id": visible.id, "reason": "done"},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+    assert closed.success is True
+    reloaded = harness._memory_manager.get_entry(
+        visible.id,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    assert reloaded is not None
+    assert reloaded.workflow_state == "closed"
+    assert reloaded.status == "active"
+
+    denied = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.resume"),
+        arguments={"thread_id": hidden.id},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+    assert denied.success is False
+    still_hidden = harness._memory_manager.get_entry(
+        hidden.id,
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+    assert still_hidden is not None
+    assert still_hidden.workflow_state == "active"
+
+    why = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.why"),
+        arguments={"query": "Please resume the Atlas budget thread.", "thread_id": hidden.id},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert why.success is True
+    assert why.tool_output is not None
+    why_payload = json.loads(why.tool_output.content)
+    assert why_payload["selected"] is False
+    assert hidden.id not in why_payload["selection"]["candidate_ids"]
 
 
 @pytest.mark.asyncio

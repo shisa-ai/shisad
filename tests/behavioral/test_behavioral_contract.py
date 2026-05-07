@@ -2293,6 +2293,157 @@ async def test_contract_todo_create_list_and_complete_executes_without_lockdown(
 
 
 @pytest.mark.asyncio
+async def test_contract_thread_controls_are_user_visible_and_owner_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+
+        def _write_thread(
+            *,
+            key: str,
+            title: str,
+            summary: str,
+            user_id: str,
+            workspace_id: str,
+            workflow_state: str = "active",
+        ) -> str:
+            decision = manager.write_with_provenance(
+                entry_type="open_thread",
+                key=key,
+                value={
+                    "title": title,
+                    "summary": summary,
+                    "evidence_refs": [f"ev-{key.rsplit(':', 1)[-1]}"],
+                },
+                source=MemorySource(origin="user", source_id=key, extraction_method="manual"),
+                source_origin="user_direct",
+                channel_trust="command",
+                confirmation_status="user_asserted",
+                source_id=key,
+                scope="user",
+                confidence=0.9,
+                confirmation_satisfied=True,
+                workflow_state=workflow_state,  # type: ignore[arg-type]
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            assert decision.kind == "allow"
+            assert decision.entry is not None
+            return decision.entry.id
+
+        stored["visible"] = _write_thread(
+            key="thread:nebula-launch",
+            title="Nebula launch",
+            summary="Nebula launch readiness and rollback ownership.",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        stored["closed"] = _write_thread(
+            key="thread:closed-audit",
+            title="Closed audit",
+            summary="Closed audit remains inspectable.",
+            user_id="alice",
+            workspace_id="ws1",
+            workflow_state="closed",
+        )
+        stored["hidden"] = _write_thread(
+            key="thread:atlas-budget",
+            title="Atlas budget",
+            summary="Atlas budget belongs to another owner.",
+            user_id="bob",
+            workspace_id="ws2",
+        )
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+
+        listed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "list my threads"},
+        )
+        inspected = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"inspect thread {stored['closed']}"},
+        )
+        why_hidden = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    f"why thread {stored['hidden']} selected for resume Atlas budget thread"
+                ),
+            },
+        )
+        closed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"close thread {stored['visible']} because done"},
+        )
+        await asyncio.sleep(1.1)
+        resumed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"resume thread {stored['visible']}"},
+        )
+
+        reloaded = MemoryManager(harness.config.data_dir / "memory_entries")
+        visible_entry = reloaded.get_entry(
+            stored["visible"],
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        hidden_entry = reloaded.get_entry(
+            stored["hidden"],
+            user_id="bob",
+            workspace_id="ws2",
+        )
+
+    list_outputs = _extract_tool_outputs(listed)
+    assert "thread.list" in list_outputs
+    list_payload = list_outputs["thread.list"][0]
+    list_text = json.dumps(list_payload, sort_keys=True)
+    assert stored["visible"] in list_text
+    assert stored["closed"] not in list_text
+    assert stored["hidden"] not in list_text
+    assert int(listed.get("executed_actions", 0)) == 1
+    assert int(listed.get("blocked_actions", 0)) == 0
+
+    inspect_outputs = _extract_tool_outputs(inspected)
+    assert "thread.inspect" in inspect_outputs
+    inspect_payload = inspect_outputs["thread.inspect"][0]
+    assert inspect_payload.get("found") is True
+    assert (inspect_payload.get("thread") or {}).get("workflow_state") == "closed"
+    assert (inspect_payload.get("packet") or {}).get("title") == "Closed audit"
+
+    why_outputs = _extract_tool_outputs(why_hidden)
+    assert "thread.why" in why_outputs
+    why_payload = why_outputs["thread.why"][0]
+    assert why_payload.get("selected") is False
+    selection = why_payload.get("selection") or {}
+    assert stored["hidden"] not in selection.get("candidate_ids", [])
+
+    close_outputs = _extract_tool_outputs(closed)
+    assert "thread.close" in close_outputs
+    close_payload = close_outputs["thread.close"][0]
+    assert close_payload.get("changed") is True
+    assert (close_payload.get("thread") or {}).get("status") == "active"
+
+    resume_outputs = _extract_tool_outputs(resumed)
+    assert "thread.resume" in resume_outputs
+    resume_payload = resume_outputs["thread.resume"][0]
+    assert resume_payload.get("changed") is True
+    assert (resume_payload.get("thread") or {}).get("workflow_state") == "active"
+
+    assert visible_entry is not None
+    assert visible_entry.workflow_state == "active"
+    assert visible_entry.status == "active"
+    assert hidden_entry is not None
+    assert hidden_entry.workflow_state == "active"
+
+
+@pytest.mark.asyncio
 async def test_contract_memory_write_rejects_caller_supplied_trust_fields(
     contract_harness: ContractHarness,
 ) -> None:

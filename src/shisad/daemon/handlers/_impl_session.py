@@ -2503,6 +2503,96 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
     if _has_explicit_memory_follow_on_command(normalized):
         return None
 
+    if re.fullmatch(
+        r"(?:list|show) (?:my )?(?:open |active |stale |closed |all )?threads",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        state_match = re.match(
+            r"^(?:list|show) (?:my )?(?P<state>open|active|stale|closed|all)? ?threads$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        state = (
+            str(state_match.group("state")).lower()
+            if state_match is not None and state_match.group("state")
+            else "open"
+        )
+        return ActionProposal(
+            action_id="explicit-thread-list",
+            tool_name=ToolName("thread.list"),
+            arguments={"state": state},
+            reasoning="Execute the user's explicit thread-list request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    thread_inspect_match = re.match(
+        r"^(?:inspect|show)\s+(?:thread\s+)(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if thread_inspect_match is not None:
+        return ActionProposal(
+            action_id="explicit-thread-inspect",
+            tool_name=ToolName("thread.inspect"),
+            arguments={"thread_id": thread_inspect_match.group("thread_id").strip()},
+            reasoning="Execute the user's explicit thread-inspect request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    thread_resume_match = re.match(
+        r"^(?:resume|reopen)\s+(?:thread\s+)(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if thread_resume_match is not None:
+        return ActionProposal(
+            action_id="explicit-thread-resume",
+            tool_name=ToolName("thread.resume"),
+            arguments={"thread_id": thread_resume_match.group("thread_id").strip()},
+            reasoning="Execute the user's explicit thread-resume request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    thread_close_match = re.match(
+        r"^(?:close|resolve)\s+(?:thread\s+)(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)"
+        r"(?:\s+(?:because|reason:)\s+(?P<reason>.+))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if thread_close_match is not None:
+        arguments = {"thread_id": thread_close_match.group("thread_id").strip()}
+        reason = str(thread_close_match.group("reason") or "").strip()
+        if reason:
+            arguments["reason"] = reason
+        return ActionProposal(
+            action_id="explicit-thread-close",
+            tool_name=ToolName("thread.close"),
+            arguments=arguments,
+            reasoning="Execute the user's explicit thread-close request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    thread_why_match = re.match(
+        r"^why\s+(?:was\s+)?thread\s+(?P<thread_id>[A-Za-z0-9][A-Za-z0-9_-]+)"
+        r"(?:\s+(?:selected|not selected))?\s+(?:for|against)\s+(?P<query>.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if thread_why_match is not None:
+        query = thread_why_match.group("query").strip()
+        if query:
+            return ActionProposal(
+                action_id="explicit-thread-why",
+                tool_name=ToolName("thread.why"),
+                arguments={
+                    "thread_id": thread_why_match.group("thread_id").strip(),
+                    "query": query,
+                },
+                reasoning="Execute the user's explicit thread-selection explanation request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
     note_match = re.match(r"^(?:add|save) (?:a )?note:\s*(.+)$", normalized, flags=re.IGNORECASE)
     if note_match is None:
         note_match = re.match(r"^remember(?: that)?\s+(.+)$", normalized, flags=re.IGNORECASE)

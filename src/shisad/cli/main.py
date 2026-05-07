@@ -89,6 +89,10 @@ from shisad.core.api.schema import (
     SkillReviewResult,
     SkillRevokeResult,
     TaskListResult,
+    ThreadInspectResult,
+    ThreadListResult,
+    ThreadMutationResult,
+    ThreadWhyResult,
     TodoDeleteResult,
     TodoExportResult,
     TodoGetResult,
@@ -261,6 +265,21 @@ def _memory_list_row(item: BaseModel) -> str:
         f"{entry_id} {entry_type} {key} "
         f"v={version if version is not None else '-'} "
         f"state={workflow_state} status={status} value={_memory_value_preview(value)}"
+    )
+
+
+def _thread_list_row(item: dict[str, Any]) -> str:
+    thread_id = str(item.get("id") or item.get("thread_id") or "")
+    title = str(item.get("title") or item.get("key") or "")
+    workflow_state = str(item.get("workflow_state") or "-")
+    scope = str(item.get("scope") or "-")
+    trust = str(item.get("channel_trust") or "-")
+    confidence = item.get("confidence")
+    last_relevant = str(item.get("last_relevant_at") or "-")
+    return (
+        f"{thread_id} state={workflow_state} scope={scope} trust={trust} "
+        f"confidence={confidence if confidence is not None else '-'} "
+        f"last={last_relevant} title={title}"
     )
 
 
@@ -3334,6 +3353,171 @@ def memory_export(fmt: str, user_id: str, workspace_id: str, include_unowned: bo
         response_model=MemoryExportResult,
     )
     click.echo(str(result.data))
+
+
+@cli.group()
+def thread() -> None:
+    """Open-thread inspection and workflow controls."""
+
+
+@thread.command("list")
+@click.option("--limit", default=20, help="Maximum threads.")
+@click.option(
+    "--state",
+    default="open",
+    type=click.Choice(["open", "active", "waiting", "blocked", "stale", "closed", "all"]),
+    show_default=True,
+    help="Thread workflow-state filter.",
+)
+@click.option("--user", "user_id", default=None, help="Owner user ID.")
+@click.option("--workspace", "workspace_id", default=None, help="Owner workspace ID.")
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the full response as JSON.")
+def thread_list(
+    limit: int,
+    state: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    include_unowned: bool,
+    as_json: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {"limit": limit, "state": state}
+    payload.update(
+        _required_owner_scope_payload_from_flags_or_env(
+            user_id,
+            workspace_id,
+            include_unowned=include_unowned,
+        )
+    )
+    result = rpc_call(config, "thread.list", payload, response_model=ThreadListResult)
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    for item in result.threads:
+        click.echo(_thread_list_row(item))
+
+
+@thread.command("inspect")
+@click.argument("thread_id")
+@click.option("--user", "user_id", default=None, help="Owner user ID.")
+@click.option("--workspace", "workspace_id", default=None, help="Owner workspace ID.")
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
+def thread_inspect(
+    thread_id: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    include_unowned: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {"thread_id": thread_id}
+    payload.update(
+        _required_owner_scope_payload_from_flags_or_env(
+            user_id,
+            workspace_id,
+            include_unowned=include_unowned,
+        )
+    )
+    result = rpc_call(config, "thread.inspect", payload, response_model=ThreadInspectResult)
+    click.echo(_dump_model(result))
+
+
+@thread.command("resume")
+@click.argument("thread_id")
+@click.option("--user", "user_id", default=None, help="Owner user ID.")
+@click.option("--workspace", "workspace_id", default=None, help="Owner workspace ID.")
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
+def thread_resume(
+    thread_id: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    include_unowned: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {"thread_id": thread_id}
+    payload.update(
+        _required_owner_scope_payload_from_flags_or_env(
+            user_id,
+            workspace_id,
+            include_unowned=include_unowned,
+        )
+    )
+    result = rpc_call(config, "thread.resume", payload, response_model=ThreadMutationResult)
+    click.echo(_dump_model(result))
+
+
+@thread.command("close")
+@click.argument("thread_id")
+@click.option("--reason", default="", help="Reason for closing the thread.")
+@click.option("--user", "user_id", default=None, help="Owner user ID.")
+@click.option("--workspace", "workspace_id", default=None, help="Owner workspace ID.")
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
+def thread_close(
+    thread_id: str,
+    reason: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    include_unowned: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {"thread_id": thread_id, "reason": reason}
+    payload.update(
+        _required_owner_scope_payload_from_flags_or_env(
+            user_id,
+            workspace_id,
+            include_unowned=include_unowned,
+        )
+    )
+    result = rpc_call(config, "thread.close", payload, response_model=ThreadMutationResult)
+    click.echo(_dump_model(result))
+
+
+@thread.command("why")
+@click.argument("query")
+@click.option("--thread-id", default="", help="Optional thread id to explain.")
+@click.option("--user", "user_id", default=None, help="Owner user ID.")
+@click.option("--workspace", "workspace_id", default=None, help="Owner workspace ID.")
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
+def thread_why(
+    query: str,
+    thread_id: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    include_unowned: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {"query": query}
+    if thread_id.strip():
+        payload["thread_id"] = thread_id.strip()
+    payload.update(
+        _required_owner_scope_payload_from_flags_or_env(
+            user_id,
+            workspace_id,
+            include_unowned=include_unowned,
+        )
+    )
+    result = rpc_call(config, "thread.why", payload, response_model=ThreadWhyResult)
+    click.echo(_dump_model(result))
 
 
 @cli.group()

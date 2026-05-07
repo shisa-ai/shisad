@@ -326,7 +326,7 @@ class ActionMonitorVoter:
     def _command_stop_pattern() -> str:
         command_verbs = (
             r"read|list|show|search|find|fetch|open|create|add|save|remember|"
-            r"mark|complete|finish|remind"
+            r"mark|complete|finish|resume|reopen|close|resolve|remind"
         )
         return rf"(?=$|[.;,]|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
 
@@ -409,6 +409,29 @@ class ActionMonitorVoter:
                 action_arguments=action_arguments,
                 action_argument_digests=argument_digests,
                 field="selector",
+            )
+        if tool_name == "thread.resume":
+            return cls._any_expected_matches(
+                normalized_text=normalized,
+                patterns=(
+                    rf"{boundary}(?:resume|reopen|continue)\s+(?:the\s+)?"
+                    rf"(?:thread\s+)?(.+?){stop}",
+                ),
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="thread_id",
+            )
+        if tool_name == "thread.close":
+            return cls._any_expected_matches(
+                normalized_text=normalized,
+                patterns=(
+                    rf"{boundary}(?:close|resolve)\s+(?:the\s+)?(?:thread\s+)?"
+                    rf"([A-Za-z0-9][A-Za-z0-9_-]+)"
+                    rf"(?:\s+(?:because|reason:)\s+.+?)?{stop}",
+                ),
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="thread_id",
             )
         if tool_name == "reminder.create":
             pattern = rf"{boundary}remind me(?:\s+to)?\s+(.+?)\s+((?:in|at)\s+.+?){stop}"

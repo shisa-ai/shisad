@@ -1893,6 +1893,84 @@ def _build_tool_registry(
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("thread.list"),
+            description=(
+                "List the user's open-thread records. Use stale, closed, or all only when "
+                "the user asks for those states explicitly."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="state",
+                    type="string",
+                    required=False,
+                    enum=["open", "active", "waiting", "blocked", "stale", "closed", "all"],
+                ),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("thread.inspect"),
+            description=(
+                "Inspect a single thread packet by id, including workflow state, trust, "
+                "rationale fields, and missing evidence."
+            ),
+            parameters=[
+                ToolParameter(name="thread_id", type="string", required=True),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("thread.resume"),
+            description=(
+                "Explicitly reopen or mark a selected thread active by id. This changes "
+                "only workflow metadata and does not authorize side effects."
+            ),
+            parameters=[
+                ToolParameter(name="thread_id", type="string", required=True),
+            ],
+            capabilities_required=[Capability.MEMORY_WRITE],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("thread.close"),
+            description=(
+                "Close a selected thread by id when the user says the thread is resolved "
+                "or should stop surfacing by default."
+            ),
+            parameters=[
+                ToolParameter(name="thread_id", type="string", required=True),
+                ToolParameter(name="reason", type="string", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_WRITE],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("thread.why"),
+            description=(
+                "Explain why a thread was selected or not selected for a continuation "
+                "query using the same owner-scoped selector as thread resume."
+            ),
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="thread_id", type="string", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("reminder.create"),
             description=(
                 "Schedule a one-time reminder. Use this when the user asks to remind them later. "

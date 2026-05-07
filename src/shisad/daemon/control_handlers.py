@@ -169,6 +169,14 @@ from shisad.core.api.schema import (
     TaskPendingConfirmationsResult,
     TaskTriggerEventParams,
     TaskTriggerEventResult,
+    ThreadCloseParams,
+    ThreadEntryParams,
+    ThreadInspectResult,
+    ThreadListParams,
+    ThreadListResult,
+    ThreadMutationResult,
+    ThreadWhyParams,
+    ThreadWhyResult,
     TodoCompleteParams,
     TodoCompleteResult,
     TodoCreateParams,
@@ -577,6 +585,31 @@ class DaemonControlHandlers:
         self, params: MemoryRotateKeyParams, ctx: RequestContext
     ) -> MemoryRotateKeyResult:
         return await self._memory.handle_memory_rotate_key(params, ctx)
+
+    async def handle_thread_list(
+        self, params: ThreadListParams, ctx: RequestContext
+    ) -> ThreadListResult:
+        return await self._memory.handle_thread_list(params, ctx)
+
+    async def handle_thread_inspect(
+        self, params: ThreadEntryParams, ctx: RequestContext
+    ) -> ThreadInspectResult:
+        return await self._memory.handle_thread_inspect(params, ctx)
+
+    async def handle_thread_resume(
+        self, params: ThreadEntryParams, ctx: RequestContext
+    ) -> ThreadMutationResult:
+        return await self._memory.handle_thread_resume(params, ctx)
+
+    async def handle_thread_close(
+        self, params: ThreadCloseParams, ctx: RequestContext
+    ) -> ThreadMutationResult:
+        return await self._memory.handle_thread_close(params, ctx)
+
+    async def handle_thread_why(
+        self, params: ThreadWhyParams, ctx: RequestContext
+    ) -> ThreadWhyResult:
+        return await self._memory.handle_thread_why(params, ctx)
 
     async def handle_note_create(
         self, params: NoteCreateParams, ctx: RequestContext
