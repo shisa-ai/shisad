@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -89,6 +90,24 @@ def scan_procedure_candidate_artifact(value: Any) -> dict[str, Any]:
         name for name, pattern in _PROCEDURE_SCAN_PATTERNS.items() if pattern.search(text)
     )
     return {"verdict": "fail" if findings else "pass", "findings": findings}
+
+
+def build_procedure_trace_pool_hash(artifact: Any, trace_ids: list[str]) -> str:
+    """Bind procedure-candidate provenance to the proposed artifact bytes."""
+
+    normalized_trace_ids = [str(item).strip() for item in trace_ids if str(item).strip()]
+    payload = {
+        "artifact": _render_procedural_content(artifact),
+        "trace_ids": normalized_trace_ids,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _procedural_name(entry: MemoryEntry) -> str:

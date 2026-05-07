@@ -35,6 +35,7 @@ from shisad.memory.surfaces import (
     build_identity_pack,
     build_procedural_artifact,
     build_procedural_summary,
+    build_procedure_trace_pool_hash,
     build_thread_resume_pack,
     entry_passes_context_filters,
     scan_procedure_candidate_artifact,
@@ -913,6 +914,15 @@ class MemoryManager:
                 kind="reject",
                 reason="procedure_candidate_trace_provenance_required",
             )
+        expected_trace_pool_hash = build_procedure_trace_pool_hash(
+            artifact,
+            normalized_trace_ids,
+        )
+        if normalized_trace_pool_hash != expected_trace_pool_hash:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_trace_provenance_unverified",
+            )
         scanner = self._procedure_candidate_scanner_packet(
             artifact,
             scanner_verdict=scanner_verdict,
@@ -920,12 +930,24 @@ class MemoryManager:
         )
         if scanner is None:
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_scanner_invalid")
+        generated_diff_preview = self._procedure_candidate_diff_preview(
+            artifact=artifact,
+            target_entry_type=normalized_target_type,
+            target_key=normalized_target_key,
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if not generated_diff_preview:
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_diff_required")
         candidate_value = {
             "artifact": artifact,
             "target_entry_type": normalized_target_type,
             "target_key": normalized_target_key,
             "trace_ids": normalized_trace_ids,
             "trace_pool_hash": normalized_trace_pool_hash,
+            "trace_pool_hash_verified": True,
             "scanner": scanner,
             "review": {
                 "status": "pending",
@@ -939,7 +961,8 @@ class MemoryManager:
                 "promoted_entry_id": "",
                 "rollback_entry_id": "",
             },
-            "diff_preview": str(diff_preview or ""),
+            "diff_preview": generated_diff_preview,
+            "producer_diff_preview": str(diff_preview or ""),
         }
         decision = self.write_with_provenance(
             entry_type="procedure_experience",
@@ -972,6 +995,7 @@ class MemoryManager:
                 "target_key": normalized_target_key,
                 "trace_ids": normalized_trace_ids,
                 "trace_pool_hash": normalized_trace_pool_hash,
+                "trace_pool_hash_verified": True,
                 "scanner": scanner,
             },
         )
@@ -1021,10 +1045,12 @@ class MemoryManager:
                 "artifact": packet["artifact"],
                 "trace_ids": packet["trace_ids"],
                 "trace_pool_hash": packet["trace_pool_hash"],
+                "trace_pool_hash_verified": packet["trace_pool_hash_verified"],
                 "scanner": packet["scanner"],
                 "review": packet["review"],
                 "promotion": packet["promotion"],
                 "diff_preview": packet["diff_preview"],
+                "producer_diff_preview": packet["producer_diff_preview"],
             },
         }
 
@@ -1124,6 +1150,15 @@ class MemoryManager:
                 kind="reject",
                 reason="procedure_candidate_trace_provenance_required",
             )
+        expected_trace_pool_hash = build_procedure_trace_pool_hash(
+            packet["artifact"],
+            packet["trace_ids"],
+        )
+        if packet["trace_pool_hash"] != expected_trace_pool_hash:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_trace_provenance_unverified",
+            )
         if scope != "user":
             return MemoryWriteDecision(
                 kind="reject",
@@ -1145,6 +1180,17 @@ class MemoryManager:
             )
         target_entry_type = str(packet["target_entry_type"])
         target_key = str(packet["target_key"])
+        expected_diff_preview = self._procedure_candidate_diff_preview(
+            artifact=packet["artifact"],
+            target_entry_type=target_entry_type,
+            target_key=target_key,
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if not packet["diff_preview"] or packet["diff_preview"] != expected_diff_preview:
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_diff_stale")
         prior_entry = self._find_latest_active_procedural_by_target(
             target_entry_type=target_entry_type,
             target_key=target_key,
@@ -2641,6 +2687,7 @@ class MemoryManager:
             "target_key": target_key,
             "trace_ids": [str(item).strip() for item in trace_ids if str(item).strip()],
             "trace_pool_hash": str(value.get("trace_pool_hash", "")).strip(),
+            "trace_pool_hash_verified": bool(value.get("trace_pool_hash_verified", False)),
             "scanner": {
                 "verdict": str(scanner.get("verdict", "")).strip().lower(),
                 "findings": [
@@ -2664,11 +2711,57 @@ class MemoryManager:
                 "rollback_entry_id": str(promotion.get("rollback_entry_id", "")).strip(),
             },
             "diff_preview": str(value.get("diff_preview", "")),
+            "producer_diff_preview": str(value.get("producer_diff_preview", "")),
         }
 
     @staticmethod
     def _procedural_sort_key(entry: MemoryEntry) -> tuple[int, datetime, str]:
         return (entry.version, entry.created_at, entry.id)
+
+    @staticmethod
+    def _procedure_artifact_content(artifact: Any) -> str:
+        if isinstance(artifact, bytes):
+            return artifact.decode("utf-8", errors="replace")
+        if isinstance(artifact, str):
+            return artifact
+        return json.dumps(artifact, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+
+    def _procedure_candidate_diff_preview(
+        self,
+        *,
+        artifact: Any,
+        target_entry_type: str,
+        target_key: str,
+        scope: str,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool,
+    ) -> str:
+        prior_entry = self._find_latest_active_procedural_by_target(
+            target_entry_type=target_entry_type,
+            target_key=target_key,
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if prior_entry is None:
+            prior_lines: list[str] = []
+            fromfile = "/dev/null"
+        else:
+            prior_lines = build_procedural_artifact(prior_entry).content.splitlines()
+            fromfile = prior_entry.id
+        current_lines = self._procedure_artifact_content(artifact).splitlines()
+        diff_lines = list(
+            difflib.unified_diff(
+                prior_lines,
+                current_lines,
+                fromfile=fromfile,
+                tofile=str(target_key).strip() or "candidate",
+                lineterm="",
+            )
+        )
+        return "\n".join(diff_lines[:80]) if diff_lines else ""
 
     @staticmethod
     def _session_scope_binding(source_id: str) -> str:
@@ -2814,7 +2907,12 @@ class MemoryManager:
         owner_workspace_id = self._normalize_owner_value(workspace_id)
         if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
             return None
+        include_legacy_unowned = (
+            include_unowned and owner_user_id is not None and owner_workspace_id is not None
+        )
         latest: MemoryEntry | None = None
+        latest_owned: MemoryEntry | None = None
+        latest_unowned: MemoryEntry | None = None
         for candidate in self._entries.values():
             if (
                 candidate.entry_type != normalized_target_type
@@ -2834,10 +2932,26 @@ class MemoryManager:
             ):
                 continue
             refreshed = self._refresh_ttl(candidate)
+            if include_legacy_unowned:
+                candidate_user_id = self._normalize_owner_value(refreshed.user_id)
+                candidate_workspace_id = self._normalize_owner_value(refreshed.workspace_id)
+                candidate_unowned = candidate_user_id is None and candidate_workspace_id is None
+                if candidate_unowned:
+                    if latest_unowned is None or self._procedural_sort_key(
+                        refreshed
+                    ) > self._procedural_sort_key(latest_unowned):
+                        latest_unowned = refreshed
+                elif latest_owned is None or self._procedural_sort_key(
+                    refreshed
+                ) > self._procedural_sort_key(latest_owned):
+                    latest_owned = refreshed
+                continue
             if latest is None or self._procedural_sort_key(refreshed) > self._procedural_sort_key(
                 latest
             ):
                 latest = refreshed
+        if include_legacy_unowned:
+            return latest_owned or latest_unowned
         return latest
 
     def _find_active_procedural_predecessor(

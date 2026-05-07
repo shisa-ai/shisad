@@ -12,6 +12,7 @@ from .procedural import (
     ProceduralInvocation,
     build_procedural_artifact,
     build_procedural_summary,
+    build_procedure_trace_pool_hash,
     scan_procedure_candidate_artifact,
 )
 from .recall import (
@@ -43,6 +44,7 @@ __all__ = [
     "build_identity_pack",
     "build_procedural_artifact",
     "build_procedural_summary",
+    "build_procedure_trace_pool_hash",
     "build_recall_pack",
     "build_thread_resume_pack",
     "entry_passes_context_filters",
