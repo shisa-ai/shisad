@@ -54,7 +54,7 @@ _ALLOWED_WORKFLOW_STATE_TRANSITIONS: dict[str, set[str]] = {
     "waiting": {"active", "blocked", "stale", "closed"},
     "blocked": {"active", "waiting", "stale", "closed"},
     "stale": {"active", "closed"},
-    "closed": {"active"},
+    "closed": set(),
 }
 
 
@@ -1722,6 +1722,7 @@ class MemoryManager:
         workspace_id: str | None = None,
         include_unowned: bool = False,
         reason: str = "",
+        allow_closed_reopen: bool = False,
     ) -> bool:
         owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
         owner_user_id = self._normalize_owner_value(user_id)
@@ -1744,7 +1745,17 @@ class MemoryManager:
         if previous_state == workflow_state:
             return True
         allowed_transitions = _ALLOWED_WORKFLOW_STATE_TRANSITIONS.get(str(previous_state), set())
-        if previous_state is not None and workflow_state not in allowed_transitions:
+        thread_reopen_allowed = (
+            allow_closed_reopen
+            and entry.entry_type == "open_thread"
+            and previous_state == "closed"
+            and workflow_state == "active"
+        )
+        if (
+            previous_state is not None
+            and workflow_state not in allowed_transitions
+            and not thread_reopen_allowed
+        ):
             raise ValueError(
                 f"invalid_workflow_transition: {previous_state or 'none'} -> {workflow_state}"
             )

@@ -322,7 +322,7 @@ class MemoryImplMixin(HandlerMixinBase):
 
     @staticmethod
     def _thread_summary_payload(entry: MemoryEntry) -> dict[str, Any]:
-        channel_binding = entry.source_id if str(entry.scope) == "channel" else ""
+        channel_binding = MemoryImplMixin._thread_value_text(entry.value, "channel_id")
         return {
             "id": entry.id,
             "key": entry.key,
@@ -375,6 +375,23 @@ class MemoryImplMixin(HandlerMixinBase):
         if state == "open":
             return state, set(_THREAD_OPEN_STATES)
         return state, {state}
+
+    @staticmethod
+    def _optional_string_param(params: Mapping[str, Any], key: str) -> str | None:
+        value = params.get(key)
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @staticmethod
+    def _string_set_param(params: Mapping[str, Any], key: str) -> set[str] | None:
+        raw = params.get(key)
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            return set()
+        return {str(item).strip() for item in raw if str(item).strip()}
 
     def _get_visible_thread(
         self,
@@ -1086,6 +1103,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 workspace_id=workspace_id,
                 include_unowned=include_unowned,
                 reason=reason,
+                allow_closed_reopen=workflow_state == "active",
             )
         except ValueError as exc:
             return {
@@ -1138,9 +1156,20 @@ class MemoryImplMixin(HandlerMixinBase):
             if thread_id
             else None
         )
+        channel_binding = self._optional_string_param(params, "channel_binding")
+        allowed_channel_trusts = self._string_set_param(params, "allowed_channel_trusts")
+        if channel_binding is None and allowed_channel_trusts is None:
+            allowed_channel_trusts = {"command", "owner_observed"}
         pack = self._memory_manager.compile_thread_resume(
             query,
             max_tokens=max(1, int(params.get("max_tokens", 700))),
+            scope_filter=self._scope_filter_from_params(
+                params,
+                default=frozenset({"session", "project", "user", "channel"}),
+            ),
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=self._optional_string_param(params, "session_scope_id"),
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,

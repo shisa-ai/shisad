@@ -131,6 +131,7 @@ from shisad.governance.merge import (
     ToolExecutionPolicy,
     normalize_patch,
 )
+from shisad.memory.context_defaults import resolve_active_attention_defaults
 from shisad.memory.ingress import IngressContext
 from shisad.memory.remap import digest_memory_value
 from shisad.memory.summarizer import ConversationSummarizer
@@ -669,6 +670,27 @@ def _resolve_session_delivery_target(
     return {"channel": "session", "recipient": str(session_id)}
 
 
+def _thread_context_filter_payload(context: StructuredToolContext) -> dict[str, Any]:
+    payload: dict[str, Any] = {"session_scope_id": str(context.session_id)}
+    raw_target = _resolve_session_delivery_target(context.session, session_id=context.session_id)
+    try:
+        delivery_target = DeliveryTarget.model_validate(raw_target)
+    except ValidationError:
+        delivery_target = None
+    defaults = resolve_active_attention_defaults(
+        channel=str(context.session.channel),
+        delivery_target=delivery_target,
+    )
+    if defaults is None:
+        return payload
+    payload["scope_filter"] = sorted(defaults.scope_filter)
+    if defaults.allowed_channel_trusts is not None:
+        payload["allowed_channel_trusts"] = sorted(defaults.allowed_channel_trusts)
+    if defaults.channel_binding is not None:
+        payload["channel_binding"] = defaults.channel_binding
+    return payload
+
+
 def _parse_reminder_delay_seconds(when: str, *, now: datetime) -> int:
     normalized = when.strip()
     if not normalized:
@@ -952,6 +974,7 @@ async def _structured_thread_why(
         {
             "query": query,
             "thread_id": _argument_string(arguments, "thread_id"),
+            **_thread_context_filter_payload(context),
             "user_id": str(context.user_id),
             "workspace_id": str(context.workspace_id),
         }

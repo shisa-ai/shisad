@@ -699,6 +699,32 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
         user_id="user-2",
         workspace_id="ws-2",
     )
+    session_scoped_decision = harness._memory_manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:session-review",
+        value={
+            "title": "Session review",
+            "summary": "Session-scoped thread should be explainable in this session.",
+            "evidence_refs": ["ev-session-review"],
+        },
+        source=MemorySource(
+            origin="user",
+            source_id=f"{harness.session_id}:thread:session-review",
+            extraction_method="test",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id=f"{harness.session_id}:thread:session-review",
+        scope="session",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        workflow_state="active",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    assert session_scoped_decision.kind == "allow"
+    assert session_scoped_decision.entry is not None
 
     listed = await HandlerImplementation._execute_approved_action(
         harness,  # type: ignore[arg-type]
@@ -769,6 +795,24 @@ async def test_m2_execute_approved_action_thread_controls_scope_owner(
     why_payload = json.loads(why.tool_output.content)
     assert why_payload["selected"] is False
     assert hidden.id not in why_payload["selection"]["candidate_ids"]
+
+    session_why = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("thread.why"),
+        arguments={
+            "query": "Please resume the Session review thread.",
+            "thread_id": session_scoped_decision.entry.id,
+        },
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    assert session_why.success is True
+    assert session_why.tool_output is not None
+    session_why_payload = json.loads(session_why.tool_output.content)
+    assert session_why_payload["selected"] is True
+    assert session_why_payload["selection"]["selected_id"] == session_scoped_decision.entry.id
 
 
 @pytest.mark.asyncio

@@ -655,6 +655,10 @@ class ThreadWhyParams(_StrictParams):
         default=None,
         validation_alias=AliasChoices("thread_id", "entry_id"),
     )
+    scope_filter: list[MemoryScope] | None = None
+    allowed_channel_trusts: list[str] | None = None
+    channel_binding: str | None = None
+    session_scope_id: str | None = None
     max_tokens: int = 700
     user_id: str | None = None
     workspace_id: str | None = None
@@ -667,6 +671,14 @@ class ThreadWhyParams(_StrictParams):
             raise ValueError("query is required")
         if self.thread_id is not None:
             self.thread_id = self.thread_id.strip() or None
+        if self.allowed_channel_trusts is not None:
+            self.allowed_channel_trusts = [
+                item.strip() for item in self.allowed_channel_trusts if item.strip()
+            ]
+        if self.channel_binding is not None:
+            self.channel_binding = self.channel_binding.strip() or None
+        if self.session_scope_id is not None:
+            self.session_scope_id = self.session_scope_id.strip() or None
         self.max_tokens = max(1, int(self.max_tokens))
         return self
 
