@@ -487,17 +487,29 @@ class TestApiSchemaValidation:
 
     def test_m4_memory_promote_skill_params_require_handle_and_entry_id(self) -> None:
         params = MemoryPromoteSkillParams.model_validate(
-            {"ingress_context": "handle-1", "entry_id": "skill-1"}
+            {
+                "ingress_context": "handle-1",
+                "entry_id": "skill-1",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+            }
         )
 
         assert params.ingress_context == "handle-1"
         assert params.entry_id == "skill-1"
+        assert params.user_id == "alice"
+        assert params.workspace_id == "ws1"
 
         with pytest.raises(ValidationError):
             MemoryPromoteSkillParams.model_validate({"entry_id": "skill-1"})
 
         with pytest.raises(ValidationError):
             MemoryPromoteSkillParams.model_validate({"ingress_context": "handle-1"})
+
+        with pytest.raises(ValidationError):
+            MemoryPromoteSkillParams.model_validate(
+                {"ingress_context": "handle-1", "entry_id": "skill-1"}
+            )
 
     def test_m1_memory_write_params_require_ingress_context(self) -> None:
         with pytest.raises(ValidationError):
@@ -643,6 +655,17 @@ class TestApiSchemaValidation:
             is True
         )
         assert (
+            MemoryPromoteSkillParams.model_validate(
+                {
+                    "ingress_context": "handle-1",
+                    "entry_id": "skill-candidate-1",
+                    "include_unowned": True,
+                    **owner_scope,
+                }
+            ).include_unowned
+            is True
+        )
+        assert (
             MemoryRejectIdentityCandidateParams.model_validate(
                 {
                     "ingress_context": "handle-1",
@@ -752,6 +775,10 @@ class TestApiSchemaValidation:
             (
                 MemoryPromoteIdentityCandidateParams,
                 {"ingress_context": "handle-1", "candidate_id": "candidate-1"},
+            ),
+            (
+                MemoryPromoteSkillParams,
+                {"ingress_context": "handle-1", "entry_id": "skill-candidate-1"},
             ),
             (
                 MemoryRejectIdentityCandidateParams,

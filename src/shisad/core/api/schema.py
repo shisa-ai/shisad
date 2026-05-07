@@ -474,6 +474,9 @@ class MemoryPromoteIdentityCandidateParams(_StrictParams):
 class MemoryPromoteSkillParams(_StrictParams):
     ingress_context: str
     entry_id: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
     def _validate_entry_shape(self) -> MemoryPromoteSkillParams:
@@ -481,6 +484,7 @@ class MemoryPromoteSkillParams(_StrictParams):
             raise ValueError("ingress_context is required")
         if not self.entry_id.strip():
             raise ValueError("entry_id is required")
+        _require_complete_owner_scope(self)
         return self
 
 

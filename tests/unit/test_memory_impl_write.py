@@ -294,6 +294,8 @@ async def test_memory_promote_skill_promotes_pending_review_candidate_from_handl
         {
             "ingress_context": context.handle_id,
             "entry_id": candidate.entry.id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -302,6 +304,58 @@ async def test_memory_promote_skill_promotes_pending_review_candidate_from_handl
     assert entry is not None
     assert entry["supersedes"] == candidate.entry.id
     assert entry["invocation_eligible"] is True
+    assert entry["user_id"] == "alice"
+    assert entry["workspace_id"] == "ws1"
+
+
+@pytest.mark.asyncio
+async def test_m7_memory_promote_skill_rejects_cross_owner_raw_id(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-cross-owner-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-cross-owner-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert candidate.entry is not None
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-promote-cross-owner-1",
+        content="Release close checklist\nCandidate version",
+    )
+
+    result = await harness.do_memory_promote_skill(
+        {
+            "ingress_context": context.handle_id,
+            "entry_id": candidate.entry.id,
+            "user_id": "bob",
+            "workspace_id": "ws1",
+        }
+    )
+
+    assert result == {
+        "kind": "reject",
+        "reason": "skill_not_found",
+        "entry": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -326,6 +380,8 @@ async def test_memory_promote_skill_derives_tool_install_context_from_tool_outpu
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     assert candidate.entry is not None
     tool_context = harness._memory_ingress_registry.mint(
@@ -341,6 +397,8 @@ async def test_memory_promote_skill_derives_tool_install_context_from_tool_outpu
         {
             "ingress_context": tool_context.handle_id,
             "entry_id": candidate.entry.id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
             "_control_api_authenticated_write": True,
         }
     )
@@ -352,6 +410,8 @@ async def test_memory_promote_skill_derives_tool_install_context_from_tool_outpu
     assert entry["channel_trust"] == "tool_passed"
     assert entry["confirmation_status"] == "pep_approved"
     assert entry["scope"] == "user"
+    assert entry["user_id"] == "alice"
+    assert entry["workspace_id"] == "ws1"
     assert entry["invocation_eligible"] is True
     assert entry["ingress_handle_id"] != tool_context.handle_id
     promoted = harness._memory_manager.get_entry(str(entry["id"]))
@@ -384,6 +444,8 @@ async def test_memory_promote_identity_candidate_rejects_quarantined_candidate_b
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     assert candidate.entry is not None
     assert harness._memory_manager.quarantine(candidate.entry.id, reason="test_quarantine")
@@ -500,6 +562,8 @@ async def test_memory_promote_skill_rejects_quarantined_candidate_before_binding
         {
             "ingress_context": context.handle_id,
             "entry_id": candidate.entry.id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 

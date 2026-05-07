@@ -4115,6 +4115,8 @@ async def test_contract_skill_command_invokes_without_confirmation_and_emits_aud
             confidence=0.95,
             confirmation_satisfied=True,
             invocation_eligible=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert decision.entry is not None
         seeded["skill_id"] = decision.entry.id
@@ -4378,6 +4380,8 @@ async def test_contract_pending_review_skill_requires_promotion_before_invocatio
             scope="user",
             confidence=0.62,
             confirmation_satisfied=True,
+            user_id="alice",
+            workspace_id="ws1",
         )
         assert current.entry is not None
         assert candidate.entry is not None
@@ -4413,6 +4417,8 @@ async def test_contract_pending_review_skill_requires_promotion_before_invocatio
             {
                 "ingress_context": minted["ingress_context"],
                 "entry_id": candidate_id,
+                "user_id": "alice",
+                "workspace_id": "ws1",
             },
         )
         assert promoted.get("kind") == "allow"
@@ -4516,6 +4522,8 @@ async def test_contract_quarantined_promotion_rpcs_fail_closed_without_binding_o
             {
                 "ingress_context": minted["ingress_context"],
                 "entry_id": seeded["skill_id"],
+                "user_id": "alice",
+                "workspace_id": "ws1",
             },
         )
         assert rejected_skill.get("kind") == "reject"

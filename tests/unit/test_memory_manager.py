@@ -1428,6 +1428,8 @@ def test_m4_invoke_skill_records_citation_audit_and_event_trail(tmp_path: Path) 
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert decision.entry is not None
@@ -1560,6 +1562,8 @@ def test_m4_list_invocable_skills_filters_by_query_and_exposes_preview_metadata(
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     hidden = manager.write_with_provenance(
         entry_type="skill",
@@ -1613,6 +1617,8 @@ def test_m4_list_invocable_skills_hides_stale_same_key_entries(tmp_path: Path) -
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     latest = manager.write_with_provenance(
         entry_type="skill",
@@ -1671,6 +1677,8 @@ def test_m4_describe_skill_can_preview_pending_review_candidate_and_diff(tmp_pat
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert current.entry is not None
@@ -1707,6 +1715,8 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
         confidence=0.95,
         confirmation_satisfied=True,
         invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
     candidate = manager.write_with_provenance(
         entry_type="skill",
@@ -1724,6 +1734,8 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert current.entry is not None
@@ -1738,11 +1750,15 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
         scope="user",
         ingress_handle_id="handle-promote-2",
         content_digest="digest-promote-2",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert decision.kind == "allow"
     assert decision.entry is not None
     assert decision.entry.supersedes == current.entry.id
+    assert decision.entry.user_id == "alice"
+    assert decision.entry.workspace_id == "ws1"
     assert decision.entry.invocation_eligible is True
     assert decision.entry.trust_band == "elevated"
     current_after = manager.get_entry(current.entry.id)
@@ -1768,6 +1784,78 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
     ) in audits
 
 
+def test_m7_promote_to_skill_does_not_supersede_cross_owner_active_skill(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    other_owner_current = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nBob current version",
+        source=MemorySource(origin="user", source_id="bob-skill-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="bob-skill-1",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nAlice candidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="alice-candidate-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="alice-candidate-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert other_owner_current.entry is not None
+    assert candidate.entry is not None
+    decision = manager.promote_to_skill(
+        entry_id=candidate.entry.id,
+        source=MemorySource(
+            origin="user", source_id="turn-promote-alice-1", extraction_method="manual"
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="turn-promote-alice-1",
+        scope="user",
+        ingress_handle_id="handle-promote-alice-1",
+        content_digest="digest-promote-alice-1",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.supersedes == candidate.entry.id
+    assert decision.entry.user_id == "alice"
+    assert decision.entry.workspace_id == "ws1"
+    other_owner_after = manager.get_entry(
+        other_owner_current.entry.id,
+        user_id="bob",
+        workspace_id="ws1",
+    )
+    assert other_owner_after is not None
+    assert other_owner_after.superseded_by is None
+
+
 def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     candidate = manager.write_with_provenance(
@@ -1786,6 +1874,8 @@ def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert candidate.entry is not None
@@ -1799,6 +1889,8 @@ def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
         scope="user",
         ingress_handle_id="handle-promote-3",
         content_digest="digest-promote-3",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert rejected.kind == "reject"
@@ -1823,6 +1915,8 @@ def test_m4_promote_to_skill_accepts_user_scoped_tool_install_triple(tmp_path: P
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert candidate.entry is not None
@@ -1836,6 +1930,8 @@ def test_m4_promote_to_skill_accepts_user_scoped_tool_install_triple(tmp_path: P
         scope="user",
         ingress_handle_id="handle-promote-tool-1",
         content_digest="digest-promote-tool-1",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert decision.kind == "allow"
@@ -1862,6 +1958,8 @@ def test_m4_promote_to_skill_rejects_non_user_scope_install(tmp_path: Path) -> N
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert candidate.entry is not None
@@ -1879,6 +1977,8 @@ def test_m4_promote_to_skill_rejects_non_user_scope_install(tmp_path: Path) -> N
         scope="session",
         ingress_handle_id="handle-promote-tool-2",
         content_digest="digest-promote-tool-2",
+        user_id="alice",
+        workspace_id="ws1",
     )
 
     assert rejected.kind == "reject"

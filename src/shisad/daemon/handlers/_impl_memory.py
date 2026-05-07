@@ -739,9 +739,14 @@ class MemoryImplMixin(HandlerMixinBase):
         if not handle_id:
             raise ValueError("ingress_context is required for memory.promote_to_skill")
         entry_id = str(params.get("entry_id", "")).strip()
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        include_unowned = bool(params.get("include_unowned", False))
         candidate = self._memory_manager.get_entry(
             entry_id,
             include_pending_review=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if candidate is None:
             return {
@@ -768,6 +773,9 @@ class MemoryImplMixin(HandlerMixinBase):
             ingress_handle_id=context.handle_id,
             content_digest=resolved_digest,
             taint_labels=context.taint_labels,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 

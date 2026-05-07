@@ -796,10 +796,16 @@ class MemoryManager:
         ingress_handle_id: str,
         content_digest: str | None,
         taint_labels: list[TaintLabel] | None = None,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool = False,
     ) -> MemoryWriteDecision:
         candidate, reason = self._resolve_procedural_entry(
             entry_id,
             include_pending_review=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if candidate is None:
             return MemoryWriteDecision(kind="reject", reason=reason)
@@ -816,7 +822,12 @@ class MemoryManager:
                 kind="reject",
                 reason="skill_promotion_requires_install_triple",
             )
-        prior_entry = self._find_active_procedural_predecessor(candidate)
+        prior_entry = self._find_active_procedural_predecessor(
+            candidate,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         supersedes_target = prior_entry.id if prior_entry is not None else candidate.id
         decision = self.write_with_provenance(
             entry_type=candidate.entry_type,
@@ -838,6 +849,9 @@ class MemoryManager:
             invocation_eligible=True,
             supersedes=supersedes_target,
             allow_trust_upgrade_without_confirmation=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if decision.kind != "allow" or decision.entry is None:
             return decision
@@ -2057,8 +2071,17 @@ class MemoryManager:
         include_pending_review: bool = False,
         allowed_scopes: set[str] | None = None,
         session_scope_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> tuple[MemoryEntry | None, str]:
-        entry = self.get_entry(skill_id, include_pending_review=include_pending_review)
+        entry = self.get_entry(
+            skill_id,
+            include_pending_review=include_pending_review,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         if entry is None:
             return None, "skill_not_found"
         if entry.entry_type not in PROCEDURAL_ENTRY_TYPES:
@@ -2077,6 +2100,9 @@ class MemoryManager:
                 refreshed,
                 allowed_scopes=allowed_scopes,
                 session_scope_id=session_scope_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                include_unowned=include_unowned,
             )
             if latest_active is not None and latest_active.id != refreshed.id:
                 return None, "skill_not_found"
@@ -2123,8 +2149,16 @@ class MemoryManager:
         *,
         allowed_scopes: set[str] | None = None,
         session_scope_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> MemoryEntry | None:
         group_key = self._procedural_group_key(entry)
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return None
         latest: MemoryEntry | None = None
         for candidate in self._entries.values():
             if (
@@ -2133,6 +2167,13 @@ class MemoryManager:
                 or self._is_quarantined(candidate)
                 or self._is_pending_review(candidate)
                 or candidate.superseded_by is not None
+            ):
+                continue
+            if not self._entry_matches_owner(
+                candidate,
+                user_id=owner_user_id,
+                workspace_id=owner_workspace_id,
+                include_unowned=include_unowned,
             ):
                 continue
             refreshed = self._refresh_ttl(candidate)
@@ -2154,11 +2195,17 @@ class MemoryManager:
         *,
         allowed_scopes: set[str] | None = None,
         session_scope_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> MemoryEntry | None:
         latest = self._find_latest_active_procedural_entry(
             entry,
             allowed_scopes=allowed_scopes,
             session_scope_id=session_scope_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if latest is None or latest.id == entry.id:
             return None
