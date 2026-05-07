@@ -834,12 +834,43 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
         workflow_state="blocked",
         confidence=0.93,
     )
+    placeholder_waiting = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:placeholder-waiting",
+        value={
+            "title": "Placeholder waiting",
+            "summary": "Placeholder cue fields should not count as actionable.",
+            "next_action": [],
+            "deadline_at": False,
+            "external_response_expected": False,
+        },
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.94,
+    )
+    placeholder_blocked = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:placeholder-blocked",
+        value={
+            "title": "Placeholder blocked",
+            "summary": "Empty dependency metadata should not count as actionable.",
+            "blocked_on": {},
+            "due_at": 0,
+        },
+        scope="user",
+        workflow_state="blocked",
+        confidence=0.94,
+    )
 
     pack = manager.compile_active_attention(max_tokens=128, scope_filter={"user"})
     high_metadata = active_attention_entry_metadata(high_priority)
     low_metadata = active_attention_entry_metadata(newer_low_confidence)
     bare_waiting_metadata = active_attention_entry_metadata(bare_waiting)
     bare_blocked_metadata = active_attention_entry_metadata(bare_blocked)
+    placeholder_waiting_metadata = active_attention_entry_metadata(placeholder_waiting)
+    placeholder_blocked_metadata = active_attention_entry_metadata(placeholder_blocked)
 
     assert pack.entries[0].id == high_priority.id
     assert high_metadata["priority"] == "high"
@@ -854,6 +885,10 @@ def test_m3_active_attention_prioritizes_high_confidence_waiting_cues(
     assert bare_waiting_metadata["cues"] == ["waiting"]
     assert bare_blocked_metadata["priority"] == "normal"
     assert bare_blocked_metadata["cues"] == ["blocked"]
+    assert placeholder_waiting_metadata["priority"] == "normal"
+    assert placeholder_waiting_metadata["cues"] == ["waiting"]
+    assert placeholder_blocked_metadata["priority"] == "normal"
+    assert placeholder_blocked_metadata["cues"] == ["blocked"]
 
 
 def test_m3_thread_packet_reports_budget_staleness_and_verification_caveats(

@@ -172,7 +172,7 @@ def _has_text_value(value: Mapping[str, Any], key: str) -> bool:
     raw = value.get(key)
     if isinstance(raw, str):
         return bool(raw.strip())
-    return raw is not None
+    return bool(raw)
 
 
 def entry_passes_context_filters(
