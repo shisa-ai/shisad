@@ -502,6 +502,76 @@ class MemoryPromoteSkillParams(_StrictParams):
         return self
 
 
+class MemoryIngestProcedureCandidateParams(_StrictParams):
+    ingress_context: str
+    key: str
+    artifact: Any
+    target_entry_type: Literal["skill", "runbook", "template"]
+    target_key: str
+    trace_ids: list[str] = Field(default_factory=list)
+    trace_pool_hash: str
+    scanner_verdict: Literal["pass", "fail"] | None = None
+    scanner_findings: list[str] = Field(default_factory=list)
+    diff_preview: str | None = None
+    content_digest: str | None = None
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_candidate_shape(self) -> MemoryIngestProcedureCandidateParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        if not self.key.strip():
+            raise ValueError("key is required")
+        if not self.target_key.strip():
+            raise ValueError("target_key is required")
+        if not [item.strip() for item in self.trace_ids if item.strip()]:
+            raise ValueError("trace_ids are required")
+        if not self.trace_pool_hash.strip():
+            raise ValueError("trace_pool_hash is required")
+        _require_complete_owner_scope(self)
+        return self
+
+
+class MemoryProcedureCandidateParams(_StrictParams):
+    candidate_id: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_candidate_id(self) -> MemoryProcedureCandidateParams:
+        if not self.candidate_id.strip():
+            raise ValueError("candidate_id is required")
+        _require_complete_owner_scope(self)
+        return self
+
+
+class MemoryPromoteProcedureCandidateParams(MemoryProcedureCandidateParams):
+    ingress_context: str
+    reviewer: str | None = None
+    content_digest: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ingress_shape(self) -> MemoryPromoteProcedureCandidateParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        return self
+
+
+class MemoryRejectProcedureCandidateParams(MemoryProcedureCandidateParams):
+    ingress_context: str
+    reviewer: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ingress_shape(self) -> MemoryRejectProcedureCandidateParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        return self
+
+
 class MemoryRejectIdentityCandidateParams(_StrictParams):
     ingress_context: str
     candidate_id: str
@@ -858,6 +928,18 @@ class MemoryIdentityCandidateResult(BaseModel):
     changed: bool
     candidate_id: str
     reason: str = ""
+
+
+class MemoryProcedureCandidateResult(BaseModel):
+    changed: bool
+    candidate_id: str
+    reason: str = ""
+
+
+class MemoryProcedureCandidateReviewResult(BaseModel):
+    found: bool = False
+    reason: str = ""
+    candidate: dict[str, Any] | None = None
 
 
 class MemoryListEntry(BaseModel):

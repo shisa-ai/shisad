@@ -12,6 +12,7 @@ from .procedural import (
     ProceduralInvocation,
     build_procedural_artifact,
     build_procedural_summary,
+    scan_procedure_candidate_artifact,
 )
 from .recall import (
     RecallPack,
@@ -46,5 +47,6 @@ __all__ = [
     "build_thread_resume_pack",
     "entry_passes_context_filters",
     "extract_recall_terms",
+    "scan_procedure_candidate_artifact",
     "verify_recall_sufficiency",
 ]

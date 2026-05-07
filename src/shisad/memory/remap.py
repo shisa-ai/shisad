@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from shisad.memory.trust import SourceOrigin, TrustGateViolation, backfill_legacy_triple
 
 ACTIVE_AGENDA_ENTRY_TYPES = {"open_thread", "scheduled", "recurring", "waiting_on", "inbox_item"}
+PROCEDURE_EXPERIENCE_ENTRY_TYPES = {"procedure_experience"}
 PROCEDURAL_ENTRY_TYPES = {"skill", "runbook", "template"}
 
 _TEMPORAL_MARKERS = re.compile(

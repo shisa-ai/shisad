@@ -16,6 +16,7 @@ from shisad.core.api.schema import (
     MemoryGetResult,
     MemoryIdentityCandidateResult,
     MemoryIngestParams,
+    MemoryIngestProcedureCandidateParams,
     MemoryIngestResult,
     MemoryInvokeSkillParams,
     MemoryInvokeSkillResult,
@@ -25,11 +26,16 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryMintIngressParams,
     MemoryMintIngressResult,
+    MemoryProcedureCandidateParams,
+    MemoryProcedureCandidateResult,
+    MemoryProcedureCandidateReviewResult,
     MemoryPromoteIdentityCandidateParams,
+    MemoryPromoteProcedureCandidateParams,
     MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryReadOriginalResult,
     MemoryRejectIdentityCandidateParams,
+    MemoryRejectProcedureCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
     MemoryReviewQueueParams,
@@ -271,6 +277,62 @@ class MemoryHandlers:
         )
         return MemoryInvokeSkillResult.model_validate(
             await self._impl.do_memory_invoke_skill(payload)
+        )
+
+    async def handle_memory_ingest_procedure_candidate(
+        self,
+        params: MemoryIngestProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryWriteResult.model_validate(
+            await self._impl.do_memory_ingest_procedure_candidate(payload)
+        )
+
+    async def handle_memory_review_procedure_candidate(
+        self,
+        params: MemoryProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryProcedureCandidateReviewResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryProcedureCandidateReviewResult.model_validate(
+            await self._impl.do_memory_review_procedure_candidate(payload)
+        )
+
+    async def handle_memory_reject_procedure_candidate(
+        self,
+        params: MemoryRejectProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryProcedureCandidateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryProcedureCandidateResult.model_validate(
+            await self._impl.do_memory_reject_procedure_candidate(payload)
+        )
+
+    async def handle_memory_promote_procedure_candidate(
+        self,
+        params: MemoryPromoteProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryWriteResult.model_validate(
+            await self._impl.do_memory_promote_procedure_candidate(payload)
         )
 
     async def handle_memory_read_original(

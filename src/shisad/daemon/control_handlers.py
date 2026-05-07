@@ -82,6 +82,7 @@ from shisad.core.api.schema import (
     MemoryGetResult,
     MemoryIdentityCandidateResult,
     MemoryIngestParams,
+    MemoryIngestProcedureCandidateParams,
     MemoryIngestResult,
     MemoryInvokeSkillParams,
     MemoryInvokeSkillResult,
@@ -91,11 +92,16 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryMintIngressParams,
     MemoryMintIngressResult,
+    MemoryProcedureCandidateParams,
+    MemoryProcedureCandidateResult,
+    MemoryProcedureCandidateReviewResult,
     MemoryPromoteIdentityCandidateParams,
+    MemoryPromoteProcedureCandidateParams,
     MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryReadOriginalResult,
     MemoryRejectIdentityCandidateParams,
+    MemoryRejectProcedureCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
     MemoryReviewQueueParams,
@@ -518,6 +524,34 @@ class DaemonControlHandlers:
         ctx: RequestContext,
     ) -> MemoryWriteResult:
         return await self._memory.handle_memory_promote_skill(params, ctx)
+
+    async def handle_memory_ingest_procedure_candidate(
+        self,
+        params: MemoryIngestProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_memory_ingest_procedure_candidate(params, ctx)
+
+    async def handle_memory_review_procedure_candidate(
+        self,
+        params: MemoryProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryProcedureCandidateReviewResult:
+        return await self._memory.handle_memory_review_procedure_candidate(params, ctx)
+
+    async def handle_memory_reject_procedure_candidate(
+        self,
+        params: MemoryRejectProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryProcedureCandidateResult:
+        return await self._memory.handle_memory_reject_procedure_candidate(params, ctx)
+
+    async def handle_memory_promote_procedure_candidate(
+        self,
+        params: MemoryPromoteProcedureCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_memory_promote_procedure_candidate(params, ctx)
 
     async def handle_memory_reject_identity_candidate(
         self,

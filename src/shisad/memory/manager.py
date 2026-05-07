@@ -20,6 +20,7 @@ from shisad.memory.events import MemoryEvent, MemoryEventStore
 from shisad.memory.remap import (
     ACTIVE_AGENDA_ENTRY_TYPES,
     PROCEDURAL_ENTRY_TYPES,
+    PROCEDURE_EXPERIENCE_ENTRY_TYPES,
     resolve_legacy_source_origin,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
@@ -36,6 +37,7 @@ from shisad.memory.surfaces import (
     build_procedural_summary,
     build_thread_resume_pack,
     entry_passes_context_filters,
+    scan_procedure_candidate_artifact,
 )
 from shisad.memory.trust import (
     ChannelTrust,
@@ -249,7 +251,8 @@ class MemoryManager:
 
         text_value = str(value)
         pending_review = confirmation_status == "pending_review"
-        if self._looks_instruction_like(text_value):
+        procedure_candidate_entry = entry_type in PROCEDURE_EXPERIENCE_ENTRY_TYPES
+        if self._looks_instruction_like(text_value) and not procedure_candidate_entry:
             return MemoryWriteDecision(
                 kind="reject",
                 reason="instruction_like_content_blocked",
@@ -870,6 +873,353 @@ class MemoryManager:
             )
             artifact.diff_preview = "\n".join(diff_lines[:40]) if diff_lines else None
         return artifact
+
+    def ingest_procedure_candidate(
+        self,
+        *,
+        key: str,
+        artifact: Any,
+        target_entry_type: str,
+        target_key: str,
+        trace_ids: list[str],
+        trace_pool_hash: str,
+        source: MemorySource,
+        source_origin: SourceOrigin,
+        channel_trust: ChannelTrust,
+        confirmation_status: ConfirmationStatus,
+        source_id: str,
+        scope: str,
+        ingress_handle_id: str,
+        content_digest: str | None,
+        scanner_verdict: str | None = None,
+        scanner_findings: list[str] | None = None,
+        diff_preview: str | None = None,
+        taint_labels: list[TaintLabel] | None = None,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool = False,
+    ) -> MemoryWriteDecision:
+        normalized_key = str(key).strip()
+        normalized_target_type = str(target_entry_type).strip().lower()
+        normalized_target_key = str(target_key).strip()
+        normalized_trace_ids = [str(item).strip() for item in trace_ids if str(item).strip()]
+        normalized_trace_pool_hash = str(trace_pool_hash).strip()
+        if not normalized_key:
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_key_required")
+        if normalized_target_type not in PROCEDURAL_ENTRY_TYPES or not normalized_target_key:
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_target_invalid")
+        if not normalized_trace_ids or not normalized_trace_pool_hash:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_trace_provenance_required",
+            )
+        scanner = self._procedure_candidate_scanner_packet(
+            artifact,
+            scanner_verdict=scanner_verdict,
+            scanner_findings=scanner_findings,
+        )
+        if scanner is None:
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_scanner_invalid")
+        candidate_value = {
+            "artifact": artifact,
+            "target_entry_type": normalized_target_type,
+            "target_key": normalized_target_key,
+            "trace_ids": normalized_trace_ids,
+            "trace_pool_hash": normalized_trace_pool_hash,
+            "scanner": scanner,
+            "review": {
+                "status": "pending",
+                "reviewer": "",
+                "approved_at": None,
+                "rejected_at": None,
+                "rejected_reason": "",
+            },
+            "promotion": {
+                "status": "candidate",
+                "promoted_entry_id": "",
+                "rollback_entry_id": "",
+            },
+            "diff_preview": str(diff_preview or ""),
+        }
+        decision = self.write_with_provenance(
+            entry_type="procedure_experience",
+            key=normalized_key,
+            value=candidate_value,
+            source=source,
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status="pending_review",
+            source_id=source_id,
+            scope=scope,
+            confidence=0.5,
+            confirmation_satisfied=confirmation_status == "user_confirmed",
+            taint_labels=list(taint_labels or []),
+            ingress_handle_id=ingress_handle_id,
+            content_digest=content_digest,
+            invocation_eligible=False,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if decision.kind != "allow" or decision.entry is None:
+            return decision
+        self._record_event(
+            entry=decision.entry,
+            event_type="procedure_candidate_ingested",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "target_entry_type": normalized_target_type,
+                "target_key": normalized_target_key,
+                "trace_ids": normalized_trace_ids,
+                "trace_pool_hash": normalized_trace_pool_hash,
+                "scanner": scanner,
+            },
+        )
+        self._audit(
+            "memory.procedure_candidate_ingested",
+            {
+                "candidate_id": decision.entry.id,
+                "target_entry_type": normalized_target_type,
+                "target_key": normalized_target_key,
+                "scanner_verdict": scanner["verdict"],
+                "ingress_handle_id": ingress_handle_id,
+            },
+        )
+        return decision
+
+    def describe_procedure_candidate(
+        self,
+        candidate_id: str,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> dict[str, Any]:
+        candidate = self.get_entry(
+            candidate_id,
+            include_pending_review=True,
+            include_deleted=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if candidate is None or candidate.entry_type not in PROCEDURE_EXPERIENCE_ENTRY_TYPES:
+            return {"found": False, "reason": "procedure_candidate_not_found", "candidate": None}
+        packet = self._procedure_candidate_packet(candidate)
+        return {
+            "found": True,
+            "reason": "",
+            "candidate": {
+                "id": candidate.id,
+                "entry_type": str(candidate.entry_type),
+                "key": candidate.key,
+                "status": candidate.status,
+                "confirmation_status": candidate.confirmation_status,
+                "superseded_by": candidate.superseded_by,
+                "target_entry_type": packet["target_entry_type"],
+                "target_key": packet["target_key"],
+                "artifact": packet["artifact"],
+                "trace_ids": packet["trace_ids"],
+                "trace_pool_hash": packet["trace_pool_hash"],
+                "scanner": packet["scanner"],
+                "review": packet["review"],
+                "promotion": packet["promotion"],
+                "diff_preview": packet["diff_preview"],
+            },
+        }
+
+    def reject_procedure_candidate(
+        self,
+        candidate_id: str,
+        *,
+        ingress_handle_id: str | None = None,
+        reviewer: str | None = None,
+        reason: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> tuple[bool, str]:
+        candidate, resolved_reason = self._resolve_procedure_candidate(
+            candidate_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if candidate is None:
+            return False, resolved_reason
+        packet = self._procedure_candidate_packet(candidate)
+        timestamp = datetime.now(UTC)
+        packet["review"].update(
+            {
+                "status": "rejected",
+                "reviewer": str(reviewer or "").strip(),
+                "rejected_at": timestamp.isoformat(),
+                "rejected_reason": str(reason or "operator_rejected").strip()
+                or "operator_rejected",
+            }
+        )
+        packet["promotion"].update({"status": "rejected", "promoted_entry_id": ""})
+        candidate.value = packet
+        candidate.deleted_at = timestamp
+        candidate.status = "tombstoned"
+        self._persist_entry(candidate)
+        self._record_event(
+            entry=candidate,
+            event_type="tombstoned",
+            ingress_handle_id=ingress_handle_id,
+            metadata={"reason": "procedure_candidate_rejected"},
+        )
+        self._record_event(
+            entry=candidate,
+            event_type="procedure_candidate_rejected",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "reviewer": packet["review"]["reviewer"],
+                "reason": packet["review"]["rejected_reason"],
+            },
+        )
+        self._audit(
+            "memory.procedure_candidate_rejected",
+            {
+                "candidate_id": candidate.id,
+                "reviewer": packet["review"]["reviewer"],
+                "reason": packet["review"]["rejected_reason"],
+                "ingress_handle_id": ingress_handle_id,
+            },
+        )
+        return True, "procedure_candidate_rejected"
+
+    def promote_procedure_candidate(
+        self,
+        *,
+        candidate_id: str,
+        source: MemorySource,
+        source_origin: SourceOrigin,
+        channel_trust: ChannelTrust,
+        confirmation_status: ConfirmationStatus,
+        source_id: str,
+        scope: str,
+        ingress_handle_id: str,
+        content_digest: str | None,
+        reviewer: str | None = None,
+        taint_labels: list[TaintLabel] | None = None,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool = False,
+    ) -> MemoryWriteDecision:
+        candidate, reason = self._resolve_procedure_candidate(
+            candidate_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if candidate is None:
+            return MemoryWriteDecision(kind="reject", reason=reason)
+        packet = self._procedure_candidate_packet(candidate)
+        scanner = packet["scanner"]
+        if scanner.get("verdict") != "pass":
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_scan_not_passed")
+        if not packet["trace_ids"] or not str(packet["trace_pool_hash"]).strip():
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_trace_provenance_required",
+            )
+        if scope != "user":
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_promotion_requires_user_scope",
+            )
+        if confirmation_status not in {"user_confirmed", "user_corrected"}:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_promotion_requires_operator_approval",
+            )
+        if not is_invocation_eligible_triple(
+            source_origin,
+            channel_trust,
+            confirmation_status,
+        ):
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_candidate_promotion_requires_install_triple",
+            )
+        target_entry_type = str(packet["target_entry_type"])
+        target_key = str(packet["target_key"])
+        prior_entry = self._find_latest_active_procedural_by_target(
+            target_entry_type=target_entry_type,
+            target_key=target_key,
+            scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        rollback_entry_id = prior_entry.id if prior_entry is not None else ""
+        decision = self.write_with_provenance(
+            entry_type=target_entry_type,
+            key=target_key,
+            value=packet["artifact"],
+            source=source,
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            source_id=source_id,
+            scope=scope,
+            confidence=max(candidate.confidence, 0.70),
+            confirmation_satisfied=True,
+            taint_labels=list(taint_labels or []),
+            ingress_handle_id=ingress_handle_id,
+            content_digest=content_digest,
+            invocation_eligible=True,
+            supersedes=rollback_entry_id or None,
+            allow_trust_upgrade_without_confirmation=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if decision.kind != "allow" or decision.entry is None:
+            return decision
+        timestamp = datetime.now(UTC)
+        packet["review"].update(
+            {
+                "status": "approved",
+                "reviewer": str(reviewer or "").strip(),
+                "approved_at": timestamp.isoformat(),
+            }
+        )
+        packet["promotion"].update(
+            {
+                "status": "promoted",
+                "promoted_entry_id": decision.entry.id,
+                "rollback_entry_id": rollback_entry_id,
+            }
+        )
+        candidate.value = packet
+        candidate.superseded_by = decision.entry.id
+        self._persist_entry(candidate)
+        self._record_event(
+            entry=candidate,
+            event_type="procedure_candidate_promoted",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "promoted_entry_id": decision.entry.id,
+                "rollback_entry_id": rollback_entry_id,
+                "target_entry_type": target_entry_type,
+                "target_key": target_key,
+                "reviewer": packet["review"]["reviewer"],
+            },
+        )
+        self._audit(
+            "memory.procedure_candidate_promoted",
+            {
+                "candidate_id": candidate.id,
+                "entry_id": decision.entry.id,
+                "rollback_entry_id": rollback_entry_id,
+                "target_entry_type": target_entry_type,
+                "target_key": target_key,
+                "ingress_handle_id": ingress_handle_id,
+            },
+        )
+        return decision
 
     def promote_to_skill(
         self,
@@ -2179,6 +2529,35 @@ class MemoryManager:
             return None, "candidate_entry_type_invalid"
         return candidate, ""
 
+    def _resolve_procedure_candidate(
+        self,
+        candidate_id: str,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> tuple[MemoryEntry | None, str]:
+        candidate = self.get_entry(
+            candidate_id,
+            include_pending_review=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if candidate is None:
+            return None, "procedure_candidate_not_found"
+        if candidate.entry_type not in PROCEDURE_EXPERIENCE_ENTRY_TYPES:
+            return None, "procedure_candidate_not_found"
+        if self._is_quarantined(candidate):
+            return None, "procedure_candidate_not_found"
+        if self._is_deleted(candidate):
+            return None, "procedure_candidate_not_found"
+        if candidate.superseded_by is not None:
+            return None, "procedure_candidate_already_resolved"
+        if not self._is_pending_review(candidate):
+            return None, "procedure_candidate_not_pending_review"
+        return candidate, ""
+
     def _resolve_procedural_entry(
         self,
         skill_id: str,
@@ -2222,6 +2601,70 @@ class MemoryManager:
             if latest_active is not None and latest_active.id != refreshed.id:
                 return None, "skill_not_found"
         return refreshed, ""
+
+    @staticmethod
+    def _procedure_candidate_scanner_packet(
+        artifact: Any,
+        *,
+        scanner_verdict: str | None,
+        scanner_findings: list[str] | None,
+    ) -> dict[str, Any] | None:
+        automatic = scan_procedure_candidate_artifact(artifact)
+        declared_verdict = str(scanner_verdict or automatic["verdict"]).strip().lower()
+        if declared_verdict not in {"pass", "fail"}:
+            return None
+        findings = {
+            str(item).strip()
+            for item in list(scanner_findings or []) + list(automatic.get("findings", []))
+            if str(item).strip()
+        }
+        verdict = "fail" if declared_verdict == "fail" or automatic["verdict"] == "fail" else "pass"
+        return {"verdict": verdict, "findings": sorted(findings)}
+
+    @staticmethod
+    def _procedure_candidate_packet(entry: MemoryEntry) -> dict[str, Any]:
+        value = entry.value if isinstance(entry.value, dict) else {}
+        target_entry_type = str(value.get("target_entry_type", "")).strip().lower()
+        target_key = str(value.get("target_key", "")).strip()
+        raw_scanner = value.get("scanner")
+        scanner: dict[str, Any] = raw_scanner if isinstance(raw_scanner, dict) else {}
+        raw_review = value.get("review")
+        review: dict[str, Any] = raw_review if isinstance(raw_review, dict) else {}
+        raw_promotion = value.get("promotion")
+        promotion: dict[str, Any] = raw_promotion if isinstance(raw_promotion, dict) else {}
+        trace_ids_raw = value.get("trace_ids", [])
+        trace_ids = trace_ids_raw if isinstance(trace_ids_raw, list) else []
+        scanner_findings = scanner.get("findings", [])
+        return {
+            "artifact": value.get("artifact"),
+            "target_entry_type": target_entry_type,
+            "target_key": target_key,
+            "trace_ids": [str(item).strip() for item in trace_ids if str(item).strip()],
+            "trace_pool_hash": str(value.get("trace_pool_hash", "")).strip(),
+            "scanner": {
+                "verdict": str(scanner.get("verdict", "")).strip().lower(),
+                "findings": [
+                    str(item).strip()
+                    for item in scanner_findings
+                    if str(item).strip()
+                ]
+                if isinstance(scanner_findings, list)
+                else [],
+            },
+            "review": {
+                "status": str(review.get("status", "pending")).strip() or "pending",
+                "reviewer": str(review.get("reviewer", "")).strip(),
+                "approved_at": review.get("approved_at"),
+                "rejected_at": review.get("rejected_at"),
+                "rejected_reason": str(review.get("rejected_reason", "")).strip(),
+            },
+            "promotion": {
+                "status": str(promotion.get("status", "candidate")).strip() or "candidate",
+                "promoted_entry_id": str(promotion.get("promoted_entry_id", "")).strip(),
+                "rollback_entry_id": str(promotion.get("rollback_entry_id", "")).strip(),
+            },
+            "diff_preview": str(value.get("diff_preview", "")),
+        }
 
     @staticmethod
     def _procedural_sort_key(entry: MemoryEntry) -> tuple[int, datetime, str]:
@@ -2352,6 +2795,49 @@ class MemoryManager:
                 latest = refreshed
         if include_legacy_unowned:
             return latest_owned or latest_unowned
+        return latest
+
+    def _find_latest_active_procedural_by_target(
+        self,
+        *,
+        target_entry_type: str,
+        target_key: str,
+        scope: str,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> MemoryEntry | None:
+        normalized_target_type = str(target_entry_type).strip().lower()
+        normalized_target_key = str(target_key).strip()
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return None
+        latest: MemoryEntry | None = None
+        for candidate in self._entries.values():
+            if (
+                candidate.entry_type != normalized_target_type
+                or candidate.key != normalized_target_key
+                or candidate.scope != scope
+                or self._is_deleted(candidate)
+                or self._is_quarantined(candidate)
+                or self._is_pending_review(candidate)
+                or candidate.superseded_by is not None
+            ):
+                continue
+            if not self._entry_matches_owner(
+                candidate,
+                user_id=owner_user_id,
+                workspace_id=owner_workspace_id,
+                include_unowned=include_unowned,
+            ):
+                continue
+            refreshed = self._refresh_ttl(candidate)
+            if latest is None or self._procedural_sort_key(refreshed) > self._procedural_sort_key(
+                latest
+            ):
+                latest = refreshed
         return latest
 
     def _find_active_procedural_predecessor(

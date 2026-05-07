@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,25 @@ if TYPE_CHECKING:
     from shisad.memory.schema import MemoryEntry
 
 _PROCEDURAL_DESCRIPTION_MAX_CHARS = 120
+_PROCEDURE_SCAN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "prompt_injection": re.compile(
+        r"\b(ignore|override|discard).{0,48}\b(system|developer|instruction|policy)s?\b",
+        re.IGNORECASE,
+    ),
+    "confirmation_bypass": re.compile(
+        r"\b(skip|bypass|disable|avoid).{0,48}\b(confirm|approval|pep|safety|policy)\b",
+        re.IGNORECASE,
+    ),
+    "credential_reference": re.compile(
+        r"\b(api[_ -]?key|secret|password|credential|token)s?\b",
+        re.IGNORECASE,
+    ),
+    "exfiltration": re.compile(
+        r"\b(exfiltrate|send|upload|post).{0,48}\b"
+        r"(secret|credential|token|password|api[_ -]?key)s?\b",
+        re.IGNORECASE,
+    ),
+}
 
 
 @dataclass(slots=True)
@@ -59,6 +79,16 @@ def _render_procedural_content(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def scan_procedure_candidate_artifact(value: Any) -> dict[str, Any]:
+    """Return a deterministic safety scan verdict for a procedural candidate."""
+
+    text = _render_procedural_content(value)
+    findings = sorted(
+        name for name, pattern in _PROCEDURE_SCAN_PATTERNS.items() if pattern.search(text)
+    )
+    return {"verdict": "fail" if findings else "pass", "findings": findings}
 
 
 def _procedural_name(entry: MemoryEntry) -> str:

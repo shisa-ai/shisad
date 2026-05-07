@@ -951,6 +951,180 @@ class MemoryImplMixin(HandlerMixinBase):
             "artifact": artifact,
         }
 
+    async def do_memory_ingest_procedure_candidate(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.ingest_procedure_candidate")
+        context = self._memory_ingress_registry.resolve(handle_id)
+        artifact = params.get("artifact")
+        content_digest = str(params.get("content_digest", "")).strip() or None
+        if content_digest is None and not isinstance(artifact, (str, bytes)):
+            content_digest = digest_memory_value(artifact)
+        resolved_digest = self._memory_ingress_registry.validate_binding(
+            handle_id,
+            content=artifact if isinstance(artifact, (str, bytes)) else None,
+            content_digest=content_digest,
+        )
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        decision = self._memory_manager.ingest_procedure_candidate(
+            key=str(params.get("key", "")).strip(),
+            artifact=artifact,
+            target_entry_type=str(params.get("target_entry_type", "")).strip(),
+            target_key=str(params.get("target_key", "")).strip(),
+            trace_ids=[
+                str(item).strip()
+                for item in params.get("trace_ids", [])
+                if str(item).strip()
+            ],
+            trace_pool_hash=str(params.get("trace_pool_hash", "")).strip(),
+            scanner_verdict=(
+                str(params.get("scanner_verdict", "")).strip() or None
+                if params.get("scanner_verdict") is not None
+                else None
+            ),
+            scanner_findings=[
+                str(item).strip()
+                for item in params.get("scanner_findings", [])
+                if str(item).strip()
+            ],
+            diff_preview=(
+                str(params.get("diff_preview", ""))
+                if params.get("diff_preview") is not None
+                else None
+            ),
+            source=MemorySource(
+                origin=legacy_source_view_origin(context.source_origin),
+                source_id=context.source_id,
+                extraction_method="procedure.candidate.ingest",
+            ),
+            source_origin=context.source_origin,
+            channel_trust=context.channel_trust,
+            confirmation_status=context.confirmation_status,
+            source_id=context.source_id,
+            scope=context.scope,
+            ingress_handle_id=context.handle_id,
+            content_digest=resolved_digest,
+            taint_labels=context.taint_labels,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
+        )
+        return cast(dict[str, Any], decision.model_dump(mode="json"))
+
+    async def do_memory_review_procedure_candidate(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        return cast(
+            dict[str, Any],
+            self._memory_manager.describe_procedure_candidate(
+                str(params.get("candidate_id", "")).strip(),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                include_unowned=bool(params.get("include_unowned", False)),
+            ),
+        )
+
+    async def do_memory_reject_procedure_candidate(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.reject_procedure_candidate")
+        context = self._memory_ingress_registry.resolve(handle_id)
+        candidate_id = str(params.get("candidate_id", "")).strip()
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        changed, reason = self._memory_manager.reject_procedure_candidate(
+            candidate_id,
+            ingress_handle_id=context.handle_id,
+            reviewer=(
+                str(params.get("reviewer", "")).strip()
+                if params.get("reviewer") is not None
+                else None
+            ),
+            reason=(
+                str(params.get("reason", "")).strip()
+                if params.get("reason") is not None
+                else None
+            ),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
+        )
+        return {
+            "changed": changed,
+            "candidate_id": candidate_id,
+            "reason": reason,
+        }
+
+    async def do_memory_promote_procedure_candidate(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.promote_procedure_candidate")
+        candidate_id = str(params.get("candidate_id", "")).strip()
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        include_unowned = bool(params.get("include_unowned", False))
+        candidate = self._memory_manager.get_entry(
+            candidate_id,
+            include_pending_review=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        if (
+            candidate is None
+            or str(candidate.entry_type) != "procedure_experience"
+            or not isinstance(candidate.value, dict)
+        ):
+            return {
+                "kind": "reject",
+                "reason": "procedure_candidate_not_found",
+                "entry": None,
+            }
+        artifact = candidate.value.get("artifact")
+        context = self._memory_ingress_registry.resolve(handle_id)
+        content_digest = str(params.get("content_digest", "")).strip() or None
+        if content_digest is None and not isinstance(artifact, (str, bytes)):
+            content_digest = digest_memory_value(artifact)
+        resolved_digest = self._memory_ingress_registry.validate_binding(
+            handle_id,
+            content=artifact if isinstance(artifact, (str, bytes)) else None,
+            content_digest=content_digest,
+        )
+        decision = self._memory_manager.promote_procedure_candidate(
+            candidate_id=candidate_id,
+            source=MemorySource(
+                origin=legacy_source_view_origin(context.source_origin),
+                source_id=context.source_id,
+                extraction_method="procedure.candidate.promote",
+            ),
+            source_origin=context.source_origin,
+            channel_trust=context.channel_trust,
+            confirmation_status=context.confirmation_status,
+            source_id=context.source_id,
+            scope=context.scope,
+            ingress_handle_id=context.handle_id,
+            content_digest=resolved_digest,
+            reviewer=(
+                str(params.get("reviewer", "")).strip()
+                if params.get("reviewer") is not None
+                else None
+            ),
+            taint_labels=context.taint_labels,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        return cast(dict[str, Any], decision.model_dump(mode="json"))
+
     async def do_memory_promote_skill(
         self,
         params: Mapping[str, Any],

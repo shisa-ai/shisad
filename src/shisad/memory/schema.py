@@ -40,6 +40,7 @@ MemoryEntryType = Literal[
     "person_note",
     "channel_participation",
     "response_feedback",
+    "procedure_experience",
     "skill",
     "runbook",
     "template",
