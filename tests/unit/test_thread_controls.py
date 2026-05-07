@@ -134,6 +134,26 @@ async def test_m2_thread_inspect_returns_packet_for_closed_thread(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_m3_thread_inspect_not_found_reports_abstention_metrics(
+    tmp_path: Path,
+) -> None:
+    harness = _ThreadControlHarness(tmp_path / "memory")
+
+    result = await harness.do_thread_inspect(
+        {"thread_id": "missing-thread", "user_id": "alice", "workspace_id": "ws1"}
+    )
+
+    assert result["found"] is False
+    assert result["selection"]["status"] == "not_found"
+    metrics = result["selection"]["metrics"]
+    assert metrics["selection_precision_estimate"] == 0.0
+    assert metrics["evidence_coverage"] == 0.0
+    assert metrics["stale_thread_answer_risk"] == 0.0
+    assert metrics["abstention_correctness_signal"] == 1.0
+    assert metrics["token_cost"] == 0
+
+
+@pytest.mark.asyncio
 async def test_m2_thread_summary_uses_canonical_channel_binding(tmp_path: Path) -> None:
     harness = _ThreadControlHarness(tmp_path / "memory")
     channel_binding = "discord:workspace-1:channel-99"

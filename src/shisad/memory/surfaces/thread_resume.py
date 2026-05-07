@@ -534,7 +534,8 @@ def thread_selection_metrics(
     stale_risk = 1.0 if packet is not None and packet.staleness.get("stale") is True else 0.0
     abstention_signal = (
         1.0
-        if status in {"insufficient", "ambiguous", "no_match"} and bool(missing_evidence)
+        if status in {"insufficient", "ambiguous", "no_match", "not_found"}
+        and bool(missing_evidence)
         else 0.0
     )
     return {
