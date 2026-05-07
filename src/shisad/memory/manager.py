@@ -2170,6 +2170,18 @@ class MemoryManager:
             str(entry.key),
         )
 
+    def _procedural_group_key_without_owner(self, entry: MemoryEntry) -> tuple[str, str, str, str]:
+        entry_scope = str(entry.scope)
+        session_binding = (
+            self._session_scope_binding(entry.source_id) if entry_scope == "session" else ""
+        )
+        return (
+            entry_scope,
+            session_binding,
+            str(entry.entry_type),
+            str(entry.key),
+        )
+
     def _procedural_scope_visible(
         self,
         entry: MemoryEntry,
@@ -2204,11 +2216,21 @@ class MemoryManager:
         owner_workspace_id = self._normalize_owner_value(workspace_id)
         if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
             return None
+        include_legacy_unowned = (
+            include_unowned and owner_user_id is not None and owner_workspace_id is not None
+        )
+        legacy_group_key = (
+            self._procedural_group_key_without_owner(entry) if include_legacy_unowned else None
+        )
         latest: MemoryEntry | None = None
         for candidate in self._entries.values():
+            if include_legacy_unowned:
+                if self._procedural_group_key_without_owner(candidate) != legacy_group_key:
+                    continue
+            elif self._procedural_group_key(candidate) != group_key:
+                continue
             if (
-                self._procedural_group_key(candidate) != group_key
-                or self._is_deleted(candidate)
+                self._is_deleted(candidate)
                 or self._is_quarantined(candidate)
                 or self._is_pending_review(candidate)
                 or candidate.superseded_by is not None
