@@ -35,6 +35,7 @@ from shisad.memory.surfaces import (
     build_procedural_artifact,
     build_procedural_summary,
     build_thread_resume_pack,
+    entry_passes_context_filters,
 )
 from shisad.memory.trust import (
     ChannelTrust,
@@ -707,6 +708,9 @@ class MemoryManager:
         query: str,
         *,
         max_tokens: int = 700,
+        scope_filter: set[str] | None = None,
+        allowed_channel_trusts: set[str] | None = None,
+        channel_binding: str | None = None,
         session_scope_id: str | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
@@ -722,6 +726,16 @@ class MemoryManager:
             entries,
             session_scope_id=session_scope_id,
         )
+        visible_entries = [
+            entry
+            for entry in visible_entries
+            if entry_passes_context_filters(
+                entry=entry,
+                scope_filter=scope_filter,
+                allowed_channel_trusts=allowed_channel_trusts,
+                channel_binding=channel_binding,
+            )
+        ]
         return build_thread_resume_pack(
             entries=visible_entries,
             query=query,

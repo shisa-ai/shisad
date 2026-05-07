@@ -927,6 +927,40 @@ def test_m1_compile_thread_resume_excludes_owner_mismatch_and_closed_or_stale(
     assert pack.packet is None
 
 
+def test_m1_compile_thread_resume_applies_channel_trust_filter(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:nebula-shared-channel",
+        value={
+            "title": "Nebula launch review",
+            "summary": "Shared participant channel thread should not be selected.",
+        },
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        scope="channel",
+        workflow_state="active",
+        confirmation_satisfied=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    pack = manager.compile_thread_resume(
+        "Resume the Nebula launch review thread.",
+        scope_filter={"session", "project", "user", "channel"},
+        allowed_channel_trusts={"command", "owner_observed"},
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    assert pack.status == "no_match"
+    assert pack.selected is None
+    assert pack.packet is None
+
+
 def test_m1_compile_thread_resume_marks_ambiguity_without_selecting(
     tmp_path: Path,
 ) -> None:

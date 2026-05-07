@@ -3,6 +3,7 @@
 from .active_attention import (
     ActiveAttentionPack,
     build_active_attention_pack,
+    entry_passes_context_filters,
 )
 from .identity import IdentityPack, build_identity_pack
 from .procedural import (
@@ -43,6 +44,7 @@ __all__ = [
     "build_procedural_summary",
     "build_recall_pack",
     "build_thread_resume_pack",
+    "entry_passes_context_filters",
     "extract_recall_terms",
     "verify_recall_sufficiency",
 ]

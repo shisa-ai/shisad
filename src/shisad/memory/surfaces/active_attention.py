@@ -71,12 +71,12 @@ def build_active_attention_pack(
             and entry.superseded_by is None
             and entry.status == "active"
             and entry.workflow_state in ACTIVE_ATTENTION_WORKFLOW_STATES
-            and (scope_filter is None or entry.scope in scope_filter)
-            and _passes_allowed_channel_trusts(
+            and entry_passes_context_filters(
                 entry=entry,
+                scope_filter=scope_filter,
                 allowed_channel_trusts=allowed_channel_trusts,
+                channel_binding=channel_binding,
             )
-            and _matches_channel_binding(entry, channel_binding)
         ),
         key=lambda entry: entry.created_at,
         reverse=True,
@@ -100,6 +100,23 @@ def build_active_attention_pack(
         max_tokens=max_tokens,
         scope_filter=set(scope_filter) if scope_filter is not None else None,
         channel_binding=channel_binding.strip() if channel_binding else None,
+    )
+
+
+def entry_passes_context_filters(
+    *,
+    entry: MemoryEntry,
+    scope_filter: set[str] | None = None,
+    allowed_channel_trusts: set[str] | None = None,
+    channel_binding: str | None = None,
+) -> bool:
+    return (
+        (scope_filter is None or entry.scope in scope_filter)
+        and _passes_allowed_channel_trusts(
+            entry=entry,
+            allowed_channel_trusts=allowed_channel_trusts,
+        )
+        and _matches_channel_binding(entry, channel_binding)
     )
 
 

@@ -3237,6 +3237,7 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_inputs: list[str] = []
+    stored_ids: dict[str, str] = {}
 
     def _seed(config: DaemonConfig) -> None:
         manager = MemoryManager(config.data_dir / "memory_entries")
@@ -3268,6 +3269,33 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
             workspace_id="ws1",
         )
         assert decision.kind == "allow"
+        assert decision.entry is not None
+        stored_ids["selected"] = decision.entry.id
+        other = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:atlas-budget",
+            value={
+                "title": "Atlas budget",
+                "summary": "Atlas budget should be suppressed during explicit resume.",
+                "evidence_refs": ["ev-atlas-budget"],
+            },
+            source=MemorySource(
+                origin="user", source_id="thread-atlas", extraction_method="manual"
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="thread-atlas",
+            scope="user",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert other.kind == "allow"
+        assert other.entry is not None
+        stored_ids["suppressed"] = other.entry.id
 
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
 
@@ -3312,6 +3340,13 @@ async def test_contract_cross_session_topic_resume_surfaces_selected_thread_pack
     assert "Mara accepted rollback ownership" in thread_context
     assert "Mara accepted rollback ownership" not in trusted_section
     assert "cannot authorize current side effects" in planner_input
+    reloaded = MemoryManager(harness.config.data_dir / "memory_entries")
+    selected_entry = reloaded.get_entry(stored_ids["selected"])
+    suppressed_entry = reloaded.get_entry(stored_ids["suppressed"])
+    assert selected_entry is not None
+    assert suppressed_entry is not None
+    assert selected_entry.citation_count == 1
+    assert suppressed_entry.citation_count == 0
 
 
 @pytest.mark.asyncio
@@ -3753,6 +3788,67 @@ async def test_contract_active_attention_excludes_other_session_threads(
 
     assert "active_attention_total=" not in trusted_section
     assert "Old session Active Attention must not enter the new session." not in planner_input
+
+
+@pytest.mark.asyncio
+async def test_contract_thread_resume_excludes_shared_channel_threads_in_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:nebula-launch-review",
+            value={
+                "title": "Nebula launch review",
+                "summary": "Shared channel Nebula thread must not enter trusted CLI resume.",
+                "evidence_refs": ["ev-nebula-shared"],
+            },
+            source=MemorySource(
+                origin="external",
+                source_id="shared-channel-nebula",
+                extraction_method="manual",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="auto_accepted",
+            source_id="shared-channel-nebula",
+            scope="channel",
+            confidence=0.85,
+            confirmation_satisfied=True,
+            workflow_state="active",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        assert decision.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "Please resume the Nebula launch review thread."},
+        )
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+
+    assert "thread_resume_status=no_match" in trusted_section
+    assert "THREAD RESUME PACKET (selected prior thread content" not in planner_input
+    assert "Shared channel Nebula thread must not enter trusted CLI resume." not in planner_input
 
 
 @pytest.mark.asyncio

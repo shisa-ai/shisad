@@ -7216,20 +7216,32 @@ class SessionImplMixin(HandlerMixinBase):
                     channel=str(getattr(session, "channel", "cli")),
                     delivery_target=validated.delivery_target,
                 )
+                active_scope_filter = (
+                    set(active_attention_defaults.scope_filter)
+                    if active_attention_defaults is not None
+                    else {"session", "project", "user"}
+                )
+                active_allowed_channel_trusts = (
+                    set(active_attention_defaults.allowed_channel_trusts)
+                    if active_attention_defaults is not None
+                    and active_attention_defaults.allowed_channel_trusts is not None
+                    else None
+                )
+                active_channel_binding = (
+                    active_attention_defaults.channel_binding
+                    if active_attention_defaults is not None
+                    else None
+                )
                 if active_attention_defaults is not None:
                     active_attention_pack = self._memory_manager.compile_active_attention(
-                        scope_filter=set(active_attention_defaults.scope_filter),
-                        allowed_channel_trusts=set(active_attention_defaults.allowed_channel_trusts)
-                        if active_attention_defaults.allowed_channel_trusts is not None
-                        else None,
-                        channel_binding=active_attention_defaults.channel_binding,
+                        scope_filter=active_scope_filter,
+                        allowed_channel_trusts=active_allowed_channel_trusts,
+                        channel_binding=active_channel_binding,
                         session_scope_id=str(validated.sid),
                         user_id=str(session.user_id),
                         workspace_id=str(session.workspace_id),
                     )
                     active_attention_entries = active_attention_pack.entries
-                    if active_attention_pack.citation_ids:
-                        self._memory_manager.record_citations(active_attention_pack.citation_ids)
                     active_attention_context = _build_active_attention_context(
                         active_attention_entries
                     )
@@ -7239,6 +7251,9 @@ class SessionImplMixin(HandlerMixinBase):
                 thread_resume_pack = self._memory_manager.compile_thread_resume(
                     firewall_result.sanitized_text,
                     max_tokens=_THREAD_RESUME_CONTEXT_MAX_TOKENS,
+                    scope_filter=active_scope_filter,
+                    allowed_channel_trusts=active_allowed_channel_trusts,
+                    channel_binding=active_channel_binding,
                     session_scope_id=str(validated.sid),
                     user_id=str(session.user_id),
                     workspace_id=str(session.workspace_id),
@@ -7251,6 +7266,10 @@ class SessionImplMixin(HandlerMixinBase):
                     ]
                     active_attention_context = _build_active_attention_context(
                         active_attention_entries
+                    )
+                if active_attention_entries:
+                    self._memory_manager.record_citations(
+                        [entry.id for entry in active_attention_entries]
                     )
                 if thread_resume_pack.status == "selected" and thread_resume_pack.selected:
                     self._memory_manager.record_citations([thread_resume_pack.selected.entry.id])
