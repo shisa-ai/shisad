@@ -305,8 +305,9 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.3 — Open threads + procedural memory pilot
 
-- User-visible thread controls (list, pin, snooze, resume, close) on top of
-  the v0.7.0 Active Attention surface.
+- User-visible thread controls (list, inspect, resume, close, why/explain) on
+  top of the v0.7.0 Active Attention surface. Pin/snooze are deferred to v0.8
+  thread UX polish.
 - Proactive thread surfacing for waiting/blocked items.
 - Review-gated procedural / experience memory pilot for trace-derived reusable
   artifacts, with default-deny retrieval and explicit promotion.

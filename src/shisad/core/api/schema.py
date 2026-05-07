@@ -55,6 +55,20 @@ def _require_complete_owner_scope(model: Any) -> None:
         raise ValueError("user_id and workspace_id are required")
 
 
+def _normalize_thread_context_filters(model: Any) -> None:
+    allowed_channel_trusts = getattr(model, "allowed_channel_trusts", None)
+    if allowed_channel_trusts is not None:
+        model.allowed_channel_trusts = [
+            item.strip() for item in allowed_channel_trusts if item.strip()
+        ]
+    channel_binding = getattr(model, "channel_binding", None)
+    if channel_binding is not None:
+        model.channel_binding = channel_binding.strip() or None
+    session_scope_id = getattr(model, "session_scope_id", None)
+    if session_scope_id is not None:
+        model.session_scope_id = session_scope_id.strip() or None
+
+
 class JsonRpcRequest(BaseModel):
     """JSON-RPC 2.0 request."""
 
@@ -621,6 +635,10 @@ ThreadStateFilter = Literal["open", "active", "waiting", "blocked", "stale", "cl
 class ThreadListParams(_StrictParams):
     limit: int = 20
     state: ThreadStateFilter = "open"
+    scope_filter: list[MemoryScope] | None = None
+    allowed_channel_trusts: list[str] | None = None
+    channel_binding: str | None = None
+    session_scope_id: str | None = None
     user_id: str | None = None
     workspace_id: str | None = None
     include_unowned: bool = False
@@ -628,11 +646,16 @@ class ThreadListParams(_StrictParams):
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> ThreadListParams:
         _require_complete_owner_scope(self)
+        _normalize_thread_context_filters(self)
         return self
 
 
 class ThreadEntryParams(_StrictParams):
     thread_id: str = Field(validation_alias=AliasChoices("thread_id", "entry_id"))
+    scope_filter: list[MemoryScope] | None = None
+    allowed_channel_trusts: list[str] | None = None
+    channel_binding: str | None = None
+    session_scope_id: str | None = None
     user_id: str | None = None
     workspace_id: str | None = None
     include_unowned: bool = False
@@ -642,6 +665,7 @@ class ThreadEntryParams(_StrictParams):
         _require_complete_owner_scope(self)
         if not self.thread_id.strip():
             raise ValueError("thread_id is required")
+        _normalize_thread_context_filters(self)
         return self
 
 
@@ -671,14 +695,7 @@ class ThreadWhyParams(_StrictParams):
             raise ValueError("query is required")
         if self.thread_id is not None:
             self.thread_id = self.thread_id.strip() or None
-        if self.allowed_channel_trusts is not None:
-            self.allowed_channel_trusts = [
-                item.strip() for item in self.allowed_channel_trusts if item.strip()
-            ]
-        if self.channel_binding is not None:
-            self.channel_binding = self.channel_binding.strip() or None
-        if self.session_scope_id is not None:
-            self.session_scope_id = self.session_scope_id.strip() or None
+        _normalize_thread_context_filters(self)
         self.max_tokens = max(1, int(self.max_tokens))
         return self
 

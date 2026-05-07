@@ -600,15 +600,35 @@ async def test_thread_control_wrappers_forward_owner_scope() -> None:
             user_id="alice",
             workspace_id="ws1",
             include_unowned=True,
+            scope_filter=["session", "user"],
+            allowed_channel_trusts=["command"],
+            channel_binding="discord:ws1:room1",
+            session_scope_id="session-1",
         ),
         RequestContext(),
     )
     inspected = await handlers.handle_thread_inspect(
-        ThreadEntryParams(thread_id="thread-1", user_id="alice", workspace_id="ws1"),
+        ThreadEntryParams(
+            thread_id="thread-1",
+            user_id="alice",
+            workspace_id="ws1",
+            scope_filter=["session", "user"],
+            allowed_channel_trusts=["command"],
+            channel_binding="discord:ws1:room1",
+            session_scope_id="session-1",
+        ),
         RequestContext(),
     )
     resumed = await handlers.handle_thread_resume(
-        ThreadEntryParams(thread_id="thread-1", user_id="alice", workspace_id="ws1"),
+        ThreadEntryParams(
+            thread_id="thread-1",
+            user_id="alice",
+            workspace_id="ws1",
+            scope_filter=["session", "user"],
+            allowed_channel_trusts=["command"],
+            channel_binding="discord:ws1:room1",
+            session_scope_id="session-1",
+        ),
         RequestContext(),
     )
     closed = await handlers.handle_thread_close(
@@ -617,6 +637,10 @@ async def test_thread_control_wrappers_forward_owner_scope() -> None:
             reason="done",
             user_id="alice",
             workspace_id="ws1",
+            scope_filter=["session", "user"],
+            allowed_channel_trusts=["command"],
+            channel_binding="discord:ws1:room1",
+            session_scope_id="session-1",
         ),
         RequestContext(),
     )
@@ -626,6 +650,10 @@ async def test_thread_control_wrappers_forward_owner_scope() -> None:
             thread_id="thread-1",
             user_id="alice",
             workspace_id="ws1",
+            scope_filter=["session", "user"],
+            allowed_channel_trusts=["command"],
+            channel_binding="discord:ws1:room1",
+            session_scope_id="session-1",
         ),
         RequestContext(),
     )
@@ -640,14 +668,22 @@ async def test_thread_control_wrappers_forward_owner_scope() -> None:
     assert impl.last_thread_list_payload["user_id"] == "alice"
     assert impl.last_thread_list_payload["workspace_id"] == "ws1"
     assert impl.last_thread_list_payload["include_unowned"] is True
+    assert impl.last_thread_list_payload["scope_filter"] == ["session", "user"]
+    assert impl.last_thread_list_payload["allowed_channel_trusts"] == ["command"]
+    assert impl.last_thread_list_payload["channel_binding"] == "discord:ws1:room1"
+    assert impl.last_thread_list_payload["session_scope_id"] == "session-1"
     assert impl.last_thread_inspect_payload is not None
     assert impl.last_thread_inspect_payload["thread_id"] == "thread-1"
+    assert impl.last_thread_inspect_payload["session_scope_id"] == "session-1"
     assert impl.last_thread_resume_payload is not None
     assert impl.last_thread_resume_payload["thread_id"] == "thread-1"
+    assert impl.last_thread_resume_payload["session_scope_id"] == "session-1"
     assert impl.last_thread_close_payload is not None
     assert impl.last_thread_close_payload["reason"] == "done"
+    assert impl.last_thread_close_payload["session_scope_id"] == "session-1"
     assert impl.last_thread_why_payload is not None
     assert impl.last_thread_why_payload["query"] == "resume Launch thread"
+    assert impl.last_thread_why_payload["session_scope_id"] == "session-1"
 
 
 @pytest.mark.asyncio

@@ -237,6 +237,27 @@ def _required_owner_scope_payload_from_flags_or_env(
     return payload
 
 
+def _thread_context_filter_payload(
+    *,
+    scope_filter: tuple[str, ...],
+    allowed_channel_trusts: tuple[str, ...],
+    channel_binding: str,
+    session_scope_id: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if scope_filter:
+        payload["scope_filter"] = list(scope_filter)
+    if allowed_channel_trusts:
+        payload["allowed_channel_trusts"] = list(allowed_channel_trusts)
+    normalized_channel_binding = channel_binding.strip()
+    if normalized_channel_binding:
+        payload["channel_binding"] = normalized_channel_binding
+    normalized_session_scope_id = session_scope_id.strip()
+    if normalized_session_scope_id:
+        payload["session_scope_id"] = normalized_session_scope_id
+    return payload
+
+
 def _memory_value_preview(value: object, *, max_chars: int = 80) -> str:
     if value is None:
         return "-"
@@ -3376,6 +3397,21 @@ def thread() -> None:
     is_flag=True,
     help="Include legacy unowned entries with the selected owner.",
 )
+@click.option(
+    "--scope",
+    "scope_filter",
+    multiple=True,
+    type=click.Choice(["session", "project", "user", "channel", "workspace"]),
+    help="Restrict thread visibility to a memory scope. Repeat for multiple scopes.",
+)
+@click.option(
+    "--allowed-channel-trust",
+    "allowed_channel_trusts",
+    multiple=True,
+    help="Allow a channel trust level for channel-scoped threads. Repeatable.",
+)
+@click.option("--channel-binding", default="", help="Exact channel binding to match.")
+@click.option("--session-scope-id", default="", help="Session id for session-scoped threads.")
 @click.option("--json", "as_json", is_flag=True, help="Print the full response as JSON.")
 def thread_list(
     limit: int,
@@ -3383,6 +3419,10 @@ def thread_list(
     user_id: str | None,
     workspace_id: str | None,
     include_unowned: bool,
+    scope_filter: tuple[str, ...],
+    allowed_channel_trusts: tuple[str, ...],
+    channel_binding: str,
+    session_scope_id: str,
     as_json: bool,
 ) -> None:
     config = _get_config()
@@ -3392,6 +3432,14 @@ def thread_list(
             user_id,
             workspace_id,
             include_unowned=include_unowned,
+        )
+    )
+    payload.update(
+        _thread_context_filter_payload(
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=session_scope_id,
         )
     )
     result = rpc_call(config, "thread.list", payload, response_model=ThreadListResult)
@@ -3411,11 +3459,30 @@ def thread_list(
     is_flag=True,
     help="Include legacy unowned entries with the selected owner.",
 )
+@click.option(
+    "--scope",
+    "scope_filter",
+    multiple=True,
+    type=click.Choice(["session", "project", "user", "channel", "workspace"]),
+    help="Restrict thread visibility to a memory scope. Repeat for multiple scopes.",
+)
+@click.option(
+    "--allowed-channel-trust",
+    "allowed_channel_trusts",
+    multiple=True,
+    help="Allow a channel trust level for channel-scoped threads. Repeatable.",
+)
+@click.option("--channel-binding", default="", help="Exact channel binding to match.")
+@click.option("--session-scope-id", default="", help="Session id for session-scoped threads.")
 def thread_inspect(
     thread_id: str,
     user_id: str | None,
     workspace_id: str | None,
     include_unowned: bool,
+    scope_filter: tuple[str, ...],
+    allowed_channel_trusts: tuple[str, ...],
+    channel_binding: str,
+    session_scope_id: str,
 ) -> None:
     config = _get_config()
     payload: dict[str, object] = {"thread_id": thread_id}
@@ -3424,6 +3491,14 @@ def thread_inspect(
             user_id,
             workspace_id,
             include_unowned=include_unowned,
+        )
+    )
+    payload.update(
+        _thread_context_filter_payload(
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=session_scope_id,
         )
     )
     result = rpc_call(config, "thread.inspect", payload, response_model=ThreadInspectResult)
@@ -3439,11 +3514,30 @@ def thread_inspect(
     is_flag=True,
     help="Include legacy unowned entries with the selected owner.",
 )
+@click.option(
+    "--scope",
+    "scope_filter",
+    multiple=True,
+    type=click.Choice(["session", "project", "user", "channel", "workspace"]),
+    help="Restrict thread visibility to a memory scope. Repeat for multiple scopes.",
+)
+@click.option(
+    "--allowed-channel-trust",
+    "allowed_channel_trusts",
+    multiple=True,
+    help="Allow a channel trust level for channel-scoped threads. Repeatable.",
+)
+@click.option("--channel-binding", default="", help="Exact channel binding to match.")
+@click.option("--session-scope-id", default="", help="Session id for session-scoped threads.")
 def thread_resume(
     thread_id: str,
     user_id: str | None,
     workspace_id: str | None,
     include_unowned: bool,
+    scope_filter: tuple[str, ...],
+    allowed_channel_trusts: tuple[str, ...],
+    channel_binding: str,
+    session_scope_id: str,
 ) -> None:
     config = _get_config()
     payload: dict[str, object] = {"thread_id": thread_id}
@@ -3452,6 +3546,14 @@ def thread_resume(
             user_id,
             workspace_id,
             include_unowned=include_unowned,
+        )
+    )
+    payload.update(
+        _thread_context_filter_payload(
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=session_scope_id,
         )
     )
     result = rpc_call(config, "thread.resume", payload, response_model=ThreadMutationResult)
@@ -3468,12 +3570,31 @@ def thread_resume(
     is_flag=True,
     help="Include legacy unowned entries with the selected owner.",
 )
+@click.option(
+    "--scope",
+    "scope_filter",
+    multiple=True,
+    type=click.Choice(["session", "project", "user", "channel", "workspace"]),
+    help="Restrict thread visibility to a memory scope. Repeat for multiple scopes.",
+)
+@click.option(
+    "--allowed-channel-trust",
+    "allowed_channel_trusts",
+    multiple=True,
+    help="Allow a channel trust level for channel-scoped threads. Repeatable.",
+)
+@click.option("--channel-binding", default="", help="Exact channel binding to match.")
+@click.option("--session-scope-id", default="", help="Session id for session-scoped threads.")
 def thread_close(
     thread_id: str,
     reason: str,
     user_id: str | None,
     workspace_id: str | None,
     include_unowned: bool,
+    scope_filter: tuple[str, ...],
+    allowed_channel_trusts: tuple[str, ...],
+    channel_binding: str,
+    session_scope_id: str,
 ) -> None:
     config = _get_config()
     payload: dict[str, object] = {"thread_id": thread_id, "reason": reason}
@@ -3482,6 +3603,14 @@ def thread_close(
             user_id,
             workspace_id,
             include_unowned=include_unowned,
+        )
+    )
+    payload.update(
+        _thread_context_filter_payload(
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=session_scope_id,
         )
     )
     result = rpc_call(config, "thread.close", payload, response_model=ThreadMutationResult)
@@ -3498,12 +3627,31 @@ def thread_close(
     is_flag=True,
     help="Include legacy unowned entries with the selected owner.",
 )
+@click.option(
+    "--scope",
+    "scope_filter",
+    multiple=True,
+    type=click.Choice(["session", "project", "user", "channel", "workspace"]),
+    help="Restrict thread visibility to a memory scope. Repeat for multiple scopes.",
+)
+@click.option(
+    "--allowed-channel-trust",
+    "allowed_channel_trusts",
+    multiple=True,
+    help="Allow a channel trust level for channel-scoped threads. Repeatable.",
+)
+@click.option("--channel-binding", default="", help="Exact channel binding to match.")
+@click.option("--session-scope-id", default="", help="Session id for session-scoped threads.")
 def thread_why(
     query: str,
     thread_id: str,
     user_id: str | None,
     workspace_id: str | None,
     include_unowned: bool,
+    scope_filter: tuple[str, ...],
+    allowed_channel_trusts: tuple[str, ...],
+    channel_binding: str,
+    session_scope_id: str,
 ) -> None:
     config = _get_config()
     payload: dict[str, object] = {"query": query}
@@ -3514,6 +3662,14 @@ def thread_why(
             user_id,
             workspace_id,
             include_unowned=include_unowned,
+        )
+    )
+    payload.update(
+        _thread_context_filter_payload(
+            scope_filter=scope_filter,
+            allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
+            session_scope_id=session_scope_id,
         )
     )
     result = rpc_call(config, "thread.why", payload, response_model=ThreadWhyResult)

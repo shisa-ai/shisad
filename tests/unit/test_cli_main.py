@@ -1208,6 +1208,107 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
 
 
+def test_thread_cli_forwards_context_filter_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    payloads: dict[str, dict[str, object]] = {
+        "thread.list": {"threads": [], "count": 0, "filters": {}},
+        "thread.inspect": {
+            "found": False,
+            "thread": None,
+            "packet": None,
+            "selection": {},
+        },
+        "thread.resume": {"changed": False, "thread_id": "thr-1", "thread": None},
+        "thread.close": {"changed": False, "thread_id": "thr-1", "thread": None},
+        "thread.why": {
+            "selected": False,
+            "thread": None,
+            "selection": {},
+            "packet": None,
+        },
+    }
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = payloads[method]
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+    context_flags = [
+        "--user",
+        "alice",
+        "--workspace",
+        "ws-1",
+        "--scope",
+        "session",
+        "--scope",
+        "user",
+        "--allowed-channel-trust",
+        "command",
+        "--channel-binding",
+        "discord:ws-1:room-7",
+        "--session-scope-id",
+        "session-1",
+    ]
+    expected_context = {
+        "user_id": "alice",
+        "workspace_id": "ws-1",
+        "scope_filter": ["session", "user"],
+        "allowed_channel_trusts": ["command"],
+        "channel_binding": "discord:ws-1:room-7",
+        "session_scope_id": "session-1",
+    }
+
+    _invoke_ok(runner, ["thread", "list", *context_flags])
+    _invoke_ok(runner, ["thread", "inspect", "thr-1", *context_flags])
+    _invoke_ok(runner, ["thread", "resume", "thr-1", *context_flags])
+    _invoke_ok(runner, ["thread", "close", "thr-1", "--reason", "done", *context_flags])
+    _invoke_ok(
+        runner,
+        [
+            "thread",
+            "why",
+            "resume Launch review thread",
+            "--thread-id",
+            "thr-1",
+            *context_flags,
+        ],
+    )
+
+    assert calls == [
+        ("thread.list", {"limit": 20, "state": "open", **expected_context}),
+        ("thread.inspect", {"thread_id": "thr-1", **expected_context}),
+        ("thread.resume", {"thread_id": "thr-1", **expected_context}),
+        (
+            "thread.close",
+            {"thread_id": "thr-1", "reason": "done", **expected_context},
+        ),
+        (
+            "thread.why",
+            {
+                "query": "resume Launch review thread",
+                "thread_id": "thr-1",
+                **expected_context,
+            },
+        ),
+    ]
+
+
 def test_action_list_empty_message_matches_requested_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
