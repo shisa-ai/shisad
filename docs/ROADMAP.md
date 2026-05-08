@@ -303,7 +303,7 @@ TOTP entry remain deferred to `v0.8.0`.
 - Retrieval/schema precision and telemetry hardening
 - Memory poisoning and persistence-policy regression closure
 
-#### v0.7.3 — Open threads + procedural memory pilot
+#### v0.7.3 — Open threads + procedural memory pilot + timeline search
 
 - User-visible thread controls (list, inspect, resume, close, why/explain) on
   top of the v0.7.0 Active Attention surface. Pin/snooze are deferred to v0.8
@@ -311,8 +311,11 @@ TOTP entry remain deferred to `v0.8.0`.
 - Proactive thread surfacing for waiting/blocked items.
 - Review-gated procedural / experience memory pilot for trace-derived reusable
   artifacts, with default-deny retrieval and explicit promotion.
-- Operator upgrade/admin UX: snapshot/backup and migration status/finalize
-  commands.
+- Explicit timeline/archive search and read surfaces over owner-scoped prior
+  sessions, with archival evidence labeling, fuzzy time bounds, redaction, and
+  promotion through existing memory write gates. Model-backed enrichment and
+  operator snapshot/migration UX remain follow-up work unless promoted during
+  release close.
 
 ### v0.8 — UX overhaul
 
@@ -362,7 +365,7 @@ TOTP entry remain deferred to `v0.8.0`.
 | Long-term memory | v0.7 |
 | Command-chat UX bug fixes (no-regex, lockdown recovery, state inspection) | v0.7.1 |
 | Memory hardening + benchmark closure | v0.7.2 |
-| Open-threads UX + procedural memory pilot + operator admin UX | v0.7.3 |
+| Open-threads UX + procedural memory pilot + timeline search | v0.7.3 |
 | UX overhaul + operator web UI | v0.8 |
 | Security infrastructure consolidation | v0.9 |
 | Multitenant support | v0.10 |
@@ -380,7 +383,7 @@ TOTP entry remain deferred to `v0.8.0`.
 9. Durable memory with gated writes (`v0.7`)
 10. Command-chat bug-fix point release (`v0.7.1`)
 11. Memory hardening + benchmark closure (`v0.7.2`)
-12. Open threads + procedural memory pilot (`v0.7.3`)
+12. Open threads + procedural memory pilot + timeline search (`v0.7.3`)
 13. UX overhaul and operator web UI (`v0.8`)
 14. Security infrastructure consolidation (`v0.9`)
 15. Multi-tenant support (`v0.10`)

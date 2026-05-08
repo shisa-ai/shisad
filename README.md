@@ -268,6 +268,19 @@ demos or workspaces where ordinary chat should not create automatic memory, set
 `SHISAD_MEMORY_AUTO_EXTRACTION_CONFIDENCE_THRESHOLD` from `0` toward `1` to keep
 only higher-confidence automatic extraction proposals.
 
+### Timeline search
+
+```bash
+uv run shisad memory timeline search "what did we decide last week?" --user alice --workspace demo
+uv run shisad memory timeline read <timeline-handle> --user alice --workspace demo
+uv run shisad memory timeline promote <timeline-handle> --type fact --key project/decision --user alice --workspace demo
+```
+
+Timeline search is explicit-pull only. Results are archival evidence from prior
+session transcripts, not current user instructions, and shared/public channel
+contexts do not reveal owner-private history unless private history is
+explicitly allowed for that request.
+
 ### Notes and todos
 
 ```bash
