@@ -143,9 +143,10 @@ class TimelineIndex:
             "thread_id",
         )
         related_memory_ids = _metadata_list(metadata, "related_memory_ids")
-        memory_entry_id = _metadata_value(metadata, "memory_entry_id")
-        if memory_entry_id:
-            related_memory_ids.append(memory_entry_id)
+        for key in ("memory_entry_id", "retrieval_chunk_id", "active_thread_id"):
+            related_id = _metadata_value(metadata, key)
+            if related_id:
+                related_memory_ids.append(related_id)
         taint_labels = [str(label) for label in entry.taint_labels]
         indexed_content = _timeline_index_content(content, taint_labels)
         payload = (

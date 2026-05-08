@@ -229,6 +229,49 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
     assert confirmed.results[0].publication_state == "private_history_share_confirmed"
 
 
+def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    shared_session = sessions.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        shared_session.id,
+        role="user",
+        content="Shared channel lunch note: tempura was the group order.",
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+        metadata={
+            "visibility": "channel_shared",
+            "related_memory_ids": ["mem-lunch"],
+            "retrieval_chunk_id": "chunk-lunch",
+            "selected_thread_id": "thread-lunch",
+        },
+    )
+
+    result = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+
+    assert result.results_count == 1
+    hit = result.results[0]
+    assert hit.publication_state == "channel_visible"
+    assert hit.thread_id == "thread-lunch"
+    assert hit.content_digest
+    assert hit.related_memory_ids == ["chunk-lunch", "mem-lunch"]
+
+
 def test_m5_timeline_redacts_high_sensitivity_rows(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
@@ -320,6 +363,44 @@ def test_m5_timeline_read_rejects_deleted_or_stale_rows(tmp_path) -> None:
     assert read.reason == "timeline_row_stale"
     assert timeline.search(
         query="archive result",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    ).results == []
+
+
+def test_m5_timeline_search_rejects_truncated_rows(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Truncated timeline row should disappear.",
+        timestamp=datetime(2026, 5, 2, 8, 0, tzinfo=UTC),
+    )
+    assert timeline.search(
+        query="truncated timeline",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    ).results_count == 1
+
+    transcripts.truncate(session.id, keep_entries=0)
+
+    assert timeline.search(
+        query="truncated timeline",
         user_id="alice",
         workspace_id="ws1",
         context_channel="cli",
