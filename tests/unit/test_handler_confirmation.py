@@ -392,6 +392,26 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
     )
 
 
+def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+
+    harness._append_confirmed_tool_output_transcript(
+        pending=pending,
+        tool_output=SimpleNamespace(
+            content="confirmed search result",
+            taint_labels=set(),
+            success=True,
+        ),
+        decision_timestamp="2026-05-08T17:15:00+00:00",
+    )
+
+    entries = harness._transcript_store.list_entries(SessionId("s-1"))
+    assert len(entries) == 1
+    assert entries[0].metadata["user_id"] == "alice"
+    assert entries[0].metadata["workspace_id"] == "w-1"
+
+
 def _register_totp_factor(
     harness: _ConfirmationImplHarness,
     *,
@@ -1316,6 +1336,8 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
     transcript_entries = harness._transcript_store.list_entries(SessionId("s-1"))
     assert transcript_entries[-1].metadata["promoted_evidence"] is True
     assert transcript_entries[-1].metadata["promoted_ref_id"] == ref.ref_id
+    assert transcript_entries[-1].metadata["user_id"] == "alice"
+    assert transcript_entries[-1].metadata["workspace_id"] == "w-1"
 
 
 @pytest.mark.asyncio

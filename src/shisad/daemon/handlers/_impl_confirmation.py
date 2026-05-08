@@ -150,6 +150,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "tool_success": bool(getattr(tool_output, "success", False)),
             "timestamp_utc": decision_timestamp,
         }
+        pending_user_id = str(getattr(pending, "user_id", "")).strip()
+        pending_workspace_id = str(getattr(pending, "workspace_id", "")).strip()
+        if pending_user_id:
+            metadata["user_id"] = pending_user_id
+        if pending_workspace_id:
+            metadata["workspace_id"] = pending_workspace_id
         delivery_target = getattr(pending, "delivery_target", None)
         if delivery_target is not None:
             if hasattr(delivery_target, "model_dump"):
@@ -1643,6 +1649,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         "channel": str(session.channel),
                         "timestamp_utc": datetime.now(UTC).isoformat(),
                         "session_mode": session.mode.value,
+                        "user_id": str(pending.user_id),
+                        "workspace_id": str(pending.workspace_id),
                         "promoted_evidence": True,
                         "promoted_ref_id": target_ref_id,
                     },
