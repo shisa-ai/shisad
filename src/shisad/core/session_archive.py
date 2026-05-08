@@ -25,6 +25,7 @@ _SESSION_PATH = "session.json"
 _TRANSCRIPT_PATH = "transcript.json"
 _CHECKPOINT_PREFIX = "checkpoints/"
 _ARCHIVE_SUFFIX = ".shisad-session.zip"
+_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY = "_archive_imported"
 _ARCHIVE_MAX_MEMBER_BYTES = 64 * 1024 * 1024
 _ARCHIVE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 _ARCHIVE_MAX_MEMBER_COUNT = 2048
@@ -42,6 +43,7 @@ _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA = frozenset(
 _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA = frozenset(
     {
         "archived_evidence_ref_id",
+        _ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY,
         "provenance",
         "source_origin",
         "source_surface",
@@ -422,6 +424,7 @@ class SessionArchiveManager:
         if not isinstance(metadata, dict):
             raise SessionArchiveError("invalid_transcript_row_metadata")
         metadata = _sanitize_imported_transcript_metadata(metadata)
+        metadata[_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY] = True
         parsed_timestamp = datetime.fromisoformat(timestamp)
         taints: set[TaintLabel] = set()
         for label in row.get("taint_labels", []):

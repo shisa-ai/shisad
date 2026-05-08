@@ -302,8 +302,10 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     poisoned = tmp_path / "poisoned-publication.shisad-session.zip"
     members = _read_archive_members(exported.archive_path)
     transcript_payload = json.loads(members["transcript.json"].decode("utf-8"))
+    transcript_payload[0]["role"] = "tool"
     transcript_payload[0]["metadata"].update(
         {
+            "_archive_imported": False,
             "channel": "slack",
             "delivery_target": {
                 "channel": "discord",
@@ -348,6 +350,7 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
         "workspace_id",
     ):
         assert key not in imported_entries[0].metadata
+    assert imported_entries[0].metadata["_archive_imported"] is True
 
     timeline = TimelineIndex(
         tmp_path / "timeline",
@@ -377,6 +380,7 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
         context_channel="cli",
     )
     assert owner.results_count == 1
+    assert owner.results[0].role == "tool"
     assert owner.results[0].source_surface == "channel_message"
     assert owner.results[0].provenance == "external_message:discord"
 

@@ -58,6 +58,7 @@ _SEARCH_STOP_WORDS = {
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 _HIGH_SENSITIVITY_TAINTS = frozenset({"credentials", "system"})
 _TIMELINE_REDACTED_CONTENT = "[REDACTED:timeline_sensitive]"
+_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY = "_archive_imported"
 _KNOWN_TIME_PHRASES = (
     "last week",
     "last monday",
@@ -933,6 +934,10 @@ def _timeline_source_surface(
     channel: str,
     metadata: dict[str, Any],
 ) -> str:
+    if _timeline_archive_imported(metadata):
+        if _normalize_channel(channel) not in {"", "cli"}:
+            return "channel_message"
+        return "transcript"
     explicit = _metadata_value(metadata, "source_surface")
     if explicit:
         return explicit
@@ -957,6 +962,10 @@ def _timeline_provenance(
     metadata: dict[str, Any],
     evidence_ref_id: str,
 ) -> str:
+    if _timeline_archive_imported(metadata):
+        if _normalize_channel(channel) not in {"", "cli"}:
+            return f"external_message:{_normalize_channel(channel) or 'channel'}"
+        return "archive_imported_transcript"
     explicit = _metadata_value(metadata, "provenance")
     if explicit:
         return explicit
@@ -996,6 +1005,10 @@ def _parse_datetime(value: str) -> datetime:
 def _metadata_value(metadata: dict[str, Any], key: str) -> str:
     value = metadata.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _timeline_archive_imported(metadata: dict[str, Any]) -> bool:
+    return metadata.get(_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY) is True
 
 
 def _metadata_list(metadata: dict[str, Any], key: str) -> list[str]:
