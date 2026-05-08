@@ -38,6 +38,8 @@ _SEARCH_STOP_WORDS = {
     "since",
     "sunday",
     "saturday",
+    "talk",
+    "talked",
     "thursday",
     "tuesday",
     "the",
@@ -64,6 +66,7 @@ _KNOWN_TIME_PHRASES = (
     "last friday",
     "last saturday",
     "last sunday",
+    "lately",
     "recently",
     "this month",
 )
@@ -623,7 +626,7 @@ def resolve_timeline_query(
         resolver.confidence = 0.0
         resolver.caveats.append("relative_anchor_unresolved")
         return resolver
-    if _contains_phrase(query_l, "recently"):
+    if _contains_phrase(query_l, "recently") or _contains_phrase(query_l, "lately"):
         resolver.since = _normalize_datetime(local_now - timedelta(days=30))
         resolver.until = normalized_now
         resolver.recency_window_source = "default_30d"

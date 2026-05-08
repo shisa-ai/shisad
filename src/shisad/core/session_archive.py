@@ -429,11 +429,14 @@ def _sha256_bytes(payload: bytes) -> str:
 
 
 def _sanitize_imported_transcript_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    return {
+    sanitized = {
         str(key): value
         for key, value in metadata.items()
         if str(key) not in _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA
     }
+    if str(metadata.get("visibility", "")).strip() == "owner_private":
+        sanitized["visibility"] = "owner_private"
+    return sanitized
 
 
 def _sanitize_imported_session_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -472,18 +475,23 @@ def _rewrite_checkpoint_session_ids(
     original_session_id: SessionId,
     imported_session_id: SessionId,
 ) -> dict[str, Any]:
-    def _looks_like_session_payload(payload: dict[str, Any]) -> bool:
-        return "id" in payload and {
+    def _looks_like_session_payload(payload: dict[str, Any], *, parent_key: str) -> bool:
+        if "id" not in payload:
+            return False
+        if parent_key == "session":
+            return True
+        return {
             "channel",
             "user_id",
             "workspace_id",
-            "session_key",
+            "mode",
+            "role",
         }.issubset(payload)
 
     def _rewrite(value: Any, *, parent_key: str = "") -> Any:
         if isinstance(value, dict):
             rewritten = {key: _rewrite(item, parent_key=key) for key, item in value.items()}
-            if _looks_like_session_payload(rewritten):
+            if _looks_like_session_payload(rewritten, parent_key=parent_key):
                 rewritten["id"] = str(imported_session_id)
                 metadata = rewritten.get("metadata")
                 if isinstance(metadata, dict):

@@ -424,6 +424,7 @@ def test_m5_session_archive_import_strips_checkpoint_delivery_target_metadata(
     )
     checkpoint_session = session.model_dump(mode="json")
     checkpoint_session["id"] = "forged-checkpoint-session-id"
+    checkpoint_session.pop("session_key", None)
     checkpoint_session["metadata"] = {
         "delivery_target": {
             "channel": "discord",
@@ -448,6 +449,69 @@ def test_m5_session_archive_import_strips_checkpoint_delivery_target_metadata(
     restored = session_manager.restore_from_checkpoint(imported_checkpoint)
     assert restored.id == imported.session.id
     assert "delivery_target" not in restored.metadata
+
+
+def test_m5_session_archive_import_preserves_owner_private_visibility(
+    tmp_path: Path,
+) -> None:
+    (
+        session_manager,
+        transcript_store,
+        _checkpoint_store,
+        lockdown,
+        archive_manager,
+    ) = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    lockdown.set_level(session.id, level=LockdownLevel.NORMAL, reason="archive", trigger="manual")
+    transcript_store.append(
+        session.id,
+        role="user",
+        content="Private imported channel note mentions soba lunch.",
+        metadata={"visibility": "owner_private"},
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+    )
+
+    exported = archive_manager.export_session(session.id)
+    imported = archive_manager.import_archive(exported.archive_path)
+    imported_entries = transcript_store.list_entries(imported.session.id)
+    assert imported_entries[0].metadata["visibility"] == "owner_private"
+    assert "delivery_target" not in imported_entries[0].metadata
+
+    timeline = TimelineIndex(
+        tmp_path / "timeline-private-import",
+        transcript_store=transcript_store,
+        session_lookup=session_manager.get,
+    )
+    timeline.rebuild_session(imported.session.id)
+
+    unbound = timeline.search(
+        query="soba lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        allow_private_history=True,
+    )
+    assert unbound.results == []
+
+    bound = timeline.search(
+        query="soba lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+        allow_private_history=True,
+    )
+    assert bound.results_count == 1
+    assert bound.results[0].publication_state == "private_history_share_confirmed"
 
 
 def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> None:

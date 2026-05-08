@@ -267,6 +267,85 @@ def test_m5_timeline_search_stopword_only_unbounded_requires_clarification(
     assert "meaningful_query_required" in result.resolver.caveats
 
 
+def test_m5_timeline_search_last_tuesday_talk_question_does_not_require_talk_token(
+    tmp_path,
+) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Alice mentioned the Ledger issue over lunch.",
+        timestamp=datetime(2026, 5, 5, 12, 0, tzinfo=UTC),
+    )
+
+    result = timeline.search(
+        query="Who did I talk to last Tuesday?",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.resolver.recency_window_source == "calendar_day"
+    assert result.results_count == 1
+    assert "Alice mentioned" in result.results[0].snippet
+
+
+def test_m5_timeline_search_lately_uses_default_recency_window(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="We went to Bar Neko for ramen.",
+        timestamp=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="We went to Bar Neko before the old launch.",
+        timestamp=datetime(2026, 2, 1, 12, 0, tzinfo=UTC),
+    )
+
+    result = timeline.search(
+        query="Have we been to Bar Neko lately?",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.resolver.recency_window_source == "default_30d"
+    assert result.results_count == 1
+    assert "ramen" in result.results[0].snippet
+
+
 def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
