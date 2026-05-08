@@ -3467,8 +3467,18 @@ def test_m4_procedure_experience_ingest_requires_trace_provenance(
     assert fake_pool_hash.reason == "procedure_candidate_trace_provenance_unverified"
 
 
+@pytest.mark.parametrize(
+    "bad_target_key",
+    [
+        "skill:release-close\n+++ forged diff label",
+        "skill:release-close\x85+++ forged diff label",
+        "skill:release-close\u2028+++ forged diff label",
+        "skill:release-close\u2029+++ forged diff label",
+    ],
+)
 def test_m4_procedure_experience_ingest_rejects_target_key_control_chars(
     tmp_path: Path,
+    bad_target_key: str,
 ) -> None:
     manager = MemoryManager(tmp_path / "memory")
     artifact = "Release close checklist"
@@ -3476,7 +3486,7 @@ def test_m4_procedure_experience_ingest_rejects_target_key_control_chars(
         key="procedure:bad-target-key",
         artifact=artifact,
         target_entry_type="skill",
-        target_key="skill:release-close\n+++ forged diff label",
+        target_key=bad_target_key,
         trace_ids=["trace-target-key"],
         trace_pool_hash=build_procedure_trace_pool_hash(artifact, ["trace-target-key"]),
         source=MemorySource(
@@ -3509,7 +3519,7 @@ def test_m4_procedure_experience_review_rejects_stored_target_key_control_chars(
         value={
             "artifact": artifact,
             "target_entry_type": "skill",
-            "target_key": "skill:release-close\n+++ forged diff label",
+            "target_key": "skill:release-close\u2028+++ forged diff label",
             "trace_ids": ["trace-stored-target-key"],
             "trace_pool_hash": build_procedure_trace_pool_hash(
                 artifact,

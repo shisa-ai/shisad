@@ -1028,6 +1028,7 @@ class MemoryManager:
         candidate_id: str,
         *,
         ingress_handle_id: str | None = None,
+        backfill_legacy: bool = True,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
@@ -1060,6 +1061,7 @@ class MemoryManager:
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
+            persist=backfill_legacy,
         )
         approval_payload = self._procedure_candidate_approval_payload(candidate.id, packet)
         return {
@@ -2753,7 +2755,12 @@ class MemoryManager:
 
     @staticmethod
     def _procedure_candidate_target_key_safe(target_key: str) -> bool:
-        return not any(ord(char) < 32 or ord(char) == 127 for char in target_key)
+        return not any(
+            ord(char) < 32
+            or 0x7F <= ord(char) <= 0x9F
+            or char in {"\u2028", "\u2029"}
+            for char in target_key
+        )
 
     @staticmethod
     def _procedure_candidate_approval_payload(candidate_id: str, packet: dict[str, Any]) -> str:
@@ -2847,6 +2854,7 @@ class MemoryManager:
         user_id: str | None,
         workspace_id: str | None,
         include_unowned: bool,
+        persist: bool = True,
     ) -> dict[str, Any]:
         value = candidate.value if isinstance(candidate.value, dict) else {}
         legacy_packet = (
@@ -2890,6 +2898,10 @@ class MemoryManager:
         if expected_diff_preview:
             updated["diff_preview"] = expected_diff_preview
         updated["review_packet_backfill_reason"] = "legacy_procedure_candidate_review_packet"
+
+        if not persist:
+            preview = candidate.model_copy(update={"value": updated})
+            return self._procedure_candidate_packet(preview)
 
         candidate.value = updated
         self._persist_entry(candidate)

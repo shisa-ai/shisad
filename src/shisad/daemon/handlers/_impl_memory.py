@@ -1098,6 +1098,7 @@ class MemoryImplMixin(HandlerMixinBase):
         review = self._memory_manager.describe_procedure_candidate(
             candidate_id,
             ingress_handle_id=context.handle_id,
+            backfill_legacy=False,
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
