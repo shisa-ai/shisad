@@ -11,6 +11,7 @@ from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager, MemorySource
 from shisad.memory.remap import digest_memory_value
+from shisad.memory.surfaces.procedural import build_procedure_trace_pool_hash
 from shisad.memory.trust import TrustGateViolation
 
 
@@ -424,6 +425,140 @@ async def test_memory_promote_skill_derives_tool_install_context_from_tool_outpu
     install_context = harness._memory_ingress_registry.resolve(str(entry["ingress_handle_id"]))
     assert install_context.confirmation_status == "pep_approved"
     assert install_context.scope == "user"
+
+
+@pytest.mark.asyncio
+async def test_m4_memory_promote_procedure_candidate_uses_promotion_ingress_for_legacy_backfill(
+    tmp_path: Path,
+) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    harness = _MemoryWriteHarness(
+        tmp_path,
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    current = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCurrent version",
+        source=MemorySource(
+            origin="user",
+            source_id="skill-current",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="skill-current",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert current.entry is not None
+    artifact = "Release close checklist\nCandidate version"
+    legacy_candidate = harness._memory_manager.write_with_provenance(
+        entry_type="procedure_experience",
+        key="procedure:legacy-release-close-handler",
+        value={
+            "artifact": artifact,
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+            "trace_ids": ["trace-legacy-handler"],
+            "trace_pool_hash": "legacy-producer-hash",
+            "scanner": {"verdict": "pass", "findings": []},
+            "review": {
+                "status": "pending",
+                "reviewer": "",
+                "approved_at": None,
+                "rejected_at": None,
+                "rejected_reason": "",
+            },
+            "promotion": {
+                "status": "candidate",
+                "promoted_entry_id": "",
+                "rollback_entry_id": "",
+            },
+            "diff_preview": "+ producer supplied legacy diff",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-legacy-handler",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pending_review",
+        source_id="trace2skill-legacy-handler",
+        scope="user",
+        confirmation_satisfied=False,
+        ingress_handle_id="handle-procedure-legacy-handler",
+        content_digest="digest-procedure-legacy-handler",
+        invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert legacy_candidate.entry is not None
+    expected_diff = harness._memory_manager._procedure_candidate_diff_preview(
+        artifact=artifact,
+        target_entry_type="skill",
+        target_key="skill:release-close",
+        scope="user",
+        user_id="alice",
+        workspace_id="ws1",
+        include_unowned=False,
+    )
+    approval_payload = harness._memory_manager._procedure_candidate_approval_payload(
+        legacy_candidate.entry.id,
+        {
+            "artifact": artifact,
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                artifact,
+                ["trace-legacy-handler"],
+            ),
+            "scanner": {"verdict": "pass", "findings": []},
+            "diff_preview": expected_diff,
+        },
+    )
+    promotion_context = harness._memory_ingress_registry.mint(
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        scope="user",
+        source_id="operator-promote-legacy-handler",
+        content=approval_payload,
+    )
+
+    result = await harness.do_memory_promote_procedure_candidate(
+        {
+            "ingress_context": promotion_context.handle_id,
+            "candidate_id": legacy_candidate.entry.id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "reviewer": "operator",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    backfill_event = harness._memory_manager.list_events(
+        entry_id=legacy_candidate.entry.id,
+        event_type="procedure_candidate_review_packet_backfilled",
+        limit=10,
+    )[0]
+    assert backfill_event.ingress_handle_id == promotion_context.handle_id
+    assert (
+        "memory.procedure_candidate_review_packet_backfilled",
+        {
+            "candidate_id": legacy_candidate.entry.id,
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+            "ingress_handle_id": promotion_context.handle_id,
+        },
+    ) in audits
 
 
 @pytest.mark.asyncio

@@ -5737,6 +5737,31 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
                 "workspace_id": "ws1",
             },
         )
+    bad_target_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=artifact,
+        source_type="tool",
+        source_id="trace2skill-bad-target-contract",
+    )
+    bad_target = await contract_harness.client.call(
+        "memory.ingest_procedure_candidate",
+        {
+            "ingress_context": bad_target_ingress["ingress_context"],
+            "artifact": artifact,
+            "key": "procedure:bad-target-contract",
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close\n+++ forged diff label",
+            "trace_ids": ["trace-bad-target-1"],
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                artifact,
+                ["trace-bad-target-1"],
+            ),
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+    assert bad_target.get("kind") == "reject"
+    assert bad_target.get("reason") == "procedure_candidate_target_invalid"
 
     review_queue = await contract_harness.client.call(
         "memory.list_review_queue",
@@ -5762,9 +5787,20 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     )
     assert marker not in json.dumps(retrieved.get("results", []), sort_keys=True)
 
+    review_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=f"review procedure candidate {candidate_id}",
+        source_type="user",
+        user_confirmed=True,
+    )
     review = await contract_harness.client.call(
         "memory.review_procedure_candidate",
-        {"candidate_id": candidate_id, "user_id": "alice", "workspace_id": "ws1"},
+        {
+            "ingress_context": review_ingress["ingress_context"],
+            "candidate_id": candidate_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     assert review.get("found") is True
     review_candidate = review.get("candidate") or {}
@@ -5973,9 +6009,20 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     poisoned_id = str(poisoned_entry.get("id", "")).strip()
     assert poisoned_id
 
+    poisoned_review_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=f"review procedure candidate {poisoned_id}",
+        source_type="user",
+        user_confirmed=True,
+    )
     poisoned_review = await contract_harness.client.call(
         "memory.review_procedure_candidate",
-        {"candidate_id": poisoned_id, "user_id": "alice", "workspace_id": "ws1"},
+        {
+            "ingress_context": poisoned_review_ingress["ingress_context"],
+            "candidate_id": poisoned_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     poisoned_review_candidate = poisoned_review.get("candidate", {})
     assert poisoned_review_candidate.get("scanner", {}).get("verdict") == "fail"
@@ -6028,9 +6075,20 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     )
     raw_secret_id = str((raw_secret.get("entry") or {}).get("id", "")).strip()
     assert raw_secret_id
+    raw_secret_review_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=f"review procedure candidate {raw_secret_id}",
+        source_type="user",
+        user_confirmed=True,
+    )
     raw_secret_review = await contract_harness.client.call(
         "memory.review_procedure_candidate",
-        {"candidate_id": raw_secret_id, "user_id": "alice", "workspace_id": "ws1"},
+        {
+            "ingress_context": raw_secret_review_ingress["ingress_context"],
+            "candidate_id": raw_secret_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     raw_secret_candidate = raw_secret_review.get("candidate") or {}
     assert raw_secret_candidate.get("scanner", {}).get("verdict") == "fail"

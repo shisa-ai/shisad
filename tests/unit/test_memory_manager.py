@@ -2654,6 +2654,7 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
 
     reviewed = manager.describe_procedure_candidate(
         legacy_candidate.entry.id,
+        ingress_handle_id="handle-procedure-review-legacy",
         user_id="alice",
         workspace_id="ws1",
     )
@@ -2681,7 +2682,7 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
         event_type="procedure_candidate_review_packet_backfilled",
         limit=10,
     )[0]
-    assert backfill_event.ingress_handle_id == "handle-procedure-legacy"
+    assert backfill_event.ingress_handle_id == "handle-procedure-review-legacy"
     assert backfill_event.metadata_json["target_entry_type"] == "skill"
     assert backfill_event.metadata_json["target_key"] == "skill:release-close"
     assert (
@@ -2694,6 +2695,7 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
             "candidate_id": legacy_candidate.entry.id,
             "target_entry_type": "skill",
             "target_key": "skill:release-close",
+            "ingress_handle_id": "handle-procedure-review-legacy",
         },
     ) in audits
 
@@ -3463,6 +3465,37 @@ def test_m4_procedure_experience_ingest_requires_trace_provenance(
     )
     assert fake_pool_hash.kind == "reject"
     assert fake_pool_hash.reason == "procedure_candidate_trace_provenance_unverified"
+
+
+def test_m4_procedure_experience_ingest_rejects_target_key_control_chars(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    artifact = "Release close checklist"
+    decision = manager.ingest_procedure_candidate(
+        key="procedure:bad-target-key",
+        artifact=artifact,
+        target_entry_type="skill",
+        target_key="skill:release-close\n+++ forged diff label",
+        trace_ids=["trace-target-key"],
+        trace_pool_hash=build_procedure_trace_pool_hash(artifact, ["trace-target-key"]),
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-target-key",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+        source_id="trace2skill-target-key",
+        scope="user",
+        ingress_handle_id="handle-target-key",
+        content_digest="digest-target-key",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert decision.kind == "reject"
+    assert decision.reason == "procedure_candidate_target_invalid"
 
 
 def test_m4_reject_procedure_experience_candidate_tombstones_auditably(

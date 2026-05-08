@@ -915,7 +915,11 @@ class MemoryManager:
         normalized_trace_pool_hash = str(trace_pool_hash).strip()
         if not normalized_key:
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_key_required")
-        if normalized_target_type not in PROCEDURAL_ENTRY_TYPES or not normalized_target_key:
+        if (
+            normalized_target_type not in PROCEDURAL_ENTRY_TYPES
+            or not normalized_target_key
+            or not self._procedure_candidate_target_key_safe(normalized_target_key)
+        ):
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_target_invalid")
         if not normalized_trace_ids or not normalized_trace_pool_hash:
             return MemoryWriteDecision(
@@ -1024,6 +1028,7 @@ class MemoryManager:
         self,
         candidate_id: str,
         *,
+        ingress_handle_id: str | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
@@ -1043,6 +1048,7 @@ class MemoryManager:
             candidate,
             packet,
             scope=str(candidate.scope),
+            ingress_handle_id=ingress_handle_id,
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
@@ -1202,6 +1208,7 @@ class MemoryManager:
             candidate,
             packet,
             scope=scope,
+            ingress_handle_id=ingress_handle_id,
             user_id=effective_user_id,
             workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
@@ -2722,6 +2729,10 @@ class MemoryManager:
         return {"verdict": verdict, "findings": sorted(findings)}
 
     @staticmethod
+    def _procedure_candidate_target_key_safe(target_key: str) -> bool:
+        return not any(ord(char) < 32 or ord(char) == 127 for char in target_key)
+
+    @staticmethod
     def _procedure_candidate_approval_payload(candidate_id: str, packet: dict[str, Any]) -> str:
         scanner = packet["scanner"]
         payload = {
@@ -2809,6 +2820,7 @@ class MemoryManager:
         packet: dict[str, Any],
         *,
         scope: str,
+        ingress_handle_id: str | None,
         user_id: str | None,
         workspace_id: str | None,
         include_unowned: bool,
@@ -2858,10 +2870,11 @@ class MemoryManager:
 
         candidate.value = updated
         self._persist_entry(candidate)
+        review_ingress_handle_id = ingress_handle_id or candidate.ingress_handle_id
         self._record_event(
             entry=candidate,
             event_type="procedure_candidate_review_packet_backfilled",
-            ingress_handle_id=candidate.ingress_handle_id,
+            ingress_handle_id=review_ingress_handle_id,
             metadata={
                 "target_entry_type": str(packet["target_entry_type"]),
                 "target_key": str(packet["target_key"]),
@@ -2874,6 +2887,7 @@ class MemoryManager:
                 "candidate_id": candidate.id,
                 "target_entry_type": str(packet["target_entry_type"]),
                 "target_key": str(packet["target_key"]),
+                "ingress_handle_id": review_ingress_handle_id,
             },
         )
         return self._procedure_candidate_packet(candidate)

@@ -1018,11 +1018,16 @@ class MemoryImplMixin(HandlerMixinBase):
         self,
         params: Mapping[str, Any],
     ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.review_procedure_candidate")
+        context = self._memory_ingress_registry.resolve(handle_id)
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         return cast(
             dict[str, Any],
             self._memory_manager.describe_procedure_candidate(
                 str(params.get("candidate_id", "")).strip(),
+                ingress_handle_id=context.handle_id,
                 user_id=user_id,
                 workspace_id=workspace_id,
                 include_unowned=bool(params.get("include_unowned", False)),
@@ -1070,6 +1075,7 @@ class MemoryImplMixin(HandlerMixinBase):
         if not handle_id:
             raise ValueError("ingress_context is required for memory.promote_procedure_candidate")
         candidate_id = str(params.get("candidate_id", "")).strip()
+        context = self._memory_ingress_registry.resolve(handle_id)
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         include_unowned = bool(params.get("include_unowned", False))
         candidate = self._memory_manager.get_entry(
@@ -1091,6 +1097,7 @@ class MemoryImplMixin(HandlerMixinBase):
             }
         review = self._memory_manager.describe_procedure_candidate(
             candidate_id,
+            ingress_handle_id=context.handle_id,
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
@@ -1104,7 +1111,6 @@ class MemoryImplMixin(HandlerMixinBase):
                 "entry": None,
             }
         artifact_digest = digest_memory_value(review_candidate.get("artifact"))
-        context = self._memory_ingress_registry.resolve(handle_id)
         self._memory_ingress_registry.validate_binding(
             handle_id,
             content=approval_payload,

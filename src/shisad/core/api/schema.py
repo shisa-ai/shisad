@@ -535,6 +535,7 @@ class MemoryIngestProcedureCandidateParams(_StrictParams):
 
 
 class MemoryProcedureCandidateParams(_StrictParams):
+    ingress_context: str
     candidate_id: str
     user_id: str | None = None
     workspace_id: str | None = None
@@ -542,6 +543,8 @@ class MemoryProcedureCandidateParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_candidate_id(self) -> MemoryProcedureCandidateParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
         if not self.candidate_id.strip():
             raise ValueError("candidate_id is required")
         _require_complete_owner_scope(self)
