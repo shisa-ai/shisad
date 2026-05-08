@@ -3473,6 +3473,8 @@ def test_m4_procedure_experience_ingest_requires_trace_provenance(
     "bad_key",
     [
         "procedure:release-close\n+++ forged diff label",
+        "\u2028procedure:release-close",
+        "procedure:release-close\n",
         "procedure:release-close\x85+++ forged diff label",
         "procedure:release-close\u2028+++ forged diff label",
         "procedure:release-close\u2029+++ forged diff label",
@@ -3514,6 +3516,8 @@ def test_m4_procedure_experience_ingest_rejects_candidate_key_control_chars(
     "bad_target_key",
     [
         "skill:release-close\n+++ forged diff label",
+        "\u2028skill:release-close",
+        "skill:release-close\n",
         "skill:release-close\x85+++ forged diff label",
         "skill:release-close\u2028+++ forged diff label",
         "skill:release-close\u2029+++ forged diff label",
@@ -3562,7 +3566,7 @@ def test_m4_procedure_experience_review_rejects_stored_target_key_control_chars(
         value={
             "artifact": artifact,
             "target_entry_type": "skill",
-            "target_key": "skill:release-close\u2028+++ forged diff label",
+            "target_key": "\u2028skill:release-close",
             "trace_ids": ["trace-stored-target-key"],
             "trace_pool_hash": build_procedure_trace_pool_hash(
                 artifact,
@@ -3652,7 +3656,7 @@ def test_m4_procedure_experience_review_rejects_stored_candidate_key_control_cha
     artifact = "Release close checklist"
     legacy_candidate = manager.write_with_provenance(
         entry_type="procedure_experience",
-        key="procedure:stored-bad-key\u2028+++ forged diff label",
+        key="procedure:stored-bad-key\n",
         value={
             "artifact": artifact,
             "target_entry_type": "skill",

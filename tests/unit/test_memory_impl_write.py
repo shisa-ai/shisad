@@ -846,7 +846,7 @@ async def test_m4_memory_list_review_queue_sanitizes_procedure_candidates(
     assert unsafe_candidate.entry is not None
     unsafe_key_candidate = harness._memory_manager.write_with_provenance(
         entry_type="procedure_experience",
-        key="procedure:queue-unsafe-key\u2028+++ forged diff label",
+        key="\u2028procedure:queue-unsafe-key",
         value={
             "artifact": "Unsafe key artifact",
             "target_entry_type": "skill",

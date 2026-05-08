@@ -453,12 +453,23 @@ class TestApiSchemaValidation:
             MemoryIngestProcedureCandidateParams.model_validate(
                 {**base_params, "key": "procedure:release-close\u2028forged"}
             )
+        with pytest.raises(ValidationError, match="key contains unsafe control characters"):
+            MemoryIngestProcedureCandidateParams.model_validate(
+                {**base_params, "key": "procedure:release-close\n"}
+            )
         with pytest.raises(
             ValidationError,
             match="target_key contains unsafe control characters",
         ):
             MemoryIngestProcedureCandidateParams.model_validate(
                 {**base_params, "target_key": "skill:release-close\u2029forged"}
+            )
+        with pytest.raises(
+            ValidationError,
+            match="target_key contains unsafe control characters",
+        ):
+            MemoryIngestProcedureCandidateParams.model_validate(
+                {**base_params, "target_key": "\u2028skill:release-close"}
             )
 
     def test_m1_memory_ingest_params_accept_handle_bound_shape(self) -> None:

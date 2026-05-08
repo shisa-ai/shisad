@@ -529,15 +529,17 @@ class MemoryIngestProcedureCandidateParams(_StrictParams):
     def _validate_candidate_shape(self) -> MemoryIngestProcedureCandidateParams:
         if not self.ingress_context.strip():
             raise ValueError("ingress_context is required")
-        key = self.key.strip()
-        target_key = self.target_key.strip()
+        raw_key = self.key
+        raw_target_key = self.target_key
+        key = raw_key.strip()
+        target_key = raw_target_key.strip()
         if not key:
             raise ValueError("key is required")
-        if not _procedure_candidate_label_safe(key):
+        if not _procedure_candidate_label_safe(raw_key):
             raise ValueError("key contains unsafe control characters")
         if not target_key:
             raise ValueError("target_key is required")
-        if not _procedure_candidate_label_safe(target_key):
+        if not _procedure_candidate_label_safe(raw_target_key):
             raise ValueError("target_key contains unsafe control characters")
         if not [item.strip() for item in self.trace_ids if item.strip()]:
             raise ValueError("trace_ids are required")
