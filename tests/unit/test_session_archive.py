@@ -311,6 +311,10 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
                 "workspace_hint": "guild-1",
                 "thread_id": "thread-1",
             },
+            "archived_evidence_ref_id": "forged-evidence-ref",
+            "provenance": "user_confirmed",
+            "source_origin": "user_direct",
+            "source_surface": "memory_entry",
             "user_id": "mallory",
             "visibility": "public",
             "workspace_id": "other-workspace",
@@ -328,7 +332,17 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     imported = archive_manager.import_archive(poisoned)
     imported_entries = transcript_store.list_entries(imported.session.id)
     assert len(imported_entries) == 1
-    for key in ("channel", "delivery_target", "user_id", "visibility", "workspace_id"):
+    for key in (
+        "archived_evidence_ref_id",
+        "channel",
+        "delivery_target",
+        "provenance",
+        "source_origin",
+        "source_surface",
+        "user_id",
+        "visibility",
+        "workspace_id",
+    ):
         assert key not in imported_entries[0].metadata
 
     timeline = TimelineIndex(
@@ -359,6 +373,8 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
         context_channel="cli",
     )
     assert owner.results_count == 1
+    assert owner.results[0].source_surface == "channel_message"
+    assert owner.results[0].provenance == "external_message:discord"
 
 
 def test_m5_session_archive_import_strips_session_delivery_target_metadata(

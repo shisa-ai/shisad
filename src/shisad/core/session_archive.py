@@ -39,6 +39,17 @@ _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA = frozenset(
         "workspace_id",
     }
 )
+_UNTRUSTED_TRANSCRIPT_SOURCE_METADATA = frozenset(
+    {
+        "archived_evidence_ref_id",
+        "provenance",
+        "source_origin",
+        "source_surface",
+    }
+)
+_UNTRUSTED_TRANSCRIPT_IMPORT_METADATA = (
+    _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA | _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA
+)
 
 
 class SessionArchiveError(ValueError):
@@ -432,7 +443,7 @@ def _sanitize_imported_transcript_metadata(metadata: dict[str, Any]) -> dict[str
     sanitized = {
         str(key): value
         for key, value in metadata.items()
-        if str(key) not in _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA
+        if str(key) not in _UNTRUSTED_TRANSCRIPT_IMPORT_METADATA
     }
     if str(metadata.get("visibility", "")).strip() == "owner_private":
         sanitized["visibility"] = "owner_private"
