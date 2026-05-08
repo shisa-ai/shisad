@@ -1028,7 +1028,7 @@ class MemoryManager:
         candidate_id: str,
         *,
         ingress_handle_id: str | None = None,
-        backfill_legacy: bool = True,
+        backfill_legacy: bool = False,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,

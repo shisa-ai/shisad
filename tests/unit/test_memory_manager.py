@@ -2655,6 +2655,7 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
     reviewed = manager.describe_procedure_candidate(
         legacy_candidate.entry.id,
         ingress_handle_id="handle-procedure-review-legacy",
+        backfill_legacy=True,
         user_id="alice",
         workspace_id="ws1",
     )
@@ -2786,6 +2787,7 @@ def test_m4_legacy_procedure_experience_reviewed_diff_rejects_stale_target(
 
     reviewed = manager.describe_procedure_candidate(
         legacy_candidate.entry.id,
+        backfill_legacy=True,
         user_id="alice",
         workspace_id="ws1",
     )
