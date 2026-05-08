@@ -158,10 +158,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
             metadata["workspace_id"] = pending_workspace_id
         delivery_target = getattr(pending, "delivery_target", None)
         if delivery_target is not None:
+            delivery_target_payload: dict[str, Any] | None = None
             if hasattr(delivery_target, "model_dump"):
-                metadata["delivery_target"] = delivery_target.model_dump(mode="json")
+                delivery_target_payload = delivery_target.model_dump(mode="json")
             elif isinstance(delivery_target, Mapping):
-                metadata["delivery_target"] = dict(delivery_target)
+                delivery_target_payload = dict(delivery_target)
+            if delivery_target_payload is not None:
+                metadata["delivery_target"] = delivery_target_payload
+                delivery_channel = str(delivery_target_payload.get("channel", "")).strip()
+                if delivery_channel:
+                    metadata["channel"] = delivery_channel
         try:
             self._transcript_store.append(
                 pending.session_id,

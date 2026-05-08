@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
@@ -51,6 +52,7 @@ from shisad.daemon.handlers._pending_approval import (
     PendingPepElevationRequest,
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
+from shisad.memory.timeline import TimelineIndex
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import (
@@ -410,6 +412,48 @@ def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) 
     assert len(entries) == 1
     assert entries[0].metadata["user_id"] == "alice"
     assert entries[0].metadata["workspace_id"] == "w-1"
+
+
+def test_m5_confirmed_tool_output_rebuild_preserves_shared_channel(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-a",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
+    pending.delivery_target = delivery_target
+
+    harness._append_confirmed_tool_output_transcript(
+        pending=pending,
+        tool_output=SimpleNamespace(
+            content="confirmed shared result",
+            taint_labels=set(),
+            success=True,
+        ),
+        decision_timestamp="2026-05-08T18:30:00+00:00",
+    )
+
+    entries = harness._transcript_store.list_entries(SessionId("s-1"))
+    assert entries[0].metadata["channel"] == "discord"
+    timeline = TimelineIndex(
+        tmp_path / "timeline-confirmed-shared",
+        transcript_store=harness._transcript_store,
+        session_lookup=lambda _sid: None,
+    )
+    assert timeline.rebuild_session(SessionId("s-1")) == 1
+
+    result = timeline.search(
+        query="shared result",
+        user_id="alice",
+        workspace_id="w-1",
+        context_channel="discord",
+        context_delivery_target=delivery_target.model_dump(mode="json"),
+    )
+    assert result.results_count == 1
 
 
 def _register_totp_factor(
