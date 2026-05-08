@@ -844,6 +844,52 @@ async def test_m4_memory_list_review_queue_sanitizes_procedure_candidates(
         workspace_id="ws1",
     )
     assert unsafe_candidate.entry is not None
+    unsafe_key_candidate = harness._memory_manager.write_with_provenance(
+        entry_type="procedure_experience",
+        key="procedure:queue-unsafe-key\u2028+++ forged diff label",
+        value={
+            "artifact": "Unsafe key artifact",
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+            "trace_ids": ["trace-queue-unsafe-key"],
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                "Unsafe key artifact",
+                ["trace-queue-unsafe-key"],
+            ),
+            "scanner": {"verdict": "pass", "findings": []},
+            "review": {
+                "status": "pending",
+                "reviewer": "",
+                "approved_at": None,
+                "rejected_at": None,
+                "rejected_reason": "",
+            },
+            "promotion": {
+                "status": "candidate",
+                "promoted_entry_id": "",
+                "rollback_entry_id": "",
+            },
+            "diff_preview": "+ forged diff",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-queue-unsafe-key",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pending_review",
+        source_id="trace2skill-queue-unsafe-key",
+        scope="user",
+        confirmation_satisfied=False,
+        ingress_handle_id="handle-queue-unsafe-key",
+        content_digest="digest-queue-unsafe-key",
+        invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert unsafe_key_candidate.entry is not None
 
     result = await harness.do_memory_list_review_queue(
         {"limit": 10, "user_id": "alice", "workspace_id": "ws1"}
@@ -855,6 +901,7 @@ async def test_m4_memory_list_review_queue_sanitizes_procedure_candidates(
         if isinstance(item, dict)
     }
     valid_entry = entries[valid_candidate.entry.id]
+    assert valid_entry["key"] == "procedure:queue-valid"
     assert valid_entry["target_key"] == "skill:release-close"
     assert valid_entry["review_packet_ready"] is True
     assert "value" not in valid_entry
@@ -862,10 +909,18 @@ async def test_m4_memory_list_review_queue_sanitizes_procedure_candidates(
     assert "diff_preview" not in valid_entry
     unsafe_entry = entries[unsafe_candidate.entry.id]
     assert unsafe_entry["review_blocked_reason"] == "procedure_candidate_target_invalid"
+    assert "key" not in unsafe_entry
     assert "target_key" not in unsafe_entry
     assert "value" not in unsafe_entry
     assert "artifact" not in unsafe_entry
     assert "diff_preview" not in unsafe_entry
+    unsafe_key_entry = entries[unsafe_key_candidate.entry.id]
+    assert unsafe_key_entry["review_blocked_reason"] == "procedure_candidate_key_invalid"
+    assert "key" not in unsafe_key_entry
+    assert "target_key" not in unsafe_key_entry
+    assert "value" not in unsafe_key_entry
+    assert "artifact" not in unsafe_key_entry
+    assert "diff_preview" not in unsafe_key_entry
 
 
 @pytest.mark.asyncio

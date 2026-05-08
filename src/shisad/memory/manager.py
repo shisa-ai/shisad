@@ -240,6 +240,7 @@ class MemoryManager:
         supersedes: str | None = None,
         allow_trust_upgrade_without_confirmation: bool = False,
         allow_procedure_experience_lifecycle: bool = False,
+        allow_instruction_like_procedural_artifact: bool = False,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
@@ -261,7 +262,22 @@ class MemoryManager:
                 kind="reject",
                 reason="procedure_experience_requires_dedicated_lifecycle",
             )
-        if self._looks_instruction_like(text_value) and not procedure_candidate_entry:
+        approved_procedural_artifact = (
+            allow_instruction_like_procedural_artifact
+            and entry_type in PROCEDURAL_ENTRY_TYPES
+            and invocation_eligible
+            and confirmation_satisfied
+            and is_invocation_eligible_triple(
+                source_origin,
+                channel_trust,
+                confirmation_status,
+            )
+        )
+        if (
+            self._looks_instruction_like(text_value)
+            and not procedure_candidate_entry
+            and not approved_procedural_artifact
+        ):
             return MemoryWriteDecision(
                 kind="reject",
                 reason="instruction_like_content_blocked",
@@ -915,6 +931,8 @@ class MemoryManager:
         normalized_trace_pool_hash = str(trace_pool_hash).strip()
         if not normalized_key:
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_key_required")
+        if not self._procedure_candidate_key_safe(normalized_key):
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_key_invalid")
         if not self._procedure_candidate_target_valid(
             normalized_target_type,
             normalized_target_key,
@@ -1043,6 +1061,12 @@ class MemoryManager:
         )
         if candidate is None or candidate.entry_type not in PROCEDURE_EXPERIENCE_ENTRY_TYPES:
             return {"found": False, "reason": "procedure_candidate_not_found", "candidate": None}
+        if not self._procedure_candidate_key_valid(candidate.key):
+            return {
+                "found": False,
+                "reason": "procedure_candidate_key_invalid",
+                "candidate": None,
+            }
         packet = self._procedure_candidate_packet(candidate)
         if not self._procedure_candidate_target_valid(
             str(packet["target_entry_type"]),
@@ -1181,6 +1205,8 @@ class MemoryManager:
         )
         if candidate is None:
             return MemoryWriteDecision(kind="reject", reason=reason)
+        if not self._procedure_candidate_key_valid(candidate.key):
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_key_invalid")
         packet = self._procedure_candidate_packet(candidate)
         if not self._procedure_candidate_target_valid(
             str(packet["target_entry_type"]),
@@ -1282,6 +1308,7 @@ class MemoryManager:
             invocation_eligible=True,
             supersedes=rollback_entry_id or None,
             allow_trust_upgrade_without_confirmation=True,
+            allow_instruction_like_procedural_artifact=True,
             user_id=effective_user_id,
             workspace_id=effective_workspace_id,
             include_unowned=include_unowned,
@@ -1397,6 +1424,7 @@ class MemoryManager:
             invocation_eligible=True,
             supersedes=supersedes_target,
             allow_trust_upgrade_without_confirmation=True,
+            allow_instruction_like_procedural_artifact=True,
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,
@@ -2750,17 +2778,28 @@ class MemoryManager:
         return (
             normalized_target_type in PROCEDURAL_ENTRY_TYPES
             and bool(normalized_target_key)
-            and MemoryManager._procedure_candidate_target_key_safe(normalized_target_key)
+            and MemoryManager._procedure_candidate_key_safe(normalized_target_key)
         )
 
     @staticmethod
-    def _procedure_candidate_target_key_safe(target_key: str) -> bool:
+    def _procedure_candidate_key_valid(candidate_key: str) -> bool:
+        normalized_key = str(candidate_key).strip()
+        return bool(normalized_key) and MemoryManager._procedure_candidate_key_safe(
+            normalized_key
+        )
+
+    @staticmethod
+    def _procedure_candidate_key_safe(key: str) -> bool:
         return not any(
             ord(char) < 32
             or 0x7F <= ord(char) <= 0x9F
             or char in {"\u2028", "\u2029"}
-            for char in target_key
+            for char in key
         )
+
+    @staticmethod
+    def _procedure_candidate_target_key_safe(target_key: str) -> bool:
+        return MemoryManager._procedure_candidate_key_safe(target_key)
 
     @staticmethod
     def _procedure_candidate_approval_payload(candidate_id: str, packet: dict[str, Any]) -> str:

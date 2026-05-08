@@ -932,7 +932,6 @@ class MemoryImplMixin(HandlerMixinBase):
         payload: dict[str, Any] = {
             "id": entry.id,
             "entry_type": str(entry.entry_type),
-            "key": entry.key,
             "status": entry.status,
             "confirmation_status": entry.confirmation_status,
             "scope": entry.scope,
@@ -957,6 +956,7 @@ class MemoryImplMixin(HandlerMixinBase):
         scanner = candidate.get("scanner")
         payload.update(
             {
+                "key": str(candidate.get("key", "")).strip(),
                 "target_entry_type": str(candidate.get("target_entry_type", "")).strip(),
                 "target_key": str(candidate.get("target_key", "")).strip(),
                 "trace_pool_hash_verified": bool(

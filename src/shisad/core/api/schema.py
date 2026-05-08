@@ -55,6 +55,13 @@ def _require_complete_owner_scope(model: Any) -> None:
         raise ValueError("user_id and workspace_id are required")
 
 
+def _procedure_candidate_label_safe(value: str) -> bool:
+    return not any(
+        ord(char) < 32 or 0x7F <= ord(char) <= 0x9F or char in {"\u2028", "\u2029"}
+        for char in value
+    )
+
+
 def _normalize_thread_context_filters(model: Any) -> None:
     allowed_channel_trusts = getattr(model, "allowed_channel_trusts", None)
     if allowed_channel_trusts is not None:
@@ -522,14 +529,22 @@ class MemoryIngestProcedureCandidateParams(_StrictParams):
     def _validate_candidate_shape(self) -> MemoryIngestProcedureCandidateParams:
         if not self.ingress_context.strip():
             raise ValueError("ingress_context is required")
-        if not self.key.strip():
+        key = self.key.strip()
+        target_key = self.target_key.strip()
+        if not key:
             raise ValueError("key is required")
-        if not self.target_key.strip():
+        if not _procedure_candidate_label_safe(key):
+            raise ValueError("key contains unsafe control characters")
+        if not target_key:
             raise ValueError("target_key is required")
+        if not _procedure_candidate_label_safe(target_key):
+            raise ValueError("target_key contains unsafe control characters")
         if not [item.strip() for item in self.trace_ids if item.strip()]:
             raise ValueError("trace_ids are required")
         if not self.trace_pool_hash.strip():
             raise ValueError("trace_pool_hash is required")
+        self.key = key
+        self.target_key = target_key
         _require_complete_owner_scope(self)
         return self
 

@@ -29,6 +29,7 @@ from shisad.core.api.schema import (
     MemoryExportResult,
     MemoryGetResult,
     MemoryIngestParams,
+    MemoryIngestProcedureCandidateParams,
     MemoryIngestResult,
     MemoryInvokeSkillParams,
     MemoryLifecycleParams,
@@ -434,6 +435,31 @@ class TestApiSchemaValidation:
         )
 
         assert params.entry_type == "inbox_item"
+
+    def test_m4_ingest_procedure_candidate_params_reject_control_char_keys(self) -> None:
+        base_params = {
+            "ingress_context": "handle-procedure",
+            "key": "procedure:release-close",
+            "artifact": "Release close checklist",
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+            "trace_ids": ["trace-1"],
+            "trace_pool_hash": "trace-pool-hash",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        }
+
+        with pytest.raises(ValidationError, match="key contains unsafe control characters"):
+            MemoryIngestProcedureCandidateParams.model_validate(
+                {**base_params, "key": "procedure:release-close\u2028forged"}
+            )
+        with pytest.raises(
+            ValidationError,
+            match="target_key contains unsafe control characters",
+        ):
+            MemoryIngestProcedureCandidateParams.model_validate(
+                {**base_params, "target_key": "skill:release-close\u2029forged"}
+            )
 
     def test_m1_memory_ingest_params_accept_handle_bound_shape(self) -> None:
         params = MemoryIngestParams.model_validate(
