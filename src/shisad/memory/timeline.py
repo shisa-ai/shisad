@@ -477,8 +477,7 @@ class TimelineIndex:
             columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(timeline_rows)")}
             if "channel_binding" not in columns:
                 conn.execute(
-                    "ALTER TABLE timeline_rows "
-                    "ADD COLUMN channel_binding TEXT NOT NULL DEFAULT ''"
+                    "ALTER TABLE timeline_rows ADD COLUMN channel_binding TEXT NOT NULL DEFAULT ''"
                 )
             if "source_surface" not in columns:
                 conn.execute(
@@ -554,7 +553,7 @@ class TimelineIndex:
                 conn.execute(
                     f"""
                     SELECT * FROM timeline_rows
-                    WHERE {' AND '.join(clauses)}
+                    WHERE {" AND ".join(clauses)}
                     ORDER BY timestamp DESC
                     """,
                     tuple(values),

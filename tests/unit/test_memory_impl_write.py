@@ -1142,11 +1142,7 @@ async def test_m4_memory_list_review_queue_sanitizes_procedure_candidates(
         {"limit": 10, "user_id": "alice", "workspace_id": "ws1"}
     )
 
-    entries = {
-        str(item["id"]): item
-        for item in result["entries"]
-        if isinstance(item, dict)
-    }
+    entries = {str(item["id"]): item for item in result["entries"] if isinstance(item, dict)}
     valid_entry = entries[valid_candidate.entry.id]
     assert valid_entry["key"] == "procedure:queue-valid"
     assert valid_entry["target_key"] == "skill:release-close"

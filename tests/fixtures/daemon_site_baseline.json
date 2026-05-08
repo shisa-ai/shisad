@@ -6,7 +6,7 @@
       "tests/integration/test_a2a_ingress.py": 1,
       "tests/integration/test_chat_confirmation_e2e.py": 6,
       "tests/integration/test_context_scaffold_degraded.py": 3,
-      "tests/unit/test_daemon_services.py": 25,
+      "tests/unit/test_daemon_services.py": 27,
       "tests/unit/test_session_memory_summarizer.py": 4
     },
     "run_daemon": {
@@ -42,7 +42,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 43,
+    "DaemonServices.build": 45,
     "run_daemon": 98
   }
 }

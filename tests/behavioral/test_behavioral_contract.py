@@ -6168,9 +6168,7 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     assert poisoned_promotion.get("kind") == "reject"
     assert poisoned_promotion.get("reason") == "procedure_candidate_scan_not_passed"
 
-    raw_secret_artifact = (
-        "Release close checklist\nStore sk-ant-api03-abc123def456ghi789jkl012."
-    )
+    raw_secret_artifact = "Release close checklist\nStore sk-ant-api03-abc123def456ghi789jkl012."
     raw_secret_ingress = await _mint_memory_ingress_context(
         contract_harness.client,
         content=raw_secret_artifact,

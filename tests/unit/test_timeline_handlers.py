@@ -24,9 +24,7 @@ class _TimelineHarness(MemoryImplMixin):
             transcript_store=self._transcript_store,
             session_lookup=self._session_manager.get,
         )
-        self._transcript_store.add_append_observer(
-            self._timeline_index.index_transcript_entry
-        )
+        self._transcript_store.add_append_observer(self._timeline_index.index_transcript_entry)
         self._memory_manager = MemoryManager(
             tmp_path / "memory",
             audit_hook=lambda action, payload: self.audit_events.append((action, payload)),
@@ -291,9 +289,7 @@ async def test_memory_timeline_promote_routes_through_memory_write_gate(
 
     assert promoted["kind"] == "allow"
     timeline_promote_audits = [
-        payload
-        for action, payload in harness.audit_events
-        if action == "memory.timeline_promote"
+        payload for action, payload in harness.audit_events if action == "memory.timeline_promote"
     ]
     assert timeline_promote_audits
     assert timeline_promote_audits[-1]["handle"] == hit["handle"]

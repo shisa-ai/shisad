@@ -498,12 +498,8 @@ def test_m5_direct_evidence_supplemental_rows_preserve_shared_delivery_target(
         delivery_target=delivery_target,
     )
 
-    assert supplemental[0]["metadata"]["delivery_target"] == delivery_target.model_dump(
-        mode="json"
-    )
-    assert supplemental[1]["metadata"]["delivery_target"] == delivery_target.model_dump(
-        mode="json"
-    )
+    assert supplemental[0]["metadata"]["delivery_target"] == delivery_target.model_dump(mode="json")
+    assert supplemental[1]["metadata"]["delivery_target"] == delivery_target.model_dump(mode="json")
     transcript_store = TranscriptStore(tmp_path / "transcripts")
     sid = SessionId("s-direct-evidence")
     transcript_store.append(

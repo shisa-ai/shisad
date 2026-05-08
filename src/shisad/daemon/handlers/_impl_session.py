@@ -4916,10 +4916,7 @@ def _build_session_frontmatter(
             )
         if thread_resume_pack.packet is not None:
             lines.append(f"thread_resume_packet_tokens={thread_resume_pack.packet.token_cost}")
-            lines.append(
-                "thread_resume_packet_max_tokens="
-                f"{thread_resume_pack.packet.max_tokens}"
-            )
+            lines.append(f"thread_resume_packet_max_tokens={thread_resume_pack.packet.max_tokens}")
             lines.append(
                 "thread_resume_verification_gap="
                 f"{json.dumps(thread_resume_pack.packet.verification_gap)}"

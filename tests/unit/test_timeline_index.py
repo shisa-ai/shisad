@@ -754,12 +754,15 @@ def test_m5_timeline_read_rejects_deleted_or_stale_rows(tmp_path) -> None:
     )
     assert read.found is False
     assert read.reason == "timeline_row_stale"
-    assert timeline.search(
-        query="archive result",
-        user_id="alice",
-        workspace_id="ws1",
-        context_channel="cli",
-    ).results == []
+    assert (
+        timeline.search(
+            query="archive result",
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+        ).results
+        == []
+    )
 
 
 def test_m5_timeline_read_filters_surrounding_rows_per_publication_policy(tmp_path) -> None:
@@ -856,21 +859,27 @@ def test_m5_timeline_search_rejects_truncated_rows(tmp_path) -> None:
         content="Truncated timeline row should disappear.",
         timestamp=datetime(2026, 5, 2, 8, 0, tzinfo=UTC),
     )
-    assert timeline.search(
-        query="truncated timeline",
-        user_id="alice",
-        workspace_id="ws1",
-        context_channel="cli",
-    ).results_count == 1
+    assert (
+        timeline.search(
+            query="truncated timeline",
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+        ).results_count
+        == 1
+    )
 
     transcripts.truncate(session.id, keep_entries=0)
 
-    assert timeline.search(
-        query="truncated timeline",
-        user_id="alice",
-        workspace_id="ws1",
-        context_channel="cli",
-    ).results == []
+    assert (
+        timeline.search(
+            query="truncated timeline",
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+        ).results
+        == []
+    )
 
 
 def test_m5_timeline_session_scope_overrides_imported_row_metadata(tmp_path) -> None:

@@ -177,8 +177,7 @@ class MemoryImplMixin(HandlerMixinBase):
             return None
         target = {str(key): value for key, value in raw_stored_target.items()}
         if any(
-            str(target.get(key, "")).strip()
-            for key in ("recipient", "workspace_hint", "thread_id")
+            str(target.get(key, "")).strip() for key in ("recipient", "workspace_hint", "thread_id")
         ):
             return target
         return None
@@ -333,10 +332,7 @@ class MemoryImplMixin(HandlerMixinBase):
     @staticmethod
     def _thread_last_relevant_timestamp(entry: MemoryEntry) -> str:
         timestamp = (
-            entry.last_cited_at
-            or entry.last_verified_at
-            or entry.valid_from
-            or entry.created_at
+            entry.last_cited_at or entry.last_verified_at or entry.valid_from or entry.created_at
         )
         return timestamp.isoformat()
 
@@ -1137,9 +1133,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 "key": str(candidate.get("key", "")).strip(),
                 "target_entry_type": str(candidate.get("target_entry_type", "")).strip(),
                 "target_key": str(candidate.get("target_key", "")).strip(),
-                "trace_pool_hash_verified": bool(
-                    candidate.get("trace_pool_hash_verified", False)
-                ),
+                "trace_pool_hash_verified": bool(candidate.get("trace_pool_hash_verified", False)),
                 "scanner": scanner_payload,
                 "review_packet_ready": True,
             }
@@ -1214,9 +1208,7 @@ class MemoryImplMixin(HandlerMixinBase):
             target_entry_type=str(params.get("target_entry_type", "")).strip(),
             target_key=str(params.get("target_key", "")).strip(),
             trace_ids=[
-                str(item).strip()
-                for item in params.get("trace_ids", [])
-                if str(item).strip()
+                str(item).strip() for item in params.get("trace_ids", []) if str(item).strip()
             ],
             trace_pool_hash=str(params.get("trace_pool_hash", "")).strip(),
             scanner_verdict=(
@@ -1292,9 +1284,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 else None
             ),
             reason=(
-                str(params.get("reason", "")).strip()
-                if params.get("reason") is not None
-                else None
+                str(params.get("reason", "")).strip() if params.get("reason") is not None else None
             ),
             user_id=user_id,
             workspace_id=workspace_id,

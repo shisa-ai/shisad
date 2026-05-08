@@ -1111,9 +1111,7 @@ class MemoryManager:
                 "producer_diff_preview": packet["producer_diff_preview"],
                 "review_packet_backfill_reason": packet["review_packet_backfill_reason"],
                 "approval_payload": approval_payload,
-                "approval_digest": self._procedure_candidate_approval_digest(
-                    approval_payload
-                ),
+                "approval_digest": self._procedure_candidate_approval_digest(approval_payload),
             },
         }
 
@@ -2752,21 +2750,15 @@ class MemoryManager:
         if declared_verdict not in {"pass", "fail"}:
             return None
         declared_findings = {
-            str(item).strip()
-            for item in list(scanner_findings or [])
-            if str(item).strip()
+            str(item).strip() for item in list(scanner_findings or []) if str(item).strip()
         }
         automatic_findings = {
-            str(item).strip()
-            for item in list(automatic.get("findings", []))
-            if str(item).strip()
+            str(item).strip() for item in list(automatic.get("findings", [])) if str(item).strip()
         }
         findings = declared_findings | automatic_findings
         verdict = (
             "fail"
-            if declared_verdict == "fail"
-            or automatic["verdict"] == "fail"
-            or declared_findings
+            if declared_verdict == "fail" or automatic["verdict"] == "fail" or declared_findings
             else "pass"
         )
         return {"verdict": verdict, "findings": sorted(findings)}
@@ -2799,9 +2791,7 @@ class MemoryManager:
     @staticmethod
     def _procedure_candidate_key_safe(key: str) -> bool:
         return not any(
-            ord(char) < 32
-            or 0x7F <= ord(char) <= 0x9F
-            or char in {"\u2028", "\u2029"}
+            ord(char) < 32 or 0x7F <= ord(char) <= 0x9F or char in {"\u2028", "\u2029"}
             for char in key
         )
 
@@ -2821,9 +2811,7 @@ class MemoryManager:
             "scanner": {
                 "verdict": str(scanner.get("verdict", "")).strip().lower(),
                 "findings": sorted(
-                    str(item).strip()
-                    for item in scanner.get("findings", [])
-                    if str(item).strip()
+                    str(item).strip() for item in scanner.get("findings", []) if str(item).strip()
                 ),
             },
             "diff_preview": str(packet["diff_preview"]),
@@ -2865,9 +2853,7 @@ class MemoryManager:
             normalized_scanner_findings = ["scanner_findings_malformed"]
         elif isinstance(scanner_findings, list):
             normalized_scanner_findings = [
-                str(item).strip()
-                for item in scanner_findings
-                if str(item).strip()
+                str(item).strip() for item in scanner_findings if str(item).strip()
             ]
         else:
             normalized_scanner_findings = ["scanner_findings_malformed"]

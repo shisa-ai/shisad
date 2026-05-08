@@ -507,9 +507,7 @@ def _thread_staleness(entry: MemoryEntry) -> dict[str, Any]:
         "last_verified_at": entry.last_verified_at.isoformat()
         if entry.last_verified_at is not None
         else "",
-        "last_cited_at": entry.last_cited_at.isoformat()
-        if entry.last_cited_at is not None
-        else "",
+        "last_cited_at": entry.last_cited_at.isoformat() if entry.last_cited_at is not None else "",
     }
 
 

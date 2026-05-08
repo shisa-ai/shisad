@@ -2686,10 +2686,7 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
     assert backfill_event.ingress_handle_id == "handle-procedure-review-legacy"
     assert backfill_event.metadata_json["target_entry_type"] == "skill"
     assert backfill_event.metadata_json["target_key"] == "skill:release-close"
-    assert (
-        backfill_event.metadata_json["reason"]
-        == "legacy_procedure_candidate_review_packet"
-    )
+    assert backfill_event.metadata_json["reason"] == "legacy_procedure_candidate_review_packet"
     assert (
         "memory.procedure_candidate_review_packet_backfilled",
         {

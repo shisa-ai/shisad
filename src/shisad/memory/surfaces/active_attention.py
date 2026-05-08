@@ -142,9 +142,7 @@ def _attention_cues(
     actionable_cues: list[str] | None = None,
 ) -> list[str]:
     cues = (
-        list(actionable_cues)
-        if actionable_cues is not None
-        else _actionable_attention_cues(entry)
+        list(actionable_cues) if actionable_cues is not None else _actionable_attention_cues(entry)
     )
     workflow_cue = _workflow_attention_cue(entry)
     if workflow_cue:
