@@ -195,6 +195,7 @@ class SessionArchiveManager:
         if not isinstance(session_payload, dict):
             raise SessionArchiveError("invalid_session_record")
         self._validate_scope_consistency(manifest, record)
+        record = _sanitize_imported_session_record(record)
 
         original_session_id = SessionId(str(manifest.original_session_id))
         imported_session_id = SessionId(uuid.uuid4().hex)
@@ -433,6 +434,19 @@ def _sanitize_imported_transcript_metadata(metadata: dict[str, Any]) -> dict[str
         for key, value in metadata.items()
         if str(key) not in _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA
     }
+
+
+def _sanitize_imported_session_record(record: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(record)
+    session_payload = sanitized.get("session")
+    if not isinstance(session_payload, dict):
+        return sanitized
+    sanitized_session = dict(session_payload)
+    metadata = sanitized_session.get("metadata")
+    if isinstance(metadata, dict):
+        sanitized_session["metadata"] = _sanitize_imported_transcript_metadata(metadata)
+    sanitized["session"] = sanitized_session
+    return sanitized
 
 
 def _validate_archive_member_name(name: str) -> None:

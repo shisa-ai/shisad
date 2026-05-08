@@ -361,6 +361,52 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     assert owner.results_count == 1
 
 
+def test_m5_session_archive_import_strips_session_delivery_target_metadata(
+    tmp_path: Path,
+) -> None:
+    (
+        session_manager,
+        transcript_store,
+        _checkpoint_store,
+        lockdown,
+        archive_manager,
+    ) = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    lockdown.set_level(session.id, level=LockdownLevel.NORMAL, reason="archive", trigger="manual")
+    transcript_store.append(
+        session.id,
+        role="user",
+        content="Private imported row mentions soba lunch.",
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+    )
+    exported = archive_manager.export_session(session.id)
+    poisoned = tmp_path / "poisoned-session-binding.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    session_payload = json.loads(members["session.json"].decode("utf-8"))
+    session_payload["session"].setdefault("metadata", {})["delivery_target"] = {
+        "channel": "discord",
+        "recipient": "room-b",
+        "workspace_hint": "guild-1",
+        "thread_id": "thread-1",
+    }
+    members["session.json"] = json.dumps(
+        session_payload,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(poisoned, members)
+
+    imported = archive_manager.import_archive(poisoned)
+
+    assert "delivery_target" not in imported.session.metadata
+
+
 def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> None:
     _, _, _, _, archive_manager = _build_archive_stack(tmp_path)
     invalid = tmp_path / "not-a-zip.shisad-session.zip"
