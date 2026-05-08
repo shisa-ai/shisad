@@ -954,6 +954,13 @@ class MemoryImplMixin(HandlerMixinBase):
             payload["review_blocked_reason"] = str(review.get("reason", "")).strip()
             return payload
         scanner = candidate.get("scanner")
+        scanner_payload: dict[str, Any] = {}
+        if isinstance(scanner, Mapping):
+            findings = scanner.get("findings", [])
+            scanner_payload = {
+                "verdict": str(scanner.get("verdict", "")).strip(),
+                "findings_count": len(findings) if isinstance(findings, list) else 0,
+            }
         payload.update(
             {
                 "key": str(candidate.get("key", "")).strip(),
@@ -962,7 +969,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 "trace_pool_hash_verified": bool(
                     candidate.get("trace_pool_hash_verified", False)
                 ),
-                "scanner": dict(scanner) if isinstance(scanner, Mapping) else {},
+                "scanner": scanner_payload,
                 "review_packet_ready": True,
             }
         )
@@ -1167,9 +1174,10 @@ class MemoryImplMixin(HandlerMixinBase):
         review_candidate = review.get("candidate") or {}
         approval_payload = str(review_candidate.get("approval_payload", "")).strip()
         if not approval_payload:
+            reason = str(review.get("reason", "")).strip()
             return {
                 "kind": "reject",
-                "reason": "procedure_candidate_review_packet_required",
+                "reason": reason or "procedure_candidate_review_packet_required",
                 "entry": None,
             }
         artifact_digest = digest_memory_value(review_candidate.get("artifact"))
