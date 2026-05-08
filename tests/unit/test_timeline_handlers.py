@@ -159,6 +159,7 @@ async def test_memory_timeline_uses_context_session_delivery_target(
             "user_id": "alice",
             "workspace_id": "ws1",
             "context_channel": "discord",
+            "context_delivery_target": {},
             "context_session_id": str(session.id),
         }
     )
@@ -170,11 +171,36 @@ async def test_memory_timeline_uses_context_session_delivery_target(
             "user_id": "alice",
             "workspace_id": "ws1",
             "context_channel": "discord",
+            "context_delivery_target": {},
             "context_session_id": str(session.id),
         }
     )
     assert read["found"] is True
     assert "tempura" in read["packet"]
+
+    ingress = harness._memory_ingress_registry.mint(
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        scope="user",
+        source_id="timeline-promote",
+        content="Shared room note: tempura was the group order.",
+    )
+    promoted = await harness.do_memory_timeline_promote(
+        {
+            "handle": with_context["results"][0]["handle"],
+            "ingress_context": ingress.handle_id,
+            "entry_type": "fact",
+            "key": "timeline:room:tempura",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "discord",
+            "context_delivery_target": {},
+            "context_session_id": str(session.id),
+        }
+    )
+    assert promoted["kind"] == "allow"
+    assert promoted["entry"]["value"] == "Shared room note: tempura was the group order."
 
 
 @pytest.mark.asyncio

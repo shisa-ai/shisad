@@ -160,7 +160,12 @@ class MemoryImplMixin(HandlerMixinBase):
     ) -> dict[str, Any] | None:
         raw_target = params.get("context_delivery_target")
         if isinstance(raw_target, Mapping):
-            return {str(key): value for key, value in raw_target.items()}
+            target = {str(key): value for key, value in raw_target.items()}
+            if any(
+                str(target.get(key, "")).strip()
+                for key in ("recipient", "workspace_hint", "thread_id")
+            ):
+                return target
         raw_session_id = str(params.get("context_session_id", "")).strip()
         if not raw_session_id:
             return None
@@ -170,7 +175,13 @@ class MemoryImplMixin(HandlerMixinBase):
         raw_stored_target = session.metadata.get("delivery_target")
         if not isinstance(raw_stored_target, Mapping):
             return None
-        return {str(key): value for key, value in raw_stored_target.items()}
+        target = {str(key): value for key, value in raw_stored_target.items()}
+        if any(
+            str(target.get(key, "")).strip()
+            for key in ("recipient", "workspace_hint", "thread_id")
+        ):
+            return target
+        return None
 
     @staticmethod
     def _normalize_owner_value(value: Any) -> str | None:

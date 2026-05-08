@@ -454,11 +454,12 @@ class MemoryTimelineSearchParams(_StrictParams):
         if self.context_session_id is not None:
             self.context_session_id = self.context_session_id.strip() or None
         if self.context_delivery_target is not None:
-            self.context_delivery_target = {
+            target = {
                 str(key): str(value).strip()
                 for key, value in self.context_delivery_target.items()
                 if str(key).strip() and str(value).strip()
             }
+            self.context_delivery_target = target or None
         if self.timezone is not None:
             self.timezone = self.timezone.strip() or None
         return self
@@ -484,11 +485,12 @@ class MemoryTimelineReadParams(_StrictParams):
         if self.context_session_id is not None:
             self.context_session_id = self.context_session_id.strip() or None
         if self.context_delivery_target is not None:
-            self.context_delivery_target = {
+            target = {
                 str(key): str(value).strip()
                 for key, value in self.context_delivery_target.items()
                 if str(key).strip() and str(value).strip()
             }
+            self.context_delivery_target = target or None
         return self
 
 
@@ -525,11 +527,12 @@ class MemoryTimelinePromoteParams(_StrictParams):
         if self.context_session_id is not None:
             self.context_session_id = self.context_session_id.strip() or None
         if self.context_delivery_target is not None:
-            self.context_delivery_target = {
+            target = {
                 str(key): str(value).strip()
                 for key, value in self.context_delivery_target.items()
                 if str(key).strip() and str(value).strip()
             }
+            self.context_delivery_target = target or None
         if self.predicate is not None:
             self.predicate = self.predicate.strip() or None
         if self.parent_digest is not None:

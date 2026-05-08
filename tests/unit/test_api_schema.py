@@ -948,6 +948,17 @@ class TestApiSchemaValidation:
         assert search.limit == 10
         assert read.surrounding == 1
         assert promote.confidence == 0.8
+        search_empty_target = MemoryTimelineSearchParams.model_validate(
+            {
+                "query": "lunch last time",
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+                "context_session_id": " session-1 ",
+                "context_delivery_target": {},
+            }
+        )
+        assert search_empty_target.context_session_id == "session-1"
+        assert search_empty_target.context_delivery_target is None
 
         ownerless_payloads: list[tuple[type[object], dict[str, object]]] = [
             (MemoryTimelineSearchParams, {"query": "lunch", "user_id": "alice"}),
