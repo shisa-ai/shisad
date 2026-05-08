@@ -3397,6 +3397,112 @@ def test_m4_procedure_experience_promotion_rejects_malformed_stored_findings(
     assert promoted.reason == "procedure_candidate_scan_not_passed"
 
 
+@pytest.mark.parametrize(
+    ("slug", "scanner_value", "expected_verdict", "expected_findings"),
+    [
+        (
+            "missing-packet",
+            None,
+            "scanner_verdict_malformed",
+            ["scanner_packet_malformed"],
+        ),
+        (
+            "non-mapping-packet",
+            "external_scanner_risk",
+            "scanner_verdict_malformed",
+            ["scanner_packet_malformed"],
+        ),
+        (
+            "missing-findings",
+            {"verdict": "pass"},
+            "pass",
+            ["scanner_findings_malformed"],
+        ),
+        (
+            "null-findings",
+            {"verdict": "pass", "findings": None},
+            "pass",
+            ["scanner_findings_malformed"],
+        ),
+        (
+            "missing-verdict",
+            {"findings": []},
+            "scanner_verdict_malformed",
+            [],
+        ),
+    ],
+)
+def test_m4_procedure_experience_promotion_rejects_malformed_scanner_shapes(
+    tmp_path: Path,
+    slug: str,
+    scanner_value: object,
+    expected_verdict: str,
+    expected_findings: list[str],
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    artifact = "Release close checklist"
+    candidate = manager.ingest_procedure_candidate(
+        key=f"procedure:{slug}",
+        artifact=artifact,
+        target_entry_type="skill",
+        target_key=f"skill:{slug}",
+        trace_ids=[f"trace-{slug}"],
+        trace_pool_hash=build_procedure_trace_pool_hash(artifact, [f"trace-{slug}"]),
+        source=MemorySource(
+            origin="external",
+            source_id=f"trace2skill-{slug}",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+        source_id=f"trace2skill-{slug}",
+        scope="user",
+        ingress_handle_id=f"handle-procedure-{slug}",
+        content_digest=f"digest-procedure-{slug}",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert candidate.entry is not None
+    stored = manager.get_entry(
+        candidate.entry.id,
+        include_pending_review=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert stored is not None
+    if scanner_value is None:
+        stored.value.pop("scanner", None)
+    else:
+        stored.value["scanner"] = scanner_value
+    manager._persist_entry(stored)
+
+    reviewed = manager.describe_procedure_candidate(
+        candidate.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert reviewed["candidate"]["scanner"]["verdict"] == expected_verdict
+    assert reviewed["candidate"]["scanner"]["findings"] == expected_findings
+
+    promoted = manager.promote_procedure_candidate(
+        candidate_id=candidate.entry.id,
+        source=MemorySource(origin="user", source_id="operator-approval", extraction_method="test"),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="operator-approval",
+        scope="user",
+        ingress_handle_id=f"handle-procedure-promote-{slug}",
+        content_digest=f"digest-procedure-promote-{slug}",
+        user_id="alice",
+        workspace_id="ws1",
+        reviewer="operator",
+    )
+    assert promoted.kind == "reject"
+    assert promoted.reason == "procedure_candidate_scan_not_passed"
+
+
 def test_m4_procedure_experience_promotion_revalidates_tampered_scanner(
     tmp_path: Path,
 ) -> None:

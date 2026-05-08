@@ -2849,15 +2849,22 @@ class MemoryManager:
         promotion: dict[str, Any] = raw_promotion if isinstance(raw_promotion, dict) else {}
         trace_ids_raw = value.get("trace_ids", [])
         trace_ids = trace_ids_raw if isinstance(trace_ids_raw, list) else []
-        scanner_findings = scanner.get("findings", [])
-        if isinstance(scanner_findings, list):
+        scanner_verdict = (
+            str(scanner.get("verdict", "")).strip().lower()
+            if isinstance(raw_scanner, dict) and scanner.get("verdict") is not None
+            else "scanner_verdict_malformed"
+        )
+        scanner_findings = scanner.get("findings")
+        if not isinstance(raw_scanner, dict):
+            normalized_scanner_findings = ["scanner_packet_malformed"]
+        elif "findings" not in scanner or scanner_findings is None:
+            normalized_scanner_findings = ["scanner_findings_malformed"]
+        elif isinstance(scanner_findings, list):
             normalized_scanner_findings = [
                 str(item).strip()
                 for item in scanner_findings
                 if str(item).strip()
             ]
-        elif scanner_findings is None:
-            normalized_scanner_findings = []
         else:
             normalized_scanner_findings = ["scanner_findings_malformed"]
         return {
@@ -2868,7 +2875,7 @@ class MemoryManager:
             "trace_pool_hash": str(value.get("trace_pool_hash", "")).strip(),
             "trace_pool_hash_verified": bool(value.get("trace_pool_hash_verified", False)),
             "scanner": {
-                "verdict": str(scanner.get("verdict", "")).strip().lower(),
+                "verdict": scanner_verdict,
                 "findings": normalized_scanner_findings,
             },
             "review": {
