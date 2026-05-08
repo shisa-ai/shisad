@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import difflib
+import hashlib
 import io
 import json
 import re
@@ -21,6 +22,7 @@ from shisad.memory.remap import (
     ACTIVE_AGENDA_ENTRY_TYPES,
     PROCEDURAL_ENTRY_TYPES,
     PROCEDURE_EXPERIENCE_ENTRY_TYPES,
+    digest_memory_value,
     resolve_legacy_source_origin,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
@@ -1045,6 +1047,7 @@ class MemoryManager:
             workspace_id=workspace_id,
             include_unowned=include_unowned,
         )
+        approval_payload = self._procedure_candidate_approval_payload(candidate.id, packet)
         return {
             "found": True,
             "reason": "",
@@ -1068,6 +1071,10 @@ class MemoryManager:
                 "diff_preview": packet["diff_preview"],
                 "producer_diff_preview": packet["producer_diff_preview"],
                 "review_packet_backfill_reason": packet["review_packet_backfill_reason"],
+                "approval_payload": approval_payload,
+                "approval_digest": self._procedure_candidate_approval_digest(
+                    approval_payload
+                ),
             },
         }
 
@@ -2713,6 +2720,37 @@ class MemoryManager:
             else "pass"
         )
         return {"verdict": verdict, "findings": sorted(findings)}
+
+    @staticmethod
+    def _procedure_candidate_approval_payload(candidate_id: str, packet: dict[str, Any]) -> str:
+        scanner = packet["scanner"]
+        payload = {
+            "candidate_id": str(candidate_id),
+            "artifact_digest": digest_memory_value(packet["artifact"]),
+            "target_entry_type": str(packet["target_entry_type"]),
+            "target_key": str(packet["target_key"]),
+            "trace_pool_hash": str(packet["trace_pool_hash"]),
+            "scanner": {
+                "verdict": str(scanner.get("verdict", "")).strip().lower(),
+                "findings": sorted(
+                    str(item).strip()
+                    for item in scanner.get("findings", [])
+                    if str(item).strip()
+                ),
+            },
+            "diff_preview": str(packet["diff_preview"]),
+        }
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+
+    @staticmethod
+    def _procedure_candidate_approval_digest(approval_payload: str) -> str:
+        return hashlib.sha256(approval_payload.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _procedure_candidate_packet(entry: MemoryEntry) -> dict[str, Any]:

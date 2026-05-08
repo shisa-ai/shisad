@@ -5771,6 +5771,10 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     assert review_candidate.get("trace_ids") == ["trace-contract-1"]
     assert review_candidate.get("scanner", {}).get("verdict") == "pass"
     assert marker in str(review_candidate.get("diff_preview", ""))
+    approval_payload = str(review_candidate.get("approval_payload", "")).strip()
+    approval_digest = str(review_candidate.get("approval_digest", "")).strip()
+    assert approval_payload
+    assert approval_digest
 
     rejected_artifact = f"Release close checklist\nReject {marker} candidate."
     rejected_ingress = await _mint_memory_ingress_context(
@@ -5831,7 +5835,7 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
 
     unapproved_ingress = await _mint_memory_ingress_context(
         contract_harness.client,
-        content=artifact,
+        content=approval_payload,
         source_type="tool",
         source_id="tool-autoinstall-contract",
     )
@@ -5847,6 +5851,50 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     )
     assert unapproved.get("kind") == "reject"
     assert unapproved.get("reason") == "procedure_candidate_promotion_requires_operator_approval"
+
+    sibling_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=artifact,
+        source_type="tool",
+        source_id="trace2skill-sibling-contract",
+    )
+    sibling = await contract_harness.client.call(
+        "memory.ingest_procedure_candidate",
+        {
+            "ingress_context": sibling_ingress["ingress_context"],
+            "artifact": artifact,
+            "key": "procedure:release-close-contract-sibling",
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close-contract-sibling",
+            "trace_ids": ["trace-contract-sibling"],
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                artifact,
+                ["trace-contract-sibling"],
+            ),
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+    sibling_id = str((sibling.get("entry") or {}).get("id", "")).strip()
+    assert sibling_id
+    approval_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=approval_payload,
+        source_type="user",
+        source_id="operator-approval-contract",
+        user_confirmed=True,
+    )
+    with pytest.raises(JsonRpcCallError, match="content digest does not match ingress context"):
+        await contract_harness.client.call(
+            "memory.promote_procedure_candidate",
+            {
+                "ingress_context": approval_ingress["ingress_context"],
+                "candidate_id": sibling_id,
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "reviewer": "operator",
+            },
+        )
 
     mismatched_approval = await _mint_memory_ingress_context(
         contract_harness.client,
@@ -5868,13 +5916,6 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
             },
         )
 
-    approval_ingress = await _mint_memory_ingress_context(
-        contract_harness.client,
-        content=artifact,
-        source_type="user",
-        source_id="operator-approval-contract",
-        user_confirmed=True,
-    )
     promoted = await contract_harness.client.call(
         "memory.promote_procedure_candidate",
         {
@@ -5935,11 +5976,12 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
         "memory.review_procedure_candidate",
         {"candidate_id": poisoned_id, "user_id": "alice", "workspace_id": "ws1"},
     )
-    assert poisoned_review.get("candidate", {}).get("scanner", {}).get("verdict") == "fail"
+    poisoned_review_candidate = poisoned_review.get("candidate", {})
+    assert poisoned_review_candidate.get("scanner", {}).get("verdict") == "fail"
 
     poisoned_approval = await _mint_memory_ingress_context(
         contract_harness.client,
-        content=poisoned_artifact,
+        content=str(poisoned_review_candidate.get("approval_payload", "")).strip(),
         source_type="user",
         source_id="operator-approval-poisoned",
         user_confirmed=True,
@@ -5956,6 +5998,62 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     )
     assert poisoned_promotion.get("kind") == "reject"
     assert poisoned_promotion.get("reason") == "procedure_candidate_scan_not_passed"
+
+    raw_secret_artifact = (
+        "Release close checklist\nStore sk-ant-api03-abc123def456ghi789jkl012."
+    )
+    raw_secret_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=raw_secret_artifact,
+        source_type="tool",
+        source_id="trace2skill-raw-secret",
+    )
+    raw_secret = await contract_harness.client.call(
+        "memory.ingest_procedure_candidate",
+        {
+            "ingress_context": raw_secret_ingress["ingress_context"],
+            "artifact": raw_secret_artifact,
+            "key": "procedure:raw-secret-contract",
+            "target_entry_type": "skill",
+            "target_key": "skill:raw-secret-contract",
+            "trace_ids": ["trace-raw-secret-1"],
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                raw_secret_artifact,
+                ["trace-raw-secret-1"],
+            ),
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+    raw_secret_id = str((raw_secret.get("entry") or {}).get("id", "")).strip()
+    assert raw_secret_id
+    raw_secret_review = await contract_harness.client.call(
+        "memory.review_procedure_candidate",
+        {"candidate_id": raw_secret_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
+    raw_secret_candidate = raw_secret_review.get("candidate") or {}
+    assert raw_secret_candidate.get("scanner", {}).get("verdict") == "fail"
+    assert "anthropic_key" in raw_secret_candidate.get("scanner", {}).get("findings", [])
+
+    raw_secret_approval = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=str(raw_secret_candidate.get("approval_payload", "")).strip(),
+        source_type="user",
+        source_id="operator-approval-raw-secret",
+        user_confirmed=True,
+    )
+    raw_secret_promotion = await contract_harness.client.call(
+        "memory.promote_procedure_candidate",
+        {
+            "ingress_context": raw_secret_approval["ingress_context"],
+            "candidate_id": raw_secret_id,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "reviewer": "operator",
+        },
+    )
+    assert raw_secret_promotion.get("kind") == "reject"
+    assert raw_secret_promotion.get("reason") == "procedure_candidate_scan_not_passed"
 
 
 @pytest.mark.asyncio

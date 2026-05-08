@@ -1089,15 +1089,24 @@ class MemoryImplMixin(HandlerMixinBase):
                 "reason": "procedure_candidate_not_found",
                 "entry": None,
             }
-        artifact = candidate.value.get("artifact")
-        context = self._memory_ingress_registry.resolve(handle_id)
-        content_digest = (
-            None if isinstance(artifact, (str, bytes)) else digest_memory_value(artifact)
+        review = self._memory_manager.describe_procedure_candidate(
+            candidate_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
+        review_candidate = review.get("candidate") or {}
+        approval_payload = str(review_candidate.get("approval_payload", "")).strip()
+        if not approval_payload:
+            return {
+                "kind": "reject",
+                "reason": "procedure_candidate_review_packet_required",
+                "entry": None,
+            }
+        context = self._memory_ingress_registry.resolve(handle_id)
         resolved_digest = self._memory_ingress_registry.validate_binding(
             handle_id,
-            content=artifact if isinstance(artifact, (str, bytes)) else None,
-            content_digest=content_digest,
+            content=approval_payload,
         )
         decision = self._memory_manager.promote_procedure_candidate(
             candidate_id=candidate_id,

@@ -9,10 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from shisad.security.firewall.output import OutputFirewall
+
 if TYPE_CHECKING:
     from shisad.memory.schema import MemoryEntry
 
 _PROCEDURAL_DESCRIPTION_MAX_CHARS = 120
+_PROCEDURE_SECRET_FIREWALL = OutputFirewall(safe_domains=[])
 _PROCEDURE_SCAN_PATTERNS: dict[str, re.Pattern[str]] = {
     "prompt_injection": re.compile(
         r"\b(ignore|override|discard).{0,48}\b(system|developer|instruction|policy)s?\b",
@@ -86,10 +89,15 @@ def scan_procedure_candidate_artifact(value: Any) -> dict[str, Any]:
     """Return a deterministic safety scan verdict for a procedural candidate."""
 
     text = _render_procedural_content(value)
-    findings = sorted(
+    semantic_findings = {
         name for name, pattern in _PROCEDURE_SCAN_PATTERNS.items() if pattern.search(text)
-    )
-    return {"verdict": "fail" if findings else "pass", "findings": findings}
+    }
+    secret_findings = set(_PROCEDURE_SECRET_FIREWALL.inspect(text).secret_findings)
+    findings = sorted(semantic_findings | secret_findings)
+    return {
+        "verdict": "fail" if findings else "pass",
+        "findings": findings,
+    }
 
 
 def build_procedure_trace_pool_hash(artifact: Any, trace_ids: list[str]) -> str:

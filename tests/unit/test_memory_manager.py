@@ -17,7 +17,10 @@ from shisad.memory.ingestion import IngestionPipeline, RetrievalResult
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import InboxItemValue, inbox_item_key
 from shisad.memory.schema import MemorySource
-from shisad.memory.surfaces.procedural import build_procedure_trace_pool_hash
+from shisad.memory.surfaces.procedural import (
+    build_procedure_trace_pool_hash,
+    scan_procedure_candidate_artifact,
+)
 
 
 def test_m2_t1_memory_write_rejects_instruction_like_content(tmp_path: Path) -> None:
@@ -3183,6 +3186,20 @@ def test_m4_procedure_experience_promotion_rejects_failed_scan(
     assert promoted.kind == "reject"
     assert promoted.reason == "procedure_candidate_scan_not_passed"
     assert manager.list_invocable_skills(user_id="alice", workspace_id="ws1") == []
+
+
+def test_m4_procedure_experience_scanner_detects_raw_secret_values() -> None:
+    raw_key = scan_procedure_candidate_artifact(
+        "Release close checklist\nStore sk-ant-api03-abc123def456ghi789jkl012."
+    )
+    assert raw_key["verdict"] == "fail"
+    assert "anthropic_key" in raw_key["findings"]
+
+    high_entropy = scan_procedure_candidate_artifact(
+        "Release close checklist\nStore ab12cd34ef56gh78ij90kl12mn34op56qr78st90uv12wx34."
+    )
+    assert high_entropy["verdict"] == "fail"
+    assert "high_entropy_secret" in high_entropy["findings"]
 
 
 def test_m4_procedure_experience_external_scanner_findings_fail_closed(
