@@ -538,7 +538,7 @@ def resolve_timeline_query(
         resolver.sort = "chronological"
     if resolver.since is not None or resolver.until is not None:
         return resolver
-    if re.search(r"\bsince\b", query_l) and not _contains_known_time_phrase(query_l):
+    if _has_unresolved_relative_anchor(query_l):
         resolver.clarification_required = True
         resolver.confidence = 0.0
         resolver.caveats.append("relative_anchor_unresolved")
@@ -595,7 +595,7 @@ def _timeline_timezone(timezone: str | None) -> tuple[Any, str, str]:
         return UTC, "explicit", ""
     try:
         return ZoneInfo(normalized), "explicit", ""
-    except ZoneInfoNotFoundError:
+    except (ValueError, ZoneInfoNotFoundError):
         return UTC, "utc_default", "timezone_unavailable"
 
 
@@ -803,6 +803,13 @@ def _contains_known_time_phrase(query: str) -> bool:
             "this month",
         )
     )
+
+
+def _has_unresolved_relative_anchor(query: str) -> bool:
+    match = re.search(r"\bsince\b", query)
+    if match is None:
+        return False
+    return not _contains_known_time_phrase(query[match.start() :])
 
 
 def _start_of_week(value: datetime) -> datetime:

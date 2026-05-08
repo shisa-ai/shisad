@@ -543,7 +543,11 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
         session_lookup=sessions.get,
     )
 
-    for query in ("since we got back", "what did we do since we got back"):
+    for query in (
+        "since we got back",
+        "what did we do since we got back",
+        "what did we do this month since we got back",
+    ):
         result = timeline.search(
             query=query,
             user_id="alice",
@@ -640,3 +644,14 @@ def test_m5_timeline_explicit_timezone_offsets_fuzzy_day_boundaries(tmp_path) ->
     assert result.resolver.timezone_source == "explicit"
     assert result.resolver.since == datetime(2026, 4, 1, 7, 0, tzinfo=UTC)
     assert result.resolver.until == datetime(2026, 5, 1, 1, 0, tzinfo=UTC)
+
+    malformed = timeline.search(
+        query="what did we do this month",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 1, 1, 0, tzinfo=UTC),
+        timezone="/tmp/not-a-zone",
+    )
+    assert malformed.resolver.timezone_source == "utc_default"
+    assert "timezone_unavailable" in malformed.resolver.caveats
