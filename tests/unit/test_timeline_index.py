@@ -185,6 +185,52 @@ def test_m5_timeline_search_explicit_range_uses_chronological_sort(tmp_path) -> 
     )
 
 
+def test_m5_timeline_search_fuzzy_bounded_window_uses_chronological_sort(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    older = datetime(2026, 4, 29, 9, 0, tzinfo=UTC)
+    newer = datetime(2026, 5, 2, 9, 0, tzinfo=UTC)
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Venue review opened with the short list.",
+        timestamp=older,
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="assistant",
+        content="Venue review closed with the restaurant deposit.",
+        timestamp=newer,
+    )
+
+    result = timeline.search(
+        query="venue review last week",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.resolver.recency_window_source == "calendar_week"
+    assert result.resolver.sort == "chronological"
+    assert [hit.timestamp for hit in result.results] == sorted(
+        [hit.timestamp for hit in result.results]
+    )
+
+
 def test_m5_timeline_search_open_topic_uses_relevance_sort(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")

@@ -619,8 +619,7 @@ def resolve_timeline_query(
     )
     if timezone_caveat:
         resolver.caveats.append(timezone_caveat)
-    if (resolver.since is not None or resolver.until is not None) and resolver.sort == "relevance":
-        resolver.sort = "chronological"
+    _apply_bounded_timeline_sort(resolver)
     if resolver.since is not None or resolver.until is not None:
         return resolver
     if _has_unresolved_relative_anchor(query_l):
@@ -632,6 +631,7 @@ def resolve_timeline_query(
         resolver.since = _normalize_datetime(local_now - timedelta(days=30))
         resolver.until = normalized_now
         resolver.recency_window_source = "default_30d"
+        _apply_bounded_timeline_sort(resolver)
         return resolver
     if _contains_phrase(query_l, "this month"):
         resolver.since = _normalize_datetime(
@@ -643,12 +643,14 @@ def resolve_timeline_query(
         )
         resolver.until = normalized_now
         resolver.recency_window_source = "calendar_month"
+        _apply_bounded_timeline_sort(resolver)
         return resolver
     if _contains_phrase(query_l, "last week"):
         start_this_week = _start_of_week(local_now)
         resolver.since = _normalize_datetime(start_this_week - timedelta(days=7))
         resolver.until = _normalize_datetime(start_this_week)
         resolver.recency_window_source = "calendar_week"
+        _apply_bounded_timeline_sort(resolver)
         return resolver
     weekday = _last_weekday_phrase(query_l)
     if weekday is not None:
@@ -668,8 +670,14 @@ def resolve_timeline_query(
             )
         )
         resolver.recency_window_source = "calendar_day"
+        _apply_bounded_timeline_sort(resolver)
         return resolver
     return resolver
+
+
+def _apply_bounded_timeline_sort(resolver: TimelineResolverMetadata) -> None:
+    if (resolver.since is not None or resolver.until is not None) and resolver.sort == "relevance":
+        resolver.sort = "chronological"
 
 
 def _timeline_timezone(timezone: str | None) -> tuple[Any, str, str]:

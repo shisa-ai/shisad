@@ -11247,6 +11247,15 @@ class SessionImplMixin(HandlerMixinBase):
             user_id=validated.user_id,
             workspace_id=validated.workspace_id,
         )
+        transcript_delivery_target = (
+            validated.delivery_target or _stored_delivery_target_from_session(validated.session)
+        )
+        if transcript_delivery_target is not None:
+            serialized_target = transcript_delivery_target.model_dump(mode="json")
+            assistant_transcript_metadata["delivery_target"] = serialized_target
+            delivery_channel = str(serialized_target.get("channel", "")).strip()
+            if delivery_channel:
+                assistant_transcript_metadata["channel"] = delivery_channel
         assistant_transcript_metadata["task_result"] = {
             "task_session_id": str(handoff.task_session_id),
             "handoff_mode": handoff.handoff_mode,

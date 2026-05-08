@@ -24,7 +24,7 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.session import Session
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.transcript import TranscriptEntry
+from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import (
     Capability,
     PEPDecision,
@@ -54,6 +54,7 @@ from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import compose_channel_binding
 from shisad.memory.schema import MemorySource
+from shisad.memory.timeline import TimelineIndex
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import MonitorDecisionType
@@ -2597,6 +2598,70 @@ async def test_task_handoff_blocked_output_policy_includes_reason_hint() -> None
     assert response["output_policy"]["url_findings"][0]["host"] == "[REDACTED]"
     assert "http://[2001:db8::1" not in output_policy_json
     assert appended["content"] == expected_response
+
+
+@pytest.mark.asyncio
+async def test_m5_task_handoff_transcript_preserves_shared_delivery_target(tmp_path) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._transcript_store = TranscriptStore(tmp_path / "transcripts")
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-a",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "run the task"},
+        sanitized_text="run the task",
+    )
+    validated.channel = "discord"
+    validated.session.channel = "discord"
+    validated.delivery_target = delivery_target
+    handoff = TaskSessionHandoff(
+        task_session_id=SessionId("task-1"),
+        success=True,
+        summary="Task summary",
+        response_text="Task handoff room marker",
+        files_changed=(),
+        agent="planner",
+        cost=None,
+        duration_ms=12,
+        proposal_ref=None,
+        raw_log_ref=None,
+        handoff_mode="summary_only",
+        command_context="ok",
+        recovery_checkpoint_id=None,
+        reason="completed",
+        plan_hash="plan-m5",
+        executed_actions=1,
+    )
+
+    await SessionImplMixin._finalize_task_handoff_response(
+        harness,
+        validated=validated,
+        handoff=handoff,
+    )
+
+    entries = harness._transcript_store.list_entries(SessionId("sess-g1"))
+    assert len(entries) == 1
+    assert entries[0].metadata["channel"] == "discord"
+    assert entries[0].metadata["delivery_target"] == delivery_target.model_dump(mode="json")
+    timeline = TimelineIndex(
+        tmp_path / "timeline-task-handoff",
+        transcript_store=harness._transcript_store,
+        session_lookup=lambda _sid: None,
+    )
+    assert timeline.rebuild_session(SessionId("sess-g1")) == 1
+
+    result = timeline.search(
+        query="handoff room marker",
+        user_id="user-g1",
+        workspace_id="workspace-g1",
+        context_channel="discord",
+        context_delivery_target=delivery_target.model_dump(mode="json"),
+    )
+
+    assert result.results_count == 1
 
 
 def test_rc_lus_direct_result_followup_blocks_sensitive_taint_for_public_channel() -> None:
