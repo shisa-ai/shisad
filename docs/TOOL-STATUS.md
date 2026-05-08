@@ -39,6 +39,11 @@ Note:
   `thread.close`, and `thread.why`) are live control/API surfaces, but this
   static snapshot omits them until the live probe seeds an `open_thread`
   fixture. Their user-visible contract is covered by behavioral tests.
+- Timeline tools (`memory.timeline.search`, `memory.timeline.read`, and
+  `memory.timeline.promote`) are live control/API and CLI surfaces in the
+  v0.7.3 line, but this static snapshot omits them until the live probe seeds a
+  prior transcript/timeline-handle fixture and a promotable read packet. Their
+  user-visible search/read/promote contract is covered by behavioral tests.
 - The generated snapshot below reflects the current `scripts/live_tool_matrix.py` probe surface. Browser rows are intentionally omitted from this point-in-time table even though the browser tool surface is live in `v0.6.0` M6 when `SHISAD_BROWSER_ENABLED=1` and `SHISAD_BROWSER_COMMAND` is configured.
 - MCP tool rows are intentionally omitted from this static snapshot because the surface is configuration-specific and discovered at runtime. In `v0.6.5` I2, discovered MCP tools are treated as external/untrusted runtime entries and require confirmation by default unless the server name appears in `SHISAD_MCP_TRUSTED_SERVERS`.
 - Browser read-mostly tools (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are designed to work without confirmation when the destination is authorized. Browser write tools (`browser.click`, `browser.type_text`) are confirmation-gated in the live runtime.
