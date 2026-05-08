@@ -3328,6 +3328,75 @@ def test_m4_procedure_experience_promotion_rejects_stored_pass_with_findings(
     assert promoted.reason == "procedure_candidate_scan_not_passed"
 
 
+def test_m4_procedure_experience_promotion_rejects_malformed_stored_findings(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    artifact = "Release close checklist"
+    candidate = manager.ingest_procedure_candidate(
+        key="procedure:malformed-stored-findings",
+        artifact=artifact,
+        target_entry_type="skill",
+        target_key="skill:malformed-stored-findings",
+        trace_ids=["trace-malformed-stored-findings"],
+        trace_pool_hash=build_procedure_trace_pool_hash(
+            artifact,
+            ["trace-malformed-stored-findings"],
+        ),
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-malformed-stored-findings",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+        source_id="trace2skill-malformed-stored-findings",
+        scope="user",
+        ingress_handle_id="handle-procedure-malformed-stored-findings",
+        content_digest="digest-procedure-malformed-stored-findings",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert candidate.entry is not None
+    stored = manager.get_entry(
+        candidate.entry.id,
+        include_pending_review=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert stored is not None
+    stored.value["scanner"] = {
+        "verdict": "pass",
+        "findings": "external_scanner_risk",
+    }
+    manager._persist_entry(stored)
+
+    reviewed = manager.describe_procedure_candidate(
+        candidate.entry.id,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert reviewed["candidate"]["scanner"]["findings"] == ["scanner_findings_malformed"]
+
+    promoted = manager.promote_procedure_candidate(
+        candidate_id=candidate.entry.id,
+        source=MemorySource(origin="user", source_id="operator-approval", extraction_method="test"),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="operator-approval",
+        scope="user",
+        ingress_handle_id="handle-procedure-promote-malformed-stored-findings",
+        content_digest="digest-procedure-promote-malformed-stored-findings",
+        user_id="alice",
+        workspace_id="ws1",
+        reviewer="operator",
+    )
+    assert promoted.kind == "reject"
+    assert promoted.reason == "procedure_candidate_scan_not_passed"
+
+
 def test_m4_procedure_experience_promotion_revalidates_tampered_scanner(
     tmp_path: Path,
 ) -> None:

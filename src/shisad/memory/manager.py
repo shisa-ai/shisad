@@ -2850,6 +2850,16 @@ class MemoryManager:
         trace_ids_raw = value.get("trace_ids", [])
         trace_ids = trace_ids_raw if isinstance(trace_ids_raw, list) else []
         scanner_findings = scanner.get("findings", [])
+        if isinstance(scanner_findings, list):
+            normalized_scanner_findings = [
+                str(item).strip()
+                for item in scanner_findings
+                if str(item).strip()
+            ]
+        elif scanner_findings is None:
+            normalized_scanner_findings = []
+        else:
+            normalized_scanner_findings = ["scanner_findings_malformed"]
         return {
             "artifact": value.get("artifact"),
             "target_entry_type": target_entry_type,
@@ -2859,13 +2869,7 @@ class MemoryManager:
             "trace_pool_hash_verified": bool(value.get("trace_pool_hash_verified", False)),
             "scanner": {
                 "verdict": str(scanner.get("verdict", "")).strip().lower(),
-                "findings": [
-                    str(item).strip()
-                    for item in scanner_findings
-                    if str(item).strip()
-                ]
-                if isinstance(scanner_findings, list)
-                else [],
+                "findings": normalized_scanner_findings,
             },
             "review": {
                 "status": str(review.get("status", "pending")).strip() or "pending",
