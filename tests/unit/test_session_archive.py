@@ -423,6 +423,7 @@ def test_m5_session_archive_import_strips_checkpoint_delivery_target_metadata(
         workspace_id=WorkspaceId("ws1"),
     )
     checkpoint_session = session.model_dump(mode="json")
+    checkpoint_session["id"] = "forged-checkpoint-session-id"
     checkpoint_session["metadata"] = {
         "delivery_target": {
             "channel": "discord",
@@ -442,8 +443,10 @@ def test_m5_session_archive_import_strips_checkpoint_delivery_target_metadata(
     )
 
     assert imported_checkpoint is not None
+    assert imported_checkpoint.state["session"]["id"] == str(imported.session.id)
     assert "delivery_target" not in imported_checkpoint.state["session"]["metadata"]
     restored = session_manager.restore_from_checkpoint(imported_checkpoint)
+    assert restored.id == imported.session.id
     assert "delivery_target" not in restored.metadata
 
 

@@ -473,7 +473,7 @@ def _rewrite_checkpoint_session_ids(
     imported_session_id: SessionId,
 ) -> dict[str, Any]:
     def _looks_like_session_payload(payload: dict[str, Any]) -> bool:
-        return payload.get("id") == str(original_session_id) and {
+        return "id" in payload and {
             "channel",
             "user_id",
             "workspace_id",
