@@ -216,19 +216,20 @@ def test_m5_timeline_search_fuzzy_bounded_window_uses_chronological_sort(tmp_pat
         timestamp=newer,
     )
 
-    result = timeline.search(
-        query="venue review last week",
-        user_id="alice",
-        workspace_id="ws1",
-        context_channel="cli",
-        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
-    )
+    for query in ("venue review last week", "last week venue review"):
+        result = timeline.search(
+            query=query,
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+            now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+        )
 
-    assert result.resolver.recency_window_source == "calendar_week"
-    assert result.resolver.sort == "chronological"
-    assert [hit.timestamp for hit in result.results] == sorted(
-        [hit.timestamp for hit in result.results]
-    )
+        assert result.resolver.recency_window_source == "calendar_week"
+        assert result.resolver.sort == "chronological"
+        assert [hit.timestamp for hit in result.results] == sorted(
+            [hit.timestamp for hit in result.results]
+        )
 
 
 def test_m5_timeline_search_open_topic_uses_relevance_sort(tmp_path) -> None:

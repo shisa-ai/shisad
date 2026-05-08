@@ -1033,7 +1033,11 @@ def _json_list(payload: str) -> list[str]:
 
 
 def _is_most_recent_query(query: str) -> bool:
-    return "last time" in query or "when did we last" in query or query.startswith("last ")
+    return (
+        "last time" in query
+        or "when did we last" in query
+        or (query.startswith("last ") and not _starts_with_known_time_phrase(query))
+    )
 
 
 def _contains_known_time_phrase(query: str) -> bool:
