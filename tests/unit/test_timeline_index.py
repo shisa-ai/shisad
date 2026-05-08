@@ -345,3 +345,33 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
     assert result.results == []
     assert result.resolver.clarification_required is True
     assert "relative_anchor_unresolved" in result.resolver.caveats
+
+
+def test_m5_timeline_resolver_records_supported_fuzzy_windows(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    now = datetime(2026, 5, 8, 12, 0, tzinfo=UTC)
+
+    cases = [
+        ("what did we do recently", "default_30d"),
+        ("what did we do this month", "calendar_month"),
+        ("what did we do last week", "calendar_week"),
+        ("what happened last tuesday", "calendar_day"),
+    ]
+    for query, source in cases:
+        result = timeline.search(
+            query=query,
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+            now=now,
+        )
+        assert result.resolver.since is not None
+        assert result.resolver.until is not None
+        assert result.resolver.recency_window_source == source
+        assert result.resolver.timezone_source == "utc_default"
