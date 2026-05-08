@@ -61,6 +61,15 @@ _MEMORY_WRITE_REJECT_HINTS: dict[str, tuple[str, str]] = {
 }
 
 
+def _datetime_param(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    return datetime.fromisoformat(raw)
+
+
 class MemoryImplMixin(HandlerMixinBase):
     @staticmethod
     def _coerce_source_id(value: Any) -> str:
@@ -778,6 +787,57 @@ class MemoryImplMixin(HandlerMixinBase):
         payload = cast(dict[str, Any], pack.legacy_payload())
         self._ingestion.record_citations([item.chunk_id for item in pack.results])
         return payload
+
+    async def do_memory_timeline_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        result = self._timeline_index.search(
+            query=str(params.get("query", "")),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            context_channel=str(params.get("context_channel", "cli")),
+            limit=int(params.get("limit", 10)),
+            since=_datetime_param(params.get("since")),
+            until=_datetime_param(params.get("until")),
+            now=_datetime_param(params.get("now")),
+            timezone=str(params.get("timezone", "")).strip() or None,
+            allow_private_history=bool(params.get("allow_private_history", False)),
+        )
+        payload = result.model_dump(mode="json")
+        payload["results_count"] = result.results_count
+        return cast(dict[str, Any], payload)
+
+    async def do_memory_timeline_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        result = self._timeline_index.read(
+            str(params.get("handle", "")),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            context_channel=str(params.get("context_channel", "cli")),
+            allow_private_history=bool(params.get("allow_private_history", False)),
+            surrounding=int(params.get("surrounding", 1)),
+        )
+        return cast(dict[str, Any], result.model_dump(mode="json"))
+
+    async def do_memory_timeline_promote(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        value, reason = self._timeline_index.content_for_handle(
+            str(params.get("handle", "")),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            context_channel=str(params.get("context_channel", "cli")),
+            allow_private_history=bool(params.get("allow_private_history", False)),
+        )
+        if value is None:
+            return {"kind": "reject", "reason": reason, "entry": None}
+        handle_params = dict(params)
+        handle_params["value"] = value
+        return self._write_handle_bound_entry(
+            handle_params,
+            entry_type=str(params.get("entry_type", "fact")),
+            key=str(params.get("key", "")),
+            value=value,
+            confidence=float(params.get("confidence", 0.8)),
+        )
 
     async def do_memory_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):

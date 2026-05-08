@@ -1508,6 +1508,193 @@ def test_memory_list_flags_override_owner_scope_env(
     ]
 
 
+def test_memory_timeline_cli_search_read_and_promote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setenv(cli_main._USER_ID_ENV, "alice")
+    monkeypatch.setenv(cli_main._WORKSPACE_ID_ENV, "ws-1")
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    search_payload = {
+        "label": "ARCHIVAL SEARCH RESULTS",
+        "query": "lunch last time",
+        "resolver": {"sort": "most_recent", "timezone_source": "utc_default"},
+        "results": [
+            {
+                "handle": "tl-abc",
+                "label": "ARCHIVAL SEARCH RESULT",
+                "trust_boundary": "archival_untrusted_content",
+                "session_id": "s1",
+                "episode_id": "s1:ep-0001",
+                "entry_id": "e1",
+                "role": "user",
+                "snippet": "We chose Bar Neko for lunch last time.",
+                "timestamp": "2026-05-05T12:00:00+00:00",
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+                "channel": "cli",
+                "visibility": "owner_private",
+                "publication_state": "owner_private",
+                "content_digest": "digest-1",
+            }
+        ],
+        "results_count": 1,
+        "publication_policy": {"private_history_blocked_count": 0},
+    }
+    read_payload = {
+        "found": True,
+        "handle": "tl-abc",
+        "packet": "ARCHIVAL SEARCH RESULTS\n- We chose Bar Neko for lunch last time.",
+        "selected_content": "We chose Bar Neko for lunch last time.",
+        "rows": search_payload["results"],
+        "grouping": {"mode": "adjacent_evidence"},
+    }
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payloads: dict[str, dict[str, object]] = {
+            "memory.timeline.search": search_payload,
+            "memory.timeline.read": read_payload,
+            "memory.mint_ingress_context": {
+                "ingress_context": "ingress-1",
+                "content_digest": "digest-1",
+                "source_origin": "user_confirmed",
+                "channel_trust": "command",
+                "confirmation_status": "user_confirmed",
+                "scope": "user",
+                "source_id": "timeline-promote",
+            },
+            "memory.timeline.promote": {
+                "kind": "allow",
+                "entry": {"id": "mem-1", "key": "timeline:lunch"},
+            },
+        }
+        payload = payloads[method]
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    search = _invoke_ok(
+        runner,
+        [
+            "memory",
+            "timeline",
+            "search",
+            "lunch last time",
+            "--channel",
+            "discord",
+            "--allow-private-history",
+            "--limit",
+            "3",
+        ],
+    )
+    assert "tl-abc" in search.output
+    assert "Bar Neko" in search.output
+
+    read = _invoke_ok(
+        runner,
+        [
+            "memory",
+            "timeline",
+            "read",
+            "tl-abc",
+            "--channel",
+            "discord",
+            "--allow-private-history",
+        ],
+    )
+    assert "ARCHIVAL SEARCH RESULTS" in read.output
+
+    promoted = _invoke_ok(
+        runner,
+        [
+            "memory",
+            "timeline",
+            "promote",
+            "tl-abc",
+            "--type",
+            "fact",
+            "--key",
+            "timeline:lunch",
+            "--channel",
+            "discord",
+            "--allow-private-history",
+            "--json",
+        ],
+    )
+    assert '"kind": "allow"' in promoted.output
+    assert calls == [
+        (
+            "memory.timeline.search",
+            {
+                "query": "lunch last time",
+                "limit": 3,
+                "context_channel": "discord",
+                "allow_private_history": True,
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            },
+        ),
+        (
+            "memory.timeline.read",
+            {
+                "handle": "tl-abc",
+                "surrounding": 1,
+                "context_channel": "discord",
+                "allow_private_history": True,
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            },
+        ),
+        (
+            "memory.timeline.read",
+            {
+                "handle": "tl-abc",
+                "surrounding": 0,
+                "context_channel": "discord",
+                "allow_private_history": True,
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            },
+        ),
+        (
+            "memory.mint_ingress_context",
+            {
+                "content": "We chose Bar Neko for lunch last time.",
+                "source_type": "user",
+                "source_id": "timeline-promote",
+                "user_confirmed": True,
+            },
+        ),
+        (
+            "memory.timeline.promote",
+            {
+                "handle": "tl-abc",
+                "ingress_context": "ingress-1",
+                "entry_type": "fact",
+                "key": "timeline:lunch",
+                "confidence": 0.8,
+                "context_channel": "discord",
+                "allow_private_history": True,
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            },
+        ),
+    ]
+
+
 @pytest.mark.parametrize(
     "args",
     [

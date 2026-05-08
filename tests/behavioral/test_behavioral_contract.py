@@ -5226,6 +5226,91 @@ async def test_contract_memory_read_original_is_explicit_and_audited(
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_timeline_search_read_and_promote(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(
+        contract_harness.client,
+        channel="cli",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    message = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "We chose Bar Neko for lunch last time."},
+    )
+    assert message.get("lockdown_level") == "normal"
+
+    blocked = await contract_harness.client.call(
+        "memory.timeline.search",
+        {
+            "query": "Bar Neko lunch",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "discord",
+        },
+    )
+    assert blocked.get("results") == []
+    blocked_private = int(
+        (blocked.get("publication_policy") or {}).get("private_history_blocked_count", 0)
+    )
+    assert blocked_private >= 1
+
+    search = await contract_harness.client.call(
+        "memory.timeline.search",
+        {
+            "query": "Bar Neko lunch",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "cli",
+            "limit": 5,
+        },
+    )
+    assert search.get("label") == "ARCHIVAL SEARCH RESULTS"
+    results = list(search.get("results") or [])
+    assert results
+    hit = next(item for item in results if "Bar Neko" in str(item.get("snippet", "")))
+    assert hit.get("label") == "ARCHIVAL SEARCH RESULT"
+    assert hit.get("trust_boundary") == "archival_untrusted_content"
+
+    read = await contract_harness.client.call(
+        "memory.timeline.read",
+        {
+            "handle": hit["handle"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "cli",
+        },
+    )
+    assert read.get("found") is True
+    assert "not current user intent" in str(read.get("packet", ""))
+    assert read.get("selected_content") == "We chose Bar Neko for lunch last time."
+
+    minted = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=read["selected_content"],
+        source_id="timeline-promote",
+        user_confirmed=True,
+    )
+    promoted = await contract_harness.client.call(
+        "memory.timeline.promote",
+        {
+            "handle": hit["handle"],
+            "ingress_context": minted["ingress_context"],
+            "entry_type": "fact",
+            "key": "timeline:lunch:last_time",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "cli",
+        },
+    )
+    assert promoted.get("kind") == "allow"
+    entry = promoted.get("entry") or {}
+    assert entry.get("value") == "We chose Bar Neko for lunch last time."
+    assert entry.get("source_origin") == "user_confirmed"
+
+
+@pytest.mark.asyncio
 async def test_contract_skill_command_invokes_without_confirmation_and_emits_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

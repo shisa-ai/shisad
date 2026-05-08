@@ -147,6 +147,45 @@ async def test_h2_daemon_services_reuses_firewall_for_ingestion_pipeline(
 
 
 @pytest.mark.asyncio
+async def test_m5_daemon_services_wires_timeline_index_append_observer(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        session = services.session_manager.create(
+            channel="cli",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="We chose Bar Neko for lunch last time.",
+            timestamp=datetime(2026, 5, 5, 12, 0, tzinfo=UTC),
+        )
+
+        result = services.timeline_index.search(
+            query="lunch last time",
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+            now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+        )
+
+        assert result.results_count == 1
+        assert "Bar Neko" in result.results[0].snippet
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_h1_daemon_services_builds_with_supervised_control_plane_sidecar(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -493,6 +532,21 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             role="user",
             content="x" * 5000,
         )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Timeline reset marker should not survive daemon reset.",
+            timestamp=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+        )
+        assert (
+            services.timeline_index.search(
+                query="timeline reset marker",
+                user_id="alice",
+                workspace_id="ws1",
+                context_channel="cli",
+            ).results_count
+            == 1
+        )
         assert services.trace_recorder is not None
         services.trace_recorder.record(
             TraceTurn(
@@ -545,6 +599,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert result["cleared"]["identity_bindings"] == 1
         assert result["cleared"]["identity_pairing_requests"] == 1
         assert result["cleared"]["transcripts"] >= 2
+        assert result["cleared"]["timeline_rows"] >= 1
         assert result["cleared"]["trace_files"] == 1
         assert result["cleared"]["session_archives"] == 1
         assert result["cleared"]["risk_observations"] == 1
@@ -562,6 +617,15 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert services.audit_log.entry_count == 0
         assert list(services.checkpoint_store._dir.iterdir()) == []
         assert services.channel_state_store.snapshot("matrix")["seen_count"] == 0
+        assert (
+            services.timeline_index.search(
+                query="timeline reset marker",
+                user_id="alice",
+                workspace_id="ws1",
+                context_channel="cli",
+            ).results
+            == []
+        )
         assert services.evidence_store._refs == {}
         assert services.ingestion.artifacts_empty()
         assert services.ingestion.search_index_count() == 0

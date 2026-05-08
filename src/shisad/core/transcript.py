@@ -9,8 +9,10 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from shisad.core.types import SessionId, TaintLabel
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptEntry(BaseModel):
@@ -40,6 +44,7 @@ class TranscriptStore:
     def __init__(self, root_dir: Path, *, blob_threshold_bytes: int = 4096) -> None:
         self._root_dir = root_dir
         self._blob_threshold_bytes = blob_threshold_bytes
+        self._append_observers: list[Callable[[SessionId, TranscriptEntry, str], None]] = []
         self._transcript_dir = root_dir / "transcripts"
         self._blob_dir = root_dir / "blobs"
         self._transcript_dir.mkdir(parents=True, exist_ok=True)
@@ -92,8 +97,24 @@ class TranscriptStore:
         with transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(entry.model_dump_json() + "\n")
         self._ensure_file_permissions(transcript_path)
+        for observer in list(self._append_observers):
+            try:
+                observer(session_id, entry, content)
+            except Exception:
+                logger.exception(
+                    "Transcript append observer failed for session %s entry %s",
+                    session_id,
+                    entry.entry_id,
+                )
 
         return entry
+
+    def add_append_observer(
+        self,
+        observer: Callable[[SessionId, TranscriptEntry, str], None],
+    ) -> None:
+        """Register a best-effort observer for append-time derived indexes."""
+        self._append_observers.append(observer)
 
     def list_entries(self, session_id: SessionId) -> list[TranscriptEntry]:
         """Return transcript entries for a session."""

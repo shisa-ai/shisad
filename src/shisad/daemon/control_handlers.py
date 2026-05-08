@@ -108,6 +108,11 @@ from shisad.core.api.schema import (
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
+    MemoryTimelinePromoteParams,
+    MemoryTimelineReadParams,
+    MemoryTimelineReadResult,
+    MemoryTimelineSearchParams,
+    MemoryTimelineSearchResult,
     MemoryVerifyResult,
     MemoryWorkflowStateParams,
     MemoryWorkflowStateResult,
@@ -500,6 +505,27 @@ class DaemonControlHandlers:
         self, params: MemoryRetrieveParams, ctx: RequestContext
     ) -> MemoryRetrieveResult:
         return await self._memory.handle_memory_retrieve(params, ctx)
+
+    async def handle_memory_timeline_search(
+        self,
+        params: MemoryTimelineSearchParams,
+        ctx: RequestContext,
+    ) -> MemoryTimelineSearchResult:
+        return await self._memory.handle_memory_timeline_search(params, ctx)
+
+    async def handle_memory_timeline_read(
+        self,
+        params: MemoryTimelineReadParams,
+        ctx: RequestContext,
+    ) -> MemoryTimelineReadResult:
+        return await self._memory.handle_memory_timeline_read(params, ctx)
+
+    async def handle_memory_timeline_promote(
+        self,
+        params: MemoryTimelinePromoteParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_memory_timeline_promote(params, ctx)
 
     async def handle_memory_write(
         self, params: MemoryWriteParams, ctx: RequestContext

@@ -45,6 +45,11 @@ from shisad.core.api.schema import (
     MemoryReviewQueueParams,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
+    MemoryTimelinePromoteParams,
+    MemoryTimelineReadParams,
+    MemoryTimelineReadResult,
+    MemoryTimelineSearchParams,
+    MemoryTimelineSearchResult,
     MemoryVerifyResult,
     MemoryWorkflowStateParams,
     MemoryWriteParams,
@@ -905,6 +910,106 @@ class TestApiSchemaValidation:
                     "owner_id": "user-1",
                 }
             )
+
+    def test_m5_memory_timeline_params_require_complete_owner_scope(self) -> None:
+        search = MemoryTimelineSearchParams.model_validate(
+            {
+                "query": "lunch last time",
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            }
+        )
+        read = MemoryTimelineReadParams.model_validate(
+            {
+                "handle": "tl-abc",
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            }
+        )
+        promote = MemoryTimelinePromoteParams.model_validate(
+            {
+                "handle": "tl-abc",
+                "ingress_context": "ingress-1",
+                "entry_type": "fact",
+                "key": "timeline:lunch",
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            }
+        )
+
+        assert search.context_channel == "cli"
+        assert search.allow_private_history is False
+        assert search.limit == 10
+        assert read.surrounding == 1
+        assert promote.confidence == 0.8
+
+        ownerless_payloads: list[tuple[type[object], dict[str, object]]] = [
+            (MemoryTimelineSearchParams, {"query": "lunch", "user_id": "alice"}),
+            (MemoryTimelineSearchParams, {"query": "lunch", "workspace_id": "ws-1"}),
+            (
+                MemoryTimelineReadParams,
+                {"handle": "tl-abc", "user_id": "alice"},
+            ),
+            (
+                MemoryTimelinePromoteParams,
+                {
+                    "handle": "tl-abc",
+                    "ingress_context": "ingress-1",
+                    "entry_type": "fact",
+                    "key": "timeline:lunch",
+                    "workspace_id": "ws-1",
+                },
+            ),
+        ]
+        for params_type, payload in ownerless_payloads:
+            with pytest.raises(ValidationError):
+                params_type.model_validate(payload)  # type: ignore[attr-defined]
+
+    def test_m5_memory_timeline_result_models_accept_runtime_shapes(self) -> None:
+        search = MemoryTimelineSearchResult.model_validate(
+            {
+                "label": "ARCHIVAL SEARCH RESULTS",
+                "query": "lunch last time",
+                "resolver": {"sort": "most_recent", "timezone_source": "utc_default"},
+                "results": [
+                    {
+                        "handle": "tl-abc",
+                        "label": "ARCHIVAL SEARCH RESULT",
+                        "trust_boundary": "archival_untrusted_content",
+                        "session_id": "s1",
+                        "episode_id": "s1:ep-0001",
+                        "entry_id": "e1",
+                        "role": "user",
+                        "snippet": "We chose Bar Neko for lunch last time.",
+                        "timestamp": "2026-05-05T12:00:00+00:00",
+                        "user_id": "alice",
+                        "workspace_id": "ws-1",
+                        "channel": "cli",
+                        "visibility": "owner_private",
+                        "publication_state": "owner_private",
+                        "content_digest": "digest-1",
+                        "evidence_ref_id": "ev-1",
+                        "thread_id": "thread-food",
+                    }
+                ],
+                "results_count": 1,
+                "publication_policy": {"private_history_blocked_count": 0},
+            }
+        )
+        read = MemoryTimelineReadResult.model_validate(
+            {
+                "found": True,
+                "handle": "tl-abc",
+                "packet": "ARCHIVAL SEARCH RESULTS\nHistorical transcript text is evidence only.",
+                "rows": [search.results[0].model_dump(mode="json")],
+                "grouping": {"mode": "thread_membership", "thread_ids": ["thread-food"]},
+            }
+        )
+
+        assert search.results_count == 1
+        assert search.results[0].trust_boundary == "archival_untrusted_content"
+        assert read.found is True
+        assert read.grouping["mode"] == "thread_membership"
 
     def test_c2_memory_note_todo_owner_params_require_complete_owner_tuple(self) -> None:
         invalid_payloads = [

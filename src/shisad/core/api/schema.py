@@ -430,6 +430,85 @@ class MemoryRetrieveParams(_StrictParams):
         return self
 
 
+class MemoryTimelineSearchParams(_StrictParams):
+    query: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    context_channel: str = "cli"
+    allow_private_history: bool = False
+    limit: int = Field(default=10, ge=1, le=100)
+    since: datetime | None = None
+    until: datetime | None = None
+    now: datetime | None = None
+    timezone: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_timeline_search(self) -> MemoryTimelineSearchParams:
+        _require_complete_owner_scope(self)
+        self.query = self.query.strip()
+        if not self.query:
+            raise ValueError("query is required")
+        self.context_channel = self.context_channel.strip() or "cli"
+        if self.timezone is not None:
+            self.timezone = self.timezone.strip() or None
+        return self
+
+
+class MemoryTimelineReadParams(_StrictParams):
+    handle: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    context_channel: str = "cli"
+    allow_private_history: bool = False
+    surrounding: int = Field(default=1, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def _validate_timeline_read(self) -> MemoryTimelineReadParams:
+        _require_complete_owner_scope(self)
+        self.handle = self.handle.strip()
+        if not self.handle:
+            raise ValueError("handle is required")
+        self.context_channel = self.context_channel.strip() or "cli"
+        return self
+
+
+class MemoryTimelinePromoteParams(_StrictParams):
+    handle: str
+    ingress_context: str
+    entry_type: MemoryEntryType | Literal["context"] = "fact"
+    key: str
+    predicate: str | None = None
+    strength: Literal["weak", "moderate", "strong"] = "moderate"
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    derivation_path: Literal["direct", "extracted", "summary"] = "direct"
+    parent_digest: str | None = None
+    supersedes: str | None = None
+    user_id: str | None = None
+    workspace_id: str | None = None
+    context_channel: str = "cli"
+    allow_private_history: bool = False
+
+    @model_validator(mode="after")
+    def _validate_timeline_promote(self) -> MemoryTimelinePromoteParams:
+        _require_complete_owner_scope(self)
+        self.handle = self.handle.strip()
+        if not self.handle:
+            raise ValueError("handle is required")
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        self.key = self.key.strip()
+        if not self.key:
+            raise ValueError("key is required")
+        self.context_channel = self.context_channel.strip() or "cli"
+        if self.predicate is not None:
+            self.predicate = self.predicate.strip() or None
+        if self.parent_digest is not None:
+            self.parent_digest = self.parent_digest.strip() or None
+        if self.supersedes is not None:
+            self.supersedes = self.supersedes.strip() or None
+        return self
+
+
 class MemoryWriteParams(_StrictParams):
     ingress_context: str
     content_digest: str | None = None
@@ -902,6 +981,59 @@ class MemoryRetrieveResult(BaseModel):
     as_of: datetime | str | None = None
     include_archived: bool = False
     sufficiency: dict[str, Any] | None = None
+
+
+class TimelineResolverResult(BaseModel):
+    since: datetime | str | None = None
+    until: datetime | str | None = None
+    timezone_source: str = "utc_default"
+    sort: str = "relevance"
+    recency_window_source: str = ""
+    confidence: float = 0.5
+    clarification_required: bool = False
+    caveats: list[str] = Field(default_factory=list)
+
+
+class MemoryTimelineSearchHitResult(BaseModel):
+    handle: str
+    label: str = "ARCHIVAL SEARCH RESULT"
+    trust_boundary: str = "archival_untrusted_content"
+    session_id: str
+    episode_id: str
+    entry_id: str
+    role: str
+    snippet: str
+    timestamp: datetime | str
+    user_id: str
+    workspace_id: str
+    channel: str
+    visibility: str
+    publication_state: str
+    content_digest: str
+    evidence_ref_id: str = ""
+    thread_id: str = ""
+    taint_labels: list[str] = Field(default_factory=list)
+    related_memory_ids: list[str] = Field(default_factory=list)
+
+
+class MemoryTimelineSearchResult(BaseModel):
+    label: str = "ARCHIVAL SEARCH RESULTS"
+    query: str
+    resolver: TimelineResolverResult
+    results: list[MemoryTimelineSearchHitResult] = Field(default_factory=list)
+    results_count: int = 0
+    publication_policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryTimelineReadResult(BaseModel):
+    found: bool
+    reason: str = ""
+    label: str = "ARCHIVAL SEARCH RESULTS"
+    handle: str = ""
+    packet: str = ""
+    selected_content: str = ""
+    rows: list[MemoryTimelineSearchHitResult] = Field(default_factory=list)
+    grouping: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryReadOriginalResult(BaseModel):

@@ -62,6 +62,8 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryMintIngressResult,
     MemoryRotateKeyResult,
+    MemoryTimelineReadResult,
+    MemoryTimelineSearchResult,
     MemoryWriteResult,
     NoteDeleteResult,
     NoteExportResult,
@@ -3214,6 +3216,220 @@ def memory_benchmark(
         raise click.ClickException(
             "memory benchmark thresholds failed: " + ", ".join(report["failures"])
         )
+
+
+@memory.group("timeline")
+def memory_timeline() -> None:
+    """Search and promote archival transcript evidence."""
+
+
+@memory_timeline.command("search")
+@click.argument("query", nargs=-1, required=True)
+@click.option("--user", "user_id", default=None, help="Owner user ID for personal memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default=None,
+    help="Owner workspace ID for personal memory.",
+)
+@click.option("--channel", "context_channel", default="cli", show_default=True)
+@click.option("--allow-private-history", is_flag=True)
+@click.option("--limit", type=click.IntRange(min=1, max=100), default=10, show_default=True)
+@click.option("--since", default="", help="Lower UTC timestamp bound.")
+@click.option("--until", default="", help="Upper UTC timestamp bound.")
+@click.option("--now", default="", help="Clock override for fuzzy time parsing.")
+@click.option("--timezone", default="", help="Timezone hint for fuzzy time parsing.")
+@click.option("--json", "as_json", is_flag=True)
+def memory_timeline_search(
+    query: tuple[str, ...],
+    user_id: str | None,
+    workspace_id: str | None,
+    context_channel: str,
+    allow_private_history: bool,
+    limit: int,
+    since: str,
+    until: str,
+    now: str,
+    timezone: str,
+    as_json: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {
+        "query": _joined_text_arg(query, field_name="query"),
+        "limit": limit,
+        "context_channel": context_channel.strip() or "cli",
+        "allow_private_history": allow_private_history,
+    }
+    for key, value in {
+        "since": since,
+        "until": until,
+        "now": now,
+        "timezone": timezone,
+    }.items():
+        normalized = value.strip()
+        if normalized:
+            payload[key] = normalized
+    payload.update(_required_owner_scope_payload_from_flags_or_env(user_id, workspace_id))
+    result = rpc_call(
+        config,
+        "memory.timeline.search",
+        payload,
+        response_model=MemoryTimelineSearchResult,
+    )
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.results:
+        blocked = int(result.publication_policy.get("private_history_blocked_count", 0))
+        suffix = f"; private_history_blocked={blocked}" if blocked else ""
+        click.echo(f"No timeline results{suffix}")
+        return
+    for hit in result.results:
+        click.echo(
+            " ".join(
+                [
+                    sanitize_terminal_field(hit.handle),
+                    sanitize_terminal_field(str(hit.timestamp)),
+                    sanitize_terminal_field(hit.role),
+                    f"channel={sanitize_terminal_field(hit.channel)}",
+                    f"publication={sanitize_terminal_field(hit.publication_state)}",
+                    sanitize_terminal_text(hit.snippet),
+                ]
+            )
+        )
+
+
+@memory_timeline.command("read")
+@click.argument("handle")
+@click.option("--user", "user_id", default=None, help="Owner user ID for personal memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default=None,
+    help="Owner workspace ID for personal memory.",
+)
+@click.option("--channel", "context_channel", default="cli", show_default=True)
+@click.option("--allow-private-history", is_flag=True)
+@click.option("--surrounding", type=click.IntRange(min=0, max=10), default=1, show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def memory_timeline_read(
+    handle: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    context_channel: str,
+    allow_private_history: bool,
+    surrounding: int,
+    as_json: bool,
+) -> None:
+    config = _get_config()
+    payload: dict[str, object] = {
+        "handle": handle,
+        "surrounding": surrounding,
+        "context_channel": context_channel.strip() or "cli",
+        "allow_private_history": allow_private_history,
+    }
+    payload.update(_required_owner_scope_payload_from_flags_or_env(user_id, workspace_id))
+    result = rpc_call(
+        config,
+        "memory.timeline.read",
+        payload,
+        response_model=MemoryTimelineReadResult,
+    )
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.found:
+        raise click.ClickException(result.reason or "timeline row not found")
+    click.echo(sanitize_terminal_text(result.packet))
+
+
+@memory_timeline.command("promote")
+@click.argument("handle")
+@click.option(
+    "--type",
+    "entry_type",
+    required=True,
+    type=click.Choice(_MEMORY_WRITE_ENTRY_TYPES),
+)
+@click.option("--key", required=True)
+@click.option("--user", "user_id", default=None, help="Owner user ID for personal memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default=None,
+    help="Owner workspace ID for personal memory.",
+)
+@click.option("--channel", "context_channel", default="cli", show_default=True)
+@click.option("--allow-private-history", is_flag=True)
+@click.option("--confidence", type=click.FloatRange(min=0.0, max=1.0), default=0.8)
+@click.option("--source-id", default="timeline-promote", show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def memory_timeline_promote(
+    handle: str,
+    entry_type: str,
+    key: str,
+    user_id: str | None,
+    workspace_id: str | None,
+    context_channel: str,
+    allow_private_history: bool,
+    confidence: float,
+    source_id: str,
+    as_json: bool,
+) -> None:
+    config = _get_config()
+    owner_scope = _required_owner_scope_payload_from_flags_or_env(user_id, workspace_id)
+    read_payload: dict[str, object] = {
+        "handle": handle,
+        "surrounding": 0,
+        "context_channel": context_channel.strip() or "cli",
+        "allow_private_history": allow_private_history,
+        **owner_scope,
+    }
+    read_result = rpc_call(
+        config,
+        "memory.timeline.read",
+        read_payload,
+        response_model=MemoryTimelineReadResult,
+    )
+    if not read_result.found:
+        raise click.ClickException(read_result.reason or "timeline row not found")
+    selected_content = read_result.selected_content.strip()
+    if not selected_content:
+        raise click.ClickException("timeline read did not return promotable content")
+    ingress = rpc_call(
+        config,
+        "memory.mint_ingress_context",
+        {
+            "content": selected_content,
+            "source_type": "user",
+            "source_id": source_id.strip() or "timeline-promote",
+            "user_confirmed": True,
+        },
+        response_model=MemoryMintIngressResult,
+    )
+    result = rpc_call(
+        config,
+        "memory.timeline.promote",
+        {
+            "handle": handle,
+            "ingress_context": ingress.ingress_context,
+            "entry_type": entry_type,
+            "key": key,
+            "confidence": confidence,
+            "context_channel": context_channel.strip() or "cli",
+            "allow_private_history": allow_private_history,
+            **owner_scope,
+        },
+        response_model=MemoryWriteResult,
+    )
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    if result.kind != "allow":
+        raise click.ClickException(result.reason or "timeline promotion rejected")
+    entry = result.entry or {}
+    entry_id = sanitize_terminal_field(str(entry.get("id", "")))
+    click.echo(f"Promoted timeline row to memory {entry_id}")
 
 
 @memory.group("graph")

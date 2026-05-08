@@ -42,6 +42,11 @@ from shisad.core.api.schema import (
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
+    MemoryTimelinePromoteParams,
+    MemoryTimelineReadParams,
+    MemoryTimelineReadResult,
+    MemoryTimelineSearchParams,
+    MemoryTimelineSearchResult,
     MemoryVerifyResult,
     MemoryWorkflowStateParams,
     MemoryWorkflowStateResult,
@@ -169,6 +174,49 @@ class MemoryHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return MemoryRetrieveResult.model_validate(await self._impl.do_memory_retrieve(payload))
+
+    async def handle_memory_timeline_search(
+        self,
+        params: MemoryTimelineSearchParams,
+        ctx: RequestContext,
+    ) -> MemoryTimelineSearchResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryTimelineSearchResult.model_validate(
+            await self._impl.do_memory_timeline_search(payload)
+        )
+
+    async def handle_memory_timeline_read(
+        self,
+        params: MemoryTimelineReadParams,
+        ctx: RequestContext,
+    ) -> MemoryTimelineReadResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryTimelineReadResult.model_validate(
+            await self._impl.do_memory_timeline_read(payload)
+        )
+
+    async def handle_memory_timeline_promote(
+        self,
+        params: MemoryTimelinePromoteParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
+        return MemoryWriteResult.model_validate(
+            await self._impl.do_memory_timeline_promote(payload)
+        )
 
     async def handle_memory_write(
         self,

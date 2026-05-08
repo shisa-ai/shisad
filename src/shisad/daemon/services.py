@@ -58,6 +58,7 @@ from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
+from shisad.memory.timeline import TimelineIndex
 from shisad.scheduler.manager import SchedulerManager
 from shisad.security.control_plane.sidecar import (
     ControlPlaneGateway,
@@ -427,6 +428,7 @@ class DaemonServices:
     sandbox: SandboxOrchestrator
     ingestion: IngestionPipeline
     memory_manager: MemoryManager
+    timeline_index: TimelineIndex
     scheduler: SchedulerManager
     skill_manager: SkillManager
     coding_manager: CodingAgentManager
@@ -723,6 +725,12 @@ class DaemonServices:
                 memory_storage_root,
                 audit_hook=event_wiring.audit_memory_event,
             )
+            timeline_index = TimelineIndex(
+                config.data_dir / "timeline",
+                transcript_store=transcript_store,
+                session_lookup=session_manager.get,
+            )
+            transcript_store.add_append_observer(timeline_index.index_transcript_entry)
             memory_ingress_registry = IngressContextRegistry()
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
             msgvault_toolkit = MsgvaultToolkit(
@@ -890,6 +898,7 @@ class DaemonServices:
                 sandbox=sandbox,
                 ingestion=ingestion,
                 memory_manager=memory_manager,
+                timeline_index=timeline_index,
                 scheduler=scheduler,
                 skill_manager=skill_manager,
                 coding_manager=coding_manager,
@@ -1046,6 +1055,7 @@ class DaemonServices:
         cleared["transcripts"] = _count_files_recursive(
             self.transcript_store._transcript_dir
         ) + _count_files_recursive(self.transcript_store._blob_dir)
+        cleared["timeline_rows"] = self.timeline_index.clear()
         _wipe_dir_contents(self.transcript_store._transcript_dir)
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
