@@ -3976,12 +3976,25 @@ def _daemon_pending_confirmation_response_text(
     return "\n".join(lines).strip()
 
 
-def _transcript_metadata_for_channel(*, channel: str, session_mode: SessionMode) -> dict[str, Any]:
-    return {
+def _transcript_metadata_for_channel(
+    *,
+    channel: str,
+    session_mode: SessionMode,
+    user_id: object | None = None,
+    workspace_id: object | None = None,
+) -> dict[str, Any]:
+    metadata = {
         "channel": channel,
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "session_mode": session_mode.value,
     }
+    normalized_user_id = str(user_id or "").strip()
+    normalized_workspace_id = str(workspace_id or "").strip()
+    if normalized_user_id:
+        metadata["user_id"] = normalized_user_id
+    if normalized_workspace_id:
+        metadata["workspace_id"] = normalized_workspace_id
+    return metadata
 
 
 def _transcript_metadata_for_firewall_risk(
@@ -5378,6 +5391,8 @@ def _build_evidence_supplemental_entries(
     records: list[dict[str, Any]],
     channel: str,
     session_mode: SessionMode,
+    user_id: object | None = None,
+    workspace_id: object | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     supplemental: list[dict[str, Any]] = []
     chat_records = deepcopy(records)
@@ -5399,6 +5414,8 @@ def _build_evidence_supplemental_entries(
                         **_transcript_metadata_for_channel(
                             channel=channel,
                             session_mode=session_mode,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
                         ),
                         "ephemeral_evidence_read": True,
                         "evidence_read_ref_id": ref_id,
@@ -5423,6 +5440,8 @@ def _build_evidence_supplemental_entries(
                         **_transcript_metadata_for_channel(
                             channel=channel,
                             session_mode=session_mode,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
                         ),
                         "promoted_evidence": True,
                         "promoted_ref_id": ref_id,
@@ -6397,6 +6416,8 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_transcript_metadata = _transcript_metadata_for_channel(
                 channel=channel,
                 session_mode=session_mode,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             transcript_delivery_target = delivery_target or stored_delivery_target
             if transcript_delivery_target is not None:
@@ -7093,6 +7114,8 @@ class SessionImplMixin(HandlerMixinBase):
             user_transcript_metadata = _transcript_metadata_for_channel(
                 channel=channel,
                 session_mode=session_mode,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             user_transcript_metadata["trust_level"] = trust_level
             user_transcript_metadata["trusted_input"] = trusted_input
@@ -9447,6 +9470,8 @@ class SessionImplMixin(HandlerMixinBase):
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
+            user_id=validated.user_id,
+            workspace_id=validated.workspace_id,
         )
         transcript_delivery_target = (
             validated.delivery_target or _stored_delivery_target_from_session(validated.session)
@@ -9991,6 +10016,8 @@ class SessionImplMixin(HandlerMixinBase):
             records=chat_serialized_tool_outputs,
             channel=validated.channel,
             session_mode=validated.session_mode,
+            user_id=validated.user_id,
+            workspace_id=validated.workspace_id,
         )
         response_text = planner_dispatch.planner_result.output.assistant_response
         tool_output_summary = ""
@@ -10247,6 +10274,8 @@ class SessionImplMixin(HandlerMixinBase):
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
+            user_id=validated.user_id,
+            workspace_id=validated.workspace_id,
         )
         normalized_pending_response = _normalized_pending_confirmation_text(response_text)
         if execution.pending_confirmation_ids and system_generated_pending_confirmation_response:
@@ -11201,6 +11230,8 @@ class SessionImplMixin(HandlerMixinBase):
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
+            user_id=validated.user_id,
+            workspace_id=validated.workspace_id,
         )
         assistant_transcript_metadata["task_result"] = {
             "task_session_id": str(handoff.task_session_id),
@@ -12141,6 +12172,8 @@ class SessionImplMixin(HandlerMixinBase):
                     **_transcript_metadata_for_channel(
                         channel=str(session.channel),
                         session_mode=session_mode,
+                        user_id=session.user_id,
+                        workspace_id=session.workspace_id,
                     ),
                     "source_origin": "consolidation_derived",
                 },

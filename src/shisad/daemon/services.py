@@ -730,13 +730,21 @@ class DaemonServices:
                 transcript_store=transcript_store,
                 session_lookup=session_manager.get,
             )
-            for session in session_manager.list_active():
+            timeline_rebuild_session_ids: dict[str, SessionId] = {
+                str(session.id): session.id for session in session_manager.list_active()
+            }
+            for transcript_session_id in transcript_store.list_session_ids():
+                timeline_rebuild_session_ids.setdefault(
+                    str(transcript_session_id),
+                    transcript_session_id,
+                )
+            for session_id in timeline_rebuild_session_ids.values():
                 try:
-                    timeline_index.rebuild_session(session.id)
+                    timeline_index.rebuild_session(session_id)
                 except Exception:
                     logger.exception(
                         "Timeline index rebuild failed for session %s during startup",
-                        session.id,
+                        session_id,
                     )
             transcript_store.add_append_observer(timeline_index.index_transcript_entry)
             memory_ingress_registry = IngressContextRegistry()

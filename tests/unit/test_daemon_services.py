@@ -211,6 +211,55 @@ async def test_m5_daemon_services_wires_timeline_index_append_observer(
 
 
 @pytest.mark.asyncio
+async def test_m5_daemon_services_rebuilds_terminated_transcript_timeline(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    preexisting_sessions = SessionManager(state_dir=config.data_dir / "sessions" / "state")
+    preexisting_transcripts = TranscriptStore(config.data_dir / "sessions")
+    terminated_session = preexisting_sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    preexisting_transcripts.append(
+        terminated_session.id,
+        role="user",
+        content="Before termination we chose katsudon for dinner.",
+        metadata={
+            "channel": "cli",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+        timestamp=datetime(2026, 5, 4, 19, 0, tzinfo=UTC),
+    )
+    assert preexisting_sessions.terminate(terminated_session.id, reason="done")
+    assert preexisting_sessions.list_active() == []
+
+    services = await DaemonServices.build(config)
+    try:
+        result = services.timeline_index.search(
+            query="katsudon dinner",
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+            now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+        )
+
+        assert result.results_count == 1
+        assert "katsudon" in result.results[0].snippet
+        assert result.results[0].session_id == str(terminated_session.id)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_h1_daemon_services_builds_with_supervised_control_plane_sidecar(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

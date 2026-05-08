@@ -139,6 +139,17 @@ class TranscriptStore:
             entries.append(TranscriptEntry.model_validate(payload))
         return entries
 
+    def list_session_ids(self) -> list[SessionId]:
+        """Return session ids that have persisted transcript rows."""
+        if not self._transcript_dir.exists():
+            return []
+        session_ids: list[SessionId] = []
+        for path in sorted(self._transcript_dir.glob("*.jsonl")):
+            session_id = path.stem.strip()
+            if session_id:
+                session_ids.append(SessionId(session_id))
+        return session_ids
+
     def truncate(self, session_id: SessionId, *, keep_entries: int) -> int:
         """Keep only the first ``keep_entries`` transcript rows for a session."""
         path = self._transcript_dir / f"{session_id}.jsonl"

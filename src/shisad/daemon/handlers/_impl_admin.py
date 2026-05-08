@@ -1351,6 +1351,8 @@ class AdminImplMixin(HandlerMixinBase):
             taint_labels=taint_labels,
             metadata={
                 "channel": message.channel,
+                "user_id": str(identity_user_id),
+                "workspace_id": str(identity_workspace_id),
                 "session_mode": "default",
                 "channel_message_id": message.message_id,
                 "delivery_target": delivery_target.model_dump(mode="json"),

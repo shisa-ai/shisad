@@ -3329,6 +3329,8 @@ class HandlerImplementation(
                     "channel": "session",
                     "timestamp_utc": datetime.now(UTC).isoformat(),
                     "session_mode": (target_session or session).mode.value,
+                    "user_id": str((target_session or session).user_id),
+                    "workspace_id": str((target_session or session).workspace_id),
                     "delivered_by": approval_actor,
                     "delivery_target": {
                         "channel": target.channel,
