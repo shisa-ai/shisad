@@ -957,8 +957,11 @@ class MemoryImplMixin(HandlerMixinBase):
         scanner_payload: dict[str, Any] = {}
         if isinstance(scanner, Mapping):
             findings = scanner.get("findings", [])
+            verdict = str(scanner.get("verdict", "")).strip().lower()
+            if verdict not in {"pass", "fail"}:
+                verdict = "unknown"
             scanner_payload = {
-                "verdict": str(scanner.get("verdict", "")).strip(),
+                "verdict": verdict,
                 "findings_count": len(findings) if isinstance(findings, list) else 0,
             }
         payload.update(
