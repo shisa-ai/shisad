@@ -554,6 +554,7 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
         "what did we do since last week's deploy",
         "what did we do since this month's launch",
         "what did we do since last-week deploy",
+        "what did we do since last week-end deploy",
     ):
         result = timeline.search(
             query=query,
@@ -610,6 +611,7 @@ def test_m5_timeline_resolver_records_supported_fuzzy_windows(tmp_path) -> None:
         "what happened last weekday",
         "what happened last week's deploy",
         "what happened last-week deploy",
+        "what happened last week-end deploy",
     ):
         prefix_collision = timeline.search(
             query=query,
