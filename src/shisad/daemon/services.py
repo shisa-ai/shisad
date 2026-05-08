@@ -730,6 +730,14 @@ class DaemonServices:
                 transcript_store=transcript_store,
                 session_lookup=session_manager.get,
             )
+            for session in session_manager.list_active():
+                try:
+                    timeline_index.rebuild_session(session.id)
+                except Exception:
+                    logger.exception(
+                        "Timeline index rebuild failed for session %s during startup",
+                        session.id,
+                    )
             transcript_store.add_append_observer(timeline_index.index_transcript_entry)
             memory_ingress_registry = IngressContextRegistry()
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")

@@ -204,6 +204,40 @@ async def test_memory_timeline_uses_context_session_delivery_target(
 
 
 @pytest.mark.asyncio
+async def test_memory_timeline_rejects_context_session_binding_for_wrong_channel(
+    tmp_path: Path,
+) -> None:
+    harness = _TimelineHarness(tmp_path)
+    _seed_session(harness)
+    context_session = harness._session_manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        metadata={
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "room-a",
+                "workspace_hint": "guild-1",
+                "thread_id": "thread-1",
+            }
+        },
+    )
+
+    result = await harness.do_memory_timeline_search(
+        {
+            "query": "Bar Neko",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "slack",
+            "context_session_id": str(context_session.id),
+            "allow_private_history": True,
+        }
+    )
+
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
 async def test_memory_timeline_search_requires_complete_owner_scope(tmp_path: Path) -> None:
     harness = _TimelineHarness(tmp_path)
     _seed_session(harness)

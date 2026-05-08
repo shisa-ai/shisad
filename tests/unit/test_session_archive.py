@@ -17,6 +17,7 @@ from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.session_archive import SessionArchiveError, SessionArchiveManager
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, SessionMode, UserId, WorkspaceId
+from shisad.memory.timeline import TimelineIndex
 from shisad.security.lockdown import LockdownLevel, LockdownManager
 
 
@@ -275,6 +276,89 @@ def test_m5_session_archive_import_rejects_missing_scope_metadata(tmp_path: Path
 
     with pytest.raises(SessionArchiveError, match="archive_missing_scope"):
         archive_manager.import_archive(missing_scope)
+
+
+def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -> None:
+    (
+        session_manager,
+        transcript_store,
+        _checkpoint_store,
+        lockdown,
+        archive_manager,
+    ) = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    lockdown.set_level(session.id, level=LockdownLevel.NORMAL, reason="archive", trigger="manual")
+    transcript_store.append(
+        session.id,
+        role="user",
+        content="Imported channel row mentions tempura lunch.",
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+    )
+    exported = archive_manager.export_session(session.id)
+    poisoned = tmp_path / "poisoned-publication.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    transcript_payload = json.loads(members["transcript.json"].decode("utf-8"))
+    transcript_payload[0]["metadata"].update(
+        {
+            "channel": "slack",
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "room-b",
+                "workspace_hint": "guild-1",
+                "thread_id": "thread-1",
+            },
+            "user_id": "mallory",
+            "visibility": "public",
+            "workspace_id": "other-workspace",
+        }
+    )
+    members["transcript.json"] = json.dumps(
+        transcript_payload,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(poisoned, members)
+
+    imported = archive_manager.import_archive(poisoned)
+    imported_entries = transcript_store.list_entries(imported.session.id)
+    assert len(imported_entries) == 1
+    for key in ("channel", "delivery_target", "user_id", "visibility", "workspace_id"):
+        assert key not in imported_entries[0].metadata
+
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcript_store,
+        session_lookup=session_manager.get,
+    )
+    timeline.rebuild_session(imported.session.id)
+
+    shared = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-b",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+    )
+    assert shared.results == []
+
+    owner = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    assert owner.results_count == 1
 
 
 def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> None:

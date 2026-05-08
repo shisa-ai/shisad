@@ -30,6 +30,15 @@ _ARCHIVE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 _ARCHIVE_MAX_MEMBER_COUNT = 2048
 _ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
 _ZIP_FLAG_ENCRYPTED = 0x1
+_UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA = frozenset(
+    {
+        "channel",
+        "delivery_target",
+        "user_id",
+        "visibility",
+        "workspace_id",
+    }
+)
 
 
 class SessionArchiveError(ValueError):
@@ -398,6 +407,7 @@ class SessionArchiveManager:
         metadata = row.get("metadata", {})
         if not isinstance(metadata, dict):
             raise SessionArchiveError("invalid_transcript_row_metadata")
+        metadata = _sanitize_imported_transcript_metadata(metadata)
         parsed_timestamp = datetime.fromisoformat(timestamp)
         taints: set[TaintLabel] = set()
         for label in row.get("taint_labels", []):
@@ -415,6 +425,14 @@ class SessionArchiveManager:
 
 def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _sanitize_imported_transcript_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in metadata.items()
+        if str(key) not in _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA
+    }
 
 
 def _validate_archive_member_name(name: str) -> None:

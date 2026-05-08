@@ -279,13 +279,26 @@ class TimelineIndex:
                     allow_private_history=allow_private_history,
                 ),
             )
+        tokens = _query_tokens(query)
+        if not tokens and resolver.since is None and resolver.until is None:
+            resolver.clarification_required = True
+            resolver.confidence = 0.0
+            resolver.caveats.append("meaningful_query_required")
+            return TimelineSearchResponse(
+                query=query,
+                resolver=resolver,
+                publication_policy=_publication_policy(
+                    context_channel=context_channel,
+                    context_delivery_target=context_delivery_target,
+                    allow_private_history=allow_private_history,
+                ),
+            )
         rows = self._candidate_rows(
             user_id=user_id,
             workspace_id=workspace_id,
             since=resolver.since,
             until=resolver.until,
         )
-        tokens = _query_tokens(query)
         hits: list[TimelineSearchHit] = []
         relevance_scores: dict[str, int] = {}
         for row in rows:
@@ -749,6 +762,12 @@ def _publication_state(
         context_delivery_target,
         fallback_channel=context_channel_normalized,
     )
+    context_binding_channel = _delivery_target_channel(
+        context_delivery_target,
+        fallback_channel=context_channel_normalized,
+    )
+    if context_binding and context_binding_channel != context_channel_normalized:
+        context_binding = ""
     if visibility == "owner_private" and shared_context:
         if not allow_private_history:
             return "private_history_blocked"
@@ -874,7 +893,7 @@ def _canonical_delivery_target_binding(
 ) -> str:
     if not isinstance(value, Mapping):
         return ""
-    channel = _normalize_channel(str(value.get("channel", "")).strip() or fallback_channel)
+    channel = _delivery_target_channel(value, fallback_channel=fallback_channel)
     recipient = str(value.get("recipient", "")).strip()
     workspace_hint = str(value.get("workspace_hint", "")).strip()
     thread_id = str(value.get("thread_id", "")).strip()
@@ -892,6 +911,16 @@ def _canonical_delivery_target_binding(
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def _delivery_target_channel(
+    value: Any,
+    *,
+    fallback_channel: str,
+) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    return _normalize_channel(str(value.get("channel", "")).strip() or fallback_channel)
 
 
 def _timeline_source_surface(

@@ -230,6 +230,43 @@ def test_m5_timeline_search_open_topic_uses_relevance_sort(tmp_path) -> None:
     assert result.results[0].timestamp < result.results[1].timestamp
 
 
+def test_m5_timeline_search_stopword_only_unbounded_requires_clarification(
+    tmp_path,
+) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Private transcript row must not be browseable by stopwords.",
+        timestamp=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+    )
+
+    result = timeline.search(
+        query="what the",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.results == []
+    assert result.resolver.clarification_required is True
+    assert "meaningful_query_required" in result.resolver.caveats
+
+
 def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
@@ -292,6 +329,22 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
     assert confirmed.publication_policy["private_history_excluded"] is False
     assert confirmed.publication_policy["context_binding_present"] is True
 
+    mismatched_channel = timeline.search(
+        query="lunch last time",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="slack",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+        allow_private_history=True,
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    assert mismatched_channel.results == []
+
     unbound_read = timeline.read(
         confirmed.results[0].handle,
         user_id="alice",
@@ -315,6 +368,21 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
         allow_private_history=True,
     )
     assert bound_read.found is True
+
+    mismatched_read = timeline.read(
+        confirmed.results[0].handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="slack",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+        allow_private_history=True,
+    )
+    assert mismatched_read.found is False
 
 
 def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) -> None:

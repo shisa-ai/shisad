@@ -16,7 +16,9 @@ from shisad.core.events import EventBus, SessionCreated
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelRouter
+from shisad.core.session import SessionManager
 from shisad.core.trace import TraceMessage, TraceToolCall, TraceTurn
+from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.services import (
@@ -157,8 +159,31 @@ async def test_m5_daemon_services_wires_timeline_index_append_observer(
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
     )
+    preexisting_sessions = SessionManager(state_dir=config.data_dir / "sessions" / "state")
+    preexisting_transcripts = TranscriptStore(config.data_dir / "sessions")
+    preexisting_session = preexisting_sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    preexisting_transcripts.append(
+        preexisting_session.id,
+        role="user",
+        content="Before observer startup we chose soba for lunch.",
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+    )
     services = await DaemonServices.build(config)
     try:
+        rebuilt = services.timeline_index.search(
+            query="soba lunch",
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+            now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+        )
+        assert rebuilt.results_count == 1
+        assert "soba" in rebuilt.results[0].snippet
+
         session = services.session_manager.create(
             channel="cli",
             user_id=UserId("alice"),
@@ -179,7 +204,7 @@ async def test_m5_daemon_services_wires_timeline_index_append_observer(
             now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
         )
 
-        assert result.results_count == 1
+        assert result.results_count == 2
         assert "Bar Neko" in result.results[0].snippet
     finally:
         await services.shutdown()
