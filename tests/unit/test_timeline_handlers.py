@@ -16,6 +16,7 @@ from shisad.memory.timeline import TimelineIndex
 
 class _TimelineHarness(MemoryImplMixin):
     def __init__(self, tmp_path: Path) -> None:
+        self.audit_events: list[tuple[str, dict[str, object]]] = []
         self._session_manager = SessionManager(state_dir=tmp_path / "sessions")
         self._transcript_store = TranscriptStore(tmp_path / "transcripts")
         self._timeline_index = TimelineIndex(
@@ -26,7 +27,10 @@ class _TimelineHarness(MemoryImplMixin):
         self._transcript_store.add_append_observer(
             self._timeline_index.index_transcript_entry
         )
-        self._memory_manager = MemoryManager(tmp_path / "memory")
+        self._memory_manager = MemoryManager(
+            tmp_path / "memory",
+            audit_hook=lambda action, payload: self.audit_events.append((action, payload)),
+        )
         self._memory_ingress_registry = IngressContextRegistry()
 
 
@@ -82,9 +86,22 @@ async def test_memory_timeline_search_and_read_return_archival_packet(tmp_path: 
     assert read["label"] == "ARCHIVAL SEARCH RESULTS"
     assert "not current user intent" in read["packet"]
     assert "evidence=ev-lunch" in read["packet"]
+    assert "source=transcript" in read["packet"]
+    assert "provenance=evidence_ref:ev-lunch" in read["packet"]
     assert "trust=archival_untrusted_content" in read["packet"]
     assert read["selected_content"] == "We chose Bar Neko for lunch last time."
     assert read["grouping"]["mode"] == "thread_membership"
+
+    assert harness.audit_events[0][0] == "memory.timeline_search"
+    search_audit = harness.audit_events[0][1]
+    assert search_audit["query_hash"]
+    assert "lunch last time" not in str(search_audit)
+    assert search_audit["results_count"] == 1
+    assert harness.audit_events[1][0] == "memory.timeline_read"
+    read_audit = harness.audit_events[1][1]
+    assert read_audit["handle"] == hit["handle"]
+    assert read_audit["found"] is True
+    assert read_audit["row_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -140,6 +157,15 @@ async def test_memory_timeline_promote_routes_through_memory_write_gate(
     )
 
     assert promoted["kind"] == "allow"
+    timeline_promote_audits = [
+        payload
+        for action, payload in harness.audit_events
+        if action == "memory.timeline_promote"
+    ]
+    assert timeline_promote_audits
+    assert timeline_promote_audits[-1]["handle"] == hit["handle"]
+    assert timeline_promote_audits[-1]["decision"] == "allow"
+    assert "Bar Neko" not in str(timeline_promote_audits[-1])
     entry = promoted["entry"]
     assert entry["value"] == "We chose Bar Neko for lunch last time."
     assert entry["source_origin"] == "user_confirmed"

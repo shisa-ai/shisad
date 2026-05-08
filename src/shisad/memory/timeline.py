@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -93,11 +93,14 @@ class TimelineSearchHit(BaseModel):
     user_id: str
     workspace_id: str
     channel: str
+    channel_binding: str = ""
     visibility: str
     publication_state: str
     content_digest: str
     evidence_ref_id: str = ""
     thread_id: str = ""
+    source_surface: str = "transcript"
+    provenance: str = "transcript"
     taint_labels: list[str] = Field(default_factory=list)
     related_memory_ids: list[str] = Field(default_factory=list)
 
@@ -172,6 +175,18 @@ class TimelineIndex:
             metadata,
             "thread_id",
         )
+        channel_binding = _timeline_channel_binding(channel, metadata)
+        source_surface = _timeline_source_surface(
+            role=entry.role,
+            channel=channel,
+            metadata=metadata,
+        )
+        provenance = _timeline_provenance(
+            role=entry.role,
+            channel=channel,
+            metadata=metadata,
+            evidence_ref_id=entry.evidence_ref_id or "",
+        )
         related_memory_ids = _metadata_list(metadata, "related_memory_ids")
         for key in ("memory_entry_id", "retrieval_chunk_id", "active_thread_id"):
             related_id = _metadata_value(metadata, key)
@@ -192,12 +207,15 @@ class TimelineIndex:
             user_id,
             workspace_id,
             channel,
+            channel_binding,
             visibility,
             entry.content_hash,
             entry.evidence_ref_id or "",
             json.dumps(taint_labels, sort_keys=True),
             json.dumps(metadata, sort_keys=True, default=str),
             thread_id,
+            source_surface,
+            provenance,
             json.dumps(sorted(set(related_memory_ids)), sort_keys=True),
         )
         with self._connect() as conn:
@@ -206,9 +224,10 @@ class TimelineIndex:
                 INSERT OR REPLACE INTO timeline_rows (
                     handle, session_id, episode_id, episode_index, entry_id, role,
                     content, snippet, timestamp, user_id, workspace_id, channel,
-                    visibility, content_digest, evidence_ref_id, taint_labels,
-                    metadata_json, thread_id, related_memory_ids
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    channel_binding, visibility, content_digest, evidence_ref_id,
+                    taint_labels, metadata_json, thread_id, source_surface,
+                    provenance, related_memory_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 payload,
             )
@@ -241,6 +260,7 @@ class TimelineIndex:
         now: datetime | None = None,
         timezone: str | None = None,
         allow_private_history: bool = False,
+        context_delivery_target: Mapping[str, Any] | None = None,
     ) -> TimelineSearchResponse:
         resolver = resolve_timeline_query(
             query,
@@ -255,6 +275,7 @@ class TimelineIndex:
                 resolver=resolver,
                 publication_policy=_publication_policy(
                     context_channel=context_channel,
+                    context_delivery_target=context_delivery_target,
                     allow_private_history=allow_private_history,
                 ),
             )
@@ -275,6 +296,7 @@ class TimelineIndex:
             publication_state = _publication_state(
                 row,
                 context_channel=context_channel,
+                context_delivery_target=context_delivery_target,
                 allow_private_history=allow_private_history,
             )
             if _publication_blocked(publication_state):
@@ -287,6 +309,7 @@ class TimelineIndex:
             results=hits,
             publication_policy=_publication_policy(
                 context_channel=context_channel,
+                context_delivery_target=context_delivery_target,
                 allow_private_history=allow_private_history,
             ),
         )
@@ -300,6 +323,7 @@ class TimelineIndex:
         context_channel: str,
         allow_private_history: bool = False,
         surrounding: int = 1,
+        context_delivery_target: Mapping[str, Any] | None = None,
     ) -> TimelineReadResponse:
         row = self._row_by_handle(handle)
         if row is None:
@@ -309,6 +333,7 @@ class TimelineIndex:
         publication_state = _publication_state(
             row,
             context_channel=context_channel,
+            context_delivery_target=context_delivery_target,
             allow_private_history=allow_private_history,
         )
         if publication_state == "private_history_blocked":
@@ -341,6 +366,7 @@ class TimelineIndex:
             item_publication = _publication_state(
                 item,
                 context_channel=context_channel,
+                context_delivery_target=context_delivery_target,
                 allow_private_history=allow_private_history,
             )
             if _publication_blocked(item_publication):
@@ -365,6 +391,7 @@ class TimelineIndex:
         workspace_id: str,
         context_channel: str,
         allow_private_history: bool = False,
+        context_delivery_target: Mapping[str, Any] | None = None,
     ) -> tuple[str | None, str]:
         row = self._row_by_handle(handle)
         if row is None:
@@ -374,6 +401,7 @@ class TimelineIndex:
         publication_state = _publication_state(
             row,
             context_channel=context_channel,
+            context_delivery_target=context_delivery_target,
             allow_private_history=allow_private_history,
         )
         if publication_state == "private_history_blocked":
@@ -407,16 +435,35 @@ class TimelineIndex:
                     user_id TEXT NOT NULL,
                     workspace_id TEXT NOT NULL,
                     channel TEXT NOT NULL,
+                    channel_binding TEXT NOT NULL DEFAULT '',
                     visibility TEXT NOT NULL,
                     content_digest TEXT NOT NULL,
                     evidence_ref_id TEXT NOT NULL,
                     taint_labels TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
+                    source_surface TEXT NOT NULL DEFAULT 'transcript',
+                    provenance TEXT NOT NULL DEFAULT 'transcript',
                     related_memory_ids TEXT NOT NULL
                 )
                 """
             )
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(timeline_rows)")}
+            if "channel_binding" not in columns:
+                conn.execute(
+                    "ALTER TABLE timeline_rows "
+                    "ADD COLUMN channel_binding TEXT NOT NULL DEFAULT ''"
+                )
+            if "source_surface" not in columns:
+                conn.execute(
+                    "ALTER TABLE timeline_rows "
+                    "ADD COLUMN source_surface TEXT NOT NULL DEFAULT 'transcript'"
+                )
+            if "provenance" not in columns:
+                conn.execute(
+                    "ALTER TABLE timeline_rows "
+                    "ADD COLUMN provenance TEXT NOT NULL DEFAULT 'transcript'"
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_timeline_owner_time
@@ -623,11 +670,14 @@ def _hit_from_row(row: sqlite3.Row, *, publication_state: str) -> TimelineSearch
         user_id=str(row["user_id"]),
         workspace_id=str(row["workspace_id"]),
         channel=str(row["channel"]),
+        channel_binding=str(row["channel_binding"]),
         visibility=str(row["visibility"]),
         publication_state=publication_state,
         content_digest=str(row["content_digest"]),
         evidence_ref_id=str(row["evidence_ref_id"]),
         thread_id=str(row["thread_id"]),
+        source_surface=str(row["source_surface"]),
+        provenance=str(row["provenance"]),
         taint_labels=_json_list(str(row["taint_labels"])),
         related_memory_ids=_json_list(str(row["related_memory_ids"])),
     )
@@ -647,8 +697,12 @@ def _render_read_packet(hits: list[TimelineSearchHit], *, grouping: dict[str, An
             f"handle={hit.handle}",
             f"trust={hit.trust_boundary}",
             f"publication={hit.publication_state}",
+            f"source={hit.source_surface}",
+            f"provenance={hit.provenance}",
             f"digest={hit.content_digest}",
         ]
+        if hit.channel_binding:
+            metadata.append(f"channel_binding={hit.channel_binding}")
         if hit.evidence_ref_id:
             metadata.append(f"evidence={hit.evidence_ref_id}")
         if hit.thread_id:
@@ -675,12 +729,18 @@ def _publication_state(
     row: sqlite3.Row,
     *,
     context_channel: str,
+    context_delivery_target: Mapping[str, Any] | None,
     allow_private_history: bool,
 ) -> str:
     context_channel_normalized = _normalize_channel(context_channel)
     shared_context = context_channel_normalized not in {"", "cli"}
     visibility = str(row["visibility"])
     row_channel = _normalize_channel(str(row["channel"]))
+    row_binding = str(row["channel_binding"])
+    context_binding = _canonical_delivery_target_binding(
+        context_delivery_target,
+        fallback_channel=context_channel_normalized,
+    )
     if visibility == "owner_private" and shared_context:
         if not allow_private_history:
             return "private_history_blocked"
@@ -693,6 +753,11 @@ def _publication_state(
         and row_channel != context_channel_normalized
     ):
         return "channel_context_blocked"
+    if visibility == "channel_shared" and shared_context:
+        if not row_binding or not context_binding:
+            return "channel_binding_required"
+        if row_binding != context_binding:
+            return "channel_context_blocked"
     return "channel_visible"
 
 
@@ -709,14 +774,29 @@ def _timeline_visibility(channel: str, metadata: dict[str, Any]) -> str:
 
 
 def _publication_blocked(publication_state: str) -> bool:
-    return publication_state in {"private_history_blocked", "channel_context_blocked"}
+    return publication_state in {
+        "private_history_blocked",
+        "channel_binding_required",
+        "channel_context_blocked",
+    }
 
 
-def _publication_policy(*, context_channel: str, allow_private_history: bool) -> dict[str, Any]:
+def _publication_policy(
+    *,
+    context_channel: str,
+    context_delivery_target: Mapping[str, Any] | None = None,
+    allow_private_history: bool,
+) -> dict[str, Any]:
+    shared_context = _normalize_channel(context_channel) not in {"", "cli"}
     return {
-        "private_history_excluded": (
-            _normalize_channel(context_channel) not in {"", "cli"} and not allow_private_history
-        )
+        "private_history_excluded": shared_context and not allow_private_history,
+        "channel_binding_required": shared_context,
+        "context_binding_present": bool(
+            _canonical_delivery_target_binding(
+                context_delivery_target,
+                fallback_channel=_normalize_channel(context_channel),
+            )
+        ),
     }
 
 
@@ -755,6 +835,90 @@ def _timeline_index_content(content: str, taint_labels: list[str]) -> str:
     if any(label in _HIGH_SENSITIVITY_TAINTS for label in taint_labels):
         return _TIMELINE_REDACTED_CONTENT
     return content
+
+
+def _timeline_channel_binding(channel: str, metadata: dict[str, Any]) -> str:
+    return _canonical_delivery_target_binding(
+        metadata.get("delivery_target"),
+        fallback_channel=_normalize_channel(channel),
+    )
+
+
+def _canonical_delivery_target_binding(
+    value: Any,
+    *,
+    fallback_channel: str,
+) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    channel = _normalize_channel(str(value.get("channel", "")).strip() or fallback_channel)
+    recipient = str(value.get("recipient", "")).strip()
+    workspace_hint = str(value.get("workspace_hint", "")).strip()
+    thread_id = str(value.get("thread_id", "")).strip()
+    if not channel or (not recipient and not workspace_hint and not thread_id):
+        return ""
+    canonical = json.dumps(
+        {
+            "channel": channel,
+            "recipient": recipient,
+            "thread_id": thread_id,
+            "workspace_hint": workspace_hint,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def _timeline_source_surface(
+    *,
+    role: str,
+    channel: str,
+    metadata: dict[str, Any],
+) -> str:
+    explicit = _metadata_value(metadata, "source_surface")
+    if explicit:
+        return explicit
+    source_origin = _metadata_value(metadata, "source_origin")
+    if source_origin:
+        return source_origin
+    if isinstance(metadata.get("task_result"), dict):
+        return "task_result"
+    if role == "summary":
+        return "summary"
+    if role == "tool" or _metadata_value(metadata, "tool_name"):
+        return "tool_output"
+    if metadata.get("delivery_target") or _normalize_channel(channel) not in {"", "cli"}:
+        return "channel_message"
+    return "transcript"
+
+
+def _timeline_provenance(
+    *,
+    role: str,
+    channel: str,
+    metadata: dict[str, Any],
+    evidence_ref_id: str,
+) -> str:
+    explicit = _metadata_value(metadata, "provenance")
+    if explicit:
+        return explicit
+    archived_ref = _metadata_value(metadata, "archived_evidence_ref_id")
+    if evidence_ref_id:
+        return f"evidence_ref:{evidence_ref_id}"
+    if archived_ref:
+        return f"archived_evidence_ref:{archived_ref}"
+    source_origin = _metadata_value(metadata, "source_origin")
+    if source_origin:
+        return f"source_origin:{source_origin}"
+    if role == "tool" or _metadata_value(metadata, "tool_name"):
+        return "tool_output"
+    if metadata.get("delivery_target") or _normalize_channel(channel) not in {"", "cli"}:
+        return f"external_message:{_normalize_channel(channel) or 'channel'}"
+    if role:
+        return f"{role}_transcript"
+    return "transcript"
 
 
 def _timeline_handle(session_id: SessionId, entry_id: str) -> str:

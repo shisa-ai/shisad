@@ -215,7 +215,7 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
         now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
     )
     assert blocked.results == []
-    assert blocked.publication_policy == {"private_history_excluded": True}
+    assert blocked.publication_policy["private_history_excluded"] is True
 
     confirmed = timeline.search(
         query="lunch last time",
@@ -227,7 +227,7 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
     )
     assert confirmed.results_count == 1
     assert confirmed.results[0].publication_state == "private_history_share_confirmed"
-    assert confirmed.publication_policy == {"private_history_excluded": False}
+    assert confirmed.publication_policy["private_history_excluded"] is False
 
 
 def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) -> None:
@@ -251,6 +251,12 @@ def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) ->
         content="Shared channel lunch note: tempura was the group order.",
         timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
         metadata={
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "room-a",
+                "workspace_hint": "guild-1",
+                "thread_id": "thread-1",
+            },
             "visibility": "channel_shared",
             "related_memory_ids": ["mem-lunch"],
             "retrieval_chunk_id": "chunk-lunch",
@@ -271,14 +277,45 @@ def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) ->
     assert hit.thread_id == "thread-lunch"
     assert hit.content_digest
     assert hit.related_memory_ids == ["chunk-lunch", "mem-lunch"]
+    assert hit.channel_binding
+    assert hit.source_surface == "channel_message"
+    assert hit.provenance == "external_message:discord"
 
-    same_channel = timeline.search(
+    unbound_shared_context = timeline.search(
         query="tempura lunch",
         user_id="alice",
         workspace_id="ws1",
         context_channel="discord",
     )
-    assert same_channel.results_count == 1
+    assert unbound_shared_context.results == []
+
+    same_room = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+    )
+    assert same_room.results_count == 1
+
+    different_room = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-b",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+    )
+    assert different_room.results == []
 
     cross_channel = timeline.search(
         query="tempura lunch",
@@ -406,6 +443,14 @@ def test_m5_timeline_read_filters_surrounding_rows_per_publication_policy(tmp_pa
         role="user",
         content="Shared channel launch decision: use the blue banner.",
         timestamp=datetime(2026, 5, 2, 8, 0, tzinfo=UTC),
+        metadata={
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "room-a",
+                "workspace_hint": "guild-1",
+                "thread_id": "thread-1",
+            },
+        },
     )
     _append(
         transcripts,
@@ -420,6 +465,12 @@ def test_m5_timeline_read_filters_surrounding_rows_per_publication_policy(tmp_pa
         user_id="alice",
         workspace_id="ws1",
         context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
     )
     assert search.results_count == 1
 
@@ -428,12 +479,20 @@ def test_m5_timeline_read_filters_surrounding_rows_per_publication_policy(tmp_pa
         user_id="alice",
         workspace_id="ws1",
         context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
         surrounding=1,
     )
 
     assert read.found is True
     assert len(read.rows) == 1
     assert "blue banner" in read.packet
+    assert "source=channel_message" in read.packet
+    assert "provenance=external_message:discord" in read.packet
     assert "launch password" not in read.packet
 
 
@@ -518,7 +577,7 @@ def test_m5_timeline_session_scope_overrides_imported_row_metadata(tmp_path) -> 
         context_channel="discord",
     )
     assert shared.results == []
-    assert shared.publication_policy == {"private_history_excluded": True}
+    assert shared.publication_policy["private_history_excluded"] is True
 
     owner = timeline.search(
         query="archive scope",

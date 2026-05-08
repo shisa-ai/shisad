@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Mapping
@@ -68,6 +69,10 @@ def _datetime_param(value: Any) -> datetime | None:
     if not raw:
         return None
     return datetime.fromisoformat(raw)
+
+
+def _timeline_query_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class MemoryImplMixin(HandlerMixinBase):
@@ -143,6 +148,11 @@ class MemoryImplMixin(HandlerMixinBase):
         if user_id is None or workspace_id is None:
             raise ValueError("user_id and workspace_id are required")
         return user_id, workspace_id
+
+    def _audit_timeline(self, action: str, payload: dict[str, Any]) -> None:
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager is not None:
+            memory_manager._audit(action, payload)
 
     @staticmethod
     def _normalize_owner_value(value: Any) -> str | None:
@@ -790,11 +800,17 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_memory_timeline_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        query = str(params.get("query", ""))
         result = self._timeline_index.search(
-            query=str(params.get("query", "")),
+            query=query,
             user_id=user_id,
             workspace_id=workspace_id,
             context_channel=str(params.get("context_channel", "cli")),
+            context_delivery_target=(
+                dict(params["context_delivery_target"])
+                if isinstance(params.get("context_delivery_target"), Mapping)
+                else None
+            ),
             limit=int(params.get("limit", 10)),
             since=_datetime_param(params.get("since")),
             until=_datetime_param(params.get("until")),
@@ -802,42 +818,120 @@ class MemoryImplMixin(HandlerMixinBase):
             timezone=str(params.get("timezone", "")).strip() or None,
             allow_private_history=bool(params.get("allow_private_history", False)),
         )
+        self._audit_timeline(
+            "memory.timeline_search",
+            {
+                "query_hash": _timeline_query_hash(query),
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "context_channel": str(params.get("context_channel", "cli")),
+                "context_binding_present": isinstance(
+                    params.get("context_delivery_target"),
+                    Mapping,
+                ),
+                "allow_private_history": bool(params.get("allow_private_history", False)),
+                "results_count": result.results_count,
+                "clarification_required": result.resolver.clarification_required,
+                "private_history_excluded": bool(
+                    result.publication_policy.get("private_history_excluded", False)
+                ),
+            },
+        )
         payload = result.model_dump(mode="json")
         payload["results_count"] = result.results_count
         return cast(dict[str, Any], payload)
 
     async def do_memory_timeline_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        handle = str(params.get("handle", ""))
         result = self._timeline_index.read(
-            str(params.get("handle", "")),
+            handle,
             user_id=user_id,
             workspace_id=workspace_id,
             context_channel=str(params.get("context_channel", "cli")),
+            context_delivery_target=(
+                dict(params["context_delivery_target"])
+                if isinstance(params.get("context_delivery_target"), Mapping)
+                else None
+            ),
             allow_private_history=bool(params.get("allow_private_history", False)),
             surrounding=int(params.get("surrounding", 1)),
+        )
+        self._audit_timeline(
+            "memory.timeline_read",
+            {
+                "handle": handle,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "context_channel": str(params.get("context_channel", "cli")),
+                "context_binding_present": isinstance(
+                    params.get("context_delivery_target"),
+                    Mapping,
+                ),
+                "allow_private_history": bool(params.get("allow_private_history", False)),
+                "found": result.found,
+                "reason": result.reason,
+                "row_count": len(result.rows),
+                "grouping_mode": str(result.grouping.get("mode", "")),
+            },
         )
         return cast(dict[str, Any], result.model_dump(mode="json"))
 
     async def do_memory_timeline_promote(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        handle = str(params.get("handle", ""))
         value, reason = self._timeline_index.content_for_handle(
-            str(params.get("handle", "")),
+            handle,
             user_id=user_id,
             workspace_id=workspace_id,
             context_channel=str(params.get("context_channel", "cli")),
+            context_delivery_target=(
+                dict(params["context_delivery_target"])
+                if isinstance(params.get("context_delivery_target"), Mapping)
+                else None
+            ),
             allow_private_history=bool(params.get("allow_private_history", False)),
         )
         if value is None:
+            self._audit_timeline(
+                "memory.timeline_promote",
+                {
+                    "handle": handle,
+                    "user_id": user_id,
+                    "workspace_id": workspace_id,
+                    "context_channel": str(params.get("context_channel", "cli")),
+                    "decision": "reject",
+                    "reason": reason,
+                    "entry_id": "",
+                    "content_digest": "",
+                },
+            )
             return {"kind": "reject", "reason": reason, "entry": None}
         handle_params = dict(params)
         handle_params["value"] = value
-        return self._write_handle_bound_entry(
+        decision = self._write_handle_bound_entry(
             handle_params,
             entry_type=str(params.get("entry_type", "fact")),
             key=str(params.get("key", "")),
             value=value,
             confidence=float(params.get("confidence", 0.8)),
         )
+        entry = decision.get("entry")
+        entry_id = str(entry.get("id", "")) if isinstance(entry, Mapping) else ""
+        self._audit_timeline(
+            "memory.timeline_promote",
+            {
+                "handle": handle,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "context_channel": str(params.get("context_channel", "cli")),
+                "decision": str(decision.get("kind", "")),
+                "reason": str(decision.get("reason", "")),
+                "entry_id": entry_id,
+                "content_digest": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            },
+        )
+        return decision
 
     async def do_memory_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):

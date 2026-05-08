@@ -372,6 +372,48 @@ class MemorySkillInvoked(BaseEvent):
     caller_context: dict[str, Any] = Field(default_factory=dict)
 
 
+class MemoryTimelineSearched(BaseEvent):
+    """Explicit timeline/archive search decision recorded."""
+
+    query_hash: str = ""
+    results_count: int = 0
+    user_id: str = ""
+    workspace_id: str = ""
+    context_channel: str = ""
+    context_binding_present: bool = False
+    allow_private_history: bool = False
+    clarification_required: bool = False
+    private_history_excluded: bool = False
+
+
+class MemoryTimelineRead(BaseEvent):
+    """Explicit timeline/archive read decision recorded."""
+
+    handle: str = ""
+    found: bool = False
+    reason: str = ""
+    row_count: int = 0
+    grouping_mode: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    context_channel: str = ""
+    context_binding_present: bool = False
+    allow_private_history: bool = False
+
+
+class MemoryTimelinePromoted(BaseEvent):
+    """Explicit timeline/archive promotion decision recorded."""
+
+    handle: str = ""
+    decision: str = ""
+    reason: str = ""
+    entry_id: str = ""
+    content_digest: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    context_channel: str = ""
+
+
 class SkillReviewRequested(BaseEvent):
     """Skill review request completed with static findings."""
 
@@ -692,6 +734,9 @@ type AnyEvent = (
     | MemoryEntryDeleted
     | MemoryEvidenceRead
     | MemorySkillInvoked
+    | MemoryTimelineSearched
+    | MemoryTimelineRead
+    | MemoryTimelinePromoted
     | SkillReviewRequested
     | SkillInstalled
     | SkillProfiled
@@ -748,6 +793,9 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "MemoryEntryDeleted": MemoryEntryDeleted,
     "MemoryEvidenceRead": MemoryEvidenceRead,
     "MemorySkillInvoked": MemorySkillInvoked,
+    "MemoryTimelineSearched": MemoryTimelineSearched,
+    "MemoryTimelineRead": MemoryTimelineRead,
+    "MemoryTimelinePromoted": MemoryTimelinePromoted,
     "SkillReviewRequested": SkillReviewRequested,
     "SkillInstalled": SkillInstalled,
     "SkillProfiled": SkillProfiled,

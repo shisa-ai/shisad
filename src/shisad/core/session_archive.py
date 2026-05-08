@@ -347,6 +347,16 @@ class SessionArchiveManager:
         session_payload = record.get("session")
         if not isinstance(session_payload, dict):
             raise SessionArchiveError("invalid_session_record")
+        required_scope = {
+            "channel": str(manifest.channel).strip(),
+            "user_id": str(manifest.user_id).strip(),
+            "workspace_id": str(manifest.workspace_id).strip(),
+        }
+        if any(not value for value in required_scope.values()):
+            raise SessionArchiveError("archive_missing_scope")
+        for field in required_scope:
+            if not str(session_payload.get(field, "")).strip():
+                raise SessionArchiveError("archive_missing_scope")
         if str(session_payload.get("id", "")).strip() != str(manifest.original_session_id).strip():
             raise SessionArchiveError("archive_session_id_mismatch")
         if str(session_payload.get("channel", "")).strip() != manifest.channel:

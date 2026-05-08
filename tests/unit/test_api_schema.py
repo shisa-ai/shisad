@@ -917,6 +917,12 @@ class TestApiSchemaValidation:
                 "query": "lunch last time",
                 "user_id": "alice",
                 "workspace_id": "ws-1",
+                "context_delivery_target": {
+                    "channel": "discord",
+                    "recipient": "room-a",
+                    "workspace_hint": "guild-1",
+                    "thread_id": "thread-1",
+                },
             }
         )
         read = MemoryTimelineReadParams.model_validate(
@@ -985,11 +991,14 @@ class TestApiSchemaValidation:
                         "user_id": "alice",
                         "workspace_id": "ws-1",
                         "channel": "cli",
+                        "channel_binding": "",
                         "visibility": "owner_private",
                         "publication_state": "owner_private",
                         "content_digest": "digest-1",
                         "evidence_ref_id": "ev-1",
                         "thread_id": "thread-food",
+                        "source_surface": "transcript",
+                        "provenance": "evidence_ref:ev-1",
                     }
                 ],
                 "results_count": 1,
@@ -1008,6 +1017,8 @@ class TestApiSchemaValidation:
 
         assert search.results_count == 1
         assert search.results[0].trust_boundary == "archival_untrusted_content"
+        assert search.results[0].source_surface == "transcript"
+        assert search.results[0].provenance == "evidence_ref:ev-1"
         assert read.found is True
         assert read.grouping["mode"] == "thread_membership"
 

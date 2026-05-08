@@ -20,6 +20,9 @@ from shisad.core.events import (
     MemoryEntryStored,
     MemoryEvidenceRead,
     MemorySkillInvoked,
+    MemoryTimelinePromoted,
+    MemoryTimelineRead,
+    MemoryTimelineSearched,
     OutputFirewallAlert,
     RateLimitTriggered,
     SessionArchiveExported,
@@ -222,6 +225,57 @@ class DaemonEventWiring:
                     caller_context=dict(data.get("caller_context", {}))
                     if isinstance(data.get("caller_context"), dict)
                     else {},
+                )
+            )
+            return
+        if action == "memory.timeline_search":
+            self.publish_async(
+                MemoryTimelineSearched(
+                    session_id=None,
+                    actor="memory.timeline.search",
+                    query_hash=str(data.get("query_hash", "")),
+                    results_count=int(data.get("results_count", 0) or 0),
+                    user_id=str(data.get("user_id", "")),
+                    workspace_id=str(data.get("workspace_id", "")),
+                    context_channel=str(data.get("context_channel", "")),
+                    context_binding_present=bool(data.get("context_binding_present", False)),
+                    allow_private_history=bool(data.get("allow_private_history", False)),
+                    clarification_required=bool(data.get("clarification_required", False)),
+                    private_history_excluded=bool(data.get("private_history_excluded", False)),
+                )
+            )
+            return
+        if action == "memory.timeline_read":
+            self.publish_async(
+                MemoryTimelineRead(
+                    session_id=None,
+                    actor="memory.timeline.read",
+                    handle=str(data.get("handle", "")),
+                    found=bool(data.get("found", False)),
+                    reason=str(data.get("reason", "")),
+                    row_count=int(data.get("row_count", 0) or 0),
+                    grouping_mode=str(data.get("grouping_mode", "")),
+                    user_id=str(data.get("user_id", "")),
+                    workspace_id=str(data.get("workspace_id", "")),
+                    context_channel=str(data.get("context_channel", "")),
+                    context_binding_present=bool(data.get("context_binding_present", False)),
+                    allow_private_history=bool(data.get("allow_private_history", False)),
+                )
+            )
+            return
+        if action == "memory.timeline_promote":
+            self.publish_async(
+                MemoryTimelinePromoted(
+                    session_id=None,
+                    actor="memory.timeline.promote",
+                    handle=str(data.get("handle", "")),
+                    decision=str(data.get("decision", "")),
+                    reason=str(data.get("reason", "")),
+                    entry_id=str(data.get("entry_id", "")),
+                    content_digest=str(data.get("content_digest", "")),
+                    user_id=str(data.get("user_id", "")),
+                    workspace_id=str(data.get("workspace_id", "")),
+                    context_channel=str(data.get("context_channel", "")),
                 )
             )
             return

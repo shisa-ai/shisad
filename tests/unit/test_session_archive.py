@@ -241,6 +241,42 @@ def test_m2_session_archive_rejects_cross_workspace_scope_mismatch(tmp_path: Pat
         archive_manager.import_archive(mismatched)
 
 
+def test_m5_session_archive_import_rejects_missing_scope_metadata(tmp_path: Path) -> None:
+    session_manager, _, _, lockdown, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    lockdown.set_level(session.id, level=LockdownLevel.NORMAL, reason="archive", trigger="manual")
+    exported = archive_manager.export_session(session.id)
+    missing_scope = tmp_path / "missing-scope.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    manifest = json.loads(members["manifest.json"].decode("utf-8"))
+    session_payload = json.loads(members["session.json"].decode("utf-8"))
+
+    for key in ("channel", "user_id", "workspace_id"):
+        manifest[key] = ""
+        session_payload["session"][key] = ""
+    members["session.json"] = json.dumps(
+        session_payload,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    members["manifest.json"] = json.dumps(
+        manifest,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(missing_scope, members)
+
+    with pytest.raises(SessionArchiveError, match="archive_missing_scope"):
+        archive_manager.import_archive(missing_scope)
+
+
 def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> None:
     _, _, _, _, archive_manager = _build_archive_stack(tmp_path)
     invalid = tmp_path / "not-a-zip.shisad-session.zip"

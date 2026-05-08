@@ -435,6 +435,7 @@ class MemoryTimelineSearchParams(_StrictParams):
     user_id: str | None = None
     workspace_id: str | None = None
     context_channel: str = "cli"
+    context_delivery_target: dict[str, str] | None = None
     allow_private_history: bool = False
     limit: int = Field(default=10, ge=1, le=100)
     since: datetime | None = None
@@ -449,6 +450,12 @@ class MemoryTimelineSearchParams(_StrictParams):
         if not self.query:
             raise ValueError("query is required")
         self.context_channel = self.context_channel.strip() or "cli"
+        if self.context_delivery_target is not None:
+            self.context_delivery_target = {
+                str(key): str(value).strip()
+                for key, value in self.context_delivery_target.items()
+                if str(key).strip() and str(value).strip()
+            }
         if self.timezone is not None:
             self.timezone = self.timezone.strip() or None
         return self
@@ -459,6 +466,7 @@ class MemoryTimelineReadParams(_StrictParams):
     user_id: str | None = None
     workspace_id: str | None = None
     context_channel: str = "cli"
+    context_delivery_target: dict[str, str] | None = None
     allow_private_history: bool = False
     surrounding: int = Field(default=1, ge=0, le=10)
 
@@ -469,6 +477,12 @@ class MemoryTimelineReadParams(_StrictParams):
         if not self.handle:
             raise ValueError("handle is required")
         self.context_channel = self.context_channel.strip() or "cli"
+        if self.context_delivery_target is not None:
+            self.context_delivery_target = {
+                str(key): str(value).strip()
+                for key, value in self.context_delivery_target.items()
+                if str(key).strip() and str(value).strip()
+            }
         return self
 
 
@@ -486,6 +500,7 @@ class MemoryTimelinePromoteParams(_StrictParams):
     user_id: str | None = None
     workspace_id: str | None = None
     context_channel: str = "cli"
+    context_delivery_target: dict[str, str] | None = None
     allow_private_history: bool = False
 
     @model_validator(mode="after")
@@ -500,6 +515,12 @@ class MemoryTimelinePromoteParams(_StrictParams):
         if not self.key:
             raise ValueError("key is required")
         self.context_channel = self.context_channel.strip() or "cli"
+        if self.context_delivery_target is not None:
+            self.context_delivery_target = {
+                str(key): str(value).strip()
+                for key, value in self.context_delivery_target.items()
+                if str(key).strip() and str(value).strip()
+            }
         if self.predicate is not None:
             self.predicate = self.predicate.strip() or None
         if self.parent_digest is not None:
@@ -1007,11 +1028,14 @@ class MemoryTimelineSearchHitResult(BaseModel):
     user_id: str
     workspace_id: str
     channel: str
+    channel_binding: str = ""
     visibility: str
     publication_state: str
     content_digest: str
     evidence_ref_id: str = ""
     thread_id: str = ""
+    source_surface: str = "transcript"
+    provenance: str = "transcript"
     taint_labels: list[str] = Field(default_factory=list)
     related_memory_ids: list[str] = Field(default_factory=list)
 

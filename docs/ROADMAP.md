@@ -313,9 +313,12 @@ TOTP entry remain deferred to `v0.8.0`.
   artifacts, with default-deny retrieval and explicit promotion.
 - Explicit timeline/archive search and read surfaces over owner-scoped prior
   sessions, with archival evidence labeling, fuzzy time bounds, redaction, and
-  promotion through existing memory write gates. Model-backed enrichment and
-  operator snapshot/migration UX remain follow-up work unless promoted during
-  release close.
+  promotion through existing memory write gates. Packets expose source surface
+  and provenance, shared-channel reads are bound to concrete delivery targets
+  when available, and audit events avoid raw query/snippet text. Model-backed
+  enrichment, bounded cross-session read expansion, and operator
+  snapshot/migration UX remain follow-up work unless promoted during release
+  close.
 
 ### v0.8 — UX overhaul
 
