@@ -553,6 +553,7 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
         "what did we do since this monthly review",
         "what did we do since last week's deploy",
         "what did we do since this month's launch",
+        "what did we do since last-week deploy",
     ):
         result = timeline.search(
             query=query,
@@ -605,7 +606,11 @@ def test_m5_timeline_resolver_records_supported_fuzzy_windows(tmp_path) -> None:
         assert result.resolver.recency_window_source == source
         assert result.resolver.timezone_source == "utc_default"
 
-    for query in ("what happened last weekday", "what happened last week's deploy"):
+    for query in (
+        "what happened last weekday",
+        "what happened last week's deploy",
+        "what happened last-week deploy",
+    ):
         prefix_collision = timeline.search(
             query=query,
             user_id="alice",
