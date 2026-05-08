@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field
 
@@ -29,10 +30,21 @@ _SEARCH_STOP_WORDS = {
     "get",
     "got",
     "have",
+    "happened",
     "last",
+    "monday",
+    "month",
+    "recently",
     "since",
+    "sunday",
+    "saturday",
+    "thursday",
+    "tuesday",
     "the",
     "this",
+    "week",
+    "wednesday",
+    "friday",
     "time",
     "to",
     "we",
@@ -126,14 +138,20 @@ class TimelineIndex:
     ) -> None:
         session = self._session_lookup(session_id)
         metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-        channel = _metadata_value(metadata, "channel") or (
-            str(session.channel).strip() if session is not None else ""
+        channel = (
+            str(session.channel).strip()
+            if session is not None
+            else _metadata_value(metadata, "channel")
         )
-        user_id = _metadata_value(metadata, "user_id") or (
-            str(session.user_id).strip() if session is not None else ""
+        user_id = (
+            str(session.user_id).strip()
+            if session is not None
+            else _metadata_value(metadata, "user_id")
         )
-        workspace_id = _metadata_value(metadata, "workspace_id") or (
-            str(session.workspace_id).strip() if session is not None else ""
+        workspace_id = (
+            str(session.workspace_id).strip()
+            if session is not None
+            else _metadata_value(metadata, "workspace_id")
         )
         visibility = _timeline_visibility(channel, metadata)
         episode_id, episode_index = self._episode_for_entry(session_id, entry)
@@ -223,7 +241,10 @@ class TimelineIndex:
             return TimelineSearchResponse(
                 query=query,
                 resolver=resolver,
-                publication_policy={"private_history_blocked_count": 0},
+                publication_policy=_publication_policy(
+                    context_channel=context_channel,
+                    allow_private_history=allow_private_history,
+                ),
             )
         rows = self._candidate_rows(
             user_id=user_id,
@@ -233,7 +254,6 @@ class TimelineIndex:
         )
         tokens = _query_tokens(query)
         hits: list[TimelineSearchHit] = []
-        blocked_private = 0
         for row in rows:
             if not self._row_current(row):
                 self._delete_handle(str(row["handle"]))
@@ -245,8 +265,7 @@ class TimelineIndex:
                 context_channel=context_channel,
                 allow_private_history=allow_private_history,
             )
-            if publication_state == "private_history_blocked":
-                blocked_private += 1
+            if _publication_blocked(publication_state):
                 continue
             hits.append(_hit_from_row(row, publication_state=publication_state))
         hits = _sort_hits(hits, resolver.sort)[: max(1, int(limit))]
@@ -254,7 +273,10 @@ class TimelineIndex:
             query=query,
             resolver=resolver,
             results=hits,
-            publication_policy={"private_history_blocked_count": blocked_private},
+            publication_policy=_publication_policy(
+                context_channel=context_channel,
+                allow_private_history=allow_private_history,
+            ),
         )
 
     def read(
@@ -283,6 +305,8 @@ class TimelineIndex:
                 reason="private_history_share_confirmation_required",
                 handle=handle,
             )
+        if _publication_blocked(publication_state):
+            return TimelineReadResponse(found=False, reason="timeline_row_not_found", handle=handle)
         if not self._row_current(row):
             self._delete_handle(handle)
             return TimelineReadResponse(found=False, reason="timeline_row_stale", handle=handle)
@@ -297,11 +321,19 @@ class TimelineIndex:
             start = max(0, current_index - max(0, int(surrounding)))
             end = min(len(rows), current_index + max(0, int(surrounding)) + 1)
             selected_rows = rows[start:end]
-        hits = [
-            _hit_from_row(item, publication_state=publication_state)
-            for item in selected_rows
-            if self._row_current(item)
-        ]
+        hits: list[TimelineSearchHit] = []
+        for item in selected_rows:
+            if not self._row_current(item):
+                self._delete_handle(str(item["handle"]))
+                continue
+            item_publication = _publication_state(
+                item,
+                context_channel=context_channel,
+                allow_private_history=allow_private_history,
+            )
+            if _publication_blocked(item_publication):
+                continue
+            hits.append(_hit_from_row(item, publication_state=item_publication))
         grouping = _grouping_for_hits(hits)
         packet = _render_read_packet(hits, grouping=grouping)
         return TimelineReadResponse(
@@ -334,6 +366,8 @@ class TimelineIndex:
         )
         if publication_state == "private_history_blocked":
             return None, "private_history_share_confirmation_required"
+        if _publication_blocked(publication_state):
+            return None, "timeline_row_not_found"
         if not self._row_current(row):
             self._delete_handle(handle)
             return None, "timeline_row_stale"
@@ -488,51 +522,81 @@ def resolve_timeline_query(
     timezone: str | None = None,
 ) -> TimelineResolverMetadata:
     normalized_now = _normalize_datetime(now or datetime.now(UTC))
+    timezone_info, timezone_source, timezone_caveat = _timeline_timezone(timezone)
+    local_now = normalized_now.astimezone(timezone_info)
     query_l = query.strip().lower()
     resolver = TimelineResolverMetadata(
         since=_normalize_datetime(since) if since is not None else None,
         until=_normalize_datetime(until) if until is not None else None,
-        timezone_source="explicit" if timezone else "utc_default",
+        timezone_source=timezone_source,
         sort="most_recent" if _is_most_recent_query(query_l) else "relevance",
         confidence=0.65,
     )
+    if timezone_caveat:
+        resolver.caveats.append(timezone_caveat)
     if (resolver.since is not None or resolver.until is not None) and resolver.sort == "relevance":
         resolver.sort = "chronological"
     if resolver.since is not None or resolver.until is not None:
         return resolver
-    if query_l.startswith("since ") and not _contains_known_time_phrase(query_l):
+    if re.search(r"\bsince\b", query_l) and not _contains_known_time_phrase(query_l):
         resolver.clarification_required = True
         resolver.confidence = 0.0
         resolver.caveats.append("relative_anchor_unresolved")
         return resolver
     if "recently" in query_l:
-        resolver.since = normalized_now - timedelta(days=30)
+        resolver.since = _normalize_datetime(local_now - timedelta(days=30))
         resolver.until = normalized_now
         resolver.recency_window_source = "default_30d"
         return resolver
     if "this month" in query_l:
-        resolver.since = datetime.combine(
-            date(normalized_now.year, normalized_now.month, 1),
-            time.min,
-            tzinfo=UTC,
+        resolver.since = _normalize_datetime(
+            datetime.combine(
+                date(local_now.year, local_now.month, 1),
+                time.min,
+                tzinfo=timezone_info,
+            )
         )
         resolver.until = normalized_now
         resolver.recency_window_source = "calendar_month"
         return resolver
     if "last week" in query_l:
-        start_this_week = _start_of_week(normalized_now)
-        resolver.since = start_this_week - timedelta(days=7)
-        resolver.until = start_this_week
+        start_this_week = _start_of_week(local_now)
+        resolver.since = _normalize_datetime(start_this_week - timedelta(days=7))
+        resolver.until = _normalize_datetime(start_this_week)
         resolver.recency_window_source = "calendar_week"
         return resolver
     weekday = _last_weekday_phrase(query_l)
     if weekday is not None:
-        day = _previous_weekday(normalized_now.date(), weekday)
-        resolver.since = datetime.combine(day, time.min, tzinfo=UTC)
-        resolver.until = resolver.since + timedelta(days=1)
+        day = _previous_weekday(local_now.date(), weekday)
+        resolver.since = _normalize_datetime(
+            datetime.combine(
+                day,
+                time.min,
+                tzinfo=timezone_info,
+            )
+        )
+        resolver.until = _normalize_datetime(
+            datetime.combine(
+                day + timedelta(days=1),
+                time.min,
+                tzinfo=timezone_info,
+            )
+        )
         resolver.recency_window_source = "calendar_day"
         return resolver
     return resolver
+
+
+def _timeline_timezone(timezone: str | None) -> tuple[Any, str, str]:
+    normalized = str(timezone or "").strip()
+    if not normalized:
+        return UTC, "utc_default", ""
+    if normalized.upper() in {"UTC", "Z"}:
+        return UTC, "explicit", ""
+    try:
+        return ZoneInfo(normalized), "explicit", ""
+    except ZoneInfoNotFoundError:
+        return UTC, "utc_default", "timezone_unavailable"
 
 
 def _hit_from_row(row: sqlite3.Row, *, publication_state: str) -> TimelineSearchHit:
@@ -601,21 +665,51 @@ def _publication_state(
     context_channel: str,
     allow_private_history: bool,
 ) -> str:
-    shared_context = context_channel.strip().lower() not in {"", "cli"}
-    if str(row["visibility"]) == "owner_private" and shared_context:
+    context_channel_normalized = _normalize_channel(context_channel)
+    shared_context = context_channel_normalized not in {"", "cli"}
+    visibility = str(row["visibility"])
+    row_channel = _normalize_channel(str(row["channel"]))
+    if visibility == "owner_private" and shared_context:
         if not allow_private_history:
             return "private_history_blocked"
         return "private_history_share_confirmed"
-    if str(row["visibility"]) == "owner_private":
+    if visibility == "owner_private":
         return "owner_private"
+    if (
+        visibility == "channel_shared"
+        and shared_context
+        and row_channel != context_channel_normalized
+    ):
+        return "channel_context_blocked"
     return "channel_visible"
 
 
 def _timeline_visibility(channel: str, metadata: dict[str, Any]) -> str:
+    channel_normalized = _normalize_channel(channel)
     explicit = _metadata_value(metadata, "visibility").lower()
-    if explicit in {"public", "workspace", "channel_shared", "owner_private"}:
+    if explicit == "owner_private":
+        return "owner_private"
+    if channel_normalized in {"", "cli"}:
+        return "owner_private"
+    if explicit in {"public", "workspace", "channel_shared"}:
         return explicit
-    return "owner_private" if channel.strip().lower() in {"", "cli"} else "channel_shared"
+    return "channel_shared"
+
+
+def _publication_blocked(publication_state: str) -> bool:
+    return publication_state in {"private_history_blocked", "channel_context_blocked"}
+
+
+def _publication_policy(*, context_channel: str, allow_private_history: bool) -> dict[str, Any]:
+    return {
+        "private_history_excluded": (
+            _normalize_channel(context_channel) not in {"", "cli"} and not allow_private_history
+        )
+    }
+
+
+def _normalize_channel(channel: str) -> str:
+    return channel.strip().lower()
 
 
 def _query_tokens(query: str) -> list[str]:
@@ -713,7 +807,7 @@ def _contains_known_time_phrase(query: str) -> bool:
 
 def _start_of_week(value: datetime) -> datetime:
     day = value.date() - timedelta(days=value.weekday())
-    return datetime.combine(day, time.min, tzinfo=UTC)
+    return datetime.combine(day, time.min, tzinfo=value.tzinfo or UTC)
 
 
 def _last_weekday_phrase(query: str) -> int | None:

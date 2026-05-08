@@ -5251,10 +5251,9 @@ async def test_contract_memory_timeline_search_read_and_promote(
         },
     )
     assert blocked.get("results") == []
-    blocked_private = int(
-        (blocked.get("publication_policy") or {}).get("private_history_blocked_count", 0)
-    )
-    assert blocked_private >= 1
+    publication_policy = blocked.get("publication_policy") or {}
+    assert publication_policy.get("private_history_excluded") is True
+    assert "private_history_blocked_count" not in publication_policy
 
     search = await contract_harness.client.call(
         "memory.timeline.search",

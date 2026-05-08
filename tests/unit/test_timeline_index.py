@@ -215,7 +215,7 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
         now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
     )
     assert blocked.results == []
-    assert blocked.publication_policy["private_history_blocked_count"] == 1
+    assert blocked.publication_policy == {"private_history_excluded": True}
 
     confirmed = timeline.search(
         query="lunch last time",
@@ -227,6 +227,7 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
     )
     assert confirmed.results_count == 1
     assert confirmed.results[0].publication_state == "private_history_share_confirmed"
+    assert confirmed.publication_policy == {"private_history_excluded": False}
 
 
 def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) -> None:
@@ -270,6 +271,22 @@ def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) ->
     assert hit.thread_id == "thread-lunch"
     assert hit.content_digest
     assert hit.related_memory_ids == ["chunk-lunch", "mem-lunch"]
+
+    same_channel = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+    )
+    assert same_channel.results_count == 1
+
+    cross_channel = timeline.search(
+        query="tempura lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="slack",
+    )
+    assert cross_channel.results == []
 
 
 def test_m5_timeline_redacts_high_sensitivity_rows(tmp_path) -> None:
@@ -369,6 +386,57 @@ def test_m5_timeline_read_rejects_deleted_or_stale_rows(tmp_path) -> None:
     ).results == []
 
 
+def test_m5_timeline_read_filters_surrounding_rows_per_publication_policy(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Shared channel launch decision: use the blue banner.",
+        timestamp=datetime(2026, 5, 2, 8, 0, tzinfo=UTC),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Private note: the launch password is not for the channel.",
+        timestamp=datetime(2026, 5, 2, 8, 1, tzinfo=UTC),
+        metadata={"visibility": "owner_private"},
+    )
+    search = timeline.search(
+        query="launch decision",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+    )
+    assert search.results_count == 1
+
+    read = timeline.read(
+        search.results[0].handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        surrounding=1,
+    )
+
+    assert read.found is True
+    assert len(read.rows) == 1
+    assert "blue banner" in read.packet
+    assert "launch password" not in read.packet
+
+
 def test_m5_timeline_search_rejects_truncated_rows(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
@@ -407,6 +475,65 @@ def test_m5_timeline_search_rejects_truncated_rows(tmp_path) -> None:
     ).results == []
 
 
+def test_m5_timeline_session_scope_overrides_imported_row_metadata(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Imported archive scope must stay with Alice workspace one.",
+        timestamp=datetime(2026, 5, 2, 8, 0, tzinfo=UTC),
+        metadata={
+            "channel": "discord",
+            "user_id": "bob",
+            "workspace_id": "ws2",
+            "visibility": "channel_shared",
+        },
+    )
+
+    bob = timeline.search(
+        query="archive scope",
+        user_id="bob",
+        workspace_id="ws2",
+        context_channel="discord",
+    )
+    assert bob.results == []
+
+    shared = timeline.search(
+        query="archive scope",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+    )
+    assert shared.results == []
+    assert shared.publication_policy == {"private_history_excluded": True}
+
+    owner = timeline.search(
+        query="archive scope",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    assert owner.results_count == 1
+    hit = owner.results[0]
+    assert hit.user_id == "alice"
+    assert hit.workspace_id == "ws1"
+    assert hit.channel == "cli"
+    assert hit.visibility == "owner_private"
+
+
 def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
@@ -416,16 +543,17 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
         session_lookup=sessions.get,
     )
 
-    result = timeline.search(
-        query="since we got back",
-        user_id="alice",
-        workspace_id="ws1",
-        context_channel="cli",
-    )
+    for query in ("since we got back", "what did we do since we got back"):
+        result = timeline.search(
+            query=query,
+            user_id="alice",
+            workspace_id="ws1",
+            context_channel="cli",
+        )
 
-    assert result.results == []
-    assert result.resolver.clarification_required is True
-    assert "relative_anchor_unresolved" in result.resolver.caveats
+        assert result.results == []
+        assert result.resolver.clarification_required is True
+        assert "relative_anchor_unresolved" in result.resolver.caveats
 
 
 def test_m5_timeline_resolver_records_supported_fuzzy_windows(tmp_path) -> None:
@@ -456,3 +584,59 @@ def test_m5_timeline_resolver_records_supported_fuzzy_windows(tmp_path) -> None:
         assert result.resolver.until is not None
         assert result.resolver.recency_window_source == source
         assert result.resolver.timezone_source == "utc_default"
+
+
+def test_m5_timeline_fuzzy_time_words_do_not_block_retrieval(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="We picked soba for the release lunch.",
+        timestamp=datetime(2026, 5, 5, 12, 0, tzinfo=UTC),
+    )
+
+    result = timeline.search(
+        query="what happened last tuesday",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.results_count == 1
+    assert "soba" in result.results[0].snippet
+
+
+def test_m5_timeline_explicit_timezone_offsets_fuzzy_day_boundaries(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    result = timeline.search(
+        query="what did we do this month",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 1, 1, 0, tzinfo=UTC),
+        timezone="America/Los_Angeles",
+    )
+
+    assert result.resolver.timezone_source == "explicit"
+    assert result.resolver.since == datetime(2026, 4, 1, 7, 0, tzinfo=UTC)
+    assert result.resolver.until == datetime(2026, 5, 1, 1, 0, tzinfo=UTC)

@@ -3280,9 +3280,7 @@ def memory_timeline_search(
         click.echo(_dump_model(result))
         return
     if not result.results:
-        blocked = int(result.publication_policy.get("private_history_blocked_count", 0))
-        suffix = f"; private_history_blocked={blocked}" if blocked else ""
-        click.echo(f"No timeline results{suffix}")
+        click.echo("No timeline results")
         return
     for hit in result.results:
         click.echo(
@@ -3393,8 +3391,8 @@ def memory_timeline_promote(
     )
     if not read_result.found:
         raise click.ClickException(read_result.reason or "timeline row not found")
-    selected_content = read_result.selected_content.strip()
-    if not selected_content:
+    selected_content = read_result.selected_content
+    if not selected_content.strip():
         raise click.ClickException("timeline read did not return promotable content")
     ingress = rpc_call(
         config,

@@ -1548,7 +1548,7 @@ def test_memory_timeline_cli_search_read_and_promote(
         "found": True,
         "handle": "tl-abc",
         "packet": "ARCHIVAL SEARCH RESULTS\n- We chose Bar Neko for lunch last time.",
-        "selected_content": "We chose Bar Neko for lunch last time.",
+        "selected_content": "  We chose Bar Neko for lunch last time.  ",
         "rows": search_payload["results"],
         "grouping": {"mode": "adjacent_evidence"},
     }
@@ -1672,7 +1672,7 @@ def test_memory_timeline_cli_search_read_and_promote(
         (
             "memory.mint_ingress_context",
             {
-                "content": "We chose Bar Neko for lunch last time.",
+                "content": "  We chose Bar Neko for lunch last time.  ",
                 "source_type": "user",
                 "source_id": "timeline-promote",
                 "user_confirmed": True,
