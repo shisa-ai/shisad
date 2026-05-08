@@ -806,10 +806,29 @@ def _contains_known_time_phrase(query: str) -> bool:
 
 
 def _has_unresolved_relative_anchor(query: str) -> bool:
-    match = re.search(r"\bsince\b", query)
-    if match is None:
-        return False
-    return not _contains_known_time_phrase(query[match.start() :])
+    for match in re.finditer(r"\bsince\b", query):
+        suffix = query[match.end() :].strip()
+        if not _starts_with_known_time_phrase(suffix):
+            return True
+    return False
+
+
+def _starts_with_known_time_phrase(query: str) -> bool:
+    return any(
+        query.startswith(phrase)
+        for phrase in (
+            "last week",
+            "last monday",
+            "last tuesday",
+            "last wednesday",
+            "last thursday",
+            "last friday",
+            "last saturday",
+            "last sunday",
+            "recently",
+            "this month",
+        )
+    )
 
 
 def _start_of_week(value: datetime) -> datetime:

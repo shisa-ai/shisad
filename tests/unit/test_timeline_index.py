@@ -547,6 +547,8 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
         "since we got back",
         "what did we do since we got back",
         "what did we do this month since we got back",
+        "what did we do since we got back this month",
+        "what did we do since we moved last week",
     ):
         result = timeline.search(
             query=query,
@@ -558,6 +560,16 @@ def test_m5_timeline_relative_anchor_requires_clarification(tmp_path) -> None:
         assert result.results == []
         assert result.resolver.clarification_required is True
         assert "relative_anchor_unresolved" in result.resolver.caveats
+
+    resolved_time_phrase = timeline.search(
+        query="what did we do since last week",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    assert resolved_time_phrase.resolver.clarification_required is False
+    assert resolved_time_phrase.resolver.recency_window_source == "calendar_week"
 
 
 def test_m5_timeline_resolver_records_supported_fuzzy_windows(tmp_path) -> None:
