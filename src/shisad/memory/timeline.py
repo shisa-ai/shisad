@@ -55,6 +55,18 @@ _SEARCH_STOP_WORDS = {
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 _HIGH_SENSITIVITY_TAINTS = frozenset({"credentials", "system"})
 _TIMELINE_REDACTED_CONTENT = "[REDACTED:timeline_sensitive]"
+_KNOWN_TIME_PHRASES = (
+    "last week",
+    "last monday",
+    "last tuesday",
+    "last wednesday",
+    "last thursday",
+    "last friday",
+    "last saturday",
+    "last sunday",
+    "recently",
+    "this month",
+)
 
 
 class TimelineResolverMetadata(BaseModel):
@@ -543,12 +555,12 @@ def resolve_timeline_query(
         resolver.confidence = 0.0
         resolver.caveats.append("relative_anchor_unresolved")
         return resolver
-    if "recently" in query_l:
+    if _contains_phrase(query_l, "recently"):
         resolver.since = _normalize_datetime(local_now - timedelta(days=30))
         resolver.until = normalized_now
         resolver.recency_window_source = "default_30d"
         return resolver
-    if "this month" in query_l:
+    if _contains_phrase(query_l, "this month"):
         resolver.since = _normalize_datetime(
             datetime.combine(
                 date(local_now.year, local_now.month, 1),
@@ -559,7 +571,7 @@ def resolve_timeline_query(
         resolver.until = normalized_now
         resolver.recency_window_source = "calendar_month"
         return resolver
-    if "last week" in query_l:
+    if _contains_phrase(query_l, "last week"):
         start_this_week = _start_of_week(local_now)
         resolver.since = _normalize_datetime(start_this_week - timedelta(days=7))
         resolver.until = _normalize_datetime(start_this_week)
@@ -788,21 +800,7 @@ def _is_most_recent_query(query: str) -> bool:
 
 
 def _contains_known_time_phrase(query: str) -> bool:
-    return any(
-        phrase in query
-        for phrase in (
-            "last week",
-            "last monday",
-            "last tuesday",
-            "last wednesday",
-            "last thursday",
-            "last friday",
-            "last saturday",
-            "last sunday",
-            "recently",
-            "this month",
-        )
-    )
+    return any(_contains_phrase(query, phrase) for phrase in _KNOWN_TIME_PHRASES)
 
 
 def _has_unresolved_relative_anchor(query: str) -> bool:
@@ -814,21 +812,19 @@ def _has_unresolved_relative_anchor(query: str) -> bool:
 
 
 def _starts_with_known_time_phrase(query: str) -> bool:
-    return any(
-        query.startswith(phrase)
-        for phrase in (
-            "last week",
-            "last monday",
-            "last tuesday",
-            "last wednesday",
-            "last thursday",
-            "last friday",
-            "last saturday",
-            "last sunday",
-            "recently",
-            "this month",
-        )
-    )
+    return any(_starts_with_phrase(query, phrase) for phrase in _KNOWN_TIME_PHRASES)
+
+
+def _contains_phrase(query: str, phrase: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", query) is not None
+
+
+def _starts_with_phrase(query: str, phrase: str) -> bool:
+    if not query.startswith(phrase):
+        return False
+    if len(query) == len(phrase):
+        return True
+    return re.match(r"\w", query[len(phrase)]) is None
 
 
 def _start_of_week(value: datetime) -> datetime:
@@ -847,7 +843,7 @@ def _last_weekday_phrase(query: str) -> int | None:
         "last sunday": 6,
     }
     for phrase, weekday in weekdays.items():
-        if phrase in query:
+        if _contains_phrase(query, phrase):
             return weekday
     return None
 
