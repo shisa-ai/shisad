@@ -2530,7 +2530,11 @@ def test_m4_procedure_experience_prefers_owned_predecessor_over_legacy_unowned(
 def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
     tmp_path: Path,
 ) -> None:
-    manager = MemoryManager(tmp_path / "memory")
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
     current = manager.write_with_provenance(
         entry_type="skill",
         key="skill:release-close",
@@ -2617,6 +2621,26 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
     assert stored_after_review is not None
     assert stored_after_review.value["trace_pool_hash_verified"] is True
     assert stored_after_review.value["producer_diff_preview"] == "+ producer supplied legacy diff"
+    backfill_event = manager.list_events(
+        entry_id=legacy_candidate.entry.id,
+        event_type="procedure_candidate_review_packet_backfilled",
+        limit=10,
+    )[0]
+    assert backfill_event.ingress_handle_id == "handle-procedure-legacy"
+    assert backfill_event.metadata_json["target_entry_type"] == "skill"
+    assert backfill_event.metadata_json["target_key"] == "skill:release-close"
+    assert (
+        backfill_event.metadata_json["reason"]
+        == "legacy_procedure_candidate_review_packet"
+    )
+    assert (
+        "memory.procedure_candidate_review_packet_backfilled",
+        {
+            "candidate_id": legacy_candidate.entry.id,
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close",
+        },
+    ) in audits
 
     promoted = manager.promote_procedure_candidate(
         candidate_id=legacy_candidate.entry.id,

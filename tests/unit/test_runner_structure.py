@@ -16,6 +16,7 @@ from shisad.core.api.schema import (
     DoctorCheckParams,
     EmailReadParams,
     EmailSearchParams,
+    MemoryProcedureCandidateParams,
     RealityCheckReadParams,
     RealityCheckSearchParams,
     SessionSetModeParams,
@@ -78,6 +79,7 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert mapping["realitycheck.read"] is RealityCheckReadParams
     assert mapping["email.search"] is EmailSearchParams
     assert mapping["email.read"] is EmailReadParams
+    assert mapping["memory.review_procedure_candidate"] is MemoryProcedureCandidateParams
     assert admin_only["dev.implement"] is True
     assert admin_only["dev.review"] is True
     assert admin_only["dev.remediate"] is True
@@ -86,6 +88,7 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert admin_only["admin.soul.update"] is True
     assert admin_only["session.restore"] is True
     assert admin_only["session.export"] is True
+    assert admin_only["memory.review_procedure_candidate"] is True
     assert "daemon.reset" not in mapping
 
     test_mode_specs = _method_specs(_HandlerStub(), test_mode=True)
