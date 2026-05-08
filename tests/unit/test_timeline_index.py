@@ -345,6 +345,18 @@ def test_m5_timeline_search_lately_uses_default_recency_window(tmp_path) -> None
     assert result.results_count == 1
     assert "ramen" in result.results[0].snippet
 
+    temporal_only = timeline.search(
+        query="What happened lately?",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert temporal_only.resolver.recency_window_source == "default_30d"
+    assert temporal_only.results_count == 1
+    assert "ramen" in temporal_only.results[0].snippet
+
 
 def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")

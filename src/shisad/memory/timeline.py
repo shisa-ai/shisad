@@ -32,6 +32,7 @@ _SEARCH_STOP_WORDS = {
     "have",
     "happened",
     "last",
+    "lately",
     "monday",
     "month",
     "recently",
