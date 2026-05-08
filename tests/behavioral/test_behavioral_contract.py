@@ -5670,6 +5670,33 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     assert candidate_entry.get("confirmation_status") == "pending_review"
     assert candidate_entry.get("invocation_eligible") is False
 
+    mismatched_ingress = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content="benign procedure artifact",
+        source_type="tool",
+        source_id="trace2skill-mismatched-ingress-contract",
+    )
+    substituted_artifact = f"Release close checklist\nSubstitute {marker} artifact."
+    with pytest.raises(JsonRpcCallError, match="content digest does not match ingress context"):
+        await contract_harness.client.call(
+            "memory.ingest_procedure_candidate",
+            {
+                "ingress_context": mismatched_ingress["ingress_context"],
+                "artifact": substituted_artifact,
+                "content_digest": mismatched_ingress["content_digest"],
+                "key": "procedure:mismatched-ingress-contract",
+                "target_entry_type": "skill",
+                "target_key": "skill:mismatched-ingress-contract",
+                "trace_ids": ["trace-mismatch-1"],
+                "trace_pool_hash": build_procedure_trace_pool_hash(
+                    substituted_artifact,
+                    ["trace-mismatch-1"],
+                ),
+                "user_id": "alice",
+                "workspace_id": "ws1",
+            },
+        )
+
     review_queue = await contract_harness.client.call(
         "memory.list_review_queue",
         {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
