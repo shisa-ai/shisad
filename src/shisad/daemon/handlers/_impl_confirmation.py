@@ -110,6 +110,20 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
     }
 
 
+def _apply_delivery_target_metadata(metadata: dict[str, Any], delivery_target: Any) -> None:
+    delivery_target_payload: dict[str, Any] | None = None
+    if hasattr(delivery_target, "model_dump"):
+        delivery_target_payload = delivery_target.model_dump(mode="json")
+    elif isinstance(delivery_target, Mapping):
+        delivery_target_payload = dict(delivery_target)
+    if delivery_target_payload is None:
+        return
+    metadata["delivery_target"] = delivery_target_payload
+    delivery_channel = str(delivery_target_payload.get("channel", "")).strip()
+    if delivery_channel:
+        metadata["channel"] = delivery_channel
+
+
 @dataclass(slots=True)
 class PendingTwoFactorEnrollment:
     enrollment_id: str
@@ -156,18 +170,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             metadata["user_id"] = pending_user_id
         if pending_workspace_id:
             metadata["workspace_id"] = pending_workspace_id
-        delivery_target = getattr(pending, "delivery_target", None)
-        if delivery_target is not None:
-            delivery_target_payload: dict[str, Any] | None = None
-            if hasattr(delivery_target, "model_dump"):
-                delivery_target_payload = delivery_target.model_dump(mode="json")
-            elif isinstance(delivery_target, Mapping):
-                delivery_target_payload = dict(delivery_target)
-            if delivery_target_payload is not None:
-                metadata["delivery_target"] = delivery_target_payload
-                delivery_channel = str(delivery_target_payload.get("channel", "")).strip()
-                if delivery_channel:
-                    metadata["channel"] = delivery_channel
+        _apply_delivery_target_metadata(metadata, getattr(pending, "delivery_target", None))
         try:
             self._transcript_store.append(
                 pending.session_id,
@@ -1645,21 +1648,23 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
                 if not content.strip():
                     raise ValueError("promoted evidence content is empty")
+                metadata = {
+                    "channel": str(session.channel),
+                    "timestamp_utc": datetime.now(UTC).isoformat(),
+                    "session_mode": session.mode.value,
+                    "user_id": str(pending.user_id),
+                    "workspace_id": str(pending.workspace_id),
+                    "promoted_evidence": True,
+                    "promoted_ref_id": target_ref_id,
+                }
+                _apply_delivery_target_metadata(metadata, getattr(pending, "delivery_target", None))
                 self._transcript_store.append(
                     pending.session_id,
                     role="assistant",
                     content=content,
                     taint_labels=set(getattr(tool_output, "taint_labels", set()))
                     or {TaintLabel.USER_REVIEWED},
-                    metadata={
-                        "channel": str(session.channel),
-                        "timestamp_utc": datetime.now(UTC).isoformat(),
-                        "session_mode": session.mode.value,
-                        "user_id": str(pending.user_id),
-                        "workspace_id": str(pending.workspace_id),
-                        "promoted_evidence": True,
-                        "promoted_ref_id": target_ref_id,
-                    },
+                    metadata=metadata,
                     evidence_ref_id=target_ref_id or None,
                 )
                 transcript_appended = True

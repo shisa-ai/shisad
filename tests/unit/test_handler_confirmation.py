@@ -1331,6 +1331,13 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
     tmp_path,
 ) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
+    harness._session.channel = "discord"
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-a",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
     ref = harness._evidence_store.store(
         SessionId("s-1"),
         "promoted body",
@@ -1349,6 +1356,7 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
         reason="manual",
         capabilities={Capability.MEMORY_READ},
         created_at=datetime.now(UTC),
+        delivery_target=delivery_target,
         approval_task_envelope_id="env-task-1",
         approval_envelope=_software_approval_envelope(tool_name=ToolName("evidence.promote")),
         approval_envelope_hash=approval_envelope_hash(
@@ -1382,6 +1390,24 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
     assert transcript_entries[-1].metadata["promoted_ref_id"] == ref.ref_id
     assert transcript_entries[-1].metadata["user_id"] == "alice"
     assert transcript_entries[-1].metadata["workspace_id"] == "w-1"
+    assert transcript_entries[-1].metadata["channel"] == "discord"
+    assert transcript_entries[-1].metadata["delivery_target"] == delivery_target.model_dump(
+        mode="json"
+    )
+    timeline = TimelineIndex(
+        tmp_path / "timeline-promoted-evidence",
+        transcript_store=harness._transcript_store,
+        session_lookup=lambda _sid: None,
+    )
+    assert timeline.rebuild_session(SessionId("s-1")) == 1
+    result = timeline.search(
+        query="promoted body",
+        user_id="alice",
+        workspace_id="w-1",
+        context_channel="discord",
+        context_delivery_target=delivery_target.model_dump(mode="json"),
+    )
+    assert result.results_count == 1
 
 
 @pytest.mark.asyncio
