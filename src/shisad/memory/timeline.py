@@ -816,7 +816,7 @@ def _starts_with_known_time_phrase(query: str) -> bool:
 
 
 def _contains_phrase(query: str, phrase: str) -> bool:
-    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", query) is not None
+    return re.search(rf"(?<![\w'-]){re.escape(phrase)}(?![\w'-])", query) is not None
 
 
 def _starts_with_phrase(query: str, phrase: str) -> bool:
@@ -824,7 +824,7 @@ def _starts_with_phrase(query: str, phrase: str) -> bool:
         return False
     if len(query) == len(phrase):
         return True
-    return re.match(r"\w", query[len(phrase)]) is None
+    return re.match(r"[\w'-]", query[len(phrase)]) is None
 
 
 def _start_of_week(value: datetime) -> datetime:
