@@ -223,7 +223,7 @@ class SessionArchiveManager:
                 new_session_id=imported_session_id,
             )
             for row in transcript_rows:
-                self._restore_transcript_row(imported_session_id, row)
+                self._restore_transcript_row(imported_session, row)
             for name, data in members.items():
                 if not name.startswith(_CHECKPOINT_PREFIX):
                     continue
@@ -409,7 +409,7 @@ class SessionArchiveManager:
         if record_level != manifest.lockdown_level:
             raise SessionArchiveError("archive_lockdown_mismatch")
 
-    def _restore_transcript_row(self, session_id: SessionId, row: Any) -> None:
+    def _restore_transcript_row(self, session: Session, row: Any) -> None:
         if not isinstance(row, dict):
             raise SessionArchiveError("invalid_transcript_row")
         content = str(row.get("content", ""))
@@ -424,13 +424,20 @@ class SessionArchiveManager:
         if not isinstance(metadata, dict):
             raise SessionArchiveError("invalid_transcript_row_metadata")
         metadata = _sanitize_imported_transcript_metadata(metadata)
+        metadata.update(
+            {
+                "channel": str(session.channel).strip(),
+                "user_id": str(session.user_id).strip(),
+                "workspace_id": str(session.workspace_id).strip(),
+            }
+        )
         metadata[_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY] = True
         parsed_timestamp = datetime.fromisoformat(timestamp)
         taints: set[TaintLabel] = set()
         for label in row.get("taint_labels", []):
             taints.add(TaintLabel(str(label)))
         self._transcript_store.append(
-            session_id,
+            session.id,
             role=role,
             content=content,
             taint_labels=set(taints),

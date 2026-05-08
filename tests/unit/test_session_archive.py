@@ -355,18 +355,18 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     assert len(imported_entries) == 1
     for key in (
         "archived_evidence_ref_id",
-        "channel",
         "delivery_target",
         "provenance",
         "source_origin",
         "source_surface",
         "task_result",
         "tool_name",
-        "user_id",
         "visibility",
-        "workspace_id",
     ):
         assert key not in imported_entries[0].metadata
+    assert imported_entries[0].metadata["channel"] == "slack"
+    assert imported_entries[0].metadata["user_id"] == "alice"
+    assert imported_entries[0].metadata["workspace_id"] == "ws1"
     assert imported_entries[0].metadata["_archive_imported"] is True
 
     timeline = TimelineIndex(
@@ -398,6 +398,53 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     )
     assert owner.results_count == 1
     assert owner.results[0].role == "tool"
+    assert owner.results[0].source_surface == "transcript"
+    assert owner.results[0].provenance == "archive_imported_transcript"
+
+
+def test_m5_session_archive_imported_transcripts_rebuild_after_termination(
+    tmp_path: Path,
+) -> None:
+    (
+        session_manager,
+        transcript_store,
+        _checkpoint_store,
+        lockdown,
+        archive_manager,
+    ) = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    lockdown.set_level(session.id, level=LockdownLevel.NORMAL, reason="archive", trigger="manual")
+    transcript_store.append(
+        session.id,
+        role="assistant",
+        content="Imported terminated row mentions udon lunch.",
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+    )
+
+    exported = archive_manager.export_session(session.id)
+    imported = archive_manager.import_archive(exported.archive_path)
+    assert session_manager.terminate(imported.session.id, reason="archive-rebuild")
+    fresh_session_manager = SessionManager(state_dir=tmp_path / "sessions" / "state")
+    fresh_transcript_store = TranscriptStore(tmp_path / "sessions")
+
+    timeline = TimelineIndex(
+        tmp_path / "timeline-terminated-import",
+        transcript_store=fresh_transcript_store,
+        session_lookup=fresh_session_manager.get,
+    )
+    assert timeline.rebuild_session(imported.session.id) == 1
+
+    owner = timeline.search(
+        query="udon lunch",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    assert owner.results_count == 1
     assert owner.results[0].source_surface == "transcript"
     assert owner.results[0].provenance == "archive_imported_transcript"
 
