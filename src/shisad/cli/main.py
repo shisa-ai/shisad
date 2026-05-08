@@ -3312,6 +3312,17 @@ def memory_timeline_search(
         click.echo(_dump_model(result))
         return
     if not result.results:
+        if result.resolver.clarification_required:
+            caveats = [
+                sanitize_terminal_field(str(caveat))
+                for caveat in result.resolver.caveats
+                if str(caveat).strip()
+            ]
+            message = "Timeline query needs clarification"
+            if caveats:
+                message = f"{message}: {', '.join(caveats)}"
+            click.echo(message)
+            return
         click.echo("No timeline results")
         return
     for hit in result.results:

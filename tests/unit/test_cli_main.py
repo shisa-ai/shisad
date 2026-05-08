@@ -1737,6 +1737,65 @@ def test_memory_timeline_cli_search_read_and_promote(
     ]
 
 
+def test_memory_timeline_cli_search_surfaces_clarification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setenv(cli_main._USER_ID_ENV, "alice")
+    monkeypatch.setenv(cli_main._WORKSPACE_ID_ENV, "ws-1")
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = {
+            "label": "ARCHIVAL SEARCH RESULTS",
+            "query": "before lunch",
+            "resolver": {
+                "sort": "relevance",
+                "timezone_source": "utc_default",
+                "clarification_required": True,
+                "confidence": 0.0,
+                "caveats": ["relative_anchor_unresolved"],
+            },
+            "results": [],
+            "results_count": 0,
+            "publication_policy": {},
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = _invoke_ok(runner, ["memory", "timeline", "search", "before lunch"])
+
+    assert "Timeline query needs clarification" in result.output
+    assert "relative_anchor_unresolved" in result.output
+    assert "No timeline results" not in result.output
+    assert calls == [
+        (
+            "memory.timeline.search",
+            {
+                "query": "before lunch",
+                "limit": 10,
+                "context_channel": "cli",
+                "allow_private_history": False,
+                "user_id": "alice",
+                "workspace_id": "ws-1",
+            },
+        ),
+    ]
+
+
 @pytest.mark.parametrize(
     "args",
     [
