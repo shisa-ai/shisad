@@ -41,6 +41,8 @@ _SEARCH_STOP_WORDS = {
     "who",
 }
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
+_HIGH_SENSITIVITY_TAINTS = frozenset({"credentials", "system"})
+_TIMELINE_REDACTED_CONTENT = "[REDACTED:timeline_sensitive]"
 
 
 class TimelineResolverMetadata(BaseModel):
@@ -144,6 +146,8 @@ class TimelineIndex:
         memory_entry_id = _metadata_value(metadata, "memory_entry_id")
         if memory_entry_id:
             related_memory_ids.append(memory_entry_id)
+        taint_labels = [str(label) for label in entry.taint_labels]
+        indexed_content = _timeline_index_content(content, taint_labels)
         payload = (
             handle,
             str(session_id),
@@ -151,8 +155,8 @@ class TimelineIndex:
             episode_index,
             entry.entry_id,
             entry.role,
-            content,
-            _snippet(content),
+            indexed_content,
+            _snippet(indexed_content),
             _normalize_datetime(entry.timestamp).isoformat(),
             user_id,
             workspace_id,
@@ -160,7 +164,7 @@ class TimelineIndex:
             visibility,
             entry.content_hash,
             entry.evidence_ref_id or "",
-            json.dumps(list(entry.taint_labels), sort_keys=True),
+            json.dumps(taint_labels, sort_keys=True),
             json.dumps(metadata, sort_keys=True, default=str),
             thread_id,
             json.dumps(sorted(set(related_memory_ids)), sort_keys=True),
@@ -491,6 +495,8 @@ def resolve_timeline_query(
         sort="most_recent" if _is_most_recent_query(query_l) else "relevance",
         confidence=0.65,
     )
+    if (resolver.since is not None or resolver.until is not None) and resolver.sort == "relevance":
+        resolver.sort = "chronological"
     if resolver.since is not None or resolver.until is not None:
         return resolver
     if query_l.startswith("since ") and not _contains_known_time_phrase(query_l):
@@ -560,9 +566,23 @@ def _render_read_packet(hits: list[TimelineSearchHit], *, grouping: dict[str, An
         f"grouping={grouping.get('mode', 'adjacent_evidence')}",
     ]
     for hit in hits:
+        metadata = [
+            f"handle={hit.handle}",
+            f"trust={hit.trust_boundary}",
+            f"publication={hit.publication_state}",
+            f"digest={hit.content_digest}",
+        ]
+        if hit.evidence_ref_id:
+            metadata.append(f"evidence={hit.evidence_ref_id}")
+        if hit.thread_id:
+            metadata.append(f"thread={hit.thread_id}")
+        if hit.taint_labels:
+            metadata.append("taints=" + ",".join(hit.taint_labels))
+        if hit.related_memory_ids:
+            metadata.append("related_memory_ids=" + ",".join(hit.related_memory_ids))
         lines.append(
             f"- [{hit.timestamp}] {hit.role} session={hit.session_id} "
-            f"episode={hit.episode_id}: {hit.snippet}"
+            f"episode={hit.episode_id} {' '.join(metadata)}: {hit.snippet}"
         )
     return "\n".join(lines)
 
@@ -622,6 +642,12 @@ def _snippet(content: str, *, max_chars: int = 240) -> str:
     if len(compact) <= max_chars:
         return compact
     return f"{compact[: max_chars - 1].rstrip()}..."
+
+
+def _timeline_index_content(content: str, taint_labels: list[str]) -> str:
+    if any(label in _HIGH_SENSITIVITY_TAINTS for label in taint_labels):
+        return _TIMELINE_REDACTED_CONTENT
+    return content
 
 
 def _timeline_handle(session_id: SessionId, entry_id: str) -> str:

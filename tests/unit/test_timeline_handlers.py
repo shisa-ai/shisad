@@ -81,6 +81,8 @@ async def test_memory_timeline_search_and_read_return_archival_packet(tmp_path: 
     assert read["found"] is True
     assert read["label"] == "ARCHIVAL SEARCH RESULTS"
     assert "not current user intent" in read["packet"]
+    assert "evidence=ev-lunch" in read["packet"]
+    assert "trust=archival_untrusted_content" in read["packet"]
     assert read["selected_content"] == "We chose Bar Neko for lunch last time."
     assert read["grouping"]["mode"] == "thread_membership"
 

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from shisad.core.session import SessionManager
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import SessionId, UserId, WorkspaceId
+from shisad.core.types import SessionId, TaintLabel, UserId, WorkspaceId
 from shisad.memory.timeline import TimelineIndex
 
 
@@ -16,12 +16,14 @@ def _append(
     content: str,
     timestamp: datetime,
     evidence_ref_id: str | None = None,
+    taint_labels: set[TaintLabel] | None = None,
     metadata: dict[str, object] | None = None,
 ) -> str:
     entry = store.append(
         session_id,
         role=role,
         content=content,
+        taint_labels=taint_labels,
         timestamp=timestamp,
         evidence_ref_id=evidence_ref_id,
         metadata=metadata or {},
@@ -137,6 +139,52 @@ def test_m5_timeline_search_fuzzy_last_time_uses_most_recent_sort(tmp_path) -> N
     assert "restaurant deposit" in result.results[0].snippet
 
 
+def test_m5_timeline_search_explicit_range_uses_chronological_sort(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    older = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+    newer = datetime(2026, 5, 6, 9, 0, tzinfo=UTC)
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Venue review started with the short list.",
+        timestamp=older,
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="assistant",
+        content="Venue review ended with the restaurant deposit.",
+        timestamp=newer,
+    )
+
+    result = timeline.search(
+        query="venue review",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        since=datetime(2026, 5, 1, tzinfo=UTC),
+        until=datetime(2026, 5, 7, tzinfo=UTC),
+    )
+
+    assert result.resolver.sort == "chronological"
+    assert [hit.timestamp for hit in result.results] == sorted(
+        [hit.timestamp for hit in result.results]
+    )
+
+
 def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
@@ -179,6 +227,55 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
     )
     assert confirmed.results_count == 1
     assert confirmed.results[0].publication_state == "private_history_share_confirmed"
+
+
+def test_m5_timeline_redacts_high_sensitivity_rows(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="tool",
+        content="credential payload sk-live-secret should not be timeline-searchable",
+        timestamp=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
+        taint_labels={TaintLabel.USER_CREDENTIALS},
+        metadata={"visibility": "owner_private"},
+    )
+
+    secret_search = timeline.search(
+        query="sk-live-secret",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    redacted_search = timeline.search(
+        query="redacted",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+
+    assert secret_search.results == []
+    assert redacted_search.results_count == 1
+    assert redacted_search.results[0].snippet == "[REDACTED:timeline_sensitive]"
+    read = timeline.read(
+        redacted_search.results[0].handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    assert read.selected_content == "[REDACTED:timeline_sensitive]"
 
 
 def test_m5_timeline_read_rejects_deleted_or_stale_rows(tmp_path) -> None:

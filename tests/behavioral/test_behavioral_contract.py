@@ -5286,6 +5286,35 @@ async def test_contract_memory_timeline_search_read_and_promote(
     assert "not current user intent" in str(read.get("packet", ""))
     assert read.get("selected_content") == "We chose Bar Neko for lunch last time."
 
+    archive_path = contract_harness.config.data_dir / "timeline-import.shisad-session.zip"
+    exported = await contract_harness.client.call(
+        "session.export",
+        {"session_id": sid, "path": str(archive_path)},
+    )
+    assert exported.get("exported") is True
+    imported = await contract_harness.client.call(
+        "session.import",
+        {"archive_path": str(archive_path)},
+    )
+    imported_session_id = str(imported.get("session_id", "")).strip()
+    assert imported_session_id
+    imported_search = await contract_harness.client.call(
+        "memory.timeline.search",
+        {
+            "query": "Bar Neko lunch",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "cli",
+            "limit": 10,
+        },
+    )
+    imported_hits = [
+        item
+        for item in list(imported_search.get("results") or [])
+        if str(item.get("session_id", "")).strip() == imported_session_id
+    ]
+    assert imported_hits
+
     minted = await _mint_memory_ingress_context(
         contract_harness.client,
         content=read["selected_content"],
