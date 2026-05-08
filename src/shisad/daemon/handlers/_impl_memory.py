@@ -1103,8 +1103,9 @@ class MemoryImplMixin(HandlerMixinBase):
                 "reason": "procedure_candidate_review_packet_required",
                 "entry": None,
             }
+        artifact_digest = digest_memory_value(review_candidate.get("artifact"))
         context = self._memory_ingress_registry.resolve(handle_id)
-        resolved_digest = self._memory_ingress_registry.validate_binding(
+        self._memory_ingress_registry.validate_binding(
             handle_id,
             content=approval_payload,
         )
@@ -1121,7 +1122,7 @@ class MemoryImplMixin(HandlerMixinBase):
             source_id=context.source_id,
             scope=context.scope,
             ingress_handle_id=context.handle_id,
-            content_digest=resolved_digest,
+            content_digest=artifact_digest,
             reviewer=(
                 str(params.get("reviewer", "")).strip()
                 if params.get("reviewer") is not None

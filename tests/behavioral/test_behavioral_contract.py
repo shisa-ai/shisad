@@ -5932,6 +5932,7 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
     assert promoted_id
     assert promoted_entry.get("entry_type") == "skill"
     assert promoted_entry.get("invocation_eligible") is True
+    assert promoted_entry.get("content_digest") == candidate_ingress["content_digest"]
 
     invoked = await contract_harness.client.call(
         "memory.invoke_skill",
