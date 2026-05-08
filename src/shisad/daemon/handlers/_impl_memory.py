@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from shisad.core.types import Capability
+from shisad.core.types import Capability, SessionId
 from shisad.daemon.handlers._csv import render_csv_row
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.memory.consolidation import ConsolidationRunResult, ConsolidationWorker
@@ -153,6 +153,24 @@ class MemoryImplMixin(HandlerMixinBase):
         memory_manager = getattr(self, "_memory_manager", None)
         if memory_manager is not None:
             memory_manager._audit(action, payload)
+
+    def _timeline_context_delivery_target(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        raw_target = params.get("context_delivery_target")
+        if isinstance(raw_target, Mapping):
+            return {str(key): value for key, value in raw_target.items()}
+        raw_session_id = str(params.get("context_session_id", "")).strip()
+        if not raw_session_id:
+            return None
+        session = self._session_manager.get(SessionId(raw_session_id))
+        if session is None:
+            return None
+        raw_stored_target = session.metadata.get("delivery_target")
+        if not isinstance(raw_stored_target, Mapping):
+            return None
+        return {str(key): value for key, value in raw_stored_target.items()}
 
     @staticmethod
     def _normalize_owner_value(value: Any) -> str | None:
@@ -801,16 +819,13 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_memory_timeline_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         query = str(params.get("query", ""))
+        context_delivery_target = self._timeline_context_delivery_target(params)
         result = self._timeline_index.search(
             query=query,
             user_id=user_id,
             workspace_id=workspace_id,
             context_channel=str(params.get("context_channel", "cli")),
-            context_delivery_target=(
-                dict(params["context_delivery_target"])
-                if isinstance(params.get("context_delivery_target"), Mapping)
-                else None
-            ),
+            context_delivery_target=context_delivery_target,
             limit=int(params.get("limit", 10)),
             since=_datetime_param(params.get("since")),
             until=_datetime_param(params.get("until")),
@@ -825,10 +840,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 "user_id": user_id,
                 "workspace_id": workspace_id,
                 "context_channel": str(params.get("context_channel", "cli")),
-                "context_binding_present": isinstance(
-                    params.get("context_delivery_target"),
-                    Mapping,
-                ),
+                "context_binding_present": context_delivery_target is not None,
                 "allow_private_history": bool(params.get("allow_private_history", False)),
                 "results_count": result.results_count,
                 "clarification_required": result.resolver.clarification_required,
@@ -844,16 +856,13 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_memory_timeline_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         handle = str(params.get("handle", ""))
+        context_delivery_target = self._timeline_context_delivery_target(params)
         result = self._timeline_index.read(
             handle,
             user_id=user_id,
             workspace_id=workspace_id,
             context_channel=str(params.get("context_channel", "cli")),
-            context_delivery_target=(
-                dict(params["context_delivery_target"])
-                if isinstance(params.get("context_delivery_target"), Mapping)
-                else None
-            ),
+            context_delivery_target=context_delivery_target,
             allow_private_history=bool(params.get("allow_private_history", False)),
             surrounding=int(params.get("surrounding", 1)),
         )
@@ -864,10 +873,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 "user_id": user_id,
                 "workspace_id": workspace_id,
                 "context_channel": str(params.get("context_channel", "cli")),
-                "context_binding_present": isinstance(
-                    params.get("context_delivery_target"),
-                    Mapping,
-                ),
+                "context_binding_present": context_delivery_target is not None,
                 "allow_private_history": bool(params.get("allow_private_history", False)),
                 "found": result.found,
                 "reason": result.reason,
@@ -880,16 +886,13 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_memory_timeline_promote(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
         handle = str(params.get("handle", ""))
+        context_delivery_target = self._timeline_context_delivery_target(params)
         value, reason = self._timeline_index.content_for_handle(
             handle,
             user_id=user_id,
             workspace_id=workspace_id,
             context_channel=str(params.get("context_channel", "cli")),
-            context_delivery_target=(
-                dict(params["context_delivery_target"])
-                if isinstance(params.get("context_delivery_target"), Mapping)
-                else None
-            ),
+            context_delivery_target=context_delivery_target,
             allow_private_history=bool(params.get("allow_private_history", False)),
         )
         if value is None:

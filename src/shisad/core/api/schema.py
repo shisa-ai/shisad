@@ -436,6 +436,7 @@ class MemoryTimelineSearchParams(_StrictParams):
     workspace_id: str | None = None
     context_channel: str = "cli"
     context_delivery_target: dict[str, str] | None = None
+    context_session_id: str | None = None
     allow_private_history: bool = False
     limit: int = Field(default=10, ge=1, le=100)
     since: datetime | None = None
@@ -450,6 +451,8 @@ class MemoryTimelineSearchParams(_StrictParams):
         if not self.query:
             raise ValueError("query is required")
         self.context_channel = self.context_channel.strip() or "cli"
+        if self.context_session_id is not None:
+            self.context_session_id = self.context_session_id.strip() or None
         if self.context_delivery_target is not None:
             self.context_delivery_target = {
                 str(key): str(value).strip()
@@ -467,6 +470,7 @@ class MemoryTimelineReadParams(_StrictParams):
     workspace_id: str | None = None
     context_channel: str = "cli"
     context_delivery_target: dict[str, str] | None = None
+    context_session_id: str | None = None
     allow_private_history: bool = False
     surrounding: int = Field(default=1, ge=0, le=10)
 
@@ -477,6 +481,8 @@ class MemoryTimelineReadParams(_StrictParams):
         if not self.handle:
             raise ValueError("handle is required")
         self.context_channel = self.context_channel.strip() or "cli"
+        if self.context_session_id is not None:
+            self.context_session_id = self.context_session_id.strip() or None
         if self.context_delivery_target is not None:
             self.context_delivery_target = {
                 str(key): str(value).strip()
@@ -501,6 +507,7 @@ class MemoryTimelinePromoteParams(_StrictParams):
     workspace_id: str | None = None
     context_channel: str = "cli"
     context_delivery_target: dict[str, str] | None = None
+    context_session_id: str | None = None
     allow_private_history: bool = False
 
     @model_validator(mode="after")
@@ -515,6 +522,8 @@ class MemoryTimelinePromoteParams(_StrictParams):
         if not self.key:
             raise ValueError("key is required")
         self.context_channel = self.context_channel.strip() or "cli"
+        if self.context_session_id is not None:
+            self.context_session_id = self.context_session_id.strip() or None
         if self.context_delivery_target is not None:
             self.context_delivery_target = {
                 str(key): str(value).strip()

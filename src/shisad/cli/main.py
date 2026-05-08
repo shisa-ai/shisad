@@ -3223,6 +3223,24 @@ def memory_timeline() -> None:
     """Search and promote archival transcript evidence."""
 
 
+def _timeline_context_delivery_target(
+    *,
+    context_channel: str,
+    recipient: str,
+    workspace_hint: str,
+    thread_id: str,
+) -> dict[str, str] | None:
+    target = {
+        "channel": context_channel.strip() or "cli",
+        "recipient": recipient.strip(),
+        "workspace_hint": workspace_hint.strip(),
+        "thread_id": thread_id.strip(),
+    }
+    if not any(target[key] for key in ("recipient", "workspace_hint", "thread_id")):
+        return None
+    return target
+
+
 @memory_timeline.command("search")
 @click.argument("query", nargs=-1, required=True)
 @click.option("--user", "user_id", default=None, help="Owner user ID for personal memory.")
@@ -3233,6 +3251,9 @@ def memory_timeline() -> None:
     help="Owner workspace ID for personal memory.",
 )
 @click.option("--channel", "context_channel", default="cli", show_default=True)
+@click.option("--recipient", default="", help="Concrete shared-channel room/recipient binding.")
+@click.option("--workspace-hint", default="", help="Concrete shared-channel workspace/guild hint.")
+@click.option("--thread-id", default="", help="Concrete shared-channel thread binding.")
 @click.option("--allow-private-history", is_flag=True)
 @click.option("--limit", type=click.IntRange(min=1, max=100), default=10, show_default=True)
 @click.option("--since", default="", help="Lower UTC timestamp bound.")
@@ -3245,6 +3266,9 @@ def memory_timeline_search(
     user_id: str | None,
     workspace_id: str | None,
     context_channel: str,
+    recipient: str,
+    workspace_hint: str,
+    thread_id: str,
     allow_private_history: bool,
     limit: int,
     since: str,
@@ -3260,6 +3284,14 @@ def memory_timeline_search(
         "context_channel": context_channel.strip() or "cli",
         "allow_private_history": allow_private_history,
     }
+    delivery_target = _timeline_context_delivery_target(
+        context_channel=context_channel,
+        recipient=recipient,
+        workspace_hint=workspace_hint,
+        thread_id=thread_id,
+    )
+    if delivery_target is not None:
+        payload["context_delivery_target"] = delivery_target
     for key, value in {
         "since": since,
         "until": until,
@@ -3307,6 +3339,9 @@ def memory_timeline_search(
     help="Owner workspace ID for personal memory.",
 )
 @click.option("--channel", "context_channel", default="cli", show_default=True)
+@click.option("--recipient", default="", help="Concrete shared-channel room/recipient binding.")
+@click.option("--workspace-hint", default="", help="Concrete shared-channel workspace/guild hint.")
+@click.option("--thread-id", default="", help="Concrete shared-channel thread binding.")
 @click.option("--allow-private-history", is_flag=True)
 @click.option("--surrounding", type=click.IntRange(min=0, max=10), default=1, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
@@ -3315,6 +3350,9 @@ def memory_timeline_read(
     user_id: str | None,
     workspace_id: str | None,
     context_channel: str,
+    recipient: str,
+    workspace_hint: str,
+    thread_id: str,
     allow_private_history: bool,
     surrounding: int,
     as_json: bool,
@@ -3326,6 +3364,14 @@ def memory_timeline_read(
         "context_channel": context_channel.strip() or "cli",
         "allow_private_history": allow_private_history,
     }
+    delivery_target = _timeline_context_delivery_target(
+        context_channel=context_channel,
+        recipient=recipient,
+        workspace_hint=workspace_hint,
+        thread_id=thread_id,
+    )
+    if delivery_target is not None:
+        payload["context_delivery_target"] = delivery_target
     payload.update(_required_owner_scope_payload_from_flags_or_env(user_id, workspace_id))
     result = rpc_call(
         config,
@@ -3358,6 +3404,9 @@ def memory_timeline_read(
     help="Owner workspace ID for personal memory.",
 )
 @click.option("--channel", "context_channel", default="cli", show_default=True)
+@click.option("--recipient", default="", help="Concrete shared-channel room/recipient binding.")
+@click.option("--workspace-hint", default="", help="Concrete shared-channel workspace/guild hint.")
+@click.option("--thread-id", default="", help="Concrete shared-channel thread binding.")
 @click.option("--allow-private-history", is_flag=True)
 @click.option("--confidence", type=click.FloatRange(min=0.0, max=1.0), default=0.8)
 @click.option("--source-id", default="timeline-promote", show_default=True)
@@ -3369,6 +3418,9 @@ def memory_timeline_promote(
     user_id: str | None,
     workspace_id: str | None,
     context_channel: str,
+    recipient: str,
+    workspace_hint: str,
+    thread_id: str,
     allow_private_history: bool,
     confidence: float,
     source_id: str,
@@ -3376,6 +3428,12 @@ def memory_timeline_promote(
 ) -> None:
     config = _get_config()
     owner_scope = _required_owner_scope_payload_from_flags_or_env(user_id, workspace_id)
+    delivery_target = _timeline_context_delivery_target(
+        context_channel=context_channel,
+        recipient=recipient,
+        workspace_hint=workspace_hint,
+        thread_id=thread_id,
+    )
     read_payload: dict[str, object] = {
         "handle": handle,
         "surrounding": 0,
@@ -3383,6 +3441,8 @@ def memory_timeline_promote(
         "allow_private_history": allow_private_history,
         **owner_scope,
     }
+    if delivery_target is not None:
+        read_payload["context_delivery_target"] = delivery_target
     read_result = rpc_call(
         config,
         "memory.timeline.read",
@@ -3405,19 +3465,22 @@ def memory_timeline_promote(
         },
         response_model=MemoryMintIngressResult,
     )
+    promote_payload: dict[str, object] = {
+        "handle": handle,
+        "ingress_context": ingress.ingress_context,
+        "entry_type": entry_type,
+        "key": key,
+        "confidence": confidence,
+        "context_channel": context_channel.strip() or "cli",
+        "allow_private_history": allow_private_history,
+        **owner_scope,
+    }
+    if delivery_target is not None:
+        promote_payload["context_delivery_target"] = delivery_target
     result = rpc_call(
         config,
         "memory.timeline.promote",
-        {
-            "handle": handle,
-            "ingress_context": ingress.ingress_context,
-            "entry_type": entry_type,
-            "key": key,
-            "confidence": confidence,
-            "context_channel": context_channel.strip() or "cli",
-            "allow_private_history": allow_private_history,
-            **owner_scope,
-        },
+        promote_payload,
         response_model=MemoryWriteResult,
     )
     if as_json:

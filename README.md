@@ -281,7 +281,10 @@ session transcripts, not current user instructions, and shared/public channel
 contexts do not reveal owner-private history unless private history is
 explicitly allowed for that request. Read packets include role, source surface,
 provenance, taints, evidence refs, and content digests; search/read/promote
-decisions are recorded in the audit log without raw query or snippet text.
+decisions are recorded in the audit log without raw query or snippet text. For
+shared-channel contexts, pass the concrete room binding with `--recipient`,
+`--workspace-hint`, and `--thread-id` so same-connector/different-room history
+stays isolated.
 
 ### Notes and todos
 

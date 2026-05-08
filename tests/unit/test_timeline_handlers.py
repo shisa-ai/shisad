@@ -51,6 +51,38 @@ def _seed_session(harness: _TimelineHarness):
     return session, entry
 
 
+def _seed_channel_session(harness: _TimelineHarness):
+    session = harness._session_manager.create(
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        metadata={
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "room-a",
+                "workspace_hint": "guild-1",
+                "thread_id": "thread-1",
+            }
+        },
+    )
+    entry = harness._transcript_store.append(
+        session.id,
+        role="user",
+        content="Shared room note: tempura was the group order.",
+        timestamp=datetime(2026, 5, 5, 12, 0, tzinfo=UTC),
+        metadata={
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "room-a",
+                "workspace_hint": "guild-1",
+                "thread_id": "thread-1",
+            },
+            "visibility": "channel_shared",
+        },
+    )
+    return session, entry
+
+
 @pytest.mark.asyncio
 async def test_memory_timeline_search_and_read_return_archival_packet(tmp_path: Path) -> None:
     harness = _TimelineHarness(tmp_path)
@@ -102,6 +134,47 @@ async def test_memory_timeline_search_and_read_return_archival_packet(tmp_path: 
     assert read_audit["handle"] == hit["handle"]
     assert read_audit["found"] is True
     assert read_audit["row_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_timeline_uses_context_session_delivery_target(
+    tmp_path: Path,
+) -> None:
+    harness = _TimelineHarness(tmp_path)
+    session, _ = _seed_channel_session(harness)
+
+    without_context = await harness.do_memory_timeline_search(
+        {
+            "query": "tempura group order",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "discord",
+        }
+    )
+    assert without_context["results"] == []
+
+    with_context = await harness.do_memory_timeline_search(
+        {
+            "query": "tempura group order",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "discord",
+            "context_session_id": str(session.id),
+        }
+    )
+    assert with_context["results_count"] == 1
+
+    read = await harness.do_memory_timeline_read(
+        {
+            "handle": with_context["results"][0]["handle"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "context_channel": "discord",
+            "context_session_id": str(session.id),
+        }
+    )
+    assert read["found"] is True
+    assert "tempura" in read["packet"]
 
 
 @pytest.mark.asyncio
