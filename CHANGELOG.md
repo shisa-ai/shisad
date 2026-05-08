@@ -9,6 +9,106 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## 0.7.3 - 2026-05-08 (release-prepared)
+
+Pre-tag release content; GitHub Release and PyPI publication are pending.
+
+### Added
+
+- **Search your saved history by time.** You can now ask the assistant about
+  your own memory timeline using fuzzy phrases like "last Thursday" or "a
+  couple weeks ago", and get results back in chronological order. Timeline
+  results stay within your authorized visibility and still go through the
+  usual redaction before surfacing; fuzzy phrases that cannot be resolved are
+  reported as unresolved instead of silently expanding.
+
+- **Pick a topic back up across sessions.** When you resume a conversation,
+  shisad can carry forward relevant thread context from prior sessions so you
+  do not have to re-explain where you left off. Resume is scoped to your
+  threads, honors the same visibility rules as normal recall, and matches
+  thread identifiers exactly instead of by prefix.
+
+- **Inspect and manage conversation threads.** New CLI and API commands let
+  you list threads, see why a thread was selected, and filter by session
+  scope, so you can audit how cross-session context is being applied to the
+  conversation you are in.
+
+- **Timeline and thread inspection output is local operational data.** JSON
+  and terminal output from the new timeline/thread commands can include local
+  history snippets, thread identifiers, channel binding values, and owner or
+  workspace identifiers after redaction. Anyone who can read that terminal,
+  file, or API response can read the scoped output. `memory.timeline.promote`
+  writes selected rows back through the usual memory write gates.
+
+- **See which threads are getting attention.** Thread packet activity now
+  surfaces through review and metrics commands so you can tell which packets
+  are active, which are deferred, and why, in a stable priority order.
+
+- **Capture reusable procedures from what you did.** When the assistant walks
+  through a multi-step procedure, it can now propose a procedure-experience
+  candidate that you review, approve, or reject before it joins your reusable
+  memory. Candidates stay scoped to you and require explicit promotion before
+  they are reused.
+
+### Changed
+
+- **Imported archive rows use conservative labels and provenance.** When
+  older session archives are loaded, imported timeline rows use generic tool
+  labels and conservative provenance until a later write path re-confirms
+  them, so legacy data cannot claim richer trust than it earned. Existing
+  archive imports keep the original owner scope instead of being re-attributed
+  on restore.
+
+### Fixed
+
+- **Confirmed replies and promoted evidence reach the channel you asked
+  for.** Confirmation flows, supplemental evidence delivery, and promoted
+  evidence paths now preserve the original delivery target instead of falling
+  back to a generic session channel. Resumed coding-agent sessions also keep
+  their connector binding so follow-ups return to the same channel.
+
+- **Archived transcripts keep the owner that actually wrote them.** Archive
+  import and transcript-backed session rebuilds preserve the original owner
+  scope, so imported history is attributed correctly in later searches.
+
+### Security
+
+- **Forged archive checkpoints and session bindings are rejected.** Archive
+  checkpoint sessions, session delivery bindings, and checkpoint session
+  bindings fail closed when they carry forged or malformed metadata, so a
+  poisoned archive import cannot impersonate other sessions, redirect
+  delivery, or smuggle cross-session identifiers into your timeline.
+
+- **Timeline answers honor owner scope, publication policy, and
+  redaction.** Timeline search and read paths enforce private/shared
+  visibility, apply publication policy before shared/public responses, and
+  invalidate timeline entries whose earlier redaction would otherwise leak
+  through a new answer. Fuzzy phrase continuations and malformed anchors are
+  rejected instead of being expanded past the window you asked about.
+
+- **Imported timeline labels and provenance are sanitized.** Tool labels,
+  provenance strings, and session identifiers on imported timeline rows are
+  sanitized before they enter the index, so a malicious archive cannot carry
+  forged labels or foreign session identifiers into your timeline.
+
+- **Procedure-memory candidates require a verified owner and explicit
+  approval.** Procedure-experience candidates, promotion packets, ingest
+  artifacts, and the review queue fail closed without a verified owner scope.
+  Legacy rows are surfaced for preview instead of being silently backfilled,
+  unsafe stored targets are rejected, and approval packets are bound to the
+  candidate they approve, so a candidate cannot be promoted or reused without
+  explicit review.
+
+- **Scanner verdicts and procedure keys reject malformed input.** Queue
+  scanner verdicts, findings, and summaries, along with procedure candidate
+  keys, reject blank, malformed, and control-character input instead of
+  normalizing it through, so a malformed scan report cannot be coaxed into an
+  approval.
+
+- **Ledger bridge transitive `uuid` advisory closed.** The optional Ledger
+  bridge now pins `uuid@11.1.1` through an npm override, closing the carried
+  supply-chain exception for `GHSA-w5hq-g745-h8pq`.
+
 ## [0.7.2] - 2026-05-07
 
 ### Added
