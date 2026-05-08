@@ -301,6 +301,22 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     exported = archive_manager.export_session(session.id)
     poisoned = tmp_path / "poisoned-publication.shisad-session.zip"
     members = _read_archive_members(exported.archive_path)
+    manifest = json.loads(members["manifest.json"].decode("utf-8"))
+    manifest["channel"] = "slack"
+    members["manifest.json"] = json.dumps(
+        manifest,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    session_payload = json.loads(members["session.json"].decode("utf-8"))
+    session_payload["session"]["channel"] = "slack"
+    members["session.json"] = json.dumps(
+        session_payload,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
     transcript_payload = json.loads(members["transcript.json"].decode("utf-8"))
     transcript_payload[0]["role"] = "tool"
     transcript_payload[0]["metadata"].update(
@@ -334,6 +350,7 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     _write_archive_members(poisoned, members)
 
     imported = archive_manager.import_archive(poisoned)
+    assert imported.session.channel == "slack"
     imported_entries = transcript_store.list_entries(imported.session.id)
     assert len(imported_entries) == 1
     for key in (
@@ -381,8 +398,8 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
     )
     assert owner.results_count == 1
     assert owner.results[0].role == "tool"
-    assert owner.results[0].source_surface == "channel_message"
-    assert owner.results[0].provenance == "external_message:discord"
+    assert owner.results[0].source_surface == "transcript"
+    assert owner.results[0].provenance == "archive_imported_transcript"
 
 
 def test_m5_session_archive_import_strips_session_delivery_target_metadata(

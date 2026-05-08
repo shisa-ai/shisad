@@ -935,8 +935,6 @@ def _timeline_source_surface(
     metadata: dict[str, Any],
 ) -> str:
     if _timeline_archive_imported(metadata):
-        if _normalize_channel(channel) not in {"", "cli"}:
-            return "channel_message"
         return "transcript"
     explicit = _metadata_value(metadata, "source_surface")
     if explicit:
@@ -963,8 +961,6 @@ def _timeline_provenance(
     evidence_ref_id: str,
 ) -> str:
     if _timeline_archive_imported(metadata):
-        if _normalize_channel(channel) not in {"", "cli"}:
-            return f"external_message:{_normalize_channel(channel) or 'channel'}"
         return "archive_imported_transcript"
     explicit = _metadata_value(metadata, "provenance")
     if explicit:
