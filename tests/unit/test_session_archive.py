@@ -407,6 +407,46 @@ def test_m5_session_archive_import_strips_session_delivery_target_metadata(
     assert "delivery_target" not in imported.session.metadata
 
 
+def test_m5_session_archive_import_strips_checkpoint_delivery_target_metadata(
+    tmp_path: Path,
+) -> None:
+    (
+        session_manager,
+        _transcript_store,
+        checkpoint_store,
+        _lockdown,
+        archive_manager,
+    ) = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    checkpoint_session = session.model_dump(mode="json")
+    checkpoint_session["metadata"] = {
+        "delivery_target": {
+            "channel": "discord",
+            "recipient": "room-b",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        }
+    }
+    checkpoint_store.create(session, state={"session": checkpoint_session})
+
+    exported = archive_manager.export_session(session.id)
+    imported = archive_manager.import_archive(exported.archive_path)
+    imported_checkpoint = next(
+        checkpoint_store.restore(checkpoint_id)
+        for checkpoint_id in imported.checkpoint_ids
+        if checkpoint_store.restore(checkpoint_id) is not None
+    )
+
+    assert imported_checkpoint is not None
+    assert "delivery_target" not in imported_checkpoint.state["session"]["metadata"]
+    restored = session_manager.restore_from_checkpoint(imported_checkpoint)
+    assert "delivery_target" not in restored.metadata
+
+
 def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> None:
     _, _, _, _, archive_manager = _build_archive_stack(tmp_path)
     invalid = tmp_path / "not-a-zip.shisad-session.zip"

@@ -485,6 +485,9 @@ def _rewrite_checkpoint_session_ids(
             rewritten = {key: _rewrite(item, parent_key=key) for key, item in value.items()}
             if _looks_like_session_payload(rewritten):
                 rewritten["id"] = str(imported_session_id)
+                metadata = rewritten.get("metadata")
+                if isinstance(metadata, dict):
+                    rewritten["metadata"] = _sanitize_imported_transcript_metadata(metadata)
             return rewritten
         if isinstance(value, list):
             return [_rewrite(item, parent_key=parent_key) for item in value]
