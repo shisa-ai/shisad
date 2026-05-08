@@ -45,6 +45,8 @@ _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA = frozenset(
         "provenance",
         "source_origin",
         "source_surface",
+        "task_result",
+        "tool_name",
     }
 )
 _UNTRUSTED_TRANSCRIPT_IMPORT_METADATA = (
