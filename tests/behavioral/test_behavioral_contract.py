@@ -2126,6 +2126,47 @@ async def test_contract_memory_write_round_trips_through_ingress_context_handle(
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_write_rejects_direct_procedure_experience_entries(
+    contract_harness: ContractHarness,
+) -> None:
+    value = {
+        "artifact": "Release close checklist\nDirect generic write",
+        "target_entry_type": "skill",
+        "target_key": "skill:direct-generic",
+    }
+    minted = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+    )
+
+    rejected = await contract_harness.client.call(
+        "memory.write",
+        {
+            "ingress_context": minted["ingress_context"],
+            "content_digest": minted["content_digest"],
+            "entry_type": "procedure_experience",
+            "key": "procedure:direct-generic",
+            "value": value,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+
+    assert rejected.get("kind") == "reject"
+    assert rejected.get("reason") == "procedure_experience_requires_dedicated_lifecycle"
+    review_queue = await contract_harness.client.call(
+        "memory.list_review_queue",
+        {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+    )
+    queued_keys = {
+        str(item.get("key", "")).strip()
+        for item in review_queue.get("entries", [])
+        if isinstance(item, dict)
+    }
+    assert "procedure:direct-generic" not in queued_keys
+
+
+@pytest.mark.asyncio
 async def test_contract_memory_write_rejects_mismatched_handle_digest_and_trust_fields(
     contract_harness: ContractHarness,
 ) -> None:

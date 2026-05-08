@@ -237,6 +237,7 @@ class MemoryManager:
         invocation_eligible: bool = False,
         supersedes: str | None = None,
         allow_trust_upgrade_without_confirmation: bool = False,
+        allow_procedure_experience_lifecycle: bool = False,
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
@@ -253,6 +254,11 @@ class MemoryManager:
         text_value = str(value)
         pending_review = confirmation_status == "pending_review"
         procedure_candidate_entry = entry_type in PROCEDURE_EXPERIENCE_ENTRY_TYPES
+        if procedure_candidate_entry and not allow_procedure_experience_lifecycle:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="procedure_experience_requires_dedicated_lifecycle",
+            )
         if self._looks_instruction_like(text_value) and not procedure_candidate_entry:
             return MemoryWriteDecision(
                 kind="reject",
@@ -980,6 +986,7 @@ class MemoryManager:
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             invocation_eligible=False,
+            allow_procedure_experience_lifecycle=True,
             user_id=user_id,
             workspace_id=workspace_id,
             include_unowned=include_unowned,

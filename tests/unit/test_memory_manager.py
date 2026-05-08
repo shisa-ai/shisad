@@ -2362,6 +2362,57 @@ def test_m4_procedure_experience_candidate_promotes_only_after_review(
     assert stored_candidate.value["promotion"]["promoted_entry_id"] == promoted.entry.id
 
 
+def test_m4_procedure_experience_generic_write_requires_dedicated_lifecycle(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    for confirmation_status, confirmation_satisfied in (
+        ("user_asserted", True),
+        ("pending_review", False),
+    ):
+        decision = manager.write_with_provenance(
+            entry_type="procedure_experience",
+            key=f"procedure:direct-{confirmation_status}",
+            value={
+                "artifact": "Release close checklist\nDirect generic write",
+                "target_entry_type": "skill",
+                "target_key": "skill:direct-generic",
+            },
+            source=MemorySource(
+                origin="user",
+                source_id=f"direct-{confirmation_status}",
+                extraction_method="test",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status=confirmation_status,
+            source_id=f"direct-{confirmation_status}",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=confirmation_satisfied,
+            invocation_eligible=False,
+            ingress_handle_id=f"handle-direct-{confirmation_status}",
+            content_digest=f"digest-direct-{confirmation_status}",
+            user_id="alice",
+            workspace_id="ws1",
+        )
+
+        assert decision.kind == "reject"
+        assert decision.reason == "procedure_experience_requires_dedicated_lifecycle"
+
+    assert (
+        manager.list_entries(
+            entry_type="procedure_experience",
+            include_pending_review=True,
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        == []
+    )
+    assert manager.list_review_queue(user_id="alice", workspace_id="ws1") == []
+
+
 def test_m4_procedure_experience_diff_is_server_generated(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     current = manager.write_with_provenance(
@@ -2591,6 +2642,7 @@ def test_m4_legacy_procedure_experience_packet_backfills_before_promotion(
         ingress_handle_id="handle-procedure-legacy",
         content_digest="digest-procedure-legacy",
         invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
         user_id="alice",
         workspace_id="ws1",
     )
@@ -2721,6 +2773,7 @@ def test_m4_legacy_procedure_experience_reviewed_diff_rejects_stale_target(
         ingress_handle_id="handle-procedure-legacy",
         content_digest="digest-procedure-legacy",
         invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
         user_id="alice",
         workspace_id="ws1",
     )
@@ -2829,6 +2882,7 @@ def test_m4_legacy_procedure_experience_bad_scope_does_not_brick_candidate(
         ingress_handle_id="handle-procedure-legacy",
         content_digest="digest-procedure-legacy",
         invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
         user_id="alice",
         workspace_id="ws1",
     )
@@ -2939,6 +2993,7 @@ def test_m4_legacy_procedure_experience_owner_omitted_promotes_owned_candidate(
         ingress_handle_id="handle-procedure-legacy",
         content_digest="digest-procedure-legacy",
         invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
         user_id="alice",
         workspace_id="ws1",
     )
