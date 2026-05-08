@@ -9,11 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
+from shisad.core.types import Capability, SessionId, SessionMode, TaintLabel, ToolName
 from shisad.daemon.handlers._impl import (
     _structured_evidence_promote,
     _structured_evidence_read,
@@ -24,6 +25,7 @@ from shisad.daemon.handlers._impl_session import (
     _summarize_tool_outputs_for_chat,
     _wrap_serialized_tool_outputs_with_evidence,
 )
+from shisad.memory.timeline import TimelineIndex
 from shisad.security.firewall import ContentFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle, RiskPolicy
@@ -449,6 +451,84 @@ def test_build_evidence_supplemental_entries_marks_read_ephemeral_and_promote_pe
     assert supplemental[1]["metadata"]["promoted_evidence"] is True
     assert "content" not in chat_records[0]["payload"]
     assert "content" not in chat_records[1]["payload"]
+
+
+def test_m5_direct_evidence_supplemental_rows_preserve_shared_delivery_target(
+    tmp_path,
+) -> None:
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-a",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
+    records = [
+        {
+            "tool_name": "evidence.read",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "ref_id": "ev-read",
+                "source": "web.fetch:example.com",
+                "content": "direct read content",
+                "taint_labels": ["untrusted"],
+            },
+            "taint_labels": ["untrusted"],
+        },
+        {
+            "tool_name": "evidence.promote",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "ref_id": "ev-promote",
+                "source": "web.fetch:example.com",
+                "content": "direct promoted room marker",
+                "taint_labels": ["user_reviewed"],
+            },
+            "taint_labels": ["user_reviewed"],
+        },
+    ]
+
+    supplemental, _chat_records = _build_evidence_supplemental_entries(
+        records=records,
+        channel="discord",
+        session_mode=SessionMode.DEFAULT,
+        user_id="alice",
+        workspace_id="w-1",
+        delivery_target=delivery_target,
+    )
+
+    assert supplemental[0]["metadata"]["delivery_target"] == delivery_target.model_dump(
+        mode="json"
+    )
+    assert supplemental[1]["metadata"]["delivery_target"] == delivery_target.model_dump(
+        mode="json"
+    )
+    transcript_store = TranscriptStore(tmp_path / "transcripts")
+    sid = SessionId("s-direct-evidence")
+    transcript_store.append(
+        sid,
+        role=supplemental[1]["role"],
+        content=supplemental[1]["content"],
+        taint_labels=supplemental[1]["taint_labels"],
+        metadata=supplemental[1]["metadata"],
+    )
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcript_store,
+        session_lookup=lambda _sid: None,
+    )
+    assert timeline.rebuild_session(sid) == 1
+
+    result = timeline.search(
+        query="promoted room marker",
+        user_id="alice",
+        workspace_id="w-1",
+        context_channel="discord",
+        context_delivery_target=delivery_target.model_dump(mode="json"),
+    )
+
+    assert result.results_count == 1
 
 
 def test_pep_allows_valid_evidence_read_and_rejects_forged_ref(tmp_path) -> None:

@@ -5393,9 +5393,18 @@ def _build_evidence_supplemental_entries(
     session_mode: SessionMode,
     user_id: object | None = None,
     workspace_id: object | None = None,
+    delivery_target: DeliveryTarget | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     supplemental: list[dict[str, Any]] = []
     chat_records = deepcopy(records)
+    delivery_target_payload = (
+        delivery_target.model_dump(mode="json") if delivery_target is not None else None
+    )
+    transcript_channel = channel
+    if delivery_target_payload is not None:
+        delivery_channel = str(delivery_target_payload.get("channel", "")).strip()
+        if delivery_channel:
+            transcript_channel = delivery_channel
     for index, record in enumerate(records):
         tool_name = str(record.get("tool_name", "")).strip()
         payload = record.get("payload")
@@ -5405,21 +5414,22 @@ def _build_evidence_supplemental_entries(
         content = payload.get("content")
         if tool_name == "evidence.read" and isinstance(content, str) and content.strip():
             taint_labels = _taint_labels_from_payload(payload) or {TaintLabel.UNTRUSTED}
+            metadata = _transcript_metadata_for_channel(
+                channel=transcript_channel,
+                session_mode=session_mode,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            if delivery_target_payload is not None:
+                metadata["delivery_target"] = delivery_target_payload
+            metadata["ephemeral_evidence_read"] = True
+            metadata["evidence_read_ref_id"] = ref_id
             supplemental.append(
                 {
                     "role": "assistant",
                     "content": content,
                     "taint_labels": taint_labels,
-                    "metadata": {
-                        **_transcript_metadata_for_channel(
-                            channel=channel,
-                            session_mode=session_mode,
-                            user_id=user_id,
-                            workspace_id=workspace_id,
-                        ),
-                        "ephemeral_evidence_read": True,
-                        "evidence_read_ref_id": ref_id,
-                    },
+                    "metadata": metadata,
                 }
             )
             chat_records[index]["payload"] = {
@@ -5431,21 +5441,22 @@ def _build_evidence_supplemental_entries(
             }
         elif tool_name == "evidence.promote" and isinstance(content, str) and content.strip():
             taint_labels = _taint_labels_from_payload(payload) or {TaintLabel.USER_REVIEWED}
+            metadata = _transcript_metadata_for_channel(
+                channel=transcript_channel,
+                session_mode=session_mode,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            if delivery_target_payload is not None:
+                metadata["delivery_target"] = delivery_target_payload
+            metadata["promoted_evidence"] = True
+            metadata["promoted_ref_id"] = ref_id
             supplemental.append(
                 {
                     "role": "assistant",
                     "content": content,
                     "taint_labels": taint_labels,
-                    "metadata": {
-                        **_transcript_metadata_for_channel(
-                            channel=channel,
-                            session_mode=session_mode,
-                            user_id=user_id,
-                            workspace_id=workspace_id,
-                        ),
-                        "promoted_evidence": True,
-                        "promoted_ref_id": ref_id,
-                    },
+                    "metadata": metadata,
                 }
             )
             chat_records[index]["payload"] = {
@@ -10018,6 +10029,9 @@ class SessionImplMixin(HandlerMixinBase):
             session_mode=validated.session_mode,
             user_id=validated.user_id,
             workspace_id=validated.workspace_id,
+            delivery_target=(
+                validated.delivery_target or _stored_delivery_target_from_session(validated.session)
+            ),
         )
         response_text = planner_dispatch.planner_result.output.assistant_response
         tool_output_summary = ""
