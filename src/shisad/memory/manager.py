@@ -2744,7 +2744,11 @@ class MemoryManager:
         scanner_findings: list[str] | None,
     ) -> dict[str, Any] | None:
         automatic = scan_procedure_candidate_artifact(artifact)
-        declared_verdict = str(scanner_verdict or automatic["verdict"]).strip().lower()
+        declared_verdict = (
+            str(automatic["verdict"]).strip().lower()
+            if scanner_verdict is None
+            else str(scanner_verdict).strip().lower()
+        )
         if declared_verdict not in {"pass", "fail"}:
             return None
         declared_findings = {
@@ -2849,11 +2853,11 @@ class MemoryManager:
         promotion: dict[str, Any] = raw_promotion if isinstance(raw_promotion, dict) else {}
         trace_ids_raw = value.get("trace_ids", [])
         trace_ids = trace_ids_raw if isinstance(trace_ids_raw, list) else []
-        scanner_verdict = (
-            str(scanner.get("verdict", "")).strip().lower()
-            if isinstance(raw_scanner, dict) and scanner.get("verdict") is not None
-            else "scanner_verdict_malformed"
-        )
+        scanner_verdict = "scanner_verdict_malformed"
+        if isinstance(raw_scanner, dict) and scanner.get("verdict") is not None:
+            normalized_scanner_verdict = str(scanner.get("verdict", "")).strip().lower()
+            if normalized_scanner_verdict in {"pass", "fail"}:
+                scanner_verdict = normalized_scanner_verdict
         scanner_findings = scanner.get("findings")
         if not isinstance(raw_scanner, dict):
             normalized_scanner_findings = ["scanner_packet_malformed"]

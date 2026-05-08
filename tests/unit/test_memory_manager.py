@@ -3430,6 +3430,18 @@ def test_m4_procedure_experience_promotion_rejects_malformed_stored_findings(
             "scanner_verdict_malformed",
             [],
         ),
+        (
+            "blank-verdict",
+            {"verdict": "", "findings": []},
+            "scanner_verdict_malformed",
+            [],
+        ),
+        (
+            "whitespace-verdict",
+            {"verdict": "   ", "findings": []},
+            "scanner_verdict_malformed",
+            [],
+        ),
     ],
 )
 def test_m4_procedure_experience_promotion_rejects_malformed_scanner_shapes(
