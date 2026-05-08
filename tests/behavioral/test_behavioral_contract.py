@@ -5773,6 +5773,15 @@ async def test_contract_procedure_experience_candidate_requires_explicit_promoti
         if isinstance(item, dict)
     }
     assert candidate_id in queued_ids
+    queued_candidate = next(
+        item
+        for item in review_queue.get("entries", [])
+        if isinstance(item, dict)
+        and str(item.get("id") or item.get("entry_id") or "").strip() == candidate_id
+    )
+    assert "value" not in queued_candidate
+    assert "artifact" not in queued_candidate
+    assert "diff_preview" not in queued_candidate
 
     blocked = await contract_harness.client.call(
         "memory.invoke_skill",

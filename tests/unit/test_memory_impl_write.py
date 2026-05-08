@@ -773,6 +773,102 @@ async def test_m4_memory_review_procedure_candidate_previews_legacy_without_back
 
 
 @pytest.mark.asyncio
+async def test_m4_memory_list_review_queue_sanitizes_procedure_candidates(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    artifact = "Release close checklist\nCandidate version"
+    valid_candidate = harness._memory_manager.ingest_procedure_candidate(
+        key="procedure:queue-valid",
+        artifact=artifact,
+        target_entry_type="skill",
+        target_key="skill:release-close",
+        trace_ids=["trace-queue-valid"],
+        trace_pool_hash=build_procedure_trace_pool_hash(artifact, ["trace-queue-valid"]),
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-queue-valid",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+        source_id="trace2skill-queue-valid",
+        scope="user",
+        ingress_handle_id="handle-queue-valid",
+        content_digest="digest-queue-valid",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert valid_candidate.entry is not None
+    unsafe_candidate = harness._memory_manager.write_with_provenance(
+        entry_type="procedure_experience",
+        key="procedure:queue-unsafe",
+        value={
+            "artifact": "Unsafe artifact",
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close\u2028+++ forged diff label",
+            "trace_ids": ["trace-queue-unsafe"],
+            "trace_pool_hash": "legacy-producer-hash",
+            "scanner": {"verdict": "pass", "findings": []},
+            "review": {
+                "status": "pending",
+                "reviewer": "",
+                "approved_at": None,
+                "rejected_at": None,
+                "rejected_reason": "",
+            },
+            "promotion": {
+                "status": "candidate",
+                "promoted_entry_id": "",
+                "rollback_entry_id": "",
+            },
+            "diff_preview": "+ forged diff",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-queue-unsafe",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pending_review",
+        source_id="trace2skill-queue-unsafe",
+        scope="user",
+        confirmation_satisfied=False,
+        ingress_handle_id="handle-queue-unsafe",
+        content_digest="digest-queue-unsafe",
+        invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert unsafe_candidate.entry is not None
+
+    result = await harness.do_memory_list_review_queue(
+        {"limit": 10, "user_id": "alice", "workspace_id": "ws1"}
+    )
+
+    entries = {
+        str(item["id"]): item
+        for item in result["entries"]
+        if isinstance(item, dict)
+    }
+    valid_entry = entries[valid_candidate.entry.id]
+    assert valid_entry["target_key"] == "skill:release-close"
+    assert valid_entry["review_packet_ready"] is True
+    assert "value" not in valid_entry
+    assert "artifact" not in valid_entry
+    assert "diff_preview" not in valid_entry
+    unsafe_entry = entries[unsafe_candidate.entry.id]
+    assert unsafe_entry["review_blocked_reason"] == "procedure_candidate_target_invalid"
+    assert "target_key" not in unsafe_entry
+    assert "value" not in unsafe_entry
+    assert "artifact" not in unsafe_entry
+    assert "diff_preview" not in unsafe_entry
+
+
+@pytest.mark.asyncio
 async def test_memory_promote_identity_candidate_rejects_quarantined_candidate_before_binding_check(
     tmp_path: Path,
 ) -> None:

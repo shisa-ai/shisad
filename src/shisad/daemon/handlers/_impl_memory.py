@@ -899,13 +899,74 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_memory_list_review_queue(self, params: Mapping[str, Any]) -> dict[str, Any]:
         user_id, workspace_id = self._required_owner_tuple_from_params(params)
+        include_unowned = bool(params.get("include_unowned", False))
         rows = self._memory_manager.list_review_queue(
             limit=int(params.get("limit", 100)),
             user_id=user_id,
             workspace_id=workspace_id,
-            include_unowned=bool(params.get("include_unowned", False)),
+            include_unowned=include_unowned,
         )
-        return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
+        return {
+            "entries": [
+                self._review_queue_entry_payload(
+                    entry,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    include_unowned=include_unowned,
+                )
+                for entry in rows
+            ],
+            "count": len(rows),
+        }
+
+    def _review_queue_entry_payload(
+        self,
+        entry: MemoryEntry,
+        *,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool,
+    ) -> dict[str, Any]:
+        if str(entry.entry_type) != "procedure_experience":
+            return entry.model_dump(mode="json")
+        payload: dict[str, Any] = {
+            "id": entry.id,
+            "entry_type": str(entry.entry_type),
+            "key": entry.key,
+            "status": entry.status,
+            "confirmation_status": entry.confirmation_status,
+            "scope": entry.scope,
+            "user_id": entry.user_id,
+            "workspace_id": entry.workspace_id,
+            "source_id": entry.source_id,
+            "source_origin": entry.source_origin,
+            "channel_trust": entry.channel_trust,
+            "created_at": entry.created_at.isoformat(),
+        }
+        review = self._memory_manager.describe_procedure_candidate(
+            entry.id,
+            backfill_legacy=False,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
+        candidate = review.get("candidate") if isinstance(review, Mapping) else None
+        if not isinstance(candidate, Mapping):
+            payload["review_blocked_reason"] = str(review.get("reason", "")).strip()
+            return payload
+        scanner = candidate.get("scanner")
+        payload.update(
+            {
+                "target_entry_type": str(candidate.get("target_entry_type", "")).strip(),
+                "target_key": str(candidate.get("target_key", "")).strip(),
+                "trace_pool_hash_verified": bool(
+                    candidate.get("trace_pool_hash_verified", False)
+                ),
+                "scanner": dict(scanner) if isinstance(scanner, Mapping) else {},
+                "review_packet_ready": True,
+            }
+        )
+        return payload
 
     async def do_memory_invoke_skill(self, params: Mapping[str, Any]) -> dict[str, Any]:
         skill_id = str(params.get("skill_id", "")).strip()
