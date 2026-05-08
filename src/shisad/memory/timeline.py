@@ -287,11 +287,13 @@ class TimelineIndex:
         )
         tokens = _query_tokens(query)
         hits: list[TimelineSearchHit] = []
+        relevance_scores: dict[str, int] = {}
         for row in rows:
             if not self._row_current(row):
                 self._delete_handle(str(row["handle"]))
                 continue
-            if tokens and not _matches_query(str(row["content"]), tokens):
+            relevance_score = _query_relevance_score(str(row["content"]), tokens)
+            if tokens and relevance_score <= 0:
                 continue
             publication_state = _publication_state(
                 row,
@@ -301,8 +303,14 @@ class TimelineIndex:
             )
             if _publication_blocked(publication_state):
                 continue
-            hits.append(_hit_from_row(row, publication_state=publication_state))
-        hits = _sort_hits(hits, resolver.sort)[: max(1, int(limit))]
+            hit = _hit_from_row(row, publication_state=publication_state)
+            relevance_scores[hit.handle] = relevance_score
+            hits.append(hit)
+        hits = _sort_hits(
+            hits,
+            resolver.sort,
+            relevance_scores=relevance_scores,
+        )[: max(1, int(limit))]
         return TimelineSearchResponse(
             query=query,
             resolver=resolver,
@@ -744,6 +752,8 @@ def _publication_state(
     if visibility == "owner_private" and shared_context:
         if not allow_private_history:
             return "private_history_blocked"
+        if not context_binding:
+            return "channel_binding_required"
         return "private_history_share_confirmed"
     if visibility == "owner_private":
         return "owner_private"
@@ -813,15 +823,28 @@ def _query_tokens(query: str) -> list[str]:
     return sorted(set(tokens))
 
 
-def _matches_query(content: str, tokens: list[str]) -> bool:
+def _query_relevance_score(content: str, tokens: list[str]) -> int:
     lowered = content.lower()
-    return any(token in lowered for token in tokens)
+    return sum(1 for token in tokens if token in lowered)
 
 
-def _sort_hits(hits: list[TimelineSearchHit], sort: str) -> list[TimelineSearchHit]:
+def _sort_hits(
+    hits: list[TimelineSearchHit],
+    sort: str,
+    *,
+    relevance_scores: Mapping[str, int] | None = None,
+) -> list[TimelineSearchHit]:
     if sort == "chronological":
-        return sorted(hits, key=lambda hit: hit.timestamp)
-    return sorted(hits, key=lambda hit: hit.timestamp, reverse=True)
+        return sorted(hits, key=lambda hit: (hit.timestamp, hit.handle))
+    stable_hits = sorted(hits, key=lambda hit: hit.handle)
+    recency_hits = sorted(stable_hits, key=lambda hit: hit.timestamp, reverse=True)
+    if sort == "relevance" and relevance_scores is not None:
+        return sorted(
+            recency_hits,
+            key=lambda hit: relevance_scores.get(hit.handle, 0),
+            reverse=True,
+        )
+    return recency_hits
 
 
 def _snippet(content: str, *, max_chars: int = 240) -> str:

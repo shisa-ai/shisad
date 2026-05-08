@@ -185,6 +185,51 @@ def test_m5_timeline_search_explicit_range_uses_chronological_sort(tmp_path) -> 
     )
 
 
+def test_m5_timeline_search_open_topic_uses_relevance_sort(tmp_path) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    older = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+    newer = datetime(2026, 5, 6, 9, 0, tzinfo=UTC)
+    _append(
+        transcripts,
+        session.id,
+        role="user",
+        content="Ledger issue follow-up selected the uuid override.",
+        timestamp=older,
+    )
+    _append(
+        transcripts,
+        session.id,
+        role="assistant",
+        content="The venue issue was unrelated.",
+        timestamp=newer,
+    )
+
+    result = timeline.search(
+        query="Ledger issue",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.resolver.sort == "relevance"
+    assert result.results_count == 2
+    assert "uuid override" in result.results[0].snippet
+    assert result.results[0].timestamp < result.results[1].timestamp
+
+
 def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")
@@ -217,7 +262,7 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
     assert blocked.results == []
     assert blocked.publication_policy["private_history_excluded"] is True
 
-    confirmed = timeline.search(
+    unbound_confirmed = timeline.search(
         query="lunch last time",
         user_id="alice",
         workspace_id="ws1",
@@ -225,9 +270,51 @@ def test_m5_timeline_search_blocks_private_history_in_shared_context(tmp_path) -
         allow_private_history=True,
         now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
     )
+    assert unbound_confirmed.results == []
+    assert unbound_confirmed.publication_policy["context_binding_present"] is False
+
+    confirmed = timeline.search(
+        query="lunch last time",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+        allow_private_history=True,
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
     assert confirmed.results_count == 1
     assert confirmed.results[0].publication_state == "private_history_share_confirmed"
     assert confirmed.publication_policy["private_history_excluded"] is False
+    assert confirmed.publication_policy["context_binding_present"] is True
+
+    unbound_read = timeline.read(
+        confirmed.results[0].handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        allow_private_history=True,
+    )
+    assert unbound_read.found is False
+
+    bound_read = timeline.read(
+        confirmed.results[0].handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="discord",
+        context_delivery_target={
+            "channel": "discord",
+            "recipient": "room-a",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+        allow_private_history=True,
+    )
+    assert bound_read.found is True
 
 
 def test_m5_timeline_search_includes_authorized_channel_shared_rows(tmp_path) -> None:
