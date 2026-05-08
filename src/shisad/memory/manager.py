@@ -915,10 +915,9 @@ class MemoryManager:
         normalized_trace_pool_hash = str(trace_pool_hash).strip()
         if not normalized_key:
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_key_required")
-        if (
-            normalized_target_type not in PROCEDURAL_ENTRY_TYPES
-            or not normalized_target_key
-            or not self._procedure_candidate_target_key_safe(normalized_target_key)
+        if not self._procedure_candidate_target_valid(
+            normalized_target_type,
+            normalized_target_key,
         ):
             return MemoryWriteDecision(kind="reject", reason="procedure_candidate_target_invalid")
         if not normalized_trace_ids or not normalized_trace_pool_hash:
@@ -1044,6 +1043,15 @@ class MemoryManager:
         if candidate is None or candidate.entry_type not in PROCEDURE_EXPERIENCE_ENTRY_TYPES:
             return {"found": False, "reason": "procedure_candidate_not_found", "candidate": None}
         packet = self._procedure_candidate_packet(candidate)
+        if not self._procedure_candidate_target_valid(
+            str(packet["target_entry_type"]),
+            str(packet["target_key"]),
+        ):
+            return {
+                "found": False,
+                "reason": "procedure_candidate_target_invalid",
+                "candidate": None,
+            }
         packet = self._backfill_legacy_procedure_candidate_packet(
             candidate,
             packet,
@@ -1172,6 +1180,11 @@ class MemoryManager:
         if candidate is None:
             return MemoryWriteDecision(kind="reject", reason=reason)
         packet = self._procedure_candidate_packet(candidate)
+        if not self._procedure_candidate_target_valid(
+            str(packet["target_entry_type"]),
+            str(packet["target_key"]),
+        ):
+            return MemoryWriteDecision(kind="reject", reason="procedure_candidate_target_invalid")
         scanner = packet["scanner"]
         scanner_findings = scanner.get("findings", [])
         promotion_scanner = self._procedure_candidate_scanner_packet(
@@ -2727,6 +2740,16 @@ class MemoryManager:
             else "pass"
         )
         return {"verdict": verdict, "findings": sorted(findings)}
+
+    @staticmethod
+    def _procedure_candidate_target_valid(target_entry_type: str, target_key: str) -> bool:
+        normalized_target_type = str(target_entry_type).strip().lower()
+        normalized_target_key = str(target_key).strip()
+        return (
+            normalized_target_type in PROCEDURAL_ENTRY_TYPES
+            and bool(normalized_target_key)
+            and MemoryManager._procedure_candidate_target_key_safe(normalized_target_key)
+        )
 
     @staticmethod
     def _procedure_candidate_target_key_safe(target_key: str) -> bool:

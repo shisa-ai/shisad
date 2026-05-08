@@ -3498,6 +3498,100 @@ def test_m4_procedure_experience_ingest_rejects_target_key_control_chars(
     assert decision.reason == "procedure_candidate_target_invalid"
 
 
+def test_m4_procedure_experience_review_rejects_stored_target_key_control_chars(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    artifact = "Release close checklist"
+    legacy_candidate = manager.write_with_provenance(
+        entry_type="procedure_experience",
+        key="procedure:stored-bad-target-key",
+        value={
+            "artifact": artifact,
+            "target_entry_type": "skill",
+            "target_key": "skill:release-close\n+++ forged diff label",
+            "trace_ids": ["trace-stored-target-key"],
+            "trace_pool_hash": build_procedure_trace_pool_hash(
+                artifact,
+                ["trace-stored-target-key"],
+            ),
+            "scanner": {"verdict": "pass", "findings": []},
+            "review": {
+                "status": "pending",
+                "reviewer": "",
+                "approved_at": None,
+                "rejected_at": None,
+                "rejected_reason": "",
+            },
+            "promotion": {
+                "status": "candidate",
+                "promoted_entry_id": "",
+                "rollback_entry_id": "",
+            },
+            "diff_preview": "+ producer supplied diff",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="trace2skill-stored-target-key",
+            extraction_method="test",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pending_review",
+        source_id="trace2skill-stored-target-key",
+        scope="user",
+        confirmation_satisfied=False,
+        ingress_handle_id="handle-stored-target-key",
+        content_digest="digest-stored-target-key",
+        invocation_eligible=False,
+        allow_procedure_experience_lifecycle=True,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert legacy_candidate.entry is not None
+
+    reviewed = manager.describe_procedure_candidate(
+        legacy_candidate.entry.id,
+        ingress_handle_id="handle-review-stored-target-key",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    assert reviewed == {
+        "found": False,
+        "reason": "procedure_candidate_target_invalid",
+        "candidate": None,
+    }
+    assert (
+        manager.list_events(
+            entry_id=legacy_candidate.entry.id,
+            event_type="procedure_candidate_review_packet_backfilled",
+            limit=10,
+        )
+        == []
+    )
+
+    promoted = manager.promote_procedure_candidate(
+        candidate_id=legacy_candidate.entry.id,
+        source=MemorySource(
+            origin="user",
+            source_id="operator-approval",
+            extraction_method="test",
+        ),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="operator-approval",
+        scope="user",
+        ingress_handle_id="handle-promote-stored-target-key",
+        content_digest="digest-promote-stored-target-key",
+        user_id="alice",
+        workspace_id="ws1",
+        reviewer="operator",
+    )
+    assert promoted.kind == "reject"
+    assert promoted.reason == "procedure_candidate_target_invalid"
+
+
 def test_m4_reject_procedure_experience_candidate_tombstones_auditably(
     tmp_path: Path,
 ) -> None:
