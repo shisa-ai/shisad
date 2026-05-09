@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-05-06*
+*Updated: 2026-05-09*
 *Status: Active*
 
 ## Goal
@@ -64,9 +64,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.7.2` is published: memory benchmark tooling, retrieval sufficiency
   checks, memory-scope hardening, safer diagnostics, and bug-fix stabilization
   extend the structured long-term memory line.
-- `v0.7.3` is release-prepared but not yet published: open-thread/topic
-  resume, fuzzy timeline/archive search, procedure-experience candidates, and
-  timeline/procedure security hardening are in release-close validation.
+- `v0.7.3` is published: open-thread/topic resume, fuzzy timeline/archive
+  search, procedure-experience candidates, and timeline/procedure security
+  hardening extend the structured long-term memory line.
 
 ## Milestones
 
@@ -308,8 +308,7 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.3 — Open threads + procedural memory pilot + timeline search
 
-- Status (2026-05-08): release-prepared; tag, GitHub Release, and PyPI
-  publication are pending release-close validation.
+- Status (2026-05-09): published on GitHub Releases and PyPI.
 - User-visible thread controls (list, inspect, resume, close, why/explain) on
   top of the v0.7.0 Active Attention surface. Pin/snooze are deferred to v0.8
   thread UX polish.

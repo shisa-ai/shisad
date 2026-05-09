@@ -51,13 +51,13 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.7.2`: memory benchmark tooling, retrieval sufficiency checks, memory-scope
-hardening, safer diagnostics, and bug-fix stabilization on top of the
-structured long-term memory line.
+`v0.7.3`: open-thread/topic resume, fuzzy timeline/archive search,
+procedure-experience candidates, and timeline/procedure security hardening on
+top of the structured long-term memory line.
 
 | Version | Focus |
 |---------|-------|
-| v0.7 | Memory foundation + long-term memory surfaces (latest published: `v0.7.2` memory hardening) |
+| v0.7 | Memory foundation + long-term memory surfaces (latest published: `v0.7.3` open threads + timeline search) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
