@@ -66,7 +66,7 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   extend the structured long-term memory line.
 - `v0.7.3` is release-prepared but not yet published: open-thread/topic
   resume, fuzzy timeline/archive search, procedure-experience candidates, and
-  timeline/procedure security hardening have passed release-close review, with
+  timeline/procedure security hardening are prepared as release content, with
   tag, GitHub Release, and PyPI publication still pending.
 
 ## Milestones
