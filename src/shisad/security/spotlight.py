@@ -181,8 +181,11 @@ def build_planner_input(
             )
         return user_goal
     combined_untrusted = "\n\n".join(untrusted_sections)
+    trusted_sections = [
+        section.strip() for section in (trusted_instructions, trusted_context) if section.strip()
+    ]
     return render_spotlight_context(
-        trusted_instructions=trusted_instructions,
+        trusted_instructions="\n\n".join(trusted_sections),
         user_goal=user_goal,
         untrusted_content=combined_untrusted,
         marker=marker,
