@@ -292,7 +292,7 @@ def _toolkit(
     )
     return BrowserToolkit(
         enabled=enabled,
-        command=command or [sys.executable, str(fixture_cli)],
+        command=command if command is not None else [sys.executable, str(fixture_cli)],
         session_root=tmp_path / "browser",
         allowed_domains=list(allowed_domains or ["127.0.0.1", "localhost"]),
         timeout_seconds=10.0,
@@ -2067,6 +2067,27 @@ async def test_gh25_browser_toolkit_mounts_env_shebang_interpreter_from_path(
 
 
 @pytest.mark.asyncio
+async def test_gh26_browser_toolkit_unconfigured_command_reports_preflight_stage(
+    tmp_path: Path,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[])
+
+    result = await toolkit.navigate(session=_session(), url="http://127.0.0.1:9/")
+
+    assert result == {
+        "ok": False,
+        "error": "browser_command_unconfigured",
+        "details": {
+            "reason": "browser_command_unconfigured",
+            "stage": "command_preflight",
+        },
+        "taint_labels": [],
+    }
+    assert runner.configs == []
+
+
+@pytest.mark.asyncio
 async def test_gh26_browser_toolkit_missing_command_reports_preflight_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2215,6 +2236,75 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
     assert str(leaked_cache) not in serialized
     assert secret_value not in serialized
     assert len(runner.configs) == 1
+
+
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    leaked_path = tmp_path / "profile" / "state.json"
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=17,
+            stderr=f"failed to read file://{leaked_path}",
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", "http://127.0.0.1:9/"],
+        network_urls=["http://127.0.0.1:9/"],
+        allow_network=True,
+    )
+
+    assert result["error"] == "browser_subprocess_failed"
+    assert result["details"]["stderr"] == "failed to read file://[path]"
+    assert str(leaked_path) not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_launched_subprocess_enoent_stays_runtime_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    leaked_path = tmp_path / "runtime" / "missing-state.json"
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=17,
+            stderr=f"ENOENT: no such file or directory, open {leaked_path}",
+            reason="allowed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", "http://127.0.0.1:9/"],
+        network_urls=["http://127.0.0.1:9/"],
+        allow_network=True,
+    )
+
+    assert result["error"] == "browser_subprocess_failed"
+    assert result["details"] == {
+        "reason": "browser_subprocess_failed",
+        "stage": "subprocess",
+        "exit_code": 17,
+        "stderr": "ENOENT: no such file or directory, open [path]",
+    }
+    assert str(leaked_path) not in json.dumps(result, sort_keys=True)
 
 
 @pytest.mark.asyncio

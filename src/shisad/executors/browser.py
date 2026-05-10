@@ -94,6 +94,10 @@ _BROWSER_FAILURE_SECRET_ASSIGNMENT_RE = re.compile(
 _BROWSER_FAILURE_SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Fa-f0-9]{32,})\b"
 )
+_BROWSER_FAILURE_FILE_URL_PATH_RE = re.compile(
+    r"file://(?:localhost)?/(?:[^\s:'\"<>),;]+/)*[^\s:'\"<>),;]+",
+    re.IGNORECASE,
+)
 _BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(
     r"(?<![:/\w.-])/(?:[^\s:'\"<>),;]+/)*[^\s:'\"<>),;]+"
 )
@@ -638,7 +642,10 @@ class BrowserToolkit:
         if self._has_unsupported_hardened_wildcard_scope():
             return self._error_payload("browser_hardened_wildcard_scope_unsupported")
         if not self._command:
-            return self._error_payload("browser_command_unconfigured")
+            return self._error_payload(
+                "browser_command_unconfigured",
+                details=self._preflight_error_details("browser_command_unconfigured"),
+            )
         _, error = self._browser_command_dependency_roots()
         if error:
             return self._error_payload(error, details=self._preflight_error_details(error))
@@ -1540,7 +1547,11 @@ class BrowserToolkit:
             or "playwright install" in detail
         ):
             return "browser_browser_not_installed"
-        if "not found" in detail or "no such file" in detail:
+        if result.reason in {
+            "command_not_found",
+            "command_unavailable",
+            "browser_command_unavailable",
+        }:
             return "browser_command_unavailable"
         return "browser_subprocess_failed"
 
@@ -1577,6 +1588,7 @@ class BrowserToolkit:
             normalized,
         )
         normalized = _BROWSER_FAILURE_SECRET_TOKEN_RE.sub("[redacted]", normalized)
+        normalized = _BROWSER_FAILURE_FILE_URL_PATH_RE.sub("file://[path]", normalized)
         normalized = _BROWSER_FAILURE_ABSOLUTE_PATH_RE.sub("[path]", normalized)
         if len(normalized) <= _BROWSER_FAILURE_DETAIL_MAX_CHARS:
             return normalized
