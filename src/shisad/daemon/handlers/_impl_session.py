@@ -10037,6 +10037,7 @@ class SessionImplMixin(HandlerMixinBase):
             ),
         )
         response_text = planner_dispatch.planner_result.output.assistant_response
+        initial_planner_response_text = response_text.strip()
         tool_output_summary = ""
         if chat_serialized_tool_outputs:
             tool_output_summary = (
@@ -10057,6 +10058,14 @@ class SessionImplMixin(HandlerMixinBase):
             f"Pending action resolution:\n{action_resolve_summary}"
             if action_resolve_summary
             else ""
+        )
+        web_evidence_tool_names = {ToolName("web.search"), ToolName("web.fetch")}
+        should_synthesize_initial_tool_response = (
+            bool(initial_planner_response_text)
+            and any(
+                tool_output.tool_name in web_evidence_tool_names
+                for tool_output in execution.executed_tool_outputs
+            )
         )
         post_tool_synthesis_result = PostToolSynthesisResult()
         system_generated_pending_confirmation_response = False
@@ -10125,13 +10134,26 @@ class SessionImplMixin(HandlerMixinBase):
                     else action_resolution_text
                 )
             if tool_output_summary:
-                if response_text.strip():
-                    appended_summary = (
-                        user_visible_tool_output_summary
-                        if action_resolution_text and user_visible_tool_output_summary
-                        else tool_output_summary
+                if should_synthesize_initial_tool_response:
+                    post_tool_synthesis_result = await self._synthesize_post_tool_response(
+                        execution=execution,
+                        serialized_tool_outputs=raw_serialized_tool_outputs,
+                        tool_output_summary=tool_output_summary,
                     )
-                    response_text = f"{response_text}\n\n{appended_summary}"
+                    synthesized_response = post_tool_synthesis_result.response_text
+                    if synthesized_response:
+                        response_text = (
+                            f"{action_resolution_text}\n\n{synthesized_response}"
+                            if action_resolution_text
+                            else synthesized_response
+                        )
+                    else:
+                        appended_summary = (
+                            user_visible_tool_output_summary
+                            if action_resolution_text and user_visible_tool_output_summary
+                            else tool_output_summary
+                        )
+                        response_text = f"{response_text}\n\n{appended_summary}"
                 else:
                     direct_tool_response = _direct_tool_output_response_without_synthesis(
                         chat_serialized_tool_outputs

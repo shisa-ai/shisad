@@ -130,6 +130,40 @@ async def _planner_stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "premature absence" in goal_lower and "amour" in goal_lower and "tabelog" in goal_lower:
+        calls = [
+            _tool_call(
+                "web.search",
+                {"query": "Amour Sapporo Tabelog reservation", "limit": 3},
+                call_id="gh27-premature-search-noisy",
+            )
+        ]
+        if has_recovery_policy:
+            calls.extend(
+                [
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-premature-search-exact",
+                    ),
+                    _tool_call(
+                        "web.fetch",
+                        {"url": _AMOUR_URL, "max_bytes": 65536},
+                        call_id="gh27-premature-fetch-tabelog",
+                    ),
+                ]
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="The Tabelog reservation path does not exist.",
+                tool_calls=calls,
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "amour" in goal_lower and "tabelog" in goal_lower:
         calls = [
             _tool_call(
@@ -393,6 +427,33 @@ async def test_gh27_weak_search_evidence_recovers_with_exact_search_and_fetch(
     assert '"Amour" "Tabelog" site:tabelog.com' in search_queries
     fetch_urls = [item["url"] for item in outputs.get("web.fetch", [])]
     assert _AMOUR_URL in fetch_urls
+
+
+@pytest.mark.asyncio
+async def test_gh27_post_tool_synthesis_replaces_premature_absence_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Premature absence test: find the Tabelog reservation path "
+                    "for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 3
+    response = str(reply.get("response", ""))
+    assert "Found Amour on Tabelog" in response
+    assert "does not exist" not in response.casefold()
 
 
 @pytest.mark.asyncio
