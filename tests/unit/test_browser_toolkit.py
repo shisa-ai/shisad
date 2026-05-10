@@ -2282,8 +2282,16 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
             "failed to read [path]",
         ),
         (
+            "ENOENT:/Users/O'Connor/Library/Caches/ms-playwright/state.json",
+            "ENOENT:[path]",
+        ),
+        (
             'failed to read /tmp/Quote"Name/ms-playwright/state.json',
             "failed to read [path]",
+        ),
+        (
+            'path:/tmp/Quote"Name/ms-playwright/state.json',
+            "path:[path]",
         ),
         (
             "failed to read /tmp/Angle<Name>/ms-playwright/state.json",
@@ -2356,6 +2364,10 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
         (
             "failed to read file://server/share name/ms-playwright/state.json",
             "failed to read file://[path]",
+        ),
+        (
+            "navigation failed https://example.com/path?q=1",
+            "navigation failed https://example.com/path?q=1",
         ),
     ],
 )

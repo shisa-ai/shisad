@@ -97,7 +97,7 @@ _BROWSER_FAILURE_SECRET_TOKEN_RE = re.compile(
 _BROWSER_FAILURE_FILE_URL_PATH_RE = re.compile(r"file://[^\r\n]+", re.IGNORECASE)
 _BROWSER_FAILURE_WINDOWS_DRIVE_PATH_RE = re.compile(r"(?<![\w.-])[A-Za-z]:[\\/][^\r\n]+")
 _BROWSER_FAILURE_UNC_PATH_RE = re.compile(r"\\\\[^\r\n]+")
-_BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(r"(?<![:/\w.-])/[^\r\n]+")
+_BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(r"(?<![/\w.-])/(?!/)[^\r\n]+")
 _BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TARGET_STOPWORDS = {
     "a",
