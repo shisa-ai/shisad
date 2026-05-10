@@ -2278,6 +2278,18 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
             "failed to read [path]",
         ),
         (
+            "failed to read /Users/O'Connor/Library/Caches/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
+            'failed to read /tmp/Quote"Name/ms-playwright/state.json',
+            "failed to read [path]",
+        ),
+        (
+            "failed to read /tmp/Angle<Name>/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
             "failed to read /Applications/My App.app/Contents/ms-playwright/state.json",
             "failed to read [path]",
         ),
@@ -2291,6 +2303,10 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
         ),
         (
             r"failed to read C:\Users\Alice Smith\AppData\Local\ms-playwright\state.json",
+            "failed to read [path]",
+        ),
+        (
+            r"failed to read C:\Users\O'Connor\AppData\Local\ms-playwright\state.json",
             "failed to read [path]",
         ),
         (
@@ -2314,11 +2330,19 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
             "failed to read [path]",
         ),
         (
+            r"failed to read \\server\O'Connor share\ms-playwright\state.json",
+            "failed to read [path]",
+        ),
+        (
             "failed to read file:///C:/Users/alice/AppData/Local/ms-playwright/state.json",
             "failed to read file://[path]",
         ),
         (
             "failed to read file:///C:/Users/Alice Smith/AppData/Local/ms-playwright/state.json",
+            "failed to read file://[path]",
+        ),
+        (
+            "failed to read file:///C:/Users/O'Connor/AppData/Local/ms-playwright/state.json",
             "failed to read file://[path]",
         ),
         (
@@ -2366,6 +2390,9 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_url_varian
     assert result["error"] == "browser_subprocess_failed"
     assert result["details"]["stderr"] == expected_stderr
     assert "Alice Smith" not in json.dumps(result, sort_keys=True)
+    assert "O'Connor" not in json.dumps(result, sort_keys=True)
+    assert "Quote" not in json.dumps(result, sort_keys=True)
+    assert "Angle" not in json.dumps(result, sort_keys=True)
     assert "My App.app" not in json.dumps(result, sort_keys=True)
     assert "Program Files" not in json.dumps(result, sort_keys=True)
     assert "x86" not in json.dumps(result, sort_keys=True)
