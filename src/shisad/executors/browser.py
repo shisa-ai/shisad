@@ -59,7 +59,15 @@ _PATHLIKE_COMMAND_ARG_SUFFIXES = {
     ".ts",
     ".tsx",
 }
-_NON_PATH_INTERPRETER_FLAGS = {"-c", "-m", "--module"}
+_NON_PATH_INTERPRETER_FLAGS = {
+    "-c",
+    "-e",
+    "-m",
+    "-p",
+    "--eval",
+    "--module",
+    "--print",
+}
 _TARGET_STOPWORDS = {
     "a",
     "an",

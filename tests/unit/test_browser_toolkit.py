@@ -912,6 +912,61 @@ async def test_gh25_browser_toolkit_absolutizes_path_valued_flag_args(
 
 
 @pytest.mark.asyncio
+async def test_gh25_browser_toolkit_preserves_code_bearing_interpreter_flag_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    for filename in ["wrapper.js", "snippet.js", "register.js", "printable.js"]:
+        (app_dir / filename).write_text("console.log('ok')\n", encoding="utf-8")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            sys.executable,
+            "-e",
+            "wrapper.js",
+            "--eval",
+            "./snippet.js",
+            "-p",
+            "printable.js",
+            "--require",
+            "register.js",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:9] == [
+        sys.executable,
+        "-e",
+        "wrapper.js",
+        "--eval",
+        "./snippet.js",
+        "-p",
+        "printable.js",
+        "--require",
+        str(app_dir / "register.js"),
+    ]
+    assert str(app_dir) in config.read_paths
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_absolutizes_relative_playwright_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
