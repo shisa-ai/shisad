@@ -786,6 +786,115 @@ async def test_gh25_browser_toolkit_mounts_symlinked_playwright_dependency_and_c
 
 
 @pytest.mark.asyncio
+async def test_gh25_browser_toolkit_absolutizes_relative_command_and_file_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    wrapper = app_dir / "wrapper.py"
+    wrapper.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[sys.executable, "wrapper.py"])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:2] == [sys.executable, str(wrapper)]
+    assert str(app_dir) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_absolutizes_relative_playwright_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    target_dir = node_modules / "@playwright" / "test"
+    bin_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    target = target_dir / "cli.js"
+    target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    command = bin_dir / "playwright-cli"
+    command.symlink_to("../@playwright/test/cli.js")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=["./node_modules/.bin/playwright-cli"])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[0] == str(command)
+    assert str(node_modules) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_mounts_env_shebang_interpreter_from_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    node_bin = tmp_path / "node-home" / "bin"
+    node_bin.mkdir(parents=True)
+    node = node_bin / "node"
+    node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node.chmod(0o755)
+    monkeypatch.setenv("PATH", str(node_bin))
+    node_modules = tmp_path / "app" / "node_modules"
+    bin_dir = node_modules / ".bin"
+    target_dir = node_modules / "@playwright" / "test"
+    bin_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    target = target_dir / "cli.js"
+    target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    command = bin_dir / "playwright-cli"
+    command.symlink_to("../@playwright/test/cli.js")
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert str(node_modules) in config.read_paths
+    assert str(node_bin) in config.read_paths
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_broken_playwright_symlink_fails_before_exec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

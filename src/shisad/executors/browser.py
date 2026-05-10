@@ -89,6 +89,7 @@ class BrowserTargetResolution:
 
 @dataclass(slots=True)
 class BrowserRuntimeSandbox:
+    command: list[str]
     read_paths: list[Path]
     write_paths: list[Path]
     env: dict[str, str]
@@ -713,7 +714,7 @@ class BrowserToolkit:
         network_policy = self._network_policy(target_urls=network_urls, allow_network=allow_network)
         config = SandboxConfig(
             tool_name=tool_name,
-            command=[*self._command, f"-s={self._session_alias(session)}", *args],
+            command=[*runtime.command, f"-s={self._session_alias(session)}", *args],
             sandbox_type=SandboxType.CONTAINER,
             session_id=str(session.id),
             cwd=str(session_dir),
@@ -747,9 +748,10 @@ class BrowserToolkit:
         return self._error_payload(self._result_error_reason(result))
 
     def _prepare_browser_runtime_sandbox(self) -> BrowserRuntimeSandbox:
-        read_paths, dependency_error = self._browser_command_dependency_roots()
+        command, read_paths, dependency_error = self._browser_command_runtime()
         if dependency_error:
             return BrowserRuntimeSandbox(
+                command=[],
                 read_paths=[],
                 write_paths=[],
                 env={},
@@ -758,49 +760,74 @@ class BrowserToolkit:
         cache_dir, cache_error = self._prepare_browser_cache_dir()
         if cache_error or cache_dir is None:
             return BrowserRuntimeSandbox(
+                command=[],
                 read_paths=[],
                 write_paths=[],
                 env={},
                 error=cache_error or "browser_cache_not_writable",
             )
         return BrowserRuntimeSandbox(
+            command=command,
             read_paths=read_paths,
             write_paths=[cache_dir],
             env={_PLAYWRIGHT_BROWSERS_PATH_ENV: str(cache_dir)},
         )
 
     def _browser_command_dependency_roots(self) -> tuple[list[Path], str]:
+        _, read_paths, error = self._browser_command_runtime()
+        return read_paths, error
+
+    def _browser_command_runtime(self) -> tuple[list[str], list[Path], str]:
         executable_path, executable_error = self._resolve_browser_executable()
         if executable_error or executable_path is None:
-            return [], executable_error or "browser_command_unavailable"
+            return [], [], executable_error or "browser_command_unavailable"
         roots: list[Path] = []
         executable_roots, dependency_error = self._dependency_roots_for_path(executable_path)
         if dependency_error:
-            return [], dependency_error
+            return [], [], dependency_error
         roots.extend(executable_roots)
+        shebang_roots, dependency_error = self._shebang_dependency_roots(executable_path)
+        if dependency_error:
+            return [], [], dependency_error
+        roots.extend(shebang_roots)
+        command = [str(executable_path)]
         for token in self._command[1:]:
-            token_path = Path(str(token)).expanduser()
-            if not token_path.is_absolute() or not (token_path.exists() or token_path.is_symlink()):
+            token_path = self._resolve_existing_command_argument(str(token))
+            if token_path is None:
+                command.append(str(token))
                 continue
             token_roots, dependency_error = self._dependency_roots_for_path(token_path)
             if dependency_error:
-                return [], dependency_error
+                return [], [], dependency_error
             roots.extend(token_roots)
-        return self._dedupe_paths(roots), ""
+            command.append(str(token_path))
+        return command, self._dedupe_paths(roots), ""
 
     def _resolve_browser_executable(self) -> tuple[Path | None, str]:
         if not self._command:
             return None, "browser_command_unconfigured"
-        executable = self._command[0]
+        return self._resolve_executable_token(self._command[0])
+
+    def _resolve_executable_token(self, executable: str) -> tuple[Path | None, str]:
         explicit_path = Path(executable).expanduser()
         if explicit_path.is_absolute() or "/" in executable:
-            if explicit_path.exists() or explicit_path.is_symlink():
-                return explicit_path, ""
+            candidate = self._absolute_path(explicit_path)
+            if candidate.exists() or candidate.is_symlink():
+                return candidate, ""
             return None, "browser_command_unavailable"
         resolved = shutil.which(executable)
         if not resolved:
             return None, "browser_command_unavailable"
         return Path(resolved), ""
+
+    def _resolve_existing_command_argument(self, token: str) -> Path | None:
+        if not token.strip() or token.startswith("-"):
+            return None
+        token_path = Path(token).expanduser()
+        candidate = self._absolute_path(token_path)
+        if candidate.exists() or candidate.is_symlink():
+            return candidate
+        return None
 
     def _dependency_roots_for_path(self, path: Path) -> tuple[list[Path], str]:
         candidate = path.expanduser()
@@ -818,6 +845,72 @@ class BrowserToolkit:
         if not candidate.exists():
             return [], "browser_dependency_unavailable"
         return [self._browser_dependency_root(candidate)], ""
+
+    def _shebang_dependency_roots(self, path: Path) -> tuple[list[Path], str]:
+        candidate = path.expanduser()
+        try:
+            script_path = candidate.resolve(strict=True) if candidate.is_symlink() else candidate
+        except OSError:
+            return [], "browser_dependency_unavailable"
+        if not script_path.is_file():
+            return [], ""
+        try:
+            first_line = script_path.open("rb").readline(256).decode("utf-8", errors="ignore")
+        except OSError:
+            return [], "browser_dependency_unavailable"
+        if not first_line.startswith("#!"):
+            return [], ""
+        try:
+            shebang = shlex.split(first_line[2:].strip())
+        except ValueError:
+            return [], "browser_dependency_unavailable"
+        if not shebang:
+            return [], ""
+        roots: list[Path] = []
+        interpreter_path, dependency_error = self._resolve_executable_token(shebang[0])
+        if dependency_error or interpreter_path is None:
+            return [], "browser_dependency_unavailable"
+        interpreter_roots, dependency_error = self._dependency_roots_for_path(interpreter_path)
+        if dependency_error:
+            return [], dependency_error
+        roots.extend(interpreter_roots)
+        if Path(shebang[0]).name == "env":
+            env_target = self._env_shebang_target(shebang[1:])
+            if env_target:
+                env_target_path, dependency_error = self._resolve_executable_token(env_target)
+                if dependency_error or env_target_path is None:
+                    return [], "browser_dependency_unavailable"
+                env_target_roots, dependency_error = self._dependency_roots_for_path(
+                    env_target_path
+                )
+                if dependency_error:
+                    return [], dependency_error
+                roots.extend(env_target_roots)
+        return self._dedupe_paths(roots), ""
+
+    @staticmethod
+    def _env_shebang_target(args: list[str]) -> str:
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == "-S":
+                try:
+                    split_args = shlex.split(" ".join(args[index + 1 :]))
+                except ValueError:
+                    return ""
+                return split_args[0] if split_args else ""
+            if token in {"-i", "--ignore-environment"}:
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return token
+        return ""
+
+    @staticmethod
+    def _absolute_path(path: Path) -> Path:
+        return path if path.is_absolute() else Path.cwd() / path
 
     @staticmethod
     def _browser_dependency_root(path: Path) -> Path:
