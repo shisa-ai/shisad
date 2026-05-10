@@ -858,6 +858,28 @@ class BrowserToolkit:
         previous_token = ""
         for token in self._command[1:]:
             token_value = str(token)
+            if previous_token in _ENV_SPLIT_FLAGS:
+                split_token, split_paths = self._normalize_env_split_argument(token_value)
+                for split_path in split_paths:
+                    split_roots, dependency_error = self._dependency_roots_for_path(split_path)
+                    if dependency_error:
+                        return [], [], dependency_error
+                    roots.extend(split_roots)
+                command.append(split_token)
+                previous_token = token_value
+                continue
+            if token_value.startswith(_ENV_SPLIT_FLAG_PREFIX):
+                split_token, split_paths = self._normalize_env_split_argument(
+                    token_value.split("=", 1)[1]
+                )
+                for split_path in split_paths:
+                    split_roots, dependency_error = self._dependency_roots_for_path(split_path)
+                    if dependency_error:
+                        return [], [], dependency_error
+                    roots.extend(split_roots)
+                command.append(f"{_ENV_SPLIT_FLAG_PREFIX}{split_token}")
+                previous_token = token_value
+                continue
             resolved_token, token_path = self._resolve_existing_command_argument(
                 token_value,
                 previous_token=previous_token,
@@ -903,6 +925,14 @@ class BrowserToolkit:
     ) -> tuple[str, Path | None]:
         if not token.strip():
             return token, None
+        if previous_token in {"-C", "--chdir"}:
+            chdir_path = self._env_chdir_path(token, None)
+            return str(chdir_path), chdir_path
+        if token.startswith("--chdir="):
+            chdir_path = self._env_chdir_path(token.split("=", 1)[1], None)
+            return f"--chdir={chdir_path}", chdir_path
+        if token.startswith("PATH="):
+            return f"PATH={self._normalize_env_path_value(token.split('=', 1)[1], base_dir)}", None
         if token.startswith("-"):
             if "=" not in token:
                 return token, None
@@ -986,7 +1016,10 @@ class BrowserToolkit:
             return None, "browser_command_unavailable"
         configured_path = env_values.get("PATH")
         if configured_path is not None:
-            resolved = shutil.which(target, path=configured_path)
+            resolved = shutil.which(
+                target,
+                path=self._normalize_env_path_value(configured_path, cwd),
+            )
             if not resolved:
                 return None, "browser_command_unavailable"
             return Path(resolved), ""
@@ -1150,6 +1183,8 @@ class BrowserToolkit:
             if "=" in token and not token.startswith("="):
                 key, value = token.split("=", 1)
                 if key:
+                    if key == "PATH":
+                        value = BrowserToolkit._normalize_env_path_value(value, cwd)
                     env_values[key] = value
                 index += 1
                 continue
@@ -1165,6 +1200,100 @@ class BrowserToolkit:
         if chdir_path.is_absolute():
             return chdir_path
         return (current_cwd or Path.cwd()) / chdir_path
+
+    def _normalize_env_split_argument(self, raw_arg: str) -> tuple[str, list[Path]]:
+        try:
+            tokens = shlex.split(raw_arg)
+        except ValueError:
+            return raw_arg, []
+        normalized: list[str] = []
+        paths: list[Path] = []
+        env_values: dict[str, str] = {}
+        cwd: Path | None = None
+        target_seen = False
+        non_path_flags: set[str] = set()
+        previous_token = ""
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if not target_seen:
+                if token in _ENV_FLAGS_WITHOUT_VALUES:
+                    normalized.append(token)
+                    index += 1
+                    continue
+                if token in {"-C", "--chdir"} and index + 1 < len(tokens):
+                    chdir_path = self._env_chdir_path(tokens[index + 1], cwd)
+                    cwd = chdir_path
+                    normalized.extend([token, str(chdir_path)])
+                    paths.append(chdir_path)
+                    index += 2
+                    continue
+                if token in _ENV_FLAGS_WITH_VALUES and index + 1 < len(tokens):
+                    normalized.extend([token, tokens[index + 1]])
+                    index += 2
+                    continue
+                if token.startswith("--chdir="):
+                    chdir_path = self._env_chdir_path(token.split("=", 1)[1], cwd)
+                    cwd = chdir_path
+                    normalized.append(f"--chdir={chdir_path}")
+                    paths.append(chdir_path)
+                    index += 1
+                    continue
+                if token.startswith(_ENV_FLAGS_WITH_VALUE_PREFIXES):
+                    normalized.append(token)
+                    index += 1
+                    continue
+                if "=" in token and not token.startswith("="):
+                    key, value = token.split("=", 1)
+                    if key == "PATH":
+                        value = self._normalize_env_path_value(value, cwd)
+                    if key:
+                        env_values[key] = value
+                    normalized.append(f"{key}={value}")
+                    index += 1
+                    continue
+                target_path, _ = self._resolve_env_target_token(
+                    token,
+                    env_values,
+                    cwd=cwd,
+                )
+                if target_path is not None:
+                    paths.append(target_path)
+                    non_path_flags = self._non_path_flags_for_command(target_path, None)
+                    target_token_path = Path(token).expanduser()
+                    if target_token_path.is_absolute() or "/" in token or token.startswith("."):
+                        token = str(target_path)
+                normalized.append(token)
+                target_seen = True
+                previous_token = token
+                index += 1
+                continue
+            resolved_token, token_path = self._resolve_existing_command_argument(
+                token,
+                previous_token=previous_token,
+                non_path_flags=non_path_flags,
+                base_dir=cwd,
+            )
+            if token_path is not None:
+                paths.append(token_path)
+            normalized.append(resolved_token)
+            previous_token = token
+            index += 1
+        return shlex.join(normalized), paths
+
+    @staticmethod
+    def _normalize_env_path_value(raw_path: str, cwd: Path | None) -> str:
+        base_dir = cwd or Path.cwd()
+        normalized_entries: list[str] = []
+        for entry in raw_path.split(os.pathsep):
+            if not entry:
+                normalized_entries.append(str(base_dir))
+                continue
+            entry_path = Path(entry).expanduser()
+            normalized_entries.append(
+                str(entry_path if entry_path.is_absolute() else base_dir / entry_path)
+            )
+        return os.pathsep.join(normalized_entries)
 
     @staticmethod
     def _absolute_path(path: Path, *, base_dir: Path | None = None) -> Path:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -1392,6 +1393,160 @@ async def test_gh25_browser_toolkit_env_chdir_resolves_relative_target_and_args(
         str(command),
         "--config",
         str(config_path),
+    ]
+    assert str(node_modules) in config.read_paths
+    assert str(app_dir) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_env_relative_chdir_is_absolutized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[str(env), "-C", "app", "./node_modules/.bin/playwright-cli"],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:4] == [str(env), "-C", str(app_dir), str(command)]
+    assert str(node_modules) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_env_chdir_resolves_relative_path_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[str(env), "-C", "app", "PATH=node_modules/.bin", "playwright-cli"],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:5] == [
+        str(env),
+        "-C",
+        str(app_dir),
+        f"PATH={bin_dir}",
+        "playwright-cli",
+    ]
+    assert str(node_modules) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_env_split_string_normalizes_relative_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    config_path = app_dir / "playwright.config.js"
+    config_path.write_text("module.exports = {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            str(env),
+            "-S",
+            "-C app ./node_modules/.bin/playwright-cli --config playwright.config.js",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:3] == [
+        str(env),
+        "-S",
+        shlex.join(
+            [
+                "-C",
+                str(app_dir),
+                str(command),
+                "--config",
+                str(config_path),
+            ]
+        ),
     ]
     assert str(node_modules) in config.read_paths
     assert str(app_dir) in config.read_paths
