@@ -759,6 +759,7 @@ async def test_gh25_browser_toolkit_mounts_symlinked_playwright_dependency_and_c
     target_dir.mkdir(parents=True)
     target = target_dir / "cli.js"
     target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    target.chmod(0o755)
     command = bin_dir / "playwright-cli"
     command.symlink_to("../@playwright/test/cli.js")
     runner = _CapturingSuccessRunner()
@@ -1149,6 +1150,134 @@ async def test_gh25_browser_toolkit_preserves_code_flags_for_env_node_launcher(
         str(register),
     ]
     assert str(node_bin) in config.read_paths
+    assert str(app_dir) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_mounts_env_launcher_script_shebang_interpreter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    node_bin = tmp_path / "node-home" / "bin"
+    node_bin.mkdir(parents=True)
+    node = node_bin / "node"
+    node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    target_dir = node_modules / "@playwright" / "test"
+    bin_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    target = target_dir / "cli.js"
+    target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    target.chmod(0o755)
+    command = bin_dir / "playwright-cli"
+    command.symlink_to("../@playwright/test/cli.js")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), str(node_bin)]))
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(env), "playwright-cli"])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:2] == [str(env), "playwright-cli"]
+    assert str(node_modules) in config.read_paths
+    assert str(node_bin) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_env_parser_handles_options_and_path_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    ambient_node_bin = tmp_path / "ambient-node" / "bin"
+    ambient_node_bin.mkdir(parents=True)
+    ambient_node = ambient_node_bin / "node"
+    ambient_node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ambient_node.chmod(0o755)
+    assigned_node_bin = tmp_path / "assigned-node" / "bin"
+    assigned_node_bin.mkdir(parents=True)
+    assigned_node = assigned_node_bin / "node"
+    assigned_node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    assigned_node.chmod(0o755)
+    monkeypatch.setenv("PATH", str(ambient_node_bin))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    register = app_dir / "register.js"
+    register.write_text("module.exports = {}\n", encoding="utf-8")
+    entry = app_dir / "entry.js"
+    entry.write_text("console.log('ok')\n", encoding="utf-8")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            str(env),
+            "-u",
+            "NODE_OPTIONS",
+            "-C",
+            str(app_dir),
+            f"PATH={assigned_node_bin}",
+            "node",
+            "-e",
+            "entry.js",
+            "--require",
+            "register.js",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:10] == [
+        str(env),
+        "-u",
+        "NODE_OPTIONS",
+        "-C",
+        str(app_dir),
+        f"PATH={assigned_node_bin}",
+        "node",
+        "-e",
+        "entry.js",
+        "--require",
+    ]
+    assert config.command[10] == str(register)
+    assert str(assigned_node_bin) in config.read_paths
+    assert str(ambient_node_bin) not in config.read_paths
     assert str(app_dir) in config.read_paths
 
 

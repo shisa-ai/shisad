@@ -61,6 +61,28 @@ _PATHLIKE_COMMAND_ARG_SUFFIXES = {
 }
 _NODE_NON_PATH_FLAGS = {"-e", "-p", "--eval", "--print"}
 _PYTHON_NON_PATH_FLAGS = {"-c", "-m", "--module"}
+_ENV_FLAGS_WITHOUT_VALUES = {
+    "-0",
+    "-i",
+    "--debug",
+    "--ignore-environment",
+    "--null",
+}
+_ENV_FLAGS_WITH_VALUES = {
+    "-a",
+    "-C",
+    "-u",
+    "--argv0",
+    "--chdir",
+    "--unset",
+}
+_ENV_FLAGS_WITH_VALUE_PREFIXES = (
+    "--argv0=",
+    "--chdir=",
+    "--unset=",
+)
+_ENV_SPLIT_FLAGS = {"-S", "--split-string"}
+_ENV_SPLIT_FLAG_PREFIX = "--split-string="
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -818,6 +840,12 @@ class BrowserToolkit:
             if dependency_error:
                 return [], [], dependency_error
             roots.extend(env_target_roots)
+            env_target_shebang_roots, dependency_error = self._shebang_dependency_roots(
+                env_target_path
+            )
+            if dependency_error:
+                return [], [], dependency_error
+            roots.extend(env_target_shebang_roots)
         command = [str(executable_path)]
         non_path_flags = self._non_path_flags_for_command(executable_path, env_target_path)
         previous_token = ""
@@ -914,13 +942,34 @@ class BrowserToolkit:
     def _env_command_target_path(self, executable_path: Path) -> tuple[Path | None, str]:
         if "env" not in self._executable_identity_names(executable_path):
             return None, ""
-        env_target = self._env_shebang_target([str(token) for token in self._command[1:]])
+        env_target, env_values = self._env_invocation(
+            [str(token) for token in self._command[1:]]
+        )
         if not env_target:
             return None, ""
-        env_target_path, dependency_error = self._resolve_executable_token(env_target)
+        env_target_path, dependency_error = self._resolve_env_target_token(
+            env_target,
+            env_values,
+        )
         if dependency_error or env_target_path is None:
             return None, "browser_dependency_unavailable"
         return env_target_path, ""
+
+    def _resolve_env_target_token(
+        self,
+        target: str,
+        env_values: dict[str, str],
+    ) -> tuple[Path | None, str]:
+        explicit_path = Path(target).expanduser()
+        if explicit_path.is_absolute() or "/" in target:
+            return self._resolve_executable_token(target)
+        configured_path = env_values.get("PATH")
+        if configured_path is not None:
+            resolved = shutil.which(target, path=configured_path)
+            if not resolved:
+                return None, "browser_command_unavailable"
+            return Path(resolved), ""
+        return self._resolve_executable_token(target)
 
     def _non_path_flags_for_command(
         self,
@@ -963,12 +1012,20 @@ class BrowserToolkit:
             return [], "browser_dependency_unavailable"
         return [self._browser_dependency_root(candidate)], ""
 
-    def _shebang_dependency_roots(self, path: Path) -> tuple[list[Path], str]:
+    def _shebang_dependency_roots(
+        self,
+        path: Path,
+        seen: set[Path] | None = None,
+    ) -> tuple[list[Path], str]:
         candidate = path.expanduser()
         try:
-            script_path = candidate.resolve(strict=True) if candidate.is_symlink() else candidate
+            script_path = candidate.resolve(strict=True)
         except OSError:
             return [], "browser_dependency_unavailable"
+        visited = seen or set()
+        if script_path in visited:
+            return [], ""
+        visited.add(script_path)
         if not script_path.is_file():
             return [], ""
         try:
@@ -992,9 +1049,12 @@ class BrowserToolkit:
             return [], dependency_error
         roots.extend(interpreter_roots)
         if Path(shebang[0]).name == "env":
-            env_target = self._env_shebang_target(shebang[1:])
+            env_target, env_values = self._env_invocation(shebang[1:])
             if env_target:
-                env_target_path, dependency_error = self._resolve_executable_token(env_target)
+                env_target_path, dependency_error = self._resolve_env_target_token(
+                    env_target,
+                    env_values,
+                )
                 if dependency_error or env_target_path is None:
                     return [], "browser_dependency_unavailable"
                 env_target_roots, dependency_error = self._dependency_roots_for_path(
@@ -1003,30 +1063,61 @@ class BrowserToolkit:
                 if dependency_error:
                     return [], dependency_error
                 roots.extend(env_target_roots)
+                env_target_shebang_roots, dependency_error = self._shebang_dependency_roots(
+                    env_target_path,
+                    seen=visited,
+                )
+                if dependency_error:
+                    return [], dependency_error
+                roots.extend(env_target_shebang_roots)
         return self._dedupe_paths(roots), ""
 
     @staticmethod
     def _env_shebang_target(args: list[str]) -> str:
+        return BrowserToolkit._env_invocation(args)[0]
+
+    @staticmethod
+    def _env_invocation(args: list[str]) -> tuple[str, dict[str, str]]:
+        env_values: dict[str, str] = {}
         index = 0
         while index < len(args):
             token = args[index]
-            if token == "-S":
+            if token in _ENV_SPLIT_FLAGS:
                 try:
                     split_args = shlex.split(" ".join(args[index + 1 :]))
                 except ValueError:
-                    return ""
-                return split_args[0] if split_args else ""
-            if token in {"-i", "--ignore-environment"}:
+                    return "", env_values
+                split_target, split_env_values = BrowserToolkit._env_invocation(split_args)
+                env_values.update(split_env_values)
+                return split_target, env_values
+            if token.startswith(_ENV_SPLIT_FLAG_PREFIX):
+                try:
+                    split_args = shlex.split(token.split("=", 1)[1])
+                except ValueError:
+                    return "", env_values
+                split_target, split_env_values = BrowserToolkit._env_invocation(split_args)
+                env_values.update(split_env_values)
+                return split_target, env_values
+            if token in _ENV_FLAGS_WITHOUT_VALUES:
+                index += 1
+                continue
+            if token in _ENV_FLAGS_WITH_VALUES:
+                index += 2
+                continue
+            if token.startswith(_ENV_FLAGS_WITH_VALUE_PREFIXES):
                 index += 1
                 continue
             if "=" in token and not token.startswith("="):
+                key, value = token.split("=", 1)
+                if key:
+                    env_values[key] = value
                 index += 1
                 continue
             if token.startswith("-"):
                 index += 1
                 continue
-            return token
-        return ""
+            return token, env_values
+        return "", env_values
 
     @staticmethod
     def _absolute_path(path: Path) -> Path:
