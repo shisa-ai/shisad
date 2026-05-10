@@ -2278,11 +2278,23 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
             "failed to read [path]",
         ),
         (
+            r"failed to read C:\Users\Alice Smith\AppData\Local\ms-playwright\state.json",
+            "failed to read [path]",
+        ),
+        (
+            r"failed to read C:\Program Files\ms-playwright\state.json",
+            "failed to read [path]",
+        ),
+        (
             "failed to read C:/Users/alice/AppData/Local/ms-playwright/state.json",
             "failed to read [path]",
         ),
         (
             r"failed to read \\server\share\ms-playwright\state.json",
+            "failed to read [path]",
+        ),
+        (
+            r"failed to read \\server\share name\ms-playwright\state.json",
             "failed to read [path]",
         ),
         (
@@ -2326,8 +2338,11 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_url_varian
     assert result["error"] == "browser_subprocess_failed"
     assert result["details"]["stderr"] == expected_stderr
     assert "Users/alice" not in json.dumps(result, sort_keys=True)
+    assert "Alice Smith" not in json.dumps(result, sort_keys=True)
+    assert "Program Files" not in json.dumps(result, sort_keys=True)
     assert "server/share" not in json.dumps(result, sort_keys=True)
     assert r"server\share" not in json.dumps(result, sort_keys=True)
+    assert "share name" not in json.dumps(result, sort_keys=True)
 
 
 @pytest.mark.asyncio
