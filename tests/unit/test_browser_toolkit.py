@@ -1722,10 +1722,23 @@ async def test_gh25_browser_toolkit_env_prefix_boundary_uses_target_position(
             ["--argv0", "./node_modules/.bin/playwright-cli"],
         ),
         (
+            ["-a", "./node_modules/.bin/playwright-cli"],
+            ["-a", "./node_modules/.bin/playwright-cli"],
+        ),
+        (
+            ["--argv0", "--split-string=./node_modules/.bin/playwright-cli"],
+            ["--argv0", "--split-string=./node_modules/.bin/playwright-cli"],
+        ),
+        (
             ["--argv0=./node_modules/.bin/playwright-cli"],
             ["--argv0=./node_modules/.bin/playwright-cli"],
         ),
         (["-u", "./NODE_OPTIONS"], ["-u", "./NODE_OPTIONS"]),
+        (["--unset", "./NODE_OPTIONS"], ["--unset", "./NODE_OPTIONS"]),
+        (
+            ["--unset", "--split-string=./NODE_OPTIONS"],
+            ["--unset", "--split-string=./NODE_OPTIONS"],
+        ),
         (["--unset=./NODE_OPTIONS"], ["--unset=./NODE_OPTIONS"]),
     ],
 )

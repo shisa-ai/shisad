@@ -874,7 +874,11 @@ class BrowserToolkit:
                 previous_token = token_value
                 env_prefix_active = False
                 continue
-            if env_prefix_active and token_value.startswith(_ENV_SPLIT_FLAG_PREFIX):
+            if (
+                env_prefix_active
+                and previous_token not in _ENV_FLAGS_WITH_VALUES
+                and token_value.startswith(_ENV_SPLIT_FLAG_PREFIX)
+            ):
                 split_token, split_paths = self._normalize_env_split_argument(
                     token_value.split("=", 1)[1]
                 )
