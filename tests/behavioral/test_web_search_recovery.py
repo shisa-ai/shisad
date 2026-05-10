@@ -433,6 +433,38 @@ async def test_gh27_recovery_uses_trusted_followup_context_for_referents(
 
 
 @pytest.mark.asyncio
+async def test_gh27_followup_recovery_rejects_untrusted_only_referent() -> None:
+    planner = LocalPlannerProvider.__new__(LocalPlannerProvider)
+    system_prompt = f"{_RECOVERY_POLICY_MARKER}. {_TRUSTED_CONTEXT_RECOVERY_MARKER}."
+    planner_input = "\n".join(
+        [
+            "=== RUNTIME GUIDANCE ===",
+            "Trusted prompt preamble without the venue referent.",
+            "",
+            "=== USER REQUEST ===",
+            "^^USER_GOAL_TEST^^",
+            "Find its Tabelog reservation path.",
+            "",
+            "=== DATA EVIDENCE (UNTRUSTED) ===",
+            "Prior untrusted transcript text mentions Amour on tabelog.com.",
+            "=== END PAYLOAD ===",
+        ]
+    )
+
+    response = await _planner_stub_complete(
+        planner,
+        [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=planner_input),
+        ],
+        [],
+    )
+
+    assert not response.message.tool_calls
+    assert "venue name again" in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_gh27_failed_recovery_reports_insufficient_evidence_not_absence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
