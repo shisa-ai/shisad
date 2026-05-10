@@ -2270,6 +2270,53 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
     assert str(leaked_path) not in json.dumps(result, sort_keys=True)
 
 
+@pytest.mark.parametrize(
+    ("raw_stderr", "expected_stderr"),
+    [
+        (
+            "failed to read file:///C:/Users/alice/AppData/Local/ms-playwright/state.json",
+            "failed to read file://[path]",
+        ),
+        (
+            "failed to read file://server/share/ms-playwright/state.json",
+            "failed to read file://[path]",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_url_variants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_stderr: str,
+    expected_stderr: str,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=17,
+            stderr=raw_stderr,
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", "http://127.0.0.1:9/"],
+        network_urls=["http://127.0.0.1:9/"],
+        allow_network=True,
+    )
+
+    assert result["error"] == "browser_subprocess_failed"
+    assert result["details"]["stderr"] == expected_stderr
+    assert "Users/alice" not in json.dumps(result, sort_keys=True)
+    assert "server/share" not in json.dumps(result, sort_keys=True)
+
+
 @pytest.mark.asyncio
 async def test_gh26_browser_toolkit_launched_subprocess_enoent_stays_runtime_failure(
     tmp_path: Path,
