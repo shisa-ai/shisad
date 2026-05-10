@@ -2228,7 +2228,7 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
         "stage": "subprocess",
         "sandbox_reason": "browser_command_failed",
         "exit_code": 17,
-        "stderr": "failed to read [path] SHISAD_API_KEY=[redacted]",
+        "stderr": "failed to read [path]",
         "stdout": "cache write failed at [path]",
     }
     serialized = json.dumps(result, sort_keys=True)
@@ -2274,6 +2274,18 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
     ("raw_stderr", "expected_stderr"),
     [
         (
+            "failed to read /Users/Alice Smith/Library/Caches/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
+            "failed to read /Applications/My App.app/Contents/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
+            "failed to read /opt/Program Files (x86)/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
             r"failed to read C:\Users\alice\AppData\Local\ms-playwright\state.json",
             "failed to read [path]",
         ),
@@ -2283,6 +2295,10 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
         ),
         (
             r"failed to read C:\Program Files\ms-playwright\state.json",
+            "failed to read [path]",
+        ),
+        (
+            r"failed to read C:\Program Files (x86)\ms-playwright\state.json",
             "failed to read [path]",
         ),
         (
@@ -2303,6 +2319,10 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
         ),
         (
             "failed to read file:///C:/Users/Alice Smith/AppData/Local/ms-playwright/state.json",
+            "failed to read file://[path]",
+        ),
+        (
+            "failed to read file:///C:/Program Files (x86)/ms-playwright/state.json",
             "failed to read file://[path]",
         ),
         (
@@ -2345,9 +2365,11 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_url_varian
 
     assert result["error"] == "browser_subprocess_failed"
     assert result["details"]["stderr"] == expected_stderr
-    assert "Users/alice" not in json.dumps(result, sort_keys=True)
     assert "Alice Smith" not in json.dumps(result, sort_keys=True)
+    assert "My App.app" not in json.dumps(result, sort_keys=True)
     assert "Program Files" not in json.dumps(result, sort_keys=True)
+    assert "x86" not in json.dumps(result, sort_keys=True)
+    assert "Users/alice" not in json.dumps(result, sort_keys=True)
     assert "server/share" not in json.dumps(result, sort_keys=True)
     assert r"server\share" not in json.dumps(result, sort_keys=True)
     assert "share name" not in json.dumps(result, sort_keys=True)
