@@ -100,6 +100,8 @@ async def _planner_stub_complete(
     normalized_input = planner_input.replace("^", "")
 
     if "POST-TOOL SYNTHESIS PASS" in normalized_input:
+        if "Synthesis failure test" in normalized_input:
+            raise RuntimeError("synthetic GH27 synthesis failure")
         if "Amour reservation page" in normalized_input:
             response = "Found Amour on Tabelog; the reservation page is available."
         elif _RECOVERY_POLICY_MARKER in normalized_input:
@@ -158,6 +160,24 @@ async def _planner_stub_complete(
                 role="assistant",
                 content="The Tabelog reservation path does not exist.",
                 tool_calls=calls,
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "synthesis failure test" in goal_lower and "amour" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="The Tabelog reservation path does not exist.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-synthesis-failure-search",
+                    )
+                ],
             ),
             model="gh27-web-recovery-stub",
             finish_reason="tool_calls",
@@ -453,6 +473,33 @@ async def test_gh27_post_tool_synthesis_replaces_premature_absence_claim(
     assert int(reply.get("executed_actions", 0)) == 3
     response = str(reply.get("response", ""))
     assert "Found Amour on Tabelog" in response
+    assert "does not exist" not in response.casefold()
+
+
+@pytest.mark.asyncio
+async def test_gh27_web_synthesis_failure_drops_premature_absence_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Synthesis failure test: find the Tabelog reservation path "
+                    "for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "intermediate tool output" in response
     assert "does not exist" not in response.casefold()
 
 

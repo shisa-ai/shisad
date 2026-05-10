@@ -3248,6 +3248,25 @@ def _intermediate_tool_summary_response(tool_output_summary: str) -> str:
     )
 
 
+def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
+    normalized = " ".join(str(response_text or "").casefold().split())
+    if not normalized:
+        return False
+    absence_markers = (
+        "does not exist",
+        "do not exist",
+        "doesn't exist",
+        "not exist",
+        "not found",
+        "could not find",
+        "can't find",
+        "cannot find",
+        "unavailable",
+        "insufficient evidence",
+    )
+    return any(marker in normalized for marker in absence_markers)
+
+
 def _transcript_entry_context_role(
     entry: TranscriptEntry,
     *,
@@ -10062,6 +10081,7 @@ class SessionImplMixin(HandlerMixinBase):
         web_evidence_tool_names = {ToolName("web.search"), ToolName("web.fetch")}
         should_synthesize_initial_tool_response = (
             bool(initial_planner_response_text)
+            and _is_web_pre_tool_absence_claim(initial_planner_response_text)
             and any(
                 tool_output.tool_name in web_evidence_tool_names
                 for tool_output in execution.executed_tool_outputs
@@ -10148,12 +10168,21 @@ class SessionImplMixin(HandlerMixinBase):
                             else synthesized_response
                         )
                     else:
-                        appended_summary = (
-                            user_visible_tool_output_summary
-                            if action_resolution_text and user_visible_tool_output_summary
-                            else tool_output_summary
+                        fallback_response = _intermediate_tool_summary_response(
+                            tool_output_summary
                         )
-                        response_text = f"{response_text}\n\n{appended_summary}"
+                        response_text = (
+                            f"{action_resolution_text}\n\n{fallback_response}"
+                            if action_resolution_text and fallback_response
+                            else fallback_response
+                        )
+                elif response_text.strip():
+                    appended_summary = (
+                        user_visible_tool_output_summary
+                        if action_resolution_text and user_visible_tool_output_summary
+                        else tool_output_summary
+                    )
+                    response_text = f"{response_text}\n\n{appended_summary}"
                 else:
                     direct_tool_response = _direct_tool_output_response_without_synthesis(
                         chat_serialized_tool_outputs
