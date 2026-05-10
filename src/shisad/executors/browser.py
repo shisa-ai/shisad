@@ -94,7 +94,7 @@ _BROWSER_FAILURE_SECRET_ASSIGNMENT_RE = re.compile(
 _BROWSER_FAILURE_SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Fa-f0-9]{32,})\b"
 )
-_BROWSER_FAILURE_FILE_URL_PATH_RE = re.compile(r"file://[^\s'\"<>),;]+", re.IGNORECASE)
+_BROWSER_FAILURE_FILE_URL_PATH_RE = re.compile(r"file://[^\r\n'\"<>),;]+", re.IGNORECASE)
 _BROWSER_FAILURE_WINDOWS_DRIVE_PATH_RE = re.compile(
     r"(?<![\w.-])[A-Za-z]:[\\/][^\r\n'\"<>),;]+"
 )
