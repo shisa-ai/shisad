@@ -919,6 +919,12 @@ async def test_gh25_browser_toolkit_preserves_code_bearing_interpreter_flag_valu
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    node_bin = tmp_path / "node-home" / "bin"
+    node_bin.mkdir(parents=True)
+    node = node_bin / "node"
+    node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node.chmod(0o755)
+    monkeypatch.setenv("PATH", str(node_bin))
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     for filename in ["wrapper.js", "snippet.js", "register.js", "printable.js"]:
@@ -929,7 +935,7 @@ async def test_gh25_browser_toolkit_preserves_code_bearing_interpreter_flag_valu
         tmp_path,
         runner=runner,
         command=[
-            sys.executable,
+            "node",
             "-e",
             "wrapper.js",
             "--eval",
@@ -953,7 +959,7 @@ async def test_gh25_browser_toolkit_preserves_code_bearing_interpreter_flag_valu
     assert len(runner.configs) == 1
     config = runner.configs[0]
     assert config.command[:9] == [
-        sys.executable,
+        str(node),
         "-e",
         "wrapper.js",
         "--eval",
@@ -962,6 +968,52 @@ async def test_gh25_browser_toolkit_preserves_code_bearing_interpreter_flag_valu
         "printable.js",
         "--require",
         str(app_dir / "register.js"),
+    ]
+    assert str(app_dir) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_absolutizes_short_flag_paths_for_custom_wrappers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    wrapper = app_dir / "custom-playwright-wrapper"
+    wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    plugin = app_dir / "plugin.js"
+    plugin.write_text("module.exports = {}\n", encoding="utf-8")
+    entry = app_dir / "entry.js"
+    entry.write_text("module.exports = {}\n", encoding="utf-8")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[str(wrapper), "-p", "plugin.js", "-e", "entry.js"],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:5] == [
+        str(wrapper),
+        "-p",
+        str(plugin),
+        "-e",
+        str(entry),
     ]
     assert str(app_dir) in config.read_paths
 

@@ -59,15 +59,8 @@ _PATHLIKE_COMMAND_ARG_SUFFIXES = {
     ".ts",
     ".tsx",
 }
-_NON_PATH_INTERPRETER_FLAGS = {
-    "-c",
-    "-e",
-    "-m",
-    "-p",
-    "--eval",
-    "--module",
-    "--print",
-}
+_NODE_NON_PATH_FLAGS = {"-e", "-p", "--eval", "--print"}
+_PYTHON_NON_PATH_FLAGS = {"-c", "-m", "--module"}
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -811,12 +804,14 @@ class BrowserToolkit:
             return [], [], dependency_error
         roots.extend(shebang_roots)
         command = [str(executable_path)]
+        non_path_flags = self._non_path_flags_for_executable(executable_path)
         previous_token = ""
         for token in self._command[1:]:
             token_value = str(token)
             resolved_token, token_path = self._resolve_existing_command_argument(
                 token_value,
                 previous_token=previous_token,
+                non_path_flags=non_path_flags,
             )
             if token_path is None:
                 command.append(resolved_token)
@@ -852,6 +847,7 @@ class BrowserToolkit:
         token: str,
         *,
         previous_token: str,
+        non_path_flags: set[str],
     ) -> tuple[str, Path | None]:
         if not token.strip():
             return token, None
@@ -862,6 +858,7 @@ class BrowserToolkit:
             value_path = self._resolve_existing_command_argument_path(
                 value,
                 previous_token=flag,
+                non_path_flags=non_path_flags,
             )
             if value_path is None:
                 return token, None
@@ -869,6 +866,7 @@ class BrowserToolkit:
         token_path = self._resolve_existing_command_argument_path(
             token,
             previous_token=previous_token,
+            non_path_flags=non_path_flags,
         )
         return (str(token_path), token_path) if token_path is not None else (token, None)
 
@@ -877,6 +875,7 @@ class BrowserToolkit:
         token: str,
         *,
         previous_token: str,
+        non_path_flags: set[str],
     ) -> Path | None:
         token_path = Path(token).expanduser()
         explicit_path_like = (
@@ -886,7 +885,7 @@ class BrowserToolkit:
             or "\\" in token
         )
         script_like = token_path.suffix.lower() in _PATHLIKE_COMMAND_ARG_SUFFIXES
-        if previous_token in _NON_PATH_INTERPRETER_FLAGS:
+        if previous_token in non_path_flags:
             return None
         if previous_token.startswith("-") and not explicit_path_like and not script_like:
             return None
@@ -896,6 +895,15 @@ class BrowserToolkit:
         if candidate.exists() or candidate.is_symlink():
             return candidate
         return None
+
+    @staticmethod
+    def _non_path_flags_for_executable(executable_path: Path) -> set[str]:
+        executable_name = executable_path.name.lower()
+        if executable_name.startswith("python"):
+            return set(_PYTHON_NON_PATH_FLAGS)
+        if executable_name in {"node", "nodejs"}:
+            return set(_NODE_NON_PATH_FLAGS)
+        return set()
 
     def _dependency_roots_for_path(self, path: Path) -> tuple[list[Path], str]:
         candidate = path.expanduser()
