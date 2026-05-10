@@ -57,6 +57,11 @@ def _extract_user_request(planner_input: str) -> str:
     return normalized.strip()
 
 
+def _trusted_preamble(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    return normalized.split("=== USER REQUEST ===", 1)[0]
+
+
 def _tool_outputs(payload: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
     rows = payload.get("tool_outputs")
     outputs: dict[str, list[dict[str, Any]]] = {}
@@ -113,8 +118,17 @@ async def _planner_stub_complete(
 
     goal = _extract_user_request(planner_input)
     goal_lower = goal.lower()
+    trusted_preamble = _trusted_preamble(planner_input)
     has_recovery_policy = _RECOVERY_POLICY_MARKER in system_prompt
     has_trusted_context_recovery = _TRUSTED_CONTEXT_RECOVERY_MARKER in system_prompt
+
+    if goal_lower.startswith("context note:"):
+        return ProviderResponse(
+            message=Message(role="assistant", content="Noted."),
+            model="gh27-web-recovery-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
 
     if "amour" in goal_lower and "tabelog" in goal_lower:
         calls = [
@@ -150,9 +164,9 @@ async def _planner_stub_complete(
         if (
             has_recovery_policy
             and has_trusted_context_recovery
-            and "TRUSTED SAME-SESSION USER CONTEXT" in normalized_input
-            and "Amour" in normalized_input
-            and "tabelog.com" in normalized_input
+            and "TRUSTED SAME-SESSION USER CONTEXT" in trusted_preamble
+            and "Amour" in trusted_preamble
+            and "tabelog.com" in trusted_preamble
         ):
             return ProviderResponse(
                 message=Message(
@@ -388,16 +402,18 @@ async def test_gh27_recovery_uses_trusted_followup_context_for_referents(
 ) -> None:
     async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
         sid = await _create_session(client)
-        await client.call(
+        context_reply = await client.call(
             "session.message",
             {
                 "session_id": sid,
                 "content": (
-                    "The venue is Amour on tabelog.com; "
+                    "Context note: the venue is Amour on tabelog.com; "
                     "its alternate listing name is Restaurant Amour."
                 ),
             },
         )
+        assert int(context_reply.get("executed_actions", 0)) == 0
+        assert _tool_outputs(context_reply) == {}
 
         reply = await client.call(
             "session.message",
