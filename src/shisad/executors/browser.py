@@ -98,6 +98,7 @@ _BROWSER_FAILURE_FILE_URL_PATH_RE = re.compile(r"file://[^\r\n]+", re.IGNORECASE
 _BROWSER_FAILURE_WINDOWS_DRIVE_PATH_RE = re.compile(r"(?<![\w.-])[A-Za-z]:[\\/][^\r\n]+")
 _BROWSER_FAILURE_UNC_PATH_RE = re.compile(r"\\\\[^\r\n]+")
 _BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(r"(?<![/\w.-])/(?!/)[^\r\n]+")
+_BROWSER_FAILURE_URL_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 _BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TARGET_STOPWORDS = {
     "a",
@@ -1586,9 +1587,21 @@ class BrowserToolkit:
         )
         normalized = _BROWSER_FAILURE_SECRET_TOKEN_RE.sub("[redacted]", normalized)
         normalized = _BROWSER_FAILURE_FILE_URL_PATH_RE.sub("file://[path]", normalized)
+        url_tokens: list[str] = []
+
+        def protect_url(match: re.Match[str]) -> str:
+            token = match.group(0)
+            if token.lower().startswith("file://"):
+                return token
+            url_tokens.append(token)
+            return f"__shisad_browser_url_{len(url_tokens) - 1}__"
+
+        normalized = _BROWSER_FAILURE_URL_TOKEN_RE.sub(protect_url, normalized)
         normalized = _BROWSER_FAILURE_WINDOWS_DRIVE_PATH_RE.sub("[path]", normalized)
         normalized = _BROWSER_FAILURE_UNC_PATH_RE.sub("[path]", normalized)
         normalized = _BROWSER_FAILURE_ABSOLUTE_PATH_RE.sub("[path]", normalized)
+        for index, token in enumerate(url_tokens):
+            normalized = normalized.replace(f"__shisad_browser_url_{index}__", token)
         if len(normalized) <= _BROWSER_FAILURE_DETAIL_MAX_CHARS:
             return normalized
         return f"{normalized[: _BROWSER_FAILURE_DETAIL_MAX_CHARS - 3].rstrip()}..."

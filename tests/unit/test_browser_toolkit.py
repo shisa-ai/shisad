@@ -2369,6 +2369,22 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
             "navigation failed https://example.com/path?q=1",
             "navigation failed https://example.com/path?q=1",
         ),
+        (
+            "navigation failed https://example.com/#/settings",
+            "navigation failed https://example.com/#/settings",
+        ),
+        (
+            "navigation failed https://example.com/?next=/login",
+            "navigation failed https://example.com/?next=/login",
+        ),
+        (
+            "navigation failed https://example.com/(foo)/bar",
+            "navigation failed https://example.com/(foo)/bar",
+        ),
+        (
+            "navigation failed https://example.com/#/settings cache /Users/Alice Smith/state.json",
+            "navigation failed https://example.com/#/settings cache [path]",
+        ),
     ],
 )
 @pytest.mark.asyncio
