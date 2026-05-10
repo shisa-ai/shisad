@@ -859,6 +859,59 @@ async def test_gh25_browser_toolkit_preserves_non_path_command_arg_values(
 
 
 @pytest.mark.asyncio
+async def test_gh25_browser_toolkit_absolutizes_path_valued_flag_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    register = app_dir / "register.js"
+    register.write_text("module.exports = {}\n", encoding="utf-8")
+    config_path = app_dir / "playwright.config.js"
+    config_path.write_text("module.exports = {}\n", encoding="utf-8")
+    (app_dir / "tests").mkdir()
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            sys.executable,
+            "--require",
+            "register.js",
+            "--config=playwright.config.js",
+            "--project",
+            "tests",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:6] == [
+        sys.executable,
+        "--require",
+        str(register),
+        f"--config={config_path}",
+        "--project",
+        "tests",
+    ]
+    assert str(app_dir) in config.read_paths
+    assert str(app_dir / "tests") not in config.read_paths
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_absolutizes_relative_playwright_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

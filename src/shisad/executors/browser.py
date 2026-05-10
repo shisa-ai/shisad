@@ -48,7 +48,18 @@ _SNAPSHOT_ELEMENT_RE = re.compile(
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
 _PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
-_PATHLIKE_COMMAND_ARG_SUFFIXES = {".cjs", ".js", ".mjs", ".py", ".sh"}
+_PATHLIKE_COMMAND_ARG_SUFFIXES = {
+    ".cjs",
+    ".js",
+    ".json",
+    ".jsx",
+    ".mjs",
+    ".py",
+    ".sh",
+    ".ts",
+    ".tsx",
+}
+_NON_PATH_INTERPRETER_FLAGS = {"-c", "-m", "--module"}
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -795,19 +806,19 @@ class BrowserToolkit:
         previous_token = ""
         for token in self._command[1:]:
             token_value = str(token)
-            token_path = self._resolve_existing_command_argument(
+            resolved_token, token_path = self._resolve_existing_command_argument(
                 token_value,
                 previous_token=previous_token,
             )
             if token_path is None:
-                command.append(token_value)
+                command.append(resolved_token)
                 previous_token = token_value
                 continue
             token_roots, dependency_error = self._dependency_roots_for_path(token_path)
             if dependency_error:
                 return [], [], dependency_error
             roots.extend(token_roots)
-            command.append(str(token_path))
+            command.append(resolved_token)
             previous_token = token_value
         return command, self._dedupe_paths(roots), ""
 
@@ -828,9 +839,37 @@ class BrowserToolkit:
             return None, "browser_command_unavailable"
         return Path(resolved), ""
 
-    def _resolve_existing_command_argument(self, token: str, *, previous_token: str) -> Path | None:
-        if not token.strip() or token.startswith("-"):
-            return None
+    def _resolve_existing_command_argument(
+        self,
+        token: str,
+        *,
+        previous_token: str,
+    ) -> tuple[str, Path | None]:
+        if not token.strip():
+            return token, None
+        if token.startswith("-"):
+            if "=" not in token:
+                return token, None
+            flag, value = token.split("=", 1)
+            value_path = self._resolve_existing_command_argument_path(
+                value,
+                previous_token=flag,
+            )
+            if value_path is None:
+                return token, None
+            return f"{flag}={value_path}", value_path
+        token_path = self._resolve_existing_command_argument_path(
+            token,
+            previous_token=previous_token,
+        )
+        return (str(token_path), token_path) if token_path is not None else (token, None)
+
+    def _resolve_existing_command_argument_path(
+        self,
+        token: str,
+        *,
+        previous_token: str,
+    ) -> Path | None:
         token_path = Path(token).expanduser()
         explicit_path_like = (
             token_path.is_absolute()
@@ -839,7 +878,9 @@ class BrowserToolkit:
             or "\\" in token
         )
         script_like = token_path.suffix.lower() in _PATHLIKE_COMMAND_ARG_SUFFIXES
-        if previous_token.startswith("-") and not explicit_path_like:
+        if previous_token in _NON_PATH_INTERPRETER_FLAGS:
+            return None
+        if previous_token.startswith("-") and not explicit_path_like and not script_like:
             return None
         if not (explicit_path_like or script_like):
             return None
