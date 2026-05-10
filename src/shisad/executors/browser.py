@@ -860,10 +860,17 @@ class BrowserToolkit:
         command = [str(executable_path)]
         non_path_flags = self._non_path_flags_for_command(executable_path, env_target_path)
         env_prefix_active = "env" in self._executable_identity_names(executable_path)
+        env_options_ended = False
         previous_token = ""
+        previous_token_was_env_value = False
         for arg_index, token in enumerate(self._command[1:]):
             token_value = str(token)
-            if env_prefix_active and previous_token in _ENV_SPLIT_FLAGS:
+            env_option_prefix_active = env_prefix_active and not env_options_ended
+            if (
+                env_option_prefix_active
+                and previous_token in _ENV_SPLIT_FLAGS
+                and not previous_token_was_env_value
+            ):
                 split_token, split_paths = self._normalize_env_split_argument(token_value)
                 for split_path in split_paths:
                     split_roots, dependency_error = self._dependency_roots_for_path(split_path)
@@ -872,10 +879,21 @@ class BrowserToolkit:
                     roots.extend(split_roots)
                 command.append(split_token)
                 previous_token = token_value
+                previous_token_was_env_value = False
                 env_prefix_active = False
                 continue
             if (
-                env_prefix_active
+                env_option_prefix_active
+                and previous_token not in _ENV_FLAGS_WITH_VALUES
+                and token_value == "--"
+            ):
+                command.append(token_value)
+                previous_token = token_value
+                previous_token_was_env_value = False
+                env_options_ended = True
+                continue
+            if (
+                env_option_prefix_active
                 and previous_token not in _ENV_FLAGS_WITH_VALUES
                 and token_value.startswith(_ENV_SPLIT_FLAG_PREFIX)
             ):
@@ -889,20 +907,25 @@ class BrowserToolkit:
                     roots.extend(split_roots)
                 command.append(f"{_ENV_SPLIT_FLAG_PREFIX}{split_token}")
                 previous_token = token_value
+                previous_token_was_env_value = False
                 env_prefix_active = False
                 continue
+            current_token_is_env_value = (
+                env_option_prefix_active and previous_token in _ENV_FLAGS_WITH_VALUES
+            )
             resolved_token, token_path = self._resolve_existing_command_argument(
                 token_value,
                 previous_token=previous_token,
                 non_path_flags=non_path_flags,
                 base_dir=env_cwd,
-                env_prefix=env_prefix_active,
+                env_prefix=env_option_prefix_active,
             )
             if token_path is None:
                 command.append(resolved_token)
                 if env_prefix_active and arg_index == env_target_index:
                     env_prefix_active = False
                 previous_token = token_value
+                previous_token_was_env_value = current_token_is_env_value
                 continue
             token_roots, dependency_error = self._dependency_roots_for_path(token_path)
             if dependency_error:
@@ -912,6 +935,7 @@ class BrowserToolkit:
             if env_prefix_active and arg_index == env_target_index:
                 env_prefix_active = False
             previous_token = token_value
+            previous_token_was_env_value = current_token_is_env_value
         return command, self._dedupe_paths(roots), ""
 
     def _resolve_browser_executable(self) -> tuple[Path | None, str]:
@@ -1193,6 +1217,10 @@ class BrowserToolkit:
                 )
                 env_values.update(split_env_values)
                 return split_target, env_values, split_cwd or cwd, index
+            if token == "--":
+                if index + 1 < len(args):
+                    return args[index + 1], env_values, cwd, index + 1
+                return "", env_values, cwd, None
             if token in _ENV_FLAGS_WITHOUT_VALUES:
                 index += 1
                 continue
@@ -1239,47 +1267,54 @@ class BrowserToolkit:
         env_values: dict[str, str] = {}
         cwd: Path | None = None
         target_seen = False
+        env_options_ended = False
         non_path_flags: set[str] = set()
         previous_token = ""
         index = 0
         while index < len(tokens):
             token = tokens[index]
             if not target_seen:
-                if token in _ENV_FLAGS_WITHOUT_VALUES:
-                    normalized.append(token)
-                    index += 1
-                    continue
-                if token in {"-C", "--chdir"} and index + 1 < len(tokens):
-                    chdir_path = self._env_chdir_path(tokens[index + 1], cwd)
-                    cwd = chdir_path
-                    normalized.extend([token, str(chdir_path)])
-                    paths.append(chdir_path)
-                    index += 2
-                    continue
-                if token in _ENV_FLAGS_WITH_VALUES and index + 1 < len(tokens):
-                    normalized.extend([token, tokens[index + 1]])
-                    index += 2
-                    continue
-                if token.startswith("--chdir="):
-                    chdir_path = self._env_chdir_path(token.split("=", 1)[1], cwd)
-                    cwd = chdir_path
-                    normalized.append(f"--chdir={chdir_path}")
-                    paths.append(chdir_path)
-                    index += 1
-                    continue
-                if token.startswith(_ENV_FLAGS_WITH_VALUE_PREFIXES):
-                    normalized.append(token)
-                    index += 1
-                    continue
-                if "=" in token and not token.startswith("="):
-                    key, value = token.split("=", 1)
-                    if key == "PATH":
-                        value = self._normalize_env_path_value(value, cwd)
-                    if key:
-                        env_values[key] = value
-                    normalized.append(f"{key}={value}")
-                    index += 1
-                    continue
+                if not env_options_ended:
+                    if token == "--":
+                        normalized.append(token)
+                        env_options_ended = True
+                        index += 1
+                        continue
+                    if token in _ENV_FLAGS_WITHOUT_VALUES:
+                        normalized.append(token)
+                        index += 1
+                        continue
+                    if token in {"-C", "--chdir"} and index + 1 < len(tokens):
+                        chdir_path = self._env_chdir_path(tokens[index + 1], cwd)
+                        cwd = chdir_path
+                        normalized.extend([token, str(chdir_path)])
+                        paths.append(chdir_path)
+                        index += 2
+                        continue
+                    if token in _ENV_FLAGS_WITH_VALUES and index + 1 < len(tokens):
+                        normalized.extend([token, tokens[index + 1]])
+                        index += 2
+                        continue
+                    if token.startswith("--chdir="):
+                        chdir_path = self._env_chdir_path(token.split("=", 1)[1], cwd)
+                        cwd = chdir_path
+                        normalized.append(f"--chdir={chdir_path}")
+                        paths.append(chdir_path)
+                        index += 1
+                        continue
+                    if token.startswith(_ENV_FLAGS_WITH_VALUE_PREFIXES):
+                        normalized.append(token)
+                        index += 1
+                        continue
+                    if "=" in token and not token.startswith("="):
+                        key, value = token.split("=", 1)
+                        if key == "PATH":
+                            value = self._normalize_env_path_value(value, cwd)
+                        if key:
+                            env_values[key] = value
+                        normalized.append(f"{key}={value}")
+                        index += 1
+                        continue
                 target_path, _ = self._resolve_env_target_token(
                     token,
                     env_values,

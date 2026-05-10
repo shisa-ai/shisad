@@ -1729,6 +1729,7 @@ async def test_gh25_browser_toolkit_env_prefix_boundary_uses_target_position(
             ["--argv0", "--split-string=./node_modules/.bin/playwright-cli"],
             ["--argv0", "--split-string=./node_modules/.bin/playwright-cli"],
         ),
+        (["--argv0", "--split-string"], ["--argv0", "--split-string"]),
         (
             ["--argv0=./node_modules/.bin/playwright-cli"],
             ["--argv0=./node_modules/.bin/playwright-cli"],
@@ -1739,6 +1740,7 @@ async def test_gh25_browser_toolkit_env_prefix_boundary_uses_target_position(
             ["--unset", "--split-string=./NODE_OPTIONS"],
             ["--unset", "--split-string=./NODE_OPTIONS"],
         ),
+        (["--unset", "-S"], ["--unset", "-S"]),
         (["--unset=./NODE_OPTIONS"], ["--unset=./NODE_OPTIONS"]),
     ],
 )
@@ -1797,6 +1799,121 @@ async def test_gh25_browser_toolkit_preserves_env_option_pathlike_operands(
         "playwright-cli",
     ]
     assert str(unset_operand) not in config.command
+    assert str(node_modules) in config.read_paths
+
+
+@pytest.mark.parametrize(
+    ("env_args", "expected_args"),
+    [
+        (
+            ["--", "--split-string=playwright-cli"],
+            ["--", "--split-string=playwright-cli"],
+        ),
+        (
+            ["-S", "-- --split-string=playwright-cli"],
+            ["-S", shlex.join(["--", "--split-string=playwright-cli"])],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_env_double_dash_stops_option_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_args: list[str],
+    expected_args: list[str],
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    target_bin = tmp_path / "target-bin"
+    target_bin.mkdir()
+    target = target_bin / "--split-string=playwright-cli"
+    target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    target.chmod(0o755)
+    monkeypatch.setenv("PATH", str(target_bin))
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[str(env), *env_args],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[: 1 + len(expected_args)] == [str(env), *expected_args]
+    assert str(target_bin) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_preserves_exact_split_literal_before_env_option(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            str(env),
+            "--argv0",
+            "--split-string",
+            "-C",
+            "app",
+            "PATH=node_modules/.bin",
+            "playwright-cli",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:7] == [
+        str(env),
+        "--argv0",
+        "--split-string",
+        "-C",
+        str(app_dir),
+        f"PATH={bin_dir}",
+        "playwright-cli",
+    ]
     assert str(node_modules) in config.read_paths
 
 
