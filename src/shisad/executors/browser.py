@@ -48,6 +48,7 @@ _SNAPSHOT_ELEMENT_RE = re.compile(
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
 _PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+_PATHLIKE_COMMAND_ARG_SUFFIXES = {".cjs", ".js", ".mjs", ".py", ".sh"}
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -791,16 +792,23 @@ class BrowserToolkit:
             return [], [], dependency_error
         roots.extend(shebang_roots)
         command = [str(executable_path)]
+        previous_token = ""
         for token in self._command[1:]:
-            token_path = self._resolve_existing_command_argument(str(token))
+            token_value = str(token)
+            token_path = self._resolve_existing_command_argument(
+                token_value,
+                previous_token=previous_token,
+            )
             if token_path is None:
-                command.append(str(token))
+                command.append(token_value)
+                previous_token = token_value
                 continue
             token_roots, dependency_error = self._dependency_roots_for_path(token_path)
             if dependency_error:
                 return [], [], dependency_error
             roots.extend(token_roots)
             command.append(str(token_path))
+            previous_token = token_value
         return command, self._dedupe_paths(roots), ""
 
     def _resolve_browser_executable(self) -> tuple[Path | None, str]:
@@ -820,10 +828,21 @@ class BrowserToolkit:
             return None, "browser_command_unavailable"
         return Path(resolved), ""
 
-    def _resolve_existing_command_argument(self, token: str) -> Path | None:
+    def _resolve_existing_command_argument(self, token: str, *, previous_token: str) -> Path | None:
         if not token.strip() or token.startswith("-"):
             return None
         token_path = Path(token).expanduser()
+        explicit_path_like = (
+            token_path.is_absolute()
+            or token.startswith((".", "~"))
+            or "/" in token
+            or "\\" in token
+        )
+        script_like = token_path.suffix.lower() in _PATHLIKE_COMMAND_ARG_SUFFIXES
+        if previous_token.startswith("-") and not explicit_path_like:
+            return None
+        if not (explicit_path_like or script_like):
+            return None
         candidate = self._absolute_path(token_path)
         if candidate.exists() or candidate.is_symlink():
             return candidate
