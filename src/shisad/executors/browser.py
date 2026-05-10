@@ -109,6 +109,13 @@ class BrowserRuntimeSandbox:
     error: str = ""
 
 
+@dataclass(slots=True)
+class BrowserCacheSandbox:
+    write_paths: list[Path]
+    env: dict[str, str]
+    error: str = ""
+
+
 class BrowserSandboxMode(StrEnum):
     CONTAINER_HARDENED = "container_hardened"
     VM = "vm"
@@ -770,20 +777,20 @@ class BrowserToolkit:
                 env={},
                 error=dependency_error,
             )
-        cache_dir, cache_error = self._prepare_browser_cache_dir()
-        if cache_error or cache_dir is None:
+        cache = self._prepare_browser_cache_dir()
+        if cache.error:
             return BrowserRuntimeSandbox(
                 command=[],
                 read_paths=[],
                 write_paths=[],
                 env={},
-                error=cache_error or "browser_cache_not_writable",
+                error=cache.error,
             )
         return BrowserRuntimeSandbox(
             command=command,
             read_paths=read_paths,
-            write_paths=[cache_dir],
-            env={_PLAYWRIGHT_BROWSERS_PATH_ENV: str(cache_dir)},
+            write_paths=cache.write_paths,
+            env=cache.env,
         )
 
     def _browser_command_dependency_roots(self) -> tuple[list[Path], str]:
@@ -803,8 +810,16 @@ class BrowserToolkit:
         if dependency_error:
             return [], [], dependency_error
         roots.extend(shebang_roots)
+        env_target_path, dependency_error = self._env_command_target_path(executable_path)
+        if dependency_error:
+            return [], [], dependency_error
+        if env_target_path is not None:
+            env_target_roots, dependency_error = self._dependency_roots_for_path(env_target_path)
+            if dependency_error:
+                return [], [], dependency_error
+            roots.extend(env_target_roots)
         command = [str(executable_path)]
-        non_path_flags = self._non_path_flags_for_executable(executable_path)
+        non_path_flags = self._non_path_flags_for_command(executable_path, env_target_path)
         previous_token = ""
         for token in self._command[1:]:
             token_value = str(token)
@@ -896,14 +911,40 @@ class BrowserToolkit:
             return candidate
         return None
 
-    @staticmethod
-    def _non_path_flags_for_executable(executable_path: Path) -> set[str]:
-        executable_name = executable_path.name.lower()
-        if executable_name.startswith("python"):
+    def _env_command_target_path(self, executable_path: Path) -> tuple[Path | None, str]:
+        if "env" not in self._executable_identity_names(executable_path):
+            return None, ""
+        env_target = self._env_shebang_target([str(token) for token in self._command[1:]])
+        if not env_target:
+            return None, ""
+        env_target_path, dependency_error = self._resolve_executable_token(env_target)
+        if dependency_error or env_target_path is None:
+            return None, "browser_dependency_unavailable"
+        return env_target_path, ""
+
+    def _non_path_flags_for_command(
+        self,
+        executable_path: Path,
+        env_target_path: Path | None,
+    ) -> set[str]:
+        executable_names = self._executable_identity_names(executable_path)
+        if env_target_path is not None:
+            executable_names.update(self._executable_identity_names(env_target_path))
+        if any(name.startswith("python") for name in executable_names):
             return set(_PYTHON_NON_PATH_FLAGS)
-        if executable_name in {"node", "nodejs"}:
+        if executable_names & {"node", "nodejs"}:
             return set(_NODE_NON_PATH_FLAGS)
         return set()
+
+    @staticmethod
+    def _executable_identity_names(executable_path: Path) -> set[str]:
+        names = {executable_path.name.lower()}
+        try:
+            resolved = executable_path.resolve(strict=True)
+        except OSError:
+            return names
+        names.add(resolved.name.lower())
+        return names
 
     def _dependency_roots_for_path(self, path: Path) -> tuple[list[Path], str]:
         candidate = path.expanduser()
@@ -978,6 +1019,9 @@ class BrowserToolkit:
             if token in {"-i", "--ignore-environment"}:
                 index += 1
                 continue
+            if "=" in token and not token.startswith("="):
+                index += 1
+                continue
             if token.startswith("-"):
                 index += 1
                 continue
@@ -998,9 +1042,14 @@ class BrowserToolkit:
         return candidate
 
     @staticmethod
-    def _prepare_browser_cache_dir() -> tuple[Path | None, str]:
+    def _prepare_browser_cache_dir() -> BrowserCacheSandbox:
         configured = os.environ.get(_PLAYWRIGHT_BROWSERS_PATH_ENV, "").strip()
-        if configured and configured != "0":
+        if configured == "0":
+            return BrowserCacheSandbox(
+                write_paths=[],
+                env={_PLAYWRIGHT_BROWSERS_PATH_ENV: "0"},
+            )
+        if configured:
             cache_dir = Path(configured).expanduser()
             if not cache_dir.is_absolute():
                 cache_dir = cache_dir.resolve(strict=False)
@@ -1009,13 +1058,20 @@ class BrowserToolkit:
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             if not cache_dir.is_dir():
-                return None, "browser_cache_not_writable"
+                return BrowserCacheSandbox(
+                    write_paths=[],
+                    env={},
+                    error="browser_cache_not_writable",
+                )
             probe = cache_dir / ".shisad-cache-write-test"
             probe.write_text("", encoding="utf-8")
             probe.unlink(missing_ok=True)
         except OSError:
-            return None, "browser_cache_not_writable"
-        return cache_dir, ""
+            return BrowserCacheSandbox(write_paths=[], env={}, error="browser_cache_not_writable")
+        return BrowserCacheSandbox(
+            write_paths=[cache_dir],
+            env={_PLAYWRIGHT_BROWSERS_PATH_ENV: str(cache_dir)},
+        )
 
     @staticmethod
     def _browser_environment_policy() -> EnvironmentPolicy:
