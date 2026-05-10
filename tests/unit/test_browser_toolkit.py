@@ -1918,6 +1918,61 @@ async def test_gh25_browser_toolkit_preserves_exact_split_literal_before_env_opt
 
 
 @pytest.mark.asyncio
+async def test_gh25_browser_toolkit_literal_value_flag_before_real_split_option(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    runner = _CapturingSuccessRunner()
+    split_payload = "-C app PATH=node_modules/.bin playwright-cli"
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            str(env),
+            "--argv0",
+            "-C",
+            f"--split-string={split_payload}",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:4] == [
+        str(env),
+        "--argv0",
+        "-C",
+        f"--split-string={shlex.join(['-C', str(app_dir), f'PATH={bin_dir}', 'playwright-cli'])}",
+    ]
+    assert str(app_dir) in config.read_paths
+    assert str(node_modules) in config.read_paths
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_absolutizes_relative_playwright_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

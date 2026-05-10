@@ -866,6 +866,11 @@ class BrowserToolkit:
         for arg_index, token in enumerate(self._command[1:]):
             token_value = str(token)
             env_option_prefix_active = env_prefix_active and not env_options_ended
+            previous_token_expects_env_value = (
+                env_option_prefix_active
+                and previous_token in _ENV_FLAGS_WITH_VALUES
+                and not previous_token_was_env_value
+            )
             if (
                 env_option_prefix_active
                 and previous_token in _ENV_SPLIT_FLAGS
@@ -884,7 +889,7 @@ class BrowserToolkit:
                 continue
             if (
                 env_option_prefix_active
-                and previous_token not in _ENV_FLAGS_WITH_VALUES
+                and not previous_token_expects_env_value
                 and token_value == "--"
             ):
                 command.append(token_value)
@@ -894,7 +899,7 @@ class BrowserToolkit:
                 continue
             if (
                 env_option_prefix_active
-                and previous_token not in _ENV_FLAGS_WITH_VALUES
+                and not previous_token_expects_env_value
                 and token_value.startswith(_ENV_SPLIT_FLAG_PREFIX)
             ):
                 split_token, split_paths = self._normalize_env_split_argument(
@@ -910,12 +915,11 @@ class BrowserToolkit:
                 previous_token_was_env_value = False
                 env_prefix_active = False
                 continue
-            current_token_is_env_value = (
-                env_option_prefix_active and previous_token in _ENV_FLAGS_WITH_VALUES
-            )
+            current_token_is_env_value = previous_token_expects_env_value
+            helper_previous_token = "" if previous_token_was_env_value else previous_token
             resolved_token, token_path = self._resolve_existing_command_argument(
                 token_value,
-                previous_token=previous_token,
+                previous_token=helper_previous_token,
                 non_path_flags=non_path_flags,
                 base_dir=env_cwd,
                 env_prefix=env_option_prefix_active,
