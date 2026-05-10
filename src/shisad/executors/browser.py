@@ -836,7 +836,8 @@ class BrowserToolkit:
             env_target_path,
             env_values,
             env_cwd,
-            env_target,
+            _env_target,
+            env_target_index,
             dependency_error,
         ) = self._env_command_target_path(executable_path)
         if dependency_error:
@@ -858,7 +859,7 @@ class BrowserToolkit:
         non_path_flags = self._non_path_flags_for_command(executable_path, env_target_path)
         env_prefix_active = "env" in self._executable_identity_names(executable_path)
         previous_token = ""
-        for token in self._command[1:]:
+        for arg_index, token in enumerate(self._command[1:]):
             token_value = str(token)
             if env_prefix_active and previous_token in _ENV_SPLIT_FLAGS:
                 split_token, split_paths = self._normalize_env_split_argument(token_value)
@@ -893,7 +894,7 @@ class BrowserToolkit:
             )
             if token_path is None:
                 command.append(resolved_token)
-                if env_prefix_active and env_target and token_value == env_target:
+                if env_prefix_active and arg_index == env_target_index:
                     env_prefix_active = False
                 previous_token = token_value
                 continue
@@ -902,7 +903,7 @@ class BrowserToolkit:
                 return [], [], dependency_error
             roots.extend(token_roots)
             command.append(resolved_token)
-            if env_prefix_active and env_target and token_value == env_target:
+            if env_prefix_active and arg_index == env_target_index:
                 env_prefix_active = False
             previous_token = token_value
         return command, self._dedupe_paths(roots), ""
@@ -994,22 +995,29 @@ class BrowserToolkit:
     def _env_command_target_path(
         self,
         executable_path: Path,
-    ) -> tuple[Path | None, dict[str, str], Path | None, str, str]:
+    ) -> tuple[Path | None, dict[str, str], Path | None, str, int | None, str]:
         if "env" not in self._executable_identity_names(executable_path):
-            return None, {}, None, "", ""
-        env_target, env_values, env_cwd = self._env_invocation(
+            return None, {}, None, "", None, ""
+        env_target, env_values, env_cwd, env_target_index = self._env_invocation(
             [str(token) for token in self._command[1:]]
         )
         if not env_target:
-            return None, env_values, env_cwd, "", ""
+            return None, env_values, env_cwd, "", env_target_index, ""
         env_target_path, dependency_error = self._resolve_env_target_token(
             env_target,
             env_values,
             cwd=env_cwd,
         )
         if dependency_error or env_target_path is None:
-            return None, env_values, env_cwd, env_target, "browser_dependency_unavailable"
-        return env_target_path, env_values, env_cwd, env_target, ""
+            return (
+                None,
+                env_values,
+                env_cwd,
+                env_target,
+                env_target_index,
+                "browser_dependency_unavailable",
+            )
+        return env_target_path, env_values, env_cwd, env_target, env_target_index, ""
 
     def _resolve_env_target_token(
         self,
@@ -1115,7 +1123,7 @@ class BrowserToolkit:
             return [], dependency_error
         roots.extend(interpreter_roots)
         if Path(shebang[0]).name == "env":
-            env_target, shebang_env_values, shebang_cwd = self._env_invocation(shebang[1:])
+            env_target, shebang_env_values, shebang_cwd, _ = self._env_invocation(shebang[1:])
             if env_target:
                 inherited_env_values = dict(env_values or {})
                 inherited_env_values.update(shebang_env_values)
@@ -1149,7 +1157,7 @@ class BrowserToolkit:
         return BrowserToolkit._env_invocation(args)[0]
 
     @staticmethod
-    def _env_invocation(args: list[str]) -> tuple[str, dict[str, str], Path | None]:
+    def _env_invocation(args: list[str]) -> tuple[str, dict[str, str], Path | None, int | None]:
         env_values: dict[str, str] = {}
         cwd: Path | None = None
         index = 0
@@ -1159,22 +1167,22 @@ class BrowserToolkit:
                 try:
                     split_args = shlex.split(" ".join(args[index + 1 :]))
                 except ValueError:
-                    return "", env_values, cwd
-                split_target, split_env_values, split_cwd = BrowserToolkit._env_invocation(
+                    return "", env_values, cwd, None
+                split_target, split_env_values, split_cwd, _ = BrowserToolkit._env_invocation(
                     split_args
                 )
                 env_values.update(split_env_values)
-                return split_target, env_values, split_cwd or cwd
+                return split_target, env_values, split_cwd or cwd, index + 1
             if token.startswith(_ENV_SPLIT_FLAG_PREFIX):
                 try:
                     split_args = shlex.split(token.split("=", 1)[1])
                 except ValueError:
-                    return "", env_values, cwd
-                split_target, split_env_values, split_cwd = BrowserToolkit._env_invocation(
+                    return "", env_values, cwd, None
+                split_target, split_env_values, split_cwd, _ = BrowserToolkit._env_invocation(
                     split_args
                 )
                 env_values.update(split_env_values)
-                return split_target, env_values, split_cwd or cwd
+                return split_target, env_values, split_cwd or cwd, index
             if token in _ENV_FLAGS_WITHOUT_VALUES:
                 index += 1
                 continue
@@ -1201,8 +1209,8 @@ class BrowserToolkit:
             if token.startswith("-"):
                 index += 1
                 continue
-            return token, env_values, cwd
-        return "", env_values, cwd
+            return token, env_values, cwd, index
+        return "", env_values, cwd, None
 
     @staticmethod
     def _env_chdir_path(raw_path: str, current_cwd: Path | None) -> Path:
