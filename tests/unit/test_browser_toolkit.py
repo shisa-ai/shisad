@@ -1553,6 +1553,113 @@ async def test_gh25_browser_toolkit_env_split_string_normalizes_relative_paths(
 
 
 @pytest.mark.asyncio
+async def test_gh25_browser_toolkit_non_env_short_s_flag_still_resolves_wrapper_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    wrapper = app_dir / "wrapper.py"
+    wrapper.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[sys.executable, "-S", "wrapper.py"],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:3] == [sys.executable, "-S", str(wrapper)]
+    assert str(app_dir) in config.read_paths
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_preserves_path_assignment_after_env_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[str(env), sys.executable, "PATH=node_modules/.bin"],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:3] == [str(env), sys.executable, "PATH=node_modules/.bin"]
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_preserves_path_assignment_for_non_env_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    wrapper = app_dir / "custom-playwright-wrapper"
+    wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[str(wrapper), "PATH=node_modules/.bin"],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[:2] == [str(wrapper), "PATH=node_modules/.bin"]
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_absolutizes_relative_playwright_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

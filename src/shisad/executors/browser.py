@@ -836,6 +836,7 @@ class BrowserToolkit:
             env_target_path,
             env_values,
             env_cwd,
+            env_target,
             dependency_error,
         ) = self._env_command_target_path(executable_path)
         if dependency_error:
@@ -855,10 +856,11 @@ class BrowserToolkit:
             roots.extend(env_target_shebang_roots)
         command = [str(executable_path)]
         non_path_flags = self._non_path_flags_for_command(executable_path, env_target_path)
+        env_prefix_active = "env" in self._executable_identity_names(executable_path)
         previous_token = ""
         for token in self._command[1:]:
             token_value = str(token)
-            if previous_token in _ENV_SPLIT_FLAGS:
+            if env_prefix_active and previous_token in _ENV_SPLIT_FLAGS:
                 split_token, split_paths = self._normalize_env_split_argument(token_value)
                 for split_path in split_paths:
                     split_roots, dependency_error = self._dependency_roots_for_path(split_path)
@@ -867,8 +869,9 @@ class BrowserToolkit:
                     roots.extend(split_roots)
                 command.append(split_token)
                 previous_token = token_value
+                env_prefix_active = False
                 continue
-            if token_value.startswith(_ENV_SPLIT_FLAG_PREFIX):
+            if env_prefix_active and token_value.startswith(_ENV_SPLIT_FLAG_PREFIX):
                 split_token, split_paths = self._normalize_env_split_argument(
                     token_value.split("=", 1)[1]
                 )
@@ -879,15 +882,19 @@ class BrowserToolkit:
                     roots.extend(split_roots)
                 command.append(f"{_ENV_SPLIT_FLAG_PREFIX}{split_token}")
                 previous_token = token_value
+                env_prefix_active = False
                 continue
             resolved_token, token_path = self._resolve_existing_command_argument(
                 token_value,
                 previous_token=previous_token,
                 non_path_flags=non_path_flags,
                 base_dir=env_cwd,
+                env_prefix=env_prefix_active,
             )
             if token_path is None:
                 command.append(resolved_token)
+                if env_prefix_active and env_target and token_value == env_target:
+                    env_prefix_active = False
                 previous_token = token_value
                 continue
             token_roots, dependency_error = self._dependency_roots_for_path(token_path)
@@ -895,6 +902,8 @@ class BrowserToolkit:
                 return [], [], dependency_error
             roots.extend(token_roots)
             command.append(resolved_token)
+            if env_prefix_active and env_target and token_value == env_target:
+                env_prefix_active = False
             previous_token = token_value
         return command, self._dedupe_paths(roots), ""
 
@@ -922,16 +931,17 @@ class BrowserToolkit:
         previous_token: str,
         non_path_flags: set[str],
         base_dir: Path | None,
+        env_prefix: bool,
     ) -> tuple[str, Path | None]:
         if not token.strip():
             return token, None
-        if previous_token in {"-C", "--chdir"}:
+        if env_prefix and previous_token in {"-C", "--chdir"}:
             chdir_path = self._env_chdir_path(token, None)
             return str(chdir_path), chdir_path
-        if token.startswith("--chdir="):
+        if env_prefix and token.startswith("--chdir="):
             chdir_path = self._env_chdir_path(token.split("=", 1)[1], None)
             return f"--chdir={chdir_path}", chdir_path
-        if token.startswith("PATH="):
+        if env_prefix and token.startswith("PATH="):
             return f"PATH={self._normalize_env_path_value(token.split('=', 1)[1], base_dir)}", None
         if token.startswith("-"):
             if "=" not in token:
@@ -984,22 +994,22 @@ class BrowserToolkit:
     def _env_command_target_path(
         self,
         executable_path: Path,
-    ) -> tuple[Path | None, dict[str, str], Path | None, str]:
+    ) -> tuple[Path | None, dict[str, str], Path | None, str, str]:
         if "env" not in self._executable_identity_names(executable_path):
-            return None, {}, None, ""
+            return None, {}, None, "", ""
         env_target, env_values, env_cwd = self._env_invocation(
             [str(token) for token in self._command[1:]]
         )
         if not env_target:
-            return None, env_values, env_cwd, ""
+            return None, env_values, env_cwd, "", ""
         env_target_path, dependency_error = self._resolve_env_target_token(
             env_target,
             env_values,
             cwd=env_cwd,
         )
         if dependency_error or env_target_path is None:
-            return None, env_values, env_cwd, "browser_dependency_unavailable"
-        return env_target_path, env_values, env_cwd, ""
+            return None, env_values, env_cwd, env_target, "browser_dependency_unavailable"
+        return env_target_path, env_values, env_cwd, env_target, ""
 
     def _resolve_env_target_token(
         self,
@@ -1273,6 +1283,7 @@ class BrowserToolkit:
                 previous_token=previous_token,
                 non_path_flags=non_path_flags,
                 base_dir=cwd,
+                env_prefix=False,
             )
             if token_path is not None:
                 paths.append(token_path)
