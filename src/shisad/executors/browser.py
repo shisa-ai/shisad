@@ -81,6 +81,8 @@ _ENV_FLAGS_WITH_VALUE_PREFIXES = (
     "--chdir=",
     "--unset=",
 )
+_ENV_LITERAL_VALUE_FLAGS = {"-a", "-u", "--argv0", "--unset"}
+_ENV_LITERAL_VALUE_PREFIXES = ("--argv0=", "--unset=")
 _ENV_SPLIT_FLAGS = {"-S", "--split-string"}
 _ENV_SPLIT_FLAG_PREFIX = "--split-string="
 _TARGET_STOPWORDS = {
@@ -939,9 +941,13 @@ class BrowserToolkit:
         if env_prefix and previous_token in {"-C", "--chdir"}:
             chdir_path = self._env_chdir_path(token, None)
             return str(chdir_path), chdir_path
+        if env_prefix and previous_token in _ENV_LITERAL_VALUE_FLAGS:
+            return token, None
         if env_prefix and token.startswith("--chdir="):
             chdir_path = self._env_chdir_path(token.split("=", 1)[1], None)
             return f"--chdir={chdir_path}", chdir_path
+        if env_prefix and token.startswith(_ENV_LITERAL_VALUE_PREFIXES):
+            return token, None
         if env_prefix and token.startswith("PATH="):
             return f"PATH={self._normalize_env_path_value(token.split('=', 1)[1], base_dir)}", None
         if token.startswith("-"):

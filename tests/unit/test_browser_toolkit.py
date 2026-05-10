@@ -1714,6 +1714,79 @@ async def test_gh25_browser_toolkit_env_prefix_boundary_uses_target_position(
     assert str(node_modules) in config.read_paths
 
 
+@pytest.mark.parametrize(
+    ("option_tokens", "expected_tokens"),
+    [
+        (
+            ["--argv0", "./node_modules/.bin/playwright-cli"],
+            ["--argv0", "./node_modules/.bin/playwright-cli"],
+        ),
+        (
+            ["--argv0=./node_modules/.bin/playwright-cli"],
+            ["--argv0=./node_modules/.bin/playwright-cli"],
+        ),
+        (["-u", "./NODE_OPTIONS"], ["-u", "./NODE_OPTIONS"]),
+        (["--unset=./NODE_OPTIONS"], ["--unset=./NODE_OPTIONS"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_preserves_env_option_pathlike_operands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    option_tokens: list[str],
+    expected_tokens: list[str],
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    env = system_bin / "env"
+    env.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    env.chmod(0o755)
+    app_dir = tmp_path / "app"
+    node_modules = app_dir / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    unset_operand = app_dir / "NODE_OPTIONS"
+    unset_operand.write_text("not an env option path\n", encoding="utf-8")
+    monkeypatch.chdir(app_dir)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        command=[
+            str(env),
+            *option_tokens,
+            "PATH=node_modules/.bin",
+            "playwright-cli",
+        ],
+    )
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.command[: 1 + len(expected_tokens) + 2] == [
+        str(env),
+        *expected_tokens,
+        f"PATH={bin_dir}",
+        "playwright-cli",
+    ]
+    assert str(unset_operand) not in config.command
+    assert str(node_modules) in config.read_paths
+
+
 @pytest.mark.asyncio
 async def test_gh25_browser_toolkit_absolutizes_relative_playwright_symlink(
     tmp_path: Path,
