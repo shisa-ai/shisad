@@ -1460,7 +1460,9 @@ def _build_tool_registry(
             name=ToolName("web.search"),
             description=(
                 "Search the web for current information. Use for weather, news,"
-                " live data, or any query requiring up-to-date results."
+                " live data, or any query requiring up-to-date results. For named-target"
+                " lookup, exact, quoted, or site/domain-bounded recovery searches are"
+                " appropriate before reporting absence from weak or noisy results."
             ),
             parameters=[
                 ToolParameter(name="query", type="string", required=True),
@@ -1474,7 +1476,11 @@ def _build_tool_registry(
     registry.register(
         ToolDefinition(
             name=ToolName("web.fetch"),
-            description="Fetch URL with structured evidence payload.",
+            description=(
+                "Fetch URL with structured evidence payload, including promising result"
+                " URLs or target-bounded URL patterns for named-target recovery when"
+                " runtime policy permits the destination."
+            ),
             parameters=[
                 ToolParameter(name="url", type="string", required=True, semantic_type="url"),
                 ToolParameter(name="snapshot", type="boolean", required=False),

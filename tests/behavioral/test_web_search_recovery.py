@@ -1,0 +1,372 @@
+"""Behavioral coverage for weak web-search evidence recovery."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from collections.abc import Mapping
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from shisad.assistant.web import WebToolkit
+from shisad.core.api.transport import ControlClient
+from shisad.core.config import DaemonConfig
+from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.providers.local_planner import LocalPlannerProvider
+from shisad.daemon.runner import run_daemon
+from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
+
+_SUMMARY_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
+_RECOVERY_POLICY_MARKER = "SEARCH EVIDENCE RECOVERY POLICY"
+_AMOUR_URL = "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+_USER_GOAL_RE = re.compile(
+    (
+        r"=== (?:USER GOAL|USER REQUEST) ===\n"
+        r".*?\n"
+        r"(.*?)\n\n"
+        r"=== (?:EXTERNAL CONTENT[^\n]*|DATA EVIDENCE[^\n]*|END CONTEXT|END PAYLOAD)"
+    ),
+    flags=re.DOTALL,
+)
+
+
+def _tool_call(tool_name: str, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "arguments": json.dumps(arguments, sort_keys=True),
+        },
+    }
+
+
+def _extract_user_request(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    match = _USER_GOAL_RE.search(normalized)
+    if match:
+        return match.group(1).strip()
+    return normalized.strip()
+
+
+def _tool_outputs(payload: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    rows = payload.get("tool_outputs")
+    outputs: dict[str, list[dict[str, Any]]] = {}
+    if not isinstance(rows, list):
+        return outputs
+    for record in rows:
+        if not isinstance(record, dict):
+            continue
+        tool_name = str(record.get("tool_name", "")).strip()
+        data = record.get("payload")
+        if tool_name and isinstance(data, dict):
+            outputs.setdefault(tool_name, []).append(data)
+    return outputs
+
+
+async def _planner_stub_complete(
+    self: LocalPlannerProvider,
+    messages: list[Message],
+    tools: list[dict[str, Any]] | None = None,
+) -> ProviderResponse:
+    _ = (self, tools)
+    if (
+        messages
+        and messages[0].role == "system"
+        and _SUMMARY_SYSTEM_MARKER in messages[0].content
+    ):
+        return ProviderResponse(
+            message=Message(role="assistant", content='{"entries": []}'),
+            model="gh27-web-recovery-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    system_prompt = messages[0].content if messages else ""
+    planner_input = messages[-1].content if messages else ""
+    normalized_input = planner_input.replace("^", "")
+
+    if "POST-TOOL SYNTHESIS PASS" in normalized_input:
+        if "Amour reservation page" in normalized_input:
+            response = "Found Amour on Tabelog; the reservation page is available."
+        elif _RECOVERY_POLICY_MARKER in normalized_input:
+            response = (
+                "The current evidence is insufficient to verify a reservation path. "
+                "I tried bounded search recovery but did not find a reliable page."
+            )
+        else:
+            response = "The reservation path does not exist or is unavailable."
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
+            model="gh27-web-recovery-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    goal = _extract_user_request(planner_input)
+    goal_lower = goal.lower()
+    has_recovery_policy = _RECOVERY_POLICY_MARKER in system_prompt
+
+    if "amour" in goal_lower and "tabelog" in goal_lower:
+        calls = [
+            _tool_call(
+                "web.search",
+                {"query": "Amour Sapporo Tabelog reservation", "limit": 3},
+                call_id="gh27-search-noisy",
+            )
+        ]
+        if has_recovery_policy:
+            calls.extend(
+                [
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-search-exact",
+                    ),
+                    _tool_call(
+                        "web.fetch",
+                        {"url": _AMOUR_URL, "max_bytes": 65536},
+                        call_id="gh27-fetch-tabelog",
+                    ),
+                ]
+            )
+        return ProviderResponse(
+            message=Message(role="assistant", content="", tool_calls=calls),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "phantom bistro" in goal_lower and "tabelog" in goal_lower:
+        calls = [
+            _tool_call(
+                "web.search",
+                {"query": "Phantom Bistro Tabelog reservation", "limit": 3},
+                call_id="gh27-missing-search-noisy",
+            )
+        ]
+        if has_recovery_policy:
+            calls.append(
+                _tool_call(
+                    "web.search",
+                    {"query": '"Phantom Bistro" "Tabelog" site:tabelog.com', "limit": 3},
+                    call_id="gh27-missing-search-exact",
+                )
+            )
+        return ProviderResponse(
+            message=Message(role="assistant", content="", tool_calls=calls),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    return ProviderResponse(
+        message=Message(role="assistant", content="OK."),
+        model="gh27-web-recovery-stub",
+        finish_reason="stop",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+
+def _stub_search(self: WebToolkit, *, query: str, limit: int = 5) -> dict[str, Any]:
+    _ = (self, limit)
+    exact_amour = '"amour"' in query.casefold() and "site:tabelog.com" in query.casefold()
+    results = (
+        [
+            {
+                "title": "Amour - Tabelog",
+                "url": _AMOUR_URL,
+                "snippet": "Amour reservation page on Tabelog.",
+                "host": "tabelog.com",
+                "allowlisted_host": True,
+                "engine": "stub",
+            }
+        ]
+        if exact_amour
+        else [
+            {
+                "title": "Noisy restaurant roundup",
+                "url": "https://example.com/noisy",
+                "snippet": (
+                    "General restaurants in Sapporo; "
+                    "no booking link for the requested venue."
+                ),
+                "host": "example.com",
+                "allowlisted_host": True,
+                "engine": "stub",
+            }
+        ]
+    )
+    return {
+        "ok": True,
+        "query": query,
+        "backend": "https://search.example.test/search",
+        "results": results,
+        "taint_labels": ["untrusted"],
+        "evidence": {
+            "operation": "web_search",
+            "backend_url": "https://search.example.test/search",
+            "query_hash": "stub",
+            "response_hash": "stub",
+            "fetched_at": "2026-05-10T00:00:00+00:00",
+            "status_code": 200,
+            "truncated": False,
+            "result_count": len(results),
+            "final_url": "https://search.example.test/search",
+        },
+        "error": "",
+    }
+
+
+def _stub_fetch(
+    self: WebToolkit,
+    *,
+    url: str,
+    snapshot: bool = False,
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    _ = (self, snapshot, max_bytes)
+    if url == _AMOUR_URL:
+        content = "Amour reservation page. Online reservations accepted via Tabelog."
+        title = "Amour - Tabelog"
+    else:
+        content = "No useful reservation details."
+        title = "Noisy page"
+    return {
+        "ok": True,
+        "url": url,
+        "status_code": 200,
+        "title": title,
+        "content": content,
+        "blocked_reason": "",
+        "truncated": False,
+        "taint_labels": ["untrusted"],
+        "evidence": {
+            "operation": "web_fetch",
+            "url": url,
+            "fetched_at": "2026-05-10T00:00:00+00:00",
+        },
+        "error": "",
+        "snapshot_path": "",
+    }
+
+
+async def _create_session(client: ControlClient) -> str:
+    created = await client.call(
+        "session.create",
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+    )
+    return str(created["session_id"])
+
+
+@asynccontextmanager
+async def _run_web_recovery_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(LocalPlannerProvider, "complete", _planner_stub_complete, raising=True)
+    monkeypatch.setattr(WebToolkit, "search", _stub_search, raising=True)
+    monkeypatch.setattr(WebToolkit, "fetch", _stub_fetch, raising=True)
+    for var in (
+        "SHISAD_MODEL_REMOTE_ENABLED",
+        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
+        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
+    ):
+        monkeypatch.setenv(var, "false")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "safe_output_domains:",
+                '  - "example.com"',
+                '  - "tabelog.com"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="WARNING",
+        context_window=6,
+        web_fetch_enabled=True,
+        web_search_enabled=True,
+        web_allowed_domains=["example.com", "tabelog.com", "search.example.test"],
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        yield client
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        with suppress(Exception):
+            await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_gh27_weak_search_evidence_recovers_with_exact_search_and_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Find the Tabelog reservation path for Amour on tabelog.com in Sapporo.",
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 3
+    assert "Found Amour on Tabelog" in str(reply.get("response", ""))
+    outputs = _tool_outputs(reply)
+    search_queries = [item["query"] for item in outputs.get("web.search", [])]
+    assert "Amour Sapporo Tabelog reservation" in search_queries
+    assert '"Amour" "Tabelog" site:tabelog.com' in search_queries
+    fetch_urls = [item["url"] for item in outputs.get("web.fetch", [])]
+    assert _AMOUR_URL in fetch_urls
+
+
+@pytest.mark.asyncio
+async def test_gh27_failed_recovery_reports_insufficient_evidence_not_absence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Find the Tabelog reservation path for Phantom Bistro.",
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 2
+    response = str(reply.get("response", "")).casefold()
+    assert "insufficient" in response
+    assert "does not exist" not in response
+    assert "unavailable" not in response
+    outputs = _tool_outputs(reply)
+    search_queries = [item["query"] for item in outputs.get("web.search", [])]
+    assert "Phantom Bistro Tabelog reservation" in search_queries
+    assert '"Phantom Bistro" "Tabelog" site:tabelog.com' in search_queries
