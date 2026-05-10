@@ -2330,6 +2330,14 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
             "failed to read [path]",
         ),
         (
+            "failed to read C://Users/Alice Smith/AppData/Local/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
+            "failed to read D://Users/O'Connor/AppData/Local/ms-playwright/state.json",
+            "failed to read [path]",
+        ),
+        (
             r"failed to read \\server\share\ms-playwright\state.json",
             "failed to read [path]",
         ),
