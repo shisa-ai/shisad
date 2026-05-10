@@ -23,6 +23,9 @@ from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _SUMMARY_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _RECOVERY_POLICY_MARKER = "SEARCH EVIDENCE RECOVERY POLICY"
+_TRUSTED_CONTEXT_RECOVERY_MARKER = (
+    "Trusted runtime and session context may resolve current-turn referents"
+)
 _AMOUR_URL = "https://tabelog.com/hokkaido/A0101/A010101/123456/"
 _USER_GOAL_RE = re.compile(
     (
@@ -111,6 +114,7 @@ async def _planner_stub_complete(
     goal = _extract_user_request(planner_input)
     goal_lower = goal.lower()
     has_recovery_policy = _RECOVERY_POLICY_MARKER in system_prompt
+    has_trusted_context_recovery = _TRUSTED_CONTEXT_RECOVERY_MARKER in system_prompt
 
     if "amour" in goal_lower and "tabelog" in goal_lower:
         calls = [
@@ -139,6 +143,40 @@ async def _planner_stub_complete(
             message=Message(role="assistant", content="", tool_calls=calls),
             model="gh27-web-recovery-stub",
             finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "its tabelog reservation path" in goal_lower:
+        if (
+            has_recovery_policy
+            and has_trusted_context_recovery
+            and "TRUSTED SAME-SESSION USER CONTEXT" in normalized_input
+            and "Amour" in normalized_input
+            and "tabelog.com" in normalized_input
+        ):
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[
+                        _tool_call(
+                            "web.search",
+                            {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                            call_id="gh27-followup-search-exact",
+                        )
+                    ],
+                ),
+                model="gh27-web-recovery-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="I need the venue name again before I can search Tabelog.",
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
@@ -341,6 +379,41 @@ async def test_gh27_weak_search_evidence_recovers_with_exact_search_and_fetch(
     assert '"Amour" "Tabelog" site:tabelog.com' in search_queries
     fetch_urls = [item["url"] for item in outputs.get("web.fetch", [])]
     assert _AMOUR_URL in fetch_urls
+
+
+@pytest.mark.asyncio
+async def test_gh27_recovery_uses_trusted_followup_context_for_referents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+        await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "The venue is Amour on tabelog.com; "
+                    "its alternate listing name is Restaurant Amour."
+                ),
+            },
+        )
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Find its Tabelog reservation path.",
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    assert "Found Amour on Tabelog" in str(reply.get("response", ""))
+    outputs = _tool_outputs(reply)
+    search_queries = [item["query"] for item in outputs.get("web.search", [])]
+    assert '"Amour" "Tabelog" site:tabelog.com' in search_queries
 
 
 @pytest.mark.asyncio
