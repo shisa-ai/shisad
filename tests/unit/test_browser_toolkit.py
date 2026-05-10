@@ -161,6 +161,21 @@ class _DirectRunner:
         return await self._run_config(config)
 
 
+class _CapturingSuccessRunner:
+    def __init__(self) -> None:
+        self.configs: list[SandboxConfig] = []
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult:
+        _ = session
+        self.configs.append(config)
+        return SandboxResult(allowed=True, exit_code=0, reason="allowed")
+
+
 class _SelectiveFailureRunner(_DirectRunner):
     def __init__(self, *, fail_tools: set[str], fail_after_goto: int = 0) -> None:
         super().__init__()
@@ -245,7 +260,8 @@ def _session() -> Session:
 def _toolkit(
     tmp_path: Path,
     *,
-    runner: _DirectRunner,
+    runner: Any,
+    command: list[str] | None = None,
     enabled: bool = True,
     allowed_domains: list[str] | None = None,
     require_hardened_isolation: bool = False,
@@ -259,7 +275,7 @@ def _toolkit(
     )
     return BrowserToolkit(
         enabled=enabled,
-        command=[sys.executable, str(fixture_cli)],
+        command=command or [sys.executable, str(fixture_cli)],
         session_root=tmp_path / "browser",
         allowed_domains=list(allowed_domains or ["127.0.0.1", "localhost"]),
         timeout_seconds=10.0,
@@ -722,6 +738,108 @@ async def test_m6_browser_toolkit_disabled_is_actionable(tmp_path: Path) -> None
     assert result == {
         "ok": False,
         "error": "browser_disabled",
+        "taint_labels": [],
+    }
+    assert runner.configs == []
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_mounts_symlinked_playwright_dependency_and_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    node_modules = tmp_path / "app" / "node_modules"
+    bin_dir = node_modules / ".bin"
+    target_dir = node_modules / "@playwright" / "test"
+    bin_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    target = target_dir / "cli.js"
+    target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    command = bin_dir / "playwright-cli"
+    command.symlink_to("../@playwright/test/cli.js")
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    cache_dir = home / ".cache" / "ms-playwright"
+    mounts = {mount.path: mount.mode for mount in config.filesystem.mounts}
+    assert str(node_modules) in config.read_paths
+    assert mounts[str(node_modules)] == "ro"
+    assert str(cache_dir) in config.write_paths
+    assert mounts[str(cache_dir)] == "rw"
+    assert config.env["PLAYWRIGHT_BROWSERS_PATH"] == str(cache_dir)
+    assert "PLAYWRIGHT_BROWSERS_PATH" in config.environment.allowed_keys
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_broken_playwright_symlink_fails_before_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    node_modules = tmp_path / "app" / "node_modules"
+    bin_dir = node_modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    command = bin_dir / "playwright-cli"
+    command.symlink_to("../@playwright/test/missing.js")
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_dependency_unavailable",
+        "taint_labels": [],
+    }
+    assert runner.configs == []
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_unwritable_playwright_cache_fails_before_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".cache").write_text("not a directory", encoding="utf-8")
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_cache_not_writable",
         "taint_labels": [],
     }
     assert runner.configs == []

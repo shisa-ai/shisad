@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import os
 import re
 import shlex
 import shutil
@@ -30,6 +31,7 @@ from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
+    EnvironmentPolicy,
     ResourceLimits,
     SandboxConfig,
     SandboxResult,
@@ -45,6 +47,7 @@ _SNAPSHOT_ELEMENT_RE = re.compile(
 )
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
+_PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -82,6 +85,14 @@ class BrowserTargetResolution:
     resolved_target: str
     destination_url: str = ""
     binding_hash: str = ""
+
+
+@dataclass(slots=True)
+class BrowserRuntimeSandbox:
+    read_paths: list[Path]
+    write_paths: list[Path]
+    env: dict[str, str]
+    error: str = ""
 
 
 class BrowserSandboxMode(StrEnum):
@@ -568,10 +579,10 @@ class BrowserToolkit:
             return self._error_payload("browser_hardened_wildcard_scope_unsupported")
         if not self._command:
             return self._error_payload("browser_command_unconfigured")
-        executable = self._command[0]
-        if Path(executable).exists() or shutil.which(executable):
-            return None
-        return self._error_payload("browser_command_unavailable")
+        _, error = self._browser_command_dependency_roots()
+        if error:
+            return self._error_payload(error)
+        return None
 
     def _has_unsupported_hardened_wildcard_scope(self) -> bool:
         if not self._require_hardened_isolation:
@@ -693,6 +704,12 @@ class BrowserToolkit:
     ) -> dict[str, Any] | None:
         session_dir = self._session_dir(session)
         session_dir.mkdir(parents=True, exist_ok=True)
+        runtime = self._prepare_browser_runtime_sandbox()
+        if runtime.error:
+            return self._error_payload(runtime.error)
+        read_paths = self._dedupe_paths([session_dir, *runtime.read_paths])
+        write_paths = self._dedupe_paths([session_dir, *runtime.write_paths])
+        filesystem = self._filesystem_policy(read_paths=read_paths, write_paths=write_paths)
         network_policy = self._network_policy(target_urls=network_urls, allow_network=allow_network)
         config = SandboxConfig(
             tool_name=tool_name,
@@ -700,11 +717,13 @@ class BrowserToolkit:
             sandbox_type=SandboxType.CONTAINER,
             session_id=str(session.id),
             cwd=str(session_dir),
-            read_paths=[str(session_dir)],
-            write_paths=[str(session_dir)],
-            filesystem=FilesystemPolicy(mounts=[{"path": str(session_dir), "mode": "rw"}]),
+            read_paths=[str(path) for path in read_paths],
+            write_paths=[str(path) for path in write_paths],
+            env=runtime.env,
+            filesystem=filesystem,
             network_urls=network_urls,
             network=network_policy,
+            environment=self._browser_environment_policy(),
             limits=ResourceLimits(
                 timeout_seconds=max(1, math.ceil(self._timeout_seconds)),
                 output_bytes=max(self._max_read_bytes * 2, 32_768),
@@ -726,6 +745,145 @@ class BrowserToolkit:
         if result.allowed and not result.timed_out and (result.exit_code or 0) == 0:
             return None
         return self._error_payload(self._result_error_reason(result))
+
+    def _prepare_browser_runtime_sandbox(self) -> BrowserRuntimeSandbox:
+        read_paths, dependency_error = self._browser_command_dependency_roots()
+        if dependency_error:
+            return BrowserRuntimeSandbox(
+                read_paths=[],
+                write_paths=[],
+                env={},
+                error=dependency_error,
+            )
+        cache_dir, cache_error = self._prepare_browser_cache_dir()
+        if cache_error or cache_dir is None:
+            return BrowserRuntimeSandbox(
+                read_paths=[],
+                write_paths=[],
+                env={},
+                error=cache_error or "browser_cache_not_writable",
+            )
+        return BrowserRuntimeSandbox(
+            read_paths=read_paths,
+            write_paths=[cache_dir],
+            env={_PLAYWRIGHT_BROWSERS_PATH_ENV: str(cache_dir)},
+        )
+
+    def _browser_command_dependency_roots(self) -> tuple[list[Path], str]:
+        executable_path, executable_error = self._resolve_browser_executable()
+        if executable_error or executable_path is None:
+            return [], executable_error or "browser_command_unavailable"
+        roots: list[Path] = []
+        executable_roots, dependency_error = self._dependency_roots_for_path(executable_path)
+        if dependency_error:
+            return [], dependency_error
+        roots.extend(executable_roots)
+        for token in self._command[1:]:
+            token_path = Path(str(token)).expanduser()
+            if not token_path.is_absolute() or not (token_path.exists() or token_path.is_symlink()):
+                continue
+            token_roots, dependency_error = self._dependency_roots_for_path(token_path)
+            if dependency_error:
+                return [], dependency_error
+            roots.extend(token_roots)
+        return self._dedupe_paths(roots), ""
+
+    def _resolve_browser_executable(self) -> tuple[Path | None, str]:
+        if not self._command:
+            return None, "browser_command_unconfigured"
+        executable = self._command[0]
+        explicit_path = Path(executable).expanduser()
+        if explicit_path.is_absolute() or "/" in executable:
+            if explicit_path.exists() or explicit_path.is_symlink():
+                return explicit_path, ""
+            return None, "browser_command_unavailable"
+        resolved = shutil.which(executable)
+        if not resolved:
+            return None, "browser_command_unavailable"
+        return Path(resolved), ""
+
+    def _dependency_roots_for_path(self, path: Path) -> tuple[list[Path], str]:
+        candidate = path.expanduser()
+        if candidate.is_symlink():
+            try:
+                resolved = candidate.resolve(strict=True)
+            except OSError:
+                return [], "browser_dependency_unavailable"
+            return self._dedupe_paths(
+                [
+                    self._browser_dependency_root(candidate),
+                    self._browser_dependency_root(resolved),
+                ]
+            ), ""
+        if not candidate.exists():
+            return [], "browser_dependency_unavailable"
+        return [self._browser_dependency_root(candidate)], ""
+
+    @staticmethod
+    def _browser_dependency_root(path: Path) -> Path:
+        candidate = path if path.is_dir() else path.parent
+        parts = candidate.parts
+        if "node_modules" in parts:
+            node_modules_index = parts.index("node_modules")
+            return Path(*parts[: node_modules_index + 1])
+        return candidate
+
+    @staticmethod
+    def _prepare_browser_cache_dir() -> tuple[Path | None, str]:
+        configured = os.environ.get(_PLAYWRIGHT_BROWSERS_PATH_ENV, "").strip()
+        if configured and configured != "0":
+            cache_dir = Path(configured).expanduser()
+            if not cache_dir.is_absolute():
+                cache_dir = cache_dir.resolve(strict=False)
+        else:
+            cache_dir = Path.home() / ".cache" / "ms-playwright"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            if not cache_dir.is_dir():
+                return None, "browser_cache_not_writable"
+            probe = cache_dir / ".shisad-cache-write-test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except OSError:
+            return None, "browser_cache_not_writable"
+        return cache_dir, ""
+
+    @staticmethod
+    def _browser_environment_policy() -> EnvironmentPolicy:
+        default_policy = EnvironmentPolicy()
+        allowed_keys = list(default_policy.allowed_keys)
+        if _PLAYWRIGHT_BROWSERS_PATH_ENV not in allowed_keys:
+            allowed_keys.append(_PLAYWRIGHT_BROWSERS_PATH_ENV)
+        return EnvironmentPolicy(
+            allowed_keys=allowed_keys,
+            denied_prefixes=list(default_policy.denied_prefixes),
+            max_keys=default_policy.max_keys,
+            max_total_bytes=default_policy.max_total_bytes,
+        )
+
+    @staticmethod
+    def _filesystem_policy(*, read_paths: list[Path], write_paths: list[Path]) -> FilesystemPolicy:
+        mounts: dict[str, str] = {}
+        for path in read_paths:
+            mounts.setdefault(str(path), "ro")
+        for path in write_paths:
+            mounts[str(path)] = "rw"
+        ordered_mounts = sorted(mounts.items(), key=lambda item: len(item[0]), reverse=True)
+        return FilesystemPolicy(
+            mounts=[{"path": path, "mode": mode} for path, mode in ordered_mounts]
+        )
+
+    @staticmethod
+    def _dedupe_paths(paths: list[Path]) -> list[Path]:
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(path)
+        return deduped
 
     def _network_policy(self, *, target_urls: list[str], allow_network: bool) -> NetworkPolicy:
         if not allow_network:
