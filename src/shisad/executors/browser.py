@@ -85,6 +85,19 @@ _ENV_LITERAL_VALUE_FLAGS = {"-a", "-u", "--argv0", "--unset"}
 _ENV_LITERAL_VALUE_PREFIXES = ("--argv0=", "--unset=")
 _ENV_SPLIT_FLAGS = {"-S", "--split-string"}
 _ENV_SPLIT_FLAG_PREFIX = "--split-string="
+_BROWSER_FAILURE_DETAIL_MAX_CHARS = 512
+_BROWSER_FAILURE_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY|CREDENTIAL)"
+    r"[A-Z0-9_]*)=([^\s]+)",
+    re.IGNORECASE,
+)
+_BROWSER_FAILURE_SECRET_TOKEN_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Fa-f0-9]{32,})\b"
+)
+_BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![:/\w.-])/(?:[^\s:'\"<>),;]+/)*[^\s:'\"<>),;]+"
+)
+_BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -131,6 +144,7 @@ class BrowserRuntimeSandbox:
     write_paths: list[Path]
     env: dict[str, str]
     error: str = ""
+    details: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -138,6 +152,7 @@ class BrowserCacheSandbox:
     write_paths: list[Path]
     env: dict[str, str]
     error: str = ""
+    details: dict[str, Any] | None = None
 
 
 class BrowserSandboxMode(StrEnum):
@@ -626,7 +641,7 @@ class BrowserToolkit:
             return self._error_payload("browser_command_unconfigured")
         _, error = self._browser_command_dependency_roots()
         if error:
-            return self._error_payload(error)
+            return self._error_payload(error, details=self._preflight_error_details(error))
         return None
 
     def _has_unsupported_hardened_wildcard_scope(self) -> bool:
@@ -751,7 +766,7 @@ class BrowserToolkit:
         session_dir.mkdir(parents=True, exist_ok=True)
         runtime = self._prepare_browser_runtime_sandbox()
         if runtime.error:
-            return self._error_payload(runtime.error)
+            return self._error_payload(runtime.error, details=runtime.details)
         read_paths = self._dedupe_paths([session_dir, *runtime.read_paths])
         write_paths = self._dedupe_paths([session_dir, *runtime.write_paths])
         filesystem = self._filesystem_policy(read_paths=read_paths, write_paths=write_paths)
@@ -789,7 +804,8 @@ class BrowserToolkit:
         result = await self._sandbox_runner.execute_async(config, session=session)
         if result.allowed and not result.timed_out and (result.exit_code or 0) == 0:
             return None
-        return self._error_payload(self._result_error_reason(result))
+        reason = self._result_error_reason(result)
+        return self._error_payload(reason, details=self._result_error_details(result, reason))
 
     def _prepare_browser_runtime_sandbox(self) -> BrowserRuntimeSandbox:
         command, read_paths, dependency_error = self._browser_command_runtime()
@@ -800,6 +816,7 @@ class BrowserToolkit:
                 write_paths=[],
                 env={},
                 error=dependency_error,
+                details=self._preflight_error_details(dependency_error),
             )
         cache = self._prepare_browser_cache_dir()
         if cache.error:
@@ -809,6 +826,7 @@ class BrowserToolkit:
                 write_paths=[],
                 env={},
                 error=cache.error,
+                details=cache.details,
             )
         return BrowserRuntimeSandbox(
             command=command,
@@ -1397,12 +1415,18 @@ class BrowserToolkit:
                     write_paths=[],
                     env={},
                     error="browser_cache_not_writable",
+                    details=BrowserToolkit._preflight_error_details("browser_cache_not_writable"),
                 )
             probe = cache_dir / ".shisad-cache-write-test"
             probe.write_text("", encoding="utf-8")
             probe.unlink(missing_ok=True)
         except OSError:
-            return BrowserCacheSandbox(write_paths=[], env={}, error="browser_cache_not_writable")
+            return BrowserCacheSandbox(
+                write_paths=[],
+                env={},
+                error="browser_cache_not_writable",
+                details=BrowserToolkit._preflight_error_details("browser_cache_not_writable"),
+            )
         return BrowserCacheSandbox(
             write_paths=[cache_dir],
             env={_PLAYWRIGHT_BROWSERS_PATH_ENV: str(cache_dir)},
@@ -1486,6 +1510,16 @@ class BrowserToolkit:
             return False
         return bool(address.is_private or address.is_loopback or address.is_link_local)
 
+    @staticmethod
+    def _preflight_error_details(reason: str) -> dict[str, Any]:
+        stage = {
+            "browser_command_unavailable": "command_preflight",
+            "browser_command_unconfigured": "command_preflight",
+            "browser_dependency_unavailable": "dependency_preflight",
+            "browser_cache_not_writable": "cache_preflight",
+        }.get(reason, "preflight")
+        return {"reason": reason, "stage": stage}
+
     def _result_error_reason(self, result: SandboxResult) -> str:
         if result.timed_out:
             return "browser_command_timeout"
@@ -1508,7 +1542,45 @@ class BrowserToolkit:
             return "browser_browser_not_installed"
         if "not found" in detail or "no such file" in detail:
             return "browser_command_unavailable"
-        return "browser_command_failed"
+        return "browser_subprocess_failed"
+
+    def _result_error_details(self, result: SandboxResult, reason: str) -> dict[str, Any]:
+        details: dict[str, Any] = {
+            "reason": reason,
+            "stage": "subprocess",
+        }
+        sandbox_reason = self._sanitize_browser_failure_text(result.reason)
+        if sandbox_reason and sandbox_reason != "allowed":
+            details["sandbox_reason"] = sandbox_reason
+        if result.exit_code is not None:
+            details["exit_code"] = result.exit_code
+        if result.timed_out:
+            details["timed_out"] = True
+        if result.truncated:
+            details["truncated"] = True
+        stderr = self._sanitize_browser_failure_text(result.stderr)
+        if stderr:
+            details["stderr"] = stderr
+        stdout = self._sanitize_browser_failure_text(result.stdout)
+        if stdout:
+            details["stdout"] = stdout
+        return details
+
+    @staticmethod
+    def _sanitize_browser_failure_text(text: str) -> str:
+        normalized = _BROWSER_FAILURE_CONTROL_RE.sub(" ", str(text))
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return ""
+        normalized = _BROWSER_FAILURE_SECRET_ASSIGNMENT_RE.sub(
+            lambda match: f"{match.group(1)}=[redacted]",
+            normalized,
+        )
+        normalized = _BROWSER_FAILURE_SECRET_TOKEN_RE.sub("[redacted]", normalized)
+        normalized = _BROWSER_FAILURE_ABSOLUTE_PATH_RE.sub("[path]", normalized)
+        if len(normalized) <= _BROWSER_FAILURE_DETAIL_MAX_CHARS:
+            return normalized
+        return f"{normalized[: _BROWSER_FAILURE_DETAIL_MAX_CHARS - 3].rstrip()}..."
 
     def _parse_page_metadata(self, raw: str) -> dict[str, Any]:
         text = raw.strip()
@@ -1804,5 +1876,9 @@ class BrowserToolkit:
         return str(self._load_state(session).get("current_url", "")).strip()
 
     @staticmethod
-    def _error_payload(reason: str) -> dict[str, Any]:
-        return {"ok": False, "error": reason, "taint_labels": []}
+    def _error_payload(reason: str, *, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"ok": False, "error": reason}
+        if details:
+            payload["details"] = details
+        payload["taint_labels"] = []
+        return payload

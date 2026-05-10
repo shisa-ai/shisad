@@ -199,6 +199,22 @@ class _SelectiveFailureRunner(_DirectRunner):
         return await self._run_config(config)
 
 
+class _ConfiguredFailureRunner(_DirectRunner):
+    def __init__(self, result: SandboxResult) -> None:
+        super().__init__()
+        self._result = result
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult:
+        _ = session
+        self.configs.append(config)
+        return self._result
+
+
 class _PolicyScopedRunner(_DirectRunner):
     @staticmethod
     def _state_path(config: SandboxConfig) -> Path:
@@ -2051,6 +2067,39 @@ async def test_gh25_browser_toolkit_mounts_env_shebang_interpreter_from_path(
 
 
 @pytest.mark.asyncio
+async def test_gh26_browser_toolkit_missing_command_reports_preflight_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    missing_command = tmp_path / "app" / "missing-playwright"
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(missing_command)])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_command_unavailable",
+        "details": {
+            "reason": "browser_command_unavailable",
+            "stage": "command_preflight",
+        },
+        "taint_labels": [],
+    }
+    assert str(missing_command) not in json.dumps(result, sort_keys=True)
+    assert runner.configs == []
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_broken_playwright_symlink_fails_before_exec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2077,8 +2126,13 @@ async def test_gh25_browser_toolkit_broken_playwright_symlink_fails_before_exec(
     assert result == {
         "ok": False,
         "error": "browser_dependency_unavailable",
+        "details": {
+            "reason": "browser_dependency_unavailable",
+            "stage": "dependency_preflight",
+        },
         "taint_labels": [],
     }
+    assert str(command) not in json.dumps(result, sort_keys=True)
     assert runner.configs == []
 
 
@@ -2105,9 +2159,62 @@ async def test_gh25_browser_toolkit_unwritable_playwright_cache_fails_before_exe
     assert result == {
         "ok": False,
         "error": "browser_cache_not_writable",
+        "details": {
+            "reason": "browser_cache_not_writable",
+            "stage": "cache_preflight",
+        },
         "taint_labels": [],
     }
+    assert str(home) not in json.dumps(result, sort_keys=True)
     assert runner.configs == []
+
+
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    leaked_path = tmp_path / "browser" / "browser-session" / "state.json"
+    leaked_cache = home / ".cache" / "ms-playwright" / "chromium"
+    secret_value = "sk-test-gh26-secret-value"
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=17,
+            stdout=f"cache write failed at {leaked_cache}",
+            stderr=f"failed to read {leaked_path} SHISAD_API_KEY={secret_value}",
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", "http://127.0.0.1:9/"],
+        network_urls=["http://127.0.0.1:9/"],
+        allow_network=True,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "browser_subprocess_failed"
+    assert result["details"] == {
+        "reason": "browser_subprocess_failed",
+        "stage": "subprocess",
+        "sandbox_reason": "browser_command_failed",
+        "exit_code": 17,
+        "stderr": "failed to read [path] SHISAD_API_KEY=[redacted]",
+        "stdout": "cache write failed at [path]",
+    }
+    serialized = json.dumps(result, sort_keys=True)
+    assert str(leaked_path) not in serialized
+    assert str(leaked_cache) not in serialized
+    assert secret_value not in serialized
+    assert len(runner.configs) == 1
 
 
 @pytest.mark.asyncio
