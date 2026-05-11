@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -537,22 +538,15 @@ class WebToolkit:
         if not compacted:
             return []
 
-        lowered = compacted.casefold()
         matches: list[tuple[int, str]] = []
         for marker in _RESERVATION_EVIDENCE_MARKERS:
-            needle = marker.casefold()
-            start = 0
-            while True:
-                index = lowered.find(needle, start)
-                if index < 0:
-                    break
+            for index in WebToolkit._iter_marker_indexes(compacted, marker):
                 if not WebToolkit._is_negated_japanese_availability_marker(
                     compacted,
                     index=index,
                     marker=marker,
                 ):
                     matches.append((index, marker))
-                start = index + max(1, len(needle))
 
         snippets: list[dict[str, Any]] = []
         seen_ranges: list[tuple[int, int]] = []
@@ -583,6 +577,21 @@ class WebToolkit:
             if len(snippets) >= _FETCH_ACTIONABLE_SNIPPET_LIMIT:
                 break
         return snippets
+
+    @staticmethod
+    def _iter_marker_indexes(text: str, marker: str) -> Iterator[int]:
+        if marker.isascii():
+            for match in re.finditer(re.escape(marker), text, flags=re.IGNORECASE):
+                yield match.start()
+            return
+
+        start = 0
+        while True:
+            index = text.find(marker, start)
+            if index < 0:
+                return
+            yield index
+            start = index + max(1, len(marker))
 
     @staticmethod
     def _is_negated_japanese_availability_marker(text: str, *, index: int, marker: str) -> bool:

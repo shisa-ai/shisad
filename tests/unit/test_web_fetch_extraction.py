@@ -46,6 +46,15 @@ def test_fetch_actionable_snippets_handle_html_split_negated_availability() -> N
     assert not any(item["matched_marker"] == "空席あり" for item in snippets)
 
 
+def test_fetch_actionable_snippets_keep_offsets_after_casefold_expanding_prefix() -> None:
+    snippets = WebToolkit._extract_actionable_evidence_snippets(
+        "Straße 予約カレンダー 空席ありません。ネット予約不可です。"
+    )
+
+    assert snippets
+    assert not any(item["matched_marker"] == "空席あり" for item in snippets)
+
+
 def test_fetch_actionable_snippets_ignore_page_without_reservation_markers() -> None:
     text = ("店舗紹介のみ。予約状況の表示はありません。 " * 100).strip()
 
