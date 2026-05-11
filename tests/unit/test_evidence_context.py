@@ -293,6 +293,46 @@ def test_summarize_tool_outputs_for_chat_surfaces_all_wrapped_evidence_refs(tmp_
     assert ref_ids[1] in summary
 
 
+def test_summarize_tool_outputs_for_chat_prefers_actionable_fetch_snippets(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/",
+                "actionable_evidence_snippets": [
+                    {
+                        "kind": "reservation_availability",
+                        "matched_marker": "本日夜空席あり",
+                        "snippet": "予約カレンダー 本日夜空席あり。ネット予約できます。",
+                        "taint_labels": ["untrusted"],
+                    }
+                ],
+                "content": "generic venue text " * 40,
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+        session_id=SessionId("sess-a"),
+        records=records,
+        evidence_store=store,
+        firewall=ContentFirewall(),
+    )
+    summary = _summarize_tool_outputs_for_chat(records)
+
+    assert len(ref_ids) == 2
+    assert "本日夜空席あり" in summary
+    assert "ネット予約" in summary
+    assert "generic venue text" not in summary
+    assert ref_ids[0] in summary
+    assert ref_ids[1] in summary
+    assert 'Use evidence.read("' in summary
+
+
 def test_wrap_serialized_tool_outputs_degrades_to_unavailable_stub_on_store_error() -> None:
     class _BrokenStore:
         def store(self, *args, **kwargs):

@@ -18,10 +18,22 @@ from shisad.assistant.boundary_helpers import _host_matches, _NoRedirectHandler,
 
 _MAX_SEARCH_BYTES = 2 * 1024 * 1024
 _MAX_REDIRECT_HOPS = 5
+_FETCH_TEXT_MAX_CHARS = 10000
+_FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS = 220
+_FETCH_ACTIONABLE_SNIPPET_MAX_CHARS = 560
+_FETCH_ACTIONABLE_SNIPPET_LIMIT = 5
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+_RESERVATION_EVIDENCE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("reservation_availability", "\u672c\u65e5\u591c\u7a7a\u5e2d\u3042\u308a"),
+    ("reservation_action", "\u30cd\u30c3\u30c8\u4e88\u7d04"),
+    ("reservation_availability", "\u7a7a\u5e2d\u3042\u308a"),
+    ("reservation_availability", "\u4e88\u7d04\u53ef"),
+    ("reservation_action", "online reservation"),
+    ("reservation_action", "reserve online"),
+)
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "access denied",
     "temporarily blocked",
@@ -243,7 +255,9 @@ class WebToolkit:
 
         decoded = payload_bytes.decode("utf-8", errors="replace")
         blocked_reason = self._blocked_page_reason(decoded)
-        text = self._extract_text(decoded)
+        full_text = self._extract_text(decoded, max_chars=None)
+        text = full_text[:_FETCH_TEXT_MAX_CHARS]
+        actionable_evidence_snippets = self._extract_actionable_evidence_snippets(full_text)
         title_match = _TITLE_RE.search(decoded)
         title = ""
         if title_match:
@@ -259,6 +273,9 @@ class WebToolkit:
             "truncated": truncated,
             "final_url": fetched.final_url,
         }
+        if actionable_evidence_snippets:
+            evidence["actionable_marker_count"] = len(actionable_evidence_snippets)
+            evidence["actionable_marker_profile"] = "reservation_availability_v1"
         if blocked_reason:
             return {
                 "ok": False,
@@ -290,6 +307,11 @@ class WebToolkit:
             "url": normalized_url,
             "status_code": status_code,
             "title": title,
+            **(
+                {"actionable_evidence_snippets": actionable_evidence_snippets}
+                if actionable_evidence_snippets
+                else {}
+            ),
             "content": text,
             "blocked_reason": "",
             "truncated": truncated,
@@ -483,10 +505,61 @@ class WebToolkit:
         return ""
 
     @staticmethod
-    def _extract_text(content: str) -> str:
+    def _extract_text(content: str, *, max_chars: int | None = _FETCH_TEXT_MAX_CHARS) -> str:
         stripped = _SCRIPT_STYLE_RE.sub(" ", content)
         stripped = _TAG_RE.sub(" ", stripped)
-        return _WS_RE.sub(" ", stripped).strip()[:10000]
+        text = _WS_RE.sub(" ", stripped).strip()
+        if max_chars is None:
+            return text
+        return text[:max_chars]
+
+    @staticmethod
+    def _extract_actionable_evidence_snippets(text: str) -> list[dict[str, Any]]:
+        compacted = _WS_RE.sub(" ", text).strip()
+        if not compacted:
+            return []
+
+        lowered = compacted.casefold()
+        matches: list[tuple[int, str, str]] = []
+        for marker_kind, marker in _RESERVATION_EVIDENCE_MARKERS:
+            needle = marker.casefold()
+            start = 0
+            while True:
+                index = lowered.find(needle, start)
+                if index < 0:
+                    break
+                matches.append((index, marker, marker_kind))
+                start = index + max(1, len(needle))
+
+        snippets: list[dict[str, Any]] = []
+        seen_ranges: list[tuple[int, int]] = []
+        for index, marker, marker_kind in sorted(matches, key=lambda item: item[0]):
+            begin = max(0, index - _FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS)
+            end = min(
+                len(compacted),
+                index + len(marker) + _FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS,
+            )
+            if any(begin <= seen_end and end >= seen_begin for seen_begin, seen_end in seen_ranges):
+                continue
+            snippet = compacted[begin:end].strip()
+            if begin > 0:
+                snippet = f"...{snippet}"
+            if end < len(compacted):
+                snippet = f"{snippet}..."
+            if len(snippet) > _FETCH_ACTIONABLE_SNIPPET_MAX_CHARS:
+                snippet = snippet[: _FETCH_ACTIONABLE_SNIPPET_MAX_CHARS - 3].rstrip() + "..."
+            snippets.append(
+                {
+                    "kind": marker_kind,
+                    "matched_marker": marker,
+                    "snippet": snippet,
+                    "taint_labels": ["untrusted"],
+                }
+            )
+            seen_ranges.append((begin, end))
+            if len(snippets) >= _FETCH_ACTIONABLE_SNIPPET_LIMIT:
+                break
+        return snippets
 
     @staticmethod
     def _error_payload(

@@ -3326,7 +3326,7 @@ def _build_post_tool_synthesis_untrusted_content(
     serialized_payload = (
         json.dumps(
             list(serialized_tool_outputs),
-            ensure_ascii=True,
+            ensure_ascii=False,
             sort_keys=True,
             indent=2,
         )
@@ -5316,6 +5316,11 @@ def _find_tool_output_preview_text(payload_value: Any) -> str:
             return stripped
         return ""
     if isinstance(payload_value, dict):
+        actionable_snippets = payload_value.get("actionable_evidence_snippets")
+        if isinstance(actionable_snippets, list):
+            preview = _find_tool_output_preview_text(actionable_snippets)
+            if preview:
+                return preview
         for key in _EVIDENCE_CONTENT_PREVIEW_KEYS:
             candidate = payload_value.get(key)
             if isinstance(candidate, str) and candidate.strip():
