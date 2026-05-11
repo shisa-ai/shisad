@@ -10,6 +10,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptEntry
 from shisad.core.types import Capability, ToolName
 from shisad.daemon.handlers._impl_session import (
+    _PAGE_TITLE_METADATA_HEADER,
     _action_monitor_explanation_from_votes,
     _blocked_action_feedback,
     _build_planner_tool_context,
@@ -1051,6 +1052,41 @@ def test_rc_lus_result_followup_reuses_confirmed_tool_output() -> None:
     assert "fs.list returned 2 entries" in response.text
     assert "README.md" in response.text
     assert "closest likely match" not in response.text
+
+
+def test_result_followup_replays_confirmed_page_title_metadata_block() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "tool",
+                json.dumps(
+                    {
+                        "ok": True,
+                        "url": "https://example.com/reserve",
+                        "status": "ok",
+                    }
+                ),
+                metadata={
+                    "confirmed_tool_output": True,
+                    "tool_name": "web.fetch",
+                    "tool_success": True,
+                    "page_title_metadata": {
+                        "title": "Reserve Online | Venue",
+                        "url": "https://example.com/reserve",
+                    },
+                },
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+    )
+
+    assert response is not None
+    assert _PAGE_TITLE_METADATA_HEADER in response.text
+    primary_summary = response.text.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "Reserve Online" not in primary_summary
+    assert '"title"' not in primary_summary
+    assert "Reserve Online" in response.text
 
 
 def test_rc_lus_result_followup_does_not_hallucinate_after_outside_root_denial() -> None:

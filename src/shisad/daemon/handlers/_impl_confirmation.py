@@ -131,6 +131,21 @@ def _confirmed_tool_output_transcript_content(*, tool_name: str, content: str) -
     return json.dumps(sanitized, ensure_ascii=True, sort_keys=True)
 
 
+def _confirmed_tool_output_page_title_metadata(*, tool_name: str, content: str) -> dict[str, Any]:
+    if tool_name.strip().lower() not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
+        return {}
+    parsed = _parse_confirmed_tool_output_payload(content)
+    title = str(parsed.get("title", "")).strip()
+    if not title:
+        return {}
+    metadata = {"title": title}
+    for key in ("url", "screenshot_id"):
+        value = str(parsed.get(key, "")).strip()
+        if value:
+            metadata[key] = value
+    return metadata
+
+
 def _apply_delivery_target_metadata(metadata: dict[str, Any], delivery_target: Any) -> None:
     delivery_target_payload: dict[str, Any] | None = None
     if hasattr(delivery_target, "model_dump"):
@@ -172,9 +187,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if str(getattr(pending, "tool_name", "")).strip() == "evidence.promote":
             return
         tool_name = str(getattr(pending, "tool_name", "")).strip()
+        raw_content = str(getattr(tool_output, "content", "") or "")
+        page_title_metadata = _confirmed_tool_output_page_title_metadata(
+            tool_name=tool_name,
+            content=raw_content,
+        )
         content = _confirmed_tool_output_transcript_content(
             tool_name=tool_name,
-            content=str(getattr(tool_output, "content", "") or ""),
+            content=raw_content,
         )
         if not content.strip():
             return
@@ -189,6 +209,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "tool_success": bool(getattr(tool_output, "success", False)),
             "timestamp_utc": decision_timestamp,
         }
+        if page_title_metadata:
+            metadata["page_title_metadata"] = page_title_metadata
         pending_user_id = str(getattr(pending, "user_id", "")).strip()
         pending_workspace_id = str(getattr(pending, "workspace_id", "")).strip()
         if pending_user_id:

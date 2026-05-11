@@ -5722,11 +5722,21 @@ def _summarize_tool_outputs_for_user_response(
     records: Sequence[Mapping[str, Any]],
     *,
     header: str,
+    include_page_title_metadata: bool = False,
 ) -> str:
     if not records:
         return ""
+    summary_records: Sequence[Mapping[str, Any]] = records
+    page_title_metadata_block = ""
+    if include_page_title_metadata:
+        serialized_records = [dict(record) for record in records]
+        page_title_metadata_block = _build_page_title_metadata_block(
+            serialized_records,
+            ensure_ascii=True,
+        )
+        summary_records = _model_facing_serialized_tool_outputs(serialized_records)
     lines = [header.rstrip(":") + ":"]
-    for record in records:
+    for record in summary_records:
         tool_name = str(record.get("tool_name", "")).strip() or "tool"
         payload = record.get("payload")
         if not isinstance(payload, Mapping):
@@ -5784,6 +5794,9 @@ def _summarize_tool_outputs_for_user_response(
         status = str(payload.get("status", "")).strip()
         suffix = f": {error or status}" if error or status else "."
         lines.append(f"- {tool_name}: completed{suffix}")
+    if page_title_metadata_block:
+        lines.append("")
+        lines.append(page_title_metadata_block)
     return "\n".join(lines)
 
 
@@ -5851,15 +5864,26 @@ def _confirmed_tool_output_response_from_transcript_entry(
         payload = {"text": entry.content_preview}
     if not isinstance(payload, Mapping):
         payload = {"value": payload}
+    summary_payload = dict(payload)
+    page_title_metadata = metadata.get("page_title_metadata")
+    if isinstance(page_title_metadata, Mapping):
+        for key in ("title", "url", "screenshot_id"):
+            value = str(page_title_metadata.get(key, "")).strip()
+            if value:
+                summary_payload[key] = value
     summary = _summarize_tool_outputs_for_user_response(
         [
             {
                 "tool_name": tool_name,
                 "success": bool(metadata.get("tool_success", False)),
-                "payload": dict(payload),
+                "payload": summary_payload,
+                "taint_labels": [
+                    str(getattr(label, "value", label)) for label in entry.taint_labels
+                ],
             }
         ],
         header="Confirmed action result",
+        include_page_title_metadata=True,
     )
     if not summary:
         return None
@@ -6748,6 +6772,7 @@ class SessionImplMixin(HandlerMixinBase):
             summary = _summarize_tool_outputs_for_user_response(
                 confirmed_tool_outputs,
                 header="Confirmed action result",
+                include_page_title_metadata=True,
             )
             if not summary:
                 return text

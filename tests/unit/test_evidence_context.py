@@ -20,6 +20,7 @@ from shisad.daemon.handlers._impl import (
     _structured_evidence_read,
 )
 from shisad.daemon.handlers._impl_session import (
+    _PAGE_TITLE_METADATA_HEADER,
     _build_evidence_supplemental_entries,
     _build_planner_conversation_context,
     _summarize_tool_outputs_for_chat,
@@ -409,6 +410,34 @@ def test_summarize_tool_outputs_prefers_screenshot_ocr_over_title() -> None:
     assert "Visible page text only." in user_summary
     assert "Reserve Online" not in chat_summary
     assert "Reserve Online" not in user_summary
+
+
+def test_confirmed_summary_renders_page_title_metadata_separately() -> None:
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "url": "https://example.com/reserve",
+                "title": "Reserve Online | Venue",
+                "status": "ok",
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    user_summary = _summarize_tool_outputs_for_user_response(
+        records,
+        header="Confirmed action result",
+        include_page_title_metadata=True,
+    )
+
+    assert _PAGE_TITLE_METADATA_HEADER in user_summary
+    primary_summary = user_summary.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert '"title"' not in primary_summary
+    assert "Reserve Online" not in primary_summary
+    assert "Reserve Online" in user_summary
 
 
 def test_wrap_serialized_tool_outputs_degrades_to_unavailable_stub_on_store_error() -> None:

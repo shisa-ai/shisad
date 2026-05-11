@@ -443,6 +443,10 @@ def test_confirmed_browser_tool_output_transcript_strips_page_title(tmp_path) ->
     assert "Visible page text only." in entries[0].content_preview
     assert "Reserve Online" not in entries[0].content_preview
     assert '"title"' not in entries[0].content_preview
+    assert entries[0].metadata["page_title_metadata"] == {
+        "screenshot_id": "shot-1",
+        "title": "Reserve Online | Venue",
+    }
     assert entries[0].metadata["tool_name"] == "browser.screenshot"
 
 
