@@ -10221,13 +10221,16 @@ class SessionImplMixin(HandlerMixinBase):
         response_text = planner_dispatch.planner_result.output.assistant_response
         initial_planner_response_text = response_text.strip()
         tool_output_summary = ""
+        model_facing_chat_serialized_tool_outputs = _model_facing_serialized_tool_outputs(
+            chat_serialized_tool_outputs
+        )
         if chat_serialized_tool_outputs:
             tool_output_summary = (
-                _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
+                _summarize_tool_outputs_for_chat(model_facing_chat_serialized_tool_outputs) or ""
             )
         user_visible_tool_output_summary = (
             _summarize_tool_outputs_for_user_response(
-                chat_serialized_tool_outputs,
+                model_facing_chat_serialized_tool_outputs,
                 header="Confirmed action result",
             )
             if chat_serialized_tool_outputs

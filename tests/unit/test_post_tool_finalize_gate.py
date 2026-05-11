@@ -10,6 +10,7 @@ from shisad.daemon.handlers._impl_session import (
     _build_post_tool_synthesis_untrusted_content,
     _model_facing_serialized_tool_outputs,
     _should_synthesize_initial_web_tool_response,
+    _summarize_tool_outputs_for_chat,
 )
 
 
@@ -349,3 +350,30 @@ def test_model_facing_tool_outputs_preserve_input_records() -> None:
 
     assert "title" not in model_facing[0]["payload"]
     assert records[0]["payload"]["title"] == "Page title"
+
+
+def test_model_facing_tool_output_summary_omits_wrapped_title_stub() -> None:
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "payload": {
+                "content": "",
+                "ok": True,
+                "title": (
+                    "[EVIDENCE ref=ev-title-1 taint=UNTRUSTED size=512 "
+                    'summary="Reserve Online | Venue" Evidence stored.]'
+                ),
+            },
+            "success": True,
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    model_facing = _model_facing_serialized_tool_outputs(records)
+    summary = _summarize_tool_outputs_for_chat(model_facing)
+
+    assert "Reserve Online" not in summary
+    assert "ev-title-1" not in summary
+    assert '"title"' not in summary
+    assert "web.fetch" in summary
+    assert records[0]["payload"]["title"].startswith("[EVIDENCE")
