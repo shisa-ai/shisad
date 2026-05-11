@@ -3253,10 +3253,10 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
     if not normalized:
         return False
     absence_patterns = (
-        r"\bdoes not exist\b",
-        r"\bdo not exist\b",
-        r"\bdoesn't exist\b",
-        r"\bnot exist\b",
+        (
+            r"\b(?:(?:tabelog )?reservation|tabelog) (?:path|page|result) "
+            r"(?:does not exist|do not exist|doesn't exist|(?:does )?not exist)\b"
+        ),
         (
             r"\b(?:current )?evidence is insufficient to "
             r"(?:verify|confirm|find) (?:the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
@@ -3274,7 +3274,10 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
             r"\b(?:could not|cannot|can't) find "
             r"(?:a |the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
         ),
-        r"\b(?:reservation )?(?:path|page) (?:is )?(?:not found|unavailable)\b",
+        (
+            r"\b(?:(?:tabelog )?reservation|tabelog) (?:path|page) "
+            r"(?:is )?(?:not found|unavailable)\b"
+        ),
     )
     return any(re.search(pattern, normalized) is not None for pattern in absence_patterns)
 

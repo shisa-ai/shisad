@@ -212,7 +212,8 @@ async def _planner_stub_complete(
                 content=(
                     "Found Amour on Tabelog, but the current evidence is insufficient "
                     "to verify the cancellation policy and there is no evidence of "
-                    "cancellation policy changes."
+                    "cancellation policy changes; a separate cancellation policy page "
+                    "does not exist."
                 ),
                 tool_calls=[
                     _tool_call(
@@ -599,6 +600,7 @@ async def test_gh27_mixed_positive_web_answer_keeps_existing_append_path(
     assert "Found Amour on Tabelog" in response
     assert "cancellation policy" in response
     assert "no evidence of cancellation policy changes" in response
+    assert "cancellation policy page does not exist" in response
     assert "intermediate tool output" not in response
 
 
