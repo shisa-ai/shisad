@@ -202,6 +202,15 @@ _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"|\btitle\s+(?:of|for)\s+(?:the|this|that)\s+(?:page|html|document)\b",
     re.IGNORECASE,
 )
+_MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
+    {
+        "browser.click",
+        "browser.navigate",
+        "browser.read_page",
+        "browser.type_text",
+        "web.fetch",
+    }
+)
 _INTERNAL_TOOL_NARRATION_MARKERS = (
     "```xml",
     "```json",
@@ -3328,11 +3337,11 @@ def _build_post_tool_synthesis_untrusted_content(
     serialized_tool_outputs: Sequence[dict[str, Any]],
     tool_output_summary: str,
     preliminary_prose: str = "",
-    include_web_fetch_title_metadata: bool = False,
+    include_page_title_metadata: bool = False,
 ) -> str:
     synthesis_tool_outputs = _model_facing_serialized_tool_outputs(
         serialized_tool_outputs,
-        include_web_fetch_title_metadata=include_web_fetch_title_metadata,
+        include_page_title_metadata=include_page_title_metadata,
     )
     serialized_payload = (
         json.dumps(
@@ -3383,25 +3392,29 @@ def _build_post_tool_synthesis_untrusted_content(
 def _model_facing_serialized_tool_outputs(
     serialized_tool_outputs: Sequence[dict[str, Any]],
     *,
-    include_web_fetch_title_metadata: bool = False,
+    include_page_title_metadata: bool = False,
 ) -> list[dict[str, Any]]:
     model_facing_tool_outputs = deepcopy(list(serialized_tool_outputs))
-    web_fetch_count = sum(
+    page_title_record_count = sum(
         1
         for record in model_facing_tool_outputs
-        if str(record.get("tool_name", "")).strip().lower() == "web.fetch"
+        if str(record.get("tool_name", "")).strip().lower()
+        in _MODEL_FACING_PAGE_TITLE_TOOL_NAMES
     )
-    include_fetch_title = include_web_fetch_title_metadata and web_fetch_count == 1
+    include_page_title = include_page_title_metadata and page_title_record_count == 1
     for record in model_facing_tool_outputs:
-        if str(record.get("tool_name", "")).strip().lower() != "web.fetch":
+        if (
+            str(record.get("tool_name", "")).strip().lower()
+            not in _MODEL_FACING_PAGE_TITLE_TOOL_NAMES
+        ):
             continue
         payload = record.get("payload")
-        if isinstance(payload, dict) and not include_fetch_title:
+        if isinstance(payload, dict) and not include_page_title:
             payload.pop("title", None)
     return model_facing_tool_outputs
 
 
-def _user_request_requests_web_fetch_title_metadata(text: str) -> bool:
+def _user_request_requests_page_title_metadata(text: str) -> bool:
     return bool(_WEB_FETCH_TITLE_REQUEST_RE.search(str(text or "")))
 
 
@@ -3412,7 +3425,7 @@ def _build_task_close_gate_tool_output_block(
 ) -> str:
     model_facing_tool_outputs = _model_facing_serialized_tool_outputs(
         serialized_tool_outputs,
-        include_web_fetch_title_metadata=_user_request_requests_web_fetch_title_metadata(
+        include_page_title_metadata=_user_request_requests_page_title_metadata(
             task_description
         ),
     )
@@ -9995,7 +10008,7 @@ class SessionImplMixin(HandlerMixinBase):
             serialized_tool_outputs=serialized_tool_outputs,
             tool_output_summary=tool_output_summary,
             preliminary_prose=preliminary_prose,
-            include_web_fetch_title_metadata=_user_request_requests_web_fetch_title_metadata(
+            include_page_title_metadata=_user_request_requests_page_title_metadata(
                 validated.firewall_result.sanitized_text
             ),
         )

@@ -8,7 +8,7 @@ from shisad.daemon.handlers._impl_session import (
     _build_post_tool_synthesis_untrusted_content,
     _model_facing_serialized_tool_outputs,
     _should_synthesize_initial_web_tool_response,
-    _user_request_requests_web_fetch_title_metadata,
+    _user_request_requests_page_title_metadata,
 )
 
 
@@ -190,11 +190,55 @@ def test_synthesis_input_includes_web_fetch_title_metadata_when_requested() -> N
             }
         ],
         tool_output_summary="Tool summary",
-        include_web_fetch_title_metadata=True,
+        include_page_title_metadata=True,
     )
 
     assert "Profile only." in content
     assert "Reserve Online | Venue" in content
+    assert '"title"' in content
+
+
+def test_synthesis_input_omits_browser_page_title_metadata_by_default() -> None:
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "browser.read_page",
+                "payload": {
+                    "content": "Profile only.",
+                    "ok": True,
+                    "title": "Reserve Online | Venue",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        tool_output_summary="Tool summary",
+    )
+
+    assert "Profile only." in content
+    assert "Reserve Online" not in content
+    assert '"title"' not in content
+
+
+def test_synthesis_input_includes_browser_page_title_metadata_when_requested() -> None:
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "browser.read_page",
+                "payload": {
+                    "content": "Profile only.",
+                    "ok": True,
+                    "title": "Browser Page Title",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        tool_output_summary="Tool summary",
+        include_page_title_metadata=True,
+    )
+
+    assert "Browser Page Title" in content
     assert '"title"' in content
 
 
@@ -225,7 +269,7 @@ def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
             },
         ],
         tool_output_summary="Tool summary",
-        include_web_fetch_title_metadata=True,
+        include_page_title_metadata=True,
     )
 
     assert "Profile A." in content
@@ -236,11 +280,11 @@ def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
 
 
 def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
-    assert _user_request_requests_web_fetch_title_metadata("What was the page title?")
-    assert _user_request_requests_web_fetch_title_metadata("Tell me the HTML title.")
-    assert _user_request_requests_web_fetch_title_metadata("What is the title of this page?")
-    assert _user_request_requests_web_fetch_title_metadata("What is this document's title?")
-    assert not _user_request_requests_web_fetch_title_metadata(
+    assert _user_request_requests_page_title_metadata("What was the page title?")
+    assert _user_request_requests_page_title_metadata("Tell me the HTML title.")
+    assert _user_request_requests_page_title_metadata("What is the title of this page?")
+    assert _user_request_requests_page_title_metadata("What is this document's title?")
+    assert not _user_request_requests_page_title_metadata(
         "Tell me whether the title-only reservation marker appears."
     )
 
