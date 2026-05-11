@@ -3253,6 +3253,10 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
     if not normalized:
         return False
     absence_patterns = (
+        r"\bdoes not exist\b",
+        r"\bdo not exist\b",
+        r"\bdoesn't exist\b",
+        r"\bnot exist\b",
         (
             r"\b(?:(?:tabelog )?reservation|tabelog) (?:path|page|result) "
             r"(?:does not exist|do not exist|doesn't exist|(?:does )?not exist)\b"
@@ -3274,12 +3278,23 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
             r"\b(?:could not|cannot|can't) find "
             r"(?:a |the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
         ),
-        (
-            r"\b(?:(?:tabelog )?reservation|tabelog) (?:path|page) "
-            r"(?:is )?(?:not found|unavailable)\b"
-        ),
+        r"\b(?:reservation )?(?:path|page) (?:is )?(?:not found|unavailable)\b",
     )
     return any(re.search(pattern, normalized) is not None for pattern in absence_patterns)
+
+
+def _has_web_pre_tool_positive_claim(response_text: str) -> bool:
+    normalized = " ".join(str(response_text or "").casefold().split())
+    if not normalized:
+        return False
+    has_target = "tabelog" in normalized or "reservation" in normalized
+    if not has_target:
+        return False
+    found_positive = "found" in normalized and not re.search(
+        r"\b(?:found no|not found)\b", normalized
+    )
+    available_positive = "available" in normalized and "unavailable" not in normalized
+    return found_positive or available_positive
 
 
 def _transcript_entry_context_role(
@@ -10097,6 +10112,7 @@ class SessionImplMixin(HandlerMixinBase):
         should_synthesize_initial_tool_response = (
             bool(initial_planner_response_text)
             and _is_web_pre_tool_absence_claim(initial_planner_response_text)
+            and not _has_web_pre_tool_positive_claim(initial_planner_response_text)
             and any(
                 tool_output.tool_name in web_evidence_tool_names
                 for tool_output in execution.executed_tool_outputs
