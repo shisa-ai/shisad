@@ -588,8 +588,13 @@ class WebToolkit:
     @staticmethod
     def _iter_marker_spans(text: str, marker: str) -> Iterator[tuple[int, int]]:
         if marker.isascii():
-            for match in re.finditer(re.escape(marker), text, flags=re.IGNORECASE):
-                yield match.start(), match.end()
+            search_text, index_map = WebToolkit._collapse_ascii_marker_search_text(text)
+            needle = "".join(marker.split())
+            for match in re.finditer(re.escape(needle), search_text, flags=re.IGNORECASE):
+                begin = index_map[match.start()]
+                end = index_map[match.end() - 1] + 1
+                if WebToolkit._has_ascii_word_boundary(text, begin=begin, end=end):
+                    yield begin, end
             return
 
         search_text, index_map = WebToolkit._collapse_japanese_marker_search_text(text)
@@ -612,6 +617,29 @@ class WebToolkit:
             search_chars.append(char)
             index_map.append(index)
         return "".join(search_chars), index_map
+
+    @staticmethod
+    def _collapse_ascii_marker_search_text(text: str) -> tuple[str, list[int]]:
+        search_chars: list[str] = []
+        index_map: list[int] = []
+        for index, char in enumerate(text):
+            if char.isspace():
+                continue
+            search_chars.append(char)
+            index_map.append(index)
+        return "".join(search_chars), index_map
+
+    @staticmethod
+    def _has_ascii_word_boundary(text: str, *, begin: int, end: int) -> bool:
+        before = text[begin - 1] if begin > 0 else ""
+        after = text[end] if end < len(text) else ""
+        return not WebToolkit._is_ascii_word_char(before) and not WebToolkit._is_ascii_word_char(
+            after
+        )
+
+    @staticmethod
+    def _is_ascii_word_char(char: str) -> bool:
+        return bool(char) and char.isascii() and char.isalnum()
 
     @staticmethod
     def _is_negated_japanese_availability_marker(

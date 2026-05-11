@@ -113,6 +113,27 @@ def test_fetch_actionable_snippets_select_late_mixed_case_english_marker() -> No
     assert snippets[0]["taint_labels"] == ["untrusted"]
 
 
+def test_fetch_actionable_snippets_handle_html_split_english_marker() -> None:
+    text = WebToolkit._extract_text(
+        "<section>Booking calendar: Reserve On<span>line</span> today.</section>",
+        max_chars=None,
+    )
+
+    snippets = WebToolkit._extract_actionable_evidence_snippets(text)
+
+    assert "Reserve On line" in text
+    assert snippets
+    assert snippets[0]["matched_marker"] == "reserve online"
+
+
+def test_fetch_actionable_snippets_do_not_match_english_marker_inside_word() -> None:
+    snippets = WebToolkit._extract_actionable_evidence_snippets(
+        "Preserve Online privacy settings for the venue website."
+    )
+
+    assert snippets == []
+
+
 def test_fetch_actionable_snippets_ignore_page_without_reservation_markers() -> None:
     text = ("店舗紹介のみ。予約状況の表示はありません。 " * 100).strip()
 

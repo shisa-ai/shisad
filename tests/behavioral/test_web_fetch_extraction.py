@@ -76,7 +76,10 @@ async def _planner_stub_complete(
             response = "Fetched evidence says 本日夜空席あり and ネット予約 are shown."
         elif (
             "actionable_evidence_snippets" in normalized_input
-            and _ENGLISH_RESERVATION_MARKER in normalized_input
+            and (
+                _ENGLISH_RESERVATION_MARKER in normalized_input
+                or _ENGLISH_RESERVATION_MARKER.casefold() in normalized_input.casefold()
+            )
         ):
             response = "Fetched evidence says Reserve Online is shown."
         else:
@@ -143,7 +146,7 @@ def _large_english_marker_html() -> bytes:
     filler_before = "restaurant profile " * 900
     target = (
         '<section class="reservation">'
-        "Booking calendar: Reserve Online from this page."
+        "Booking calendar: Reserve On<span>line</span> from this page."
         "</section>"
     )
     filler_after = " menu details" * 7000
