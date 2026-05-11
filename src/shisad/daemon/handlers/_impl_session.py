@@ -203,8 +203,11 @@ _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _PAGE_TITLE_NEGATION_RE = re.compile(
-    r"\b(?:not|ignore|without|exclude)\b[^.?!]{0,120}"
-    r"\b(?:page|html|document)\s+title\b",
+    r"\b(?:not|ignore|without|exclude)\b",
+    re.IGNORECASE,
+)
+_PAGE_TITLE_DOUBLE_NEGATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\b",
     re.IGNORECASE,
 )
 _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
@@ -3429,9 +3432,15 @@ def _model_facing_serialized_tool_outputs(
 
 def _user_request_requests_page_title_metadata(text: str) -> bool:
     normalized = str(text or "")
-    if _PAGE_TITLE_NEGATION_RE.search(normalized):
-        return False
-    return bool(_WEB_FETCH_TITLE_REQUEST_RE.search(normalized))
+    for segment in re.split(r"[.?!;\n]+", normalized):
+        if not _WEB_FETCH_TITLE_REQUEST_RE.search(segment):
+            continue
+        if _PAGE_TITLE_DOUBLE_NEGATION_RE.search(segment):
+            return True
+        if _PAGE_TITLE_NEGATION_RE.search(segment):
+            continue
+        return True
+    return False
 
 
 def _build_task_close_gate_tool_output_block(
