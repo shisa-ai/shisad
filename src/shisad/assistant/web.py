@@ -35,6 +35,11 @@ _RESERVATION_EVIDENCE_MARKERS: tuple[str, ...] = (
     "online reservation",
     "reserve online",
 )
+_FETCH_ACTIONABLE_MARKER_PRIORITY: dict[str, int] = {
+    "\u672c\u65e5\u591c\u7a7a\u5e2d\u3042\u308a": 0,
+    "\u7a7a\u5e2d\u3042\u308a": 0,
+    "\u4e88\u7d04\u53ef": 0,
+}
 _JAPANESE_AVAILABILITY_MARKERS: frozenset[str] = frozenset(
     (
         "\u672c\u65e5\u591c\u7a7a\u5e2d\u3042\u308a",
@@ -53,6 +58,7 @@ _JAPANESE_AVAILABILITY_NEGATION_SEPARATORS = (
     ",.:;!?()[]{}-"
     "\uff1a\uff1b\uff01\uff1f"
 )
+_JAPANESE_MARKER_INTERNAL_SEPARATORS = _JAPANESE_AVAILABILITY_NEGATION_SEPARATORS
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "access denied",
     "temporarily blocked",
@@ -538,23 +544,24 @@ class WebToolkit:
         if not compacted:
             return []
 
-        matches: list[tuple[int, str]] = []
+        matches: list[tuple[int, int, int, str]] = []
         for marker in _RESERVATION_EVIDENCE_MARKERS:
-            for index in WebToolkit._iter_marker_indexes(compacted, marker):
+            for index, marker_end in WebToolkit._iter_marker_spans(compacted, marker):
                 if not WebToolkit._is_negated_japanese_availability_marker(
                     compacted,
-                    index=index,
+                    marker_end=marker_end,
                     marker=marker,
                 ):
-                    matches.append((index, marker))
+                    priority = _FETCH_ACTIONABLE_MARKER_PRIORITY.get(marker, 1)
+                    matches.append((priority, index, marker_end, marker))
 
         snippets: list[dict[str, Any]] = []
         seen_ranges: list[tuple[int, int]] = []
-        for index, marker in sorted(matches, key=lambda item: item[0]):
+        for _priority, index, marker_end, marker in sorted(matches):
             begin = max(0, index - _FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS)
             end = min(
                 len(compacted),
-                index + len(marker) + _FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS,
+                marker_end + _FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS,
             )
             if any(begin <= seen_end and end >= seen_begin for seen_begin, seen_end in seen_ranges):
                 continue
@@ -579,25 +586,43 @@ class WebToolkit:
         return snippets
 
     @staticmethod
-    def _iter_marker_indexes(text: str, marker: str) -> Iterator[int]:
+    def _iter_marker_spans(text: str, marker: str) -> Iterator[tuple[int, int]]:
         if marker.isascii():
             for match in re.finditer(re.escape(marker), text, flags=re.IGNORECASE):
-                yield match.start()
+                yield match.start(), match.end()
             return
 
+        search_text, index_map = WebToolkit._collapse_japanese_marker_search_text(text)
         start = 0
         while True:
-            index = text.find(marker, start)
+            index = search_text.find(marker, start)
             if index < 0:
                 return
-            yield index
+            marker_end_index = index + len(marker) - 1
+            yield index_map[index], index_map[marker_end_index] + 1
             start = index + max(1, len(marker))
 
     @staticmethod
-    def _is_negated_japanese_availability_marker(text: str, *, index: int, marker: str) -> bool:
+    def _collapse_japanese_marker_search_text(text: str) -> tuple[str, list[int]]:
+        search_chars: list[str] = []
+        index_map: list[int] = []
+        for index, char in enumerate(text):
+            if char in _JAPANESE_MARKER_INTERNAL_SEPARATORS:
+                continue
+            search_chars.append(char)
+            index_map.append(index)
+        return "".join(search_chars), index_map
+
+    @staticmethod
+    def _is_negated_japanese_availability_marker(
+        text: str,
+        *,
+        marker_end: int,
+        marker: str,
+    ) -> bool:
         if marker not in _JAPANESE_AVAILABILITY_MARKERS:
             return False
-        suffix = text[index + len(marker) : index + len(marker) + 8]
+        suffix = text[marker_end : marker_end + 8]
         suffix = suffix.lstrip(_JAPANESE_AVAILABILITY_NEGATION_SEPARATORS)
         return any(
             suffix.startswith(negator)

@@ -46,6 +46,18 @@ def test_fetch_actionable_snippets_handle_html_split_negated_availability() -> N
     assert not any(item["matched_marker"] == "空席あり" for item in snippets)
 
 
+def test_fetch_actionable_snippets_handle_html_split_positive_availability() -> None:
+    text = WebToolkit._extract_text(
+        "<section>予約カレンダー 空席<span>あり</span>。ネット予約できます。</section>",
+        max_chars=None,
+    )
+
+    snippets = WebToolkit._extract_actionable_evidence_snippets(text)
+
+    assert "空席 あり" in text
+    assert any(item["matched_marker"] == "空席あり" for item in snippets)
+
+
 def test_fetch_actionable_snippets_keep_offsets_after_casefold_expanding_prefix() -> None:
     snippets = WebToolkit._extract_actionable_evidence_snippets(
         "Straße 予約カレンダー 空席ありません。ネット予約不可です。"
@@ -53,6 +65,17 @@ def test_fetch_actionable_snippets_keep_offsets_after_casefold_expanding_prefix(
 
     assert snippets
     assert not any(item["matched_marker"] == "空席あり" for item in snippets)
+
+
+def test_fetch_actionable_snippets_prioritize_availability_over_repeated_actions() -> None:
+    action_blocks = ("ネット予約 " + ("説明" * 240) + " ") * 6
+    snippets = WebToolkit._extract_actionable_evidence_snippets(
+        action_blocks + "予約カレンダー 本日夜空席あり。"
+    )
+
+    assert len(snippets) <= 5
+    assert snippets[0]["matched_marker"] == "本日夜空席あり"
+    assert any(item["matched_marker"] == "本日夜空席あり" for item in snippets)
 
 
 def test_fetch_actionable_snippets_ignore_page_without_reservation_markers() -> None:
