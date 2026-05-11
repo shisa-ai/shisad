@@ -196,21 +196,47 @@ _POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS = 4200
 _POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
 _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
-_WEB_FETCH_TITLE_REQUEST_RE = re.compile(
-    r"\b(?:page|html|document)\s+title\b"
+# Conservative model-facing metadata gate: title metadata is included only for
+# direct positive title requests, not every user mention of "page title".
+_PAGE_TITLE_PHRASE_PATTERN = (
+    r"(?:\b(?:page|html|document)\s+title\b"
     r"|\b(?:the|this|that)\s+(?:page|html|document)(?:['\u2019]s)?\s+title\b"
-    r"|\btitle\s+(?:of|for)\s+(?:the|this|that)\s+(?:page|html|document)\b",
-    re.IGNORECASE,
+    r"|\btitle\s+(?:of|for)\s+(?:the|this|that)\s+(?:page|html|document)\b)"
 )
-_PAGE_TITLE_LOCAL_NEGATION_RE = re.compile(
-    r"(?:\b(?:not|ignore|without|exclude)\s+"
-    r"|\b(?:do\s+not|don't|dont)\s+(?:include|use|return|care\s+about)\s+)"
-    r"(?:the|this|that|a|an)?\s*$",
+_PAGE_TITLE_REQUEST_SEGMENT_PREFIX = r"(?:^|[.!?;,\n]\s*)(?:(?:and|but|also|then)\s+)?"
+_PAGE_TITLE_REQUEST_ACTION_PATTERN = (
+    r"(?:(?:tell|show|give)\s+me|(?:return|include|use|display|mention))"
+)
+_PAGE_TITLE_RESPONSE_ACTION_PATTERN = r"(?:(?:tell|show|give)\s+me)"
+_PAGE_TITLE_REQUEST_TARGET_PATTERN = (
+    r"(?:the|this|that|a|an)?\s*" + _PAGE_TITLE_PHRASE_PATTERN
+)
+_WEB_FETCH_TITLE_REQUEST_RE = re.compile(
+    r"(?:"
+    + _PAGE_TITLE_REQUEST_SEGMENT_PREFIX
+    + r"(?:"
+    + r"(?:please\s+)?"
+    + _PAGE_TITLE_REQUEST_ACTION_PATTERN
+    + r"\s+"
+    + r"|(?:can|could|would)\s+you\s+(?:please\s+)?"
+    + _PAGE_TITLE_REQUEST_ACTION_PATTERN
+    + r"\s+"
+    + r"|(?:what|which)\s+(?:is|was|are|were)\s+"
+    + r"|(?:i\s+)?(?:want|need)\s+"
+    + r")"
+    + _PAGE_TITLE_REQUEST_TARGET_PATTERN
+    + r"|\b(?:and|but|also|then)\s+(?:please\s+)?"
+    + _PAGE_TITLE_RESPONSE_ACTION_PATTERN
+    + r"\s+"
+    + _PAGE_TITLE_REQUEST_TARGET_PATTERN
+    + r")",
     re.IGNORECASE,
 )
 _PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE = re.compile(
-    r"\b(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\s+"
-    r"(?:the|this|that|a|an)?\s*$",
+    _PAGE_TITLE_REQUEST_SEGMENT_PREFIX
+    + r"(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\s+"
+    + r"(?:the|this|that|a|an)?\s*"
+    + _PAGE_TITLE_PHRASE_PATTERN,
     re.IGNORECASE,
 )
 _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
@@ -3435,14 +3461,10 @@ def _model_facing_serialized_tool_outputs(
 
 def _user_request_requests_page_title_metadata(text: str) -> bool:
     normalized = str(text or "")
-    for match in _WEB_FETCH_TITLE_REQUEST_RE.finditer(normalized):
-        prefix = normalized[max(0, match.start() - 80) : match.start()]
-        if _PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE.search(prefix):
-            return True
-        if _PAGE_TITLE_LOCAL_NEGATION_RE.search(prefix):
-            continue
-        return True
-    return False
+    return bool(
+        _WEB_FETCH_TITLE_REQUEST_RE.search(normalized)
+        or _PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE.search(normalized)
+    )
 
 
 def _build_task_close_gate_tool_output_block(

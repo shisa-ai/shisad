@@ -307,6 +307,11 @@ def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
     assert _user_request_requests_page_title_metadata("Tell me the HTML title.")
     assert _user_request_requests_page_title_metadata("What is the title of this page?")
     assert _user_request_requests_page_title_metadata("What is this document's title?")
+    assert _user_request_requests_page_title_metadata("Please show me the page title.")
+    assert _user_request_requests_page_title_metadata(
+        "Can you return the title of this page?"
+    )
+    assert _user_request_requests_page_title_metadata("I need this document's title.")
     assert not _user_request_requests_page_title_metadata(
         "Tell me whether the title-only reservation marker appears."
     )
@@ -335,9 +340,27 @@ def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
     assert not _user_request_requests_page_title_metadata(
         "I do not care about the page title; check reservation availability."
     )
+    assert not _user_request_requests_page_title_metadata(
+        "I don't want the page title; check reservation availability."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "Do not mention the page title; check availability."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "Do not show or display the page title; check availability."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "Do not include or use the page title; check availability."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "Don't use or return the title of this page; check availability."
+    )
     assert _user_request_requests_page_title_metadata("Don't ignore the page title.")
     assert _user_request_requests_page_title_metadata(
         "I do not care about reservation availability; tell me the page title."
+    )
+    assert _user_request_requests_page_title_metadata(
+        "Check reservation availability, but tell me the page title too."
     )
     assert _user_request_requests_page_title_metadata(
         "Tell me the page title without anything else."
