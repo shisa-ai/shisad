@@ -46,6 +46,12 @@ _JAPANESE_AVAILABILITY_NEGATION_SUFFIXES: tuple[str, ...] = (
     "\u7121\u3057",
     "\u306a\u3044",
 )
+_JAPANESE_AVAILABILITY_NEGATION_SEPARATORS = (
+    " \t\r\n"
+    "\u3000\u3001\u3002\u30fb"
+    ",.:;!?()[]{}-"
+    "\uff1a\uff1b\uff01\uff1f"
+)
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "access denied",
     "temporarily blocked",
@@ -583,6 +589,7 @@ class WebToolkit:
         if marker not in _JAPANESE_AVAILABILITY_MARKERS:
             return False
         suffix = text[index + len(marker) : index + len(marker) + 8]
+        suffix = suffix.lstrip(_JAPANESE_AVAILABILITY_NEGATION_SEPARATORS)
         return any(
             suffix.startswith(negator)
             for negator in _JAPANESE_AVAILABILITY_NEGATION_SUFFIXES
