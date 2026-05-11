@@ -23,6 +23,7 @@ from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _SUMMARY_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _RECOVERY_POLICY_MARKER = "SEARCH EVIDENCE RECOVERY POLICY"
+_UNSUPPORTED_PRELIMINARY_POSITIVE_MARKER = "UNSUPPORTED_PRELIMINARY_POSITIVE_TEST"
 _TRUSTED_CONTEXT_RECOVERY_MARKER = (
     "Trusted runtime and session context may resolve current-turn referents"
 )
@@ -102,7 +103,15 @@ async def _planner_stub_complete(
     if "POST-TOOL SYNTHESIS PASS" in normalized_input:
         if "Synthesis failure test" in normalized_input:
             raise RuntimeError("synthetic GH27 synthesis failure")
-        if (
+        if _UNSUPPORTED_PRELIMINARY_POSITIVE_MARKER in normalized_input:
+            if "Do not preserve preliminary claims that a web target" in normalized_input:
+                response = (
+                    "The current evidence is insufficient to verify the Amour "
+                    "reservation page. The search result did not establish the target."
+                )
+            else:
+                response = "Found Amour on Tabelog; the reservation page is available."
+        elif (
             "Amour reservation page" in normalized_input
             and "cancellation policy" in normalized_input
         ):
@@ -242,6 +251,24 @@ async def _planner_stub_complete(
                         "web.search",
                         {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
                         call_id="gh27-insufficient-pretool-search",
+                    )
+                ],
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "unsupported preliminary positive test" in goal_lower and "amour" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Found Amour on Tabelog; the reservation page is available.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": "Amour reservation page", "limit": 3},
+                        call_id="gh27-unsupported-positive-search",
                     )
                 ],
             ),
@@ -732,6 +759,35 @@ async def test_gh27_mixed_positive_web_answer_synthesizes_with_unrelated_caveat(
     assert "cancellation policy" in response
     assert "does not establish a separate cancellation policy page" in response
     assert "intermediate tool output" not in response
+
+
+@pytest.mark.asyncio
+async def test_gh27_unsupported_preliminary_positive_becomes_insufficient(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    f"{_UNSUPPORTED_PRELIMINARY_POSITIVE_MARKER}: "
+                    "Unsupported preliminary positive test: find the Tabelog "
+                    "reservation path for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "insufficient" in response.casefold()
+    assert "Found Amour on Tabelog" not in response
+    assert "reservation page is available" not in response
 
 
 @pytest.mark.asyncio
