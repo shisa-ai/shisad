@@ -203,7 +203,9 @@ _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _PAGE_TITLE_LOCAL_NEGATION_RE = re.compile(
-    r"\b(?:not|ignore|without|exclude)\s+(?:the|this|that|a|an)?\s*$",
+    r"(?:\b(?:not|ignore|without|exclude)\s+"
+    r"|\b(?:do\s+not|don't|dont)\s+(?:include|use|return|care\s+about)\s+)"
+    r"(?:the|this|that|a|an)?\s*$",
     re.IGNORECASE,
 )
 _PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE = re.compile(
