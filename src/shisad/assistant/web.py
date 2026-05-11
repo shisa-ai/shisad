@@ -624,6 +624,11 @@ class WebToolkit:
             return False
         suffix = text[marker_end : marker_end + 8]
         suffix = suffix.lstrip(_JAPANESE_AVAILABILITY_NEGATION_SEPARATORS)
+        suffix = "".join(
+            char
+            for char in suffix
+            if char not in _JAPANESE_AVAILABILITY_NEGATION_SEPARATORS
+        )
         return any(
             suffix.startswith(negator)
             for negator in _JAPANESE_AVAILABILITY_NEGATION_SUFFIXES
