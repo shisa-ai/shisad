@@ -166,9 +166,9 @@ shisad is >50K lines. If a user sends "search for news" and gets a lockdown noti
 
 The daemon does deterministic work: authenticate, authorize, enforce, audit, sandbox, taint-track, route. Natural-language judgment — intent, valence, topic, negation scope, reconciling a preliminary claim against new evidence — belongs in an LLM.
 
-When a decision in the daemon reduces to parsing free-form prose with regex or edit-distance heuristics, the decision is in the wrong layer. Relocate the judgment to an LLM (the COMMAND agent, the planner, the post-tool synthesizer, or a dedicated classifier prompt) and have the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) around it.
+When a decision in the daemon reduces to parsing free-form prose with regex or edit-distance heuristics, the decision is likely in the wrong layer. Carefully consider whether the input is a bounded vocabulary (a protocol, a schema, a known marker set) or unbounded natural language, sentiment, or classification. If it is the latter, relocate the judgment to an LLM (the COMMAND agent, the planner, the post-tool synthesizer, or a dedicated classifier prompt) and have the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) around it.
 
-This failure mode has occurred twice in the codebase (v0.7.1 command pre-parser; v0.7.3.1 GH27 post-tool classifier). Reasoning, prior incidents, and the signals that identify it are in `docs/adr/DESIGN-structural-vs-linguistic.md`.
+If you encounter this pattern during coding or review, refer to `docs/adr/DESIGN-structural-vs-linguistic.md` for prior incidents, signals, and the bounded-vs-unbounded test in more detail.
 
 ---
 
