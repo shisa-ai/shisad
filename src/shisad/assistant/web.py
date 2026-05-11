@@ -593,7 +593,12 @@ class WebToolkit:
             for match in re.finditer(re.escape(needle), search_text, flags=re.IGNORECASE):
                 begin = index_map[match.start()]
                 end = index_map[match.end() - 1] + 1
-                if WebToolkit._has_ascii_word_boundary(text, begin=begin, end=end):
+                if WebToolkit._has_ascii_word_boundary(
+                    text,
+                    begin=begin,
+                    end=end,
+                    marker=marker,
+                ):
                     yield begin, end
             return
 
@@ -630,12 +635,17 @@ class WebToolkit:
         return "".join(search_chars), index_map
 
     @staticmethod
-    def _has_ascii_word_boundary(text: str, *, begin: int, end: int) -> bool:
+    def _has_ascii_word_boundary(text: str, *, begin: int, end: int, marker: str) -> bool:
         before = text[begin - 1] if begin > 0 else ""
         after = text[end] if end < len(text) else ""
-        return not WebToolkit._is_ascii_word_char(before) and not WebToolkit._is_ascii_word_char(
-            after
-        )
+        if WebToolkit._is_ascii_word_char(before) or WebToolkit._is_ascii_word_char(after):
+            return False
+        marker_head = marker.split()[0].casefold()
+        prefix_match = re.search(r"([A-Za-z0-9]+)\s*$", text[:begin])
+        if prefix_match and (prefix_match.group(1) + marker_head).casefold() == "preserve":
+            return False
+        suffix_match = re.match(r"\s+([A-Za-z0-9]+)", text[end:])
+        return not (suffix_match is not None and suffix_match.group(1).casefold() == "s")
 
     @staticmethod
     def _is_ascii_word_char(char: str) -> bool:
