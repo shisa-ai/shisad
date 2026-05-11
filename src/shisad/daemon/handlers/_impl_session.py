@@ -4304,6 +4304,7 @@ def _transcript_entry_content(
         (
             metadata.get("promoted_evidence") is True
             or metadata.get("system_generated_pending_confirmations") is True
+            or metadata.get("pending_confirmation_bridge") is True
         )
         and transcript_store is not None
         and entry.blob_ref
@@ -6065,6 +6066,7 @@ def _recent_result_followup_response(
     user_text: str,
     entries: Sequence[TranscriptEntry],
     active_pending_confirmation_ids: frozenset[str] | None = None,
+    transcript_store: TranscriptStore | None = None,
 ) -> ResultFollowupResponse | None:
     if not _is_result_followup_query(user_text):
         return None
@@ -6084,7 +6086,10 @@ def _recent_result_followup_response(
             continue
         if role != "assistant":
             continue
-        text = str(entry.content_preview or "").strip()
+        text = _transcript_entry_content(
+            entry=entry,
+            transcript_store=transcript_store,
+        ).strip()
         if not text:
             continue
         lowered = text.lower()
@@ -9722,6 +9727,7 @@ class SessionImplMixin(HandlerMixinBase):
                 delivery_target=validated.delivery_target,
                 fallback_target=_stored_delivery_target_from_session(validated.session),
             ),
+            transcript_store=self._transcript_store,
         )
         if response is None:
             return None

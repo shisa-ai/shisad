@@ -48,7 +48,6 @@ from shisad.daemon.handlers._impl_session import (
     TaskDelegationRecommendation,
     TaskSessionHandoff,
     _active_attention_defaults_for_validated,
-    _recent_result_followup_response,
 )
 from shisad.memory.consolidation import ConsolidationWorker
 from shisad.memory.ingress import IngressContextRegistry
@@ -3505,28 +3504,13 @@ async def test_finalize_response_fallback_keeps_page_title_metadata_labeled() ->
 
 
 @pytest.mark.asyncio
-async def test_finalize_response_pending_actions_keep_title_metadata_labeled() -> None:
+async def test_finalize_response_pending_actions_keep_title_metadata_labeled(
+    tmp_path: Path,
+) -> None:
     harness = _FinalizeEvidenceHarness()
     harness._evidence_store = None
-    transcript_entries: list[TranscriptEntry] = []
-
-    def _append_transcript(_sid: SessionId, **kwargs: object) -> TranscriptEntry:
-        raw_metadata = kwargs.get("metadata")
-        metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
-        entry = TranscriptEntry(
-            role=str(kwargs.get("role", "")),
-            content_hash="2" * 64,
-            content_preview=str(kwargs.get("content", "")),
-            taint_labels=list(kwargs.get("taint_labels", [])),
-            metadata=metadata,
-        )
-        transcript_entries.append(entry)
-        return entry
-
-    harness._transcript_store = SimpleNamespace(
-        append=_append_transcript,
-        list_entries=lambda _sid: transcript_entries,
-    )
+    transcript_store = TranscriptStore(tmp_path / "transcript", blob_threshold_bytes=120)
+    harness._transcript_store = transcript_store
     harness._pending_actions = {
         "c-1": SimpleNamespace(
             confirmation_id="c-1",
@@ -3577,27 +3561,24 @@ async def test_finalize_response_pending_actions_keep_title_metadata_labeled() -
     primary_summary = text.split("Optional page-title metadata", 1)[0]
     assert "ネット予約" not in primary_summary
     assert '"title"' not in primary_summary
-    assert transcript_entries
+    transcript_entries = transcript_store.list_entries(SessionId("sess-g1"))
+    assert len(transcript_entries) == 1
+    assert transcript_entries[0].blob_ref
     assert transcript_entries[0].metadata["pending_confirmation_bridge"] is True
 
-    followup = _recent_result_followup_response(
-        user_text="what was the result?",
-        entries=[
-            transcript_entries[0],
-            TranscriptEntry(
-                role="user",
-                content_hash="3" * 64,
-                content_preview="what was the result?",
-                metadata={},
-            ),
-        ],
-        active_pending_confirmation_ids=frozenset(),
+    followup_response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=_validation_result(
+            params={"session_id": "sess-g1", "content": "what was the result?"},
+            sanitized_text="what was the result?",
+        ),
     )
 
-    assert followup is not None
-    assert "Completed action result:" in followup.text
-    assert "Optional page-title metadata" in followup.text
-    assert "ネット予約" in followup.text
+    assert followup_response is not None
+    followup_text = str(followup_response["response"])
+    assert "Completed action result:" in followup_text
+    assert "Optional page-title metadata" in followup_text
+    assert "ネット予約" in followup_text
 
 
 @pytest.mark.asyncio
