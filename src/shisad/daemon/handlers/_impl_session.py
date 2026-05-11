@@ -3252,19 +3252,22 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
     normalized = " ".join(str(response_text or "").casefold().split())
     if not normalized:
         return False
-    absence_markers = (
-        "does not exist",
-        "do not exist",
-        "doesn't exist",
-        "not exist",
-        "not found",
-        "could not find",
-        "can't find",
-        "cannot find",
-        "unavailable",
-        "insufficient evidence",
+    absence_patterns = (
+        r"\bdoes not exist\b",
+        r"\bdo not exist\b",
+        r"\bdoesn't exist\b",
+        r"\bnot exist\b",
+        r"\binsufficient evidence\b",
+        r"\bevidence is insufficient\b",
+        r"\bcurrent evidence is insufficient\b",
+        r"\bno (?:reliable )?(?:tabelog )?(?:reservation )?(?:path|page|result|evidence)\b",
+        (
+            r"\b(?:could not|cannot|can't) find "
+            r"(?:a |the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
+        ),
+        r"\b(?:reservation )?(?:path|page) (?:is )?(?:not found|unavailable)\b",
     )
-    return any(marker in normalized for marker in absence_markers)
+    return any(re.search(pattern, normalized) is not None for pattern in absence_patterns)
 
 
 def _transcript_entry_context_role(
