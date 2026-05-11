@@ -164,11 +164,11 @@ shisad is >50K lines. If a user sends "search for news" and gets a lockdown noti
 
 ## Fifth Principle: Structure in the Daemon, Meaning in the LLM
 
-The daemon's job is deterministic: authenticate, authorize, enforce, audit, sandbox, taint-track, route. Natural-language judgment — intent, valence, topic, negation scope, reconciling a preliminary claim against new evidence — belongs to the LLM that's already doing that work.
+The daemon does deterministic work: authenticate, authorize, enforce, audit, sandbox, taint-track, route. Natural-language judgment — intent, valence, topic, negation scope, reconciling a preliminary claim against new evidence — belongs in an LLM.
 
-When a decision reduces to parsing free-form prose with regex or edit-distance heuristics, it's in the wrong layer. Relocate the judgment to an LLM and let the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) deterministically.
+When a decision in the daemon reduces to parsing free-form prose with regex or edit-distance heuristics, the decision is in the wrong layer. Relocate the judgment to an LLM (the COMMAND agent, the planner, the post-tool synthesizer, or a dedicated classifier prompt) and have the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) around it.
 
-This pattern is subtle and has bitten the codebase at least twice. Background, prior incidents, and the checklist for spotting it live in `docs/adr/DESIGN-structural-vs-linguistic.md`.
+This failure mode has occurred twice in the codebase (v0.7.1 command pre-parser; v0.7.3.1 GH27 post-tool classifier). Reasoning, prior incidents, and the signals that identify it are in `docs/adr/DESIGN-structural-vs-linguistic.md`.
 
 ---
 
