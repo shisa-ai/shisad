@@ -4466,10 +4466,13 @@ def _build_planner_conversation_context(
             lines.append(f"Summary of earlier turns: {summary}")
 
     for entry in visible_entries:
+        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
         raw_content = _transcript_entry_content(
             entry=entry,
             transcript_store=transcript_store,
         )
+        if bool(metadata.get("pending_confirmation_bridge")):
+            raw_content = _mixed_pending_confirmation_result_portion(raw_content) or raw_content
         role = _transcript_entry_context_role(entry, content=raw_content)
         compact = _compact_context_text(raw_content, max_chars=_CONTEXT_ENTRY_MAX_CHARS)
         if compact:

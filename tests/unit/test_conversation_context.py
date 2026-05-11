@@ -149,6 +149,17 @@ def test_pending_bridge_summary_reads_blob_result_portion(tmp_path: Path) -> Non
     assert entry.blob_ref is not None
     assert "Completed actions:" not in entry.content_preview
 
+    rendered_visible, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "assistant: Completed actions:" in rendered_visible
+    assert "[PENDING CONFIRMATIONS]" not in rendered_visible
+    assert "Optional page-title" in rendered_visible
+
     store.append(sid, role="user", content="next request")
     rendered_summary, _taints = _build_planner_conversation_context(
         transcript_store=store,
