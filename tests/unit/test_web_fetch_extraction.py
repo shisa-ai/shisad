@@ -79,6 +79,16 @@ def test_fetch_actionable_snippets_do_not_join_positive_marker_across_punctuatio
     assert snippets == []
 
 
+def test_fetch_actionable_snippets_do_not_join_japanese_marker_across_blocks() -> None:
+    text = WebToolkit._extract_text(
+        "<section>予約カレンダー</section><div>空席</div><div>ありましたらお電話ください。</div>",
+        max_chars=None,
+    )
+
+    assert "空席 ありましたら" in text
+    assert WebToolkit._extract_actionable_evidence_snippets(text) == []
+
+
 def test_fetch_actionable_snippets_keep_offsets_after_casefold_expanding_prefix() -> None:
     snippets = WebToolkit._extract_actionable_evidence_snippets(
         "Straße 予約カレンダー 空席ありません。ネット予約不可です。"
@@ -162,9 +172,24 @@ def test_fetch_actionable_snippets_keep_document_tags_as_boundaries() -> None:
 
     snippets = WebToolkit._extract_actionable_evidence_snippets(text)
 
-    assert "Venue Reserve Online" in text
+    assert "Venue" not in text
+    assert "Reserve Online" in text
     assert snippets
     assert snippets[0]["matched_marker"] == "reserve online"
+
+
+def test_fetch_actionable_snippets_ignore_title_only_marker() -> None:
+    text = WebToolkit._extract_text(
+        (
+            "<html><head><title>Reserve Online | Venue</title></head>"
+            "<body>Profile only.</body></html>"
+        ),
+        max_chars=None,
+    )
+
+    assert "Reserve Online" not in text
+    assert "Profile only" in text
+    assert WebToolkit._extract_actionable_evidence_snippets(text) == []
 
 
 def test_fetch_actionable_snippets_do_not_block_split_custom_tag_names() -> None:

@@ -25,6 +25,8 @@ _FETCH_ACTIONABLE_SNIPPET_MAX_CHARS = 560
 _FETCH_ACTIONABLE_SNIPPET_LIMIT = 5
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_HEAD_RE = re.compile(r"<head\b[^>]*>.*?</head\s*>", re.IGNORECASE | re.DOTALL)
+_TITLE_BLOCK_RE = re.compile(r"<title\b[^>]*>.*?</title\s*>", re.IGNORECASE | re.DOTALL)
 _BLOCK_TAG_RE = re.compile(
     r"</?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|figcaption|"
     r"figure|footer|form|h[1-6]|head|header|hr|html|li|main|nav|ol|p|pre|"
@@ -64,7 +66,6 @@ _JAPANESE_AVAILABILITY_NEGATION_SEPARATORS = (
     ",.:;!?()[]{}-"
     "\uff1a\uff1b\uff01\uff1f"
 )
-_JAPANESE_MARKER_INTERNAL_SEPARATORS = " \t\r\n\u3000"
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "access denied",
     "temporarily blocked",
@@ -538,6 +539,8 @@ class WebToolkit:
     @staticmethod
     def _extract_text(content: str, *, max_chars: int | None = _FETCH_TEXT_MAX_CHARS) -> str:
         stripped = _SCRIPT_STYLE_RE.sub(" ", content)
+        stripped = _HEAD_RE.sub(" ", stripped)
+        stripped = _TITLE_BLOCK_RE.sub(" ", stripped)
         stripped = _BLOCK_TAG_RE.sub(" ", stripped)
         stripped = _TAG_RE.sub("", stripped)
         text = _WS_RE.sub(" ", stripped).strip()
@@ -601,26 +604,14 @@ class WebToolkit:
                 yield match.start(), match.end()
             return
 
-        search_text, index_map = WebToolkit._collapse_japanese_marker_search_text(text)
         start = 0
         while True:
-            index = search_text.find(marker, start)
+            index = text.find(marker, start)
             if index < 0:
                 return
-            marker_end_index = index + len(marker) - 1
-            yield index_map[index], index_map[marker_end_index] + 1
+            marker_end = index + len(marker)
+            yield index, marker_end
             start = index + max(1, len(marker))
-
-    @staticmethod
-    def _collapse_japanese_marker_search_text(text: str) -> tuple[str, list[int]]:
-        search_chars: list[str] = []
-        index_map: list[int] = []
-        for index, char in enumerate(text):
-            if char in _JAPANESE_MARKER_INTERNAL_SEPARATORS:
-                continue
-            search_chars.append(char)
-            index_map.append(index)
-        return "".join(search_chars), index_map
 
     @staticmethod
     def _is_negated_japanese_availability_marker(
