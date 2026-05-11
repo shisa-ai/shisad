@@ -26,9 +26,9 @@ _FETCH_ACTIONABLE_SNIPPET_LIMIT = 5
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _BLOCK_TAG_RE = re.compile(
-    r"</?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|"
-    r"footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|"
-    r"tfoot|th|thead|tr|ul)[^>]*>",
+    r"</?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|figcaption|"
+    r"figure|footer|form|h[1-6]|head|header|hr|html|li|main|nav|ol|p|pre|"
+    r"section|table|tbody|td|tfoot|th|thead|title|tr|ul)(?:\s[^>]*)?\s*/?>",
     re.IGNORECASE,
 )
 _TAG_RE = re.compile(r"<[^>]+>")

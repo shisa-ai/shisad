@@ -154,6 +154,29 @@ def test_fetch_actionable_snippets_do_not_match_tag_split_english_suffix() -> No
     assert WebToolkit._extract_actionable_evidence_snippets(text) == []
 
 
+def test_fetch_actionable_snippets_keep_document_tags_as_boundaries() -> None:
+    text = WebToolkit._extract_text(
+        "<html><head><title>Venue</title></head><body>Reserve Online today.</body></html>",
+        max_chars=None,
+    )
+
+    snippets = WebToolkit._extract_actionable_evidence_snippets(text)
+
+    assert "Venue Reserve Online" in text
+    assert snippets
+    assert snippets[0]["matched_marker"] == "reserve online"
+
+
+def test_fetch_actionable_snippets_do_not_block_split_custom_tag_names() -> None:
+    text = WebToolkit._extract_text(
+        "<p-custom>Pre</p-custom><span>serve Online</span> privacy settings.",
+        max_chars=None,
+    )
+
+    assert "Preserve Online" in text
+    assert WebToolkit._extract_actionable_evidence_snippets(text) == []
+
+
 def test_fetch_actionable_snippets_ignore_page_without_reservation_markers() -> None:
     text = ("店舗紹介のみ。予約状況の表示はありません。 " * 100).strip()
 
