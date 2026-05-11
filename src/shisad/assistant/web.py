@@ -58,7 +58,7 @@ _JAPANESE_AVAILABILITY_NEGATION_SEPARATORS = (
     ",.:;!?()[]{}-"
     "\uff1a\uff1b\uff01\uff1f"
 )
-_JAPANESE_MARKER_INTERNAL_SEPARATORS = _JAPANESE_AVAILABILITY_NEGATION_SEPARATORS
+_JAPANESE_MARKER_INTERNAL_SEPARATORS = " \t\r\n\u3000"
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "access denied",
     "temporarily blocked",

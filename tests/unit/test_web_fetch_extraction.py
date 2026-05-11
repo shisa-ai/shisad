@@ -71,6 +71,14 @@ def test_fetch_actionable_snippets_handle_html_split_positive_availability() -> 
     assert any(item["matched_marker"] == "空席あり" for item in snippets)
 
 
+def test_fetch_actionable_snippets_do_not_join_positive_marker_across_punctuation() -> None:
+    snippets = WebToolkit._extract_actionable_evidence_snippets(
+        "予約カレンダー 空席。ありましたらお電話ください。"
+    )
+
+    assert snippets == []
+
+
 def test_fetch_actionable_snippets_keep_offsets_after_casefold_expanding_prefix() -> None:
     snippets = WebToolkit._extract_actionable_evidence_snippets(
         "Straße 予約カレンダー 空席ありません。ネット予約不可です。"
