@@ -10269,7 +10269,7 @@ class SessionImplMixin(HandlerMixinBase):
         user_visible_tool_output_summary = (
             _summarize_tool_outputs_for_user_response(
                 chat_serialized_tool_outputs,
-                header="Confirmed action result",
+                header="Completed action result",
                 include_page_title_metadata=True,
             )
             if chat_serialized_tool_outputs

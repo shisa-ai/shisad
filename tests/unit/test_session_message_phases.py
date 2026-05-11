@@ -3549,6 +3549,8 @@ async def test_finalize_response_pending_actions_keep_title_metadata_labeled() -
     text = str(response["response"])
     assert "[PENDING CONFIRMATIONS]" in text
     assert "Completed actions:" in text
+    assert "Completed action result:" in text
+    assert "Confirmed action result:" not in text
     assert "Optional page-title metadata" in text
     assert "ネット予約" in text
     assert "\\u30cd" not in text
@@ -3588,6 +3590,8 @@ async def test_finalize_response_browser_prose_keeps_title_metadata_labeled() ->
 
     text = str(response["response"])
     assert text.startswith("I captured the page.")
+    assert "Completed action result:" in text
+    assert "Confirmed action result:" not in text
     assert "Visible page text." in text
     assert "Optional page-title metadata" in text
     assert "ネット予約" in text
