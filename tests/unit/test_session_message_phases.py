@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import shisad.daemon.handlers._impl_session as impl_session
 from shisad.channels.base import DeliveryTarget
 from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.planner import (
@@ -226,6 +227,80 @@ class _EarlyReturnHarness(SessionImplMixin):
         raise AssertionError("phase 5 should not run after an early validation response")
 
 
+class _PlannerContextBuildHarness(SessionImplMixin):
+    def __init__(self, tmp_path: Path) -> None:
+        self._transcript_store = TranscriptStore(
+            tmp_path / "planner-context-transcript",
+            blob_threshold_bytes=80,
+        )
+        self._session_manager = SimpleNamespace(persist=lambda _sid: None)
+        self._config = SimpleNamespace(
+            context_window=10,
+            planner_memory_top_k=1,
+            assistant_fs_roots=[],
+        )
+        self._ingestion = SimpleNamespace()
+        self._memory_manager = SimpleNamespace()
+        self._browser_toolkit = None
+        self._evidence_store = None
+        self._registry = ToolRegistry()
+        self._policy_loader = SimpleNamespace(
+            policy=SimpleNamespace(
+                egress=[],
+                control_plane=SimpleNamespace(
+                    trace=SimpleNamespace(ttl_seconds=1800, max_actions=10)
+                ),
+            )
+        )
+        self._lockdown_manager = SimpleNamespace(
+            apply_capability_restrictions=lambda _sid, capabilities: set(capabilities),
+            state_for=lambda _sid: SimpleNamespace(
+                level=SimpleNamespace(value="none"),
+                reason="",
+            ),
+        )
+        self._control_plane = _PlannerContextControlPlane()
+        self._event_bus = SimpleNamespace(publish=self._noop_publish)
+
+    async def _noop_publish(self, _event: object) -> None:
+        return None
+
+    def _pending_confirmations_for_binding(
+        self,
+        *,
+        session_id: SessionId,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+    ) -> list[object]:
+        _ = (session_id, user_id, workspace_id)
+        return []
+
+    def _build_task_ledger_snapshot(
+        self,
+        *,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+    ) -> None:
+        _ = (user_id, workspace_id)
+        return None
+
+    def _origin_for(self, *, session: Session, actor: str) -> str:
+        _ = session
+        return f"{actor}-origin"
+
+
+class _PlannerContextControlPlane:
+    def __init__(self) -> None:
+        self._active_plan_hash = ""
+
+    def active_plan_hash(self, _sid: str) -> str:
+        return self._active_plan_hash
+
+    def begin_precontent_plan(self, **_kwargs: object) -> str:
+        self._active_plan_hash = "plan-gh28"
+        return self._active_plan_hash
+
+
 @pytest.mark.asyncio
 async def test_g1_do_session_message_runs_new_phase_methods_in_order() -> None:
     harness = _PhaseHarness()
@@ -256,6 +331,59 @@ async def test_g1_do_session_message_short_circuits_on_phase1_early_response() -
 
     assert harness.calls == ["validate"]
     assert result == {"session_id": "sess-g1", "response": "blocked"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("degraded_scaffold", [False, True])
+async def test_build_context_for_planner_trusts_title_instruction_for_replayed_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    degraded_scaffold: bool,
+) -> None:
+    harness = _PlannerContextBuildHarness(tmp_path)
+    sid = SessionId("sess-g1")
+    harness._transcript_store.append(
+        sid,
+        role="assistant",
+        content=(
+            "[PENDING CONFIRMATIONS]\n"
+            "Queued for your approval:\n"
+            "1. c-1\n\n"
+            + "pending detail " * 30
+            + "\n\nCompleted actions:\n"
+            "Completed action result:\n"
+            "Optional page-title metadata (untrusted; separate from primary tool evidence):\n"
+            '[{"title": "ネット予約 | 会場"}]'
+        ),
+        metadata={"pending_confirmation_bridge": True},
+    )
+    harness._transcript_store.append(
+        sid,
+        role="user",
+        content="what was the title?",
+    )
+    if degraded_scaffold:
+        def _raise_context_scaffold(**_kwargs: object) -> None:
+            raise RuntimeError("degraded")
+
+        monkeypatch.setattr(
+            impl_session,
+            "_build_planner_context_scaffold",
+            _raise_context_scaffold,
+        )
+
+    planner_context = await SessionImplMixin._build_context_for_planner(
+        harness,
+        _validation_result(
+            params={"session_id": str(sid), "content": "what was the title?"},
+            sanitized_text="what was the title?",
+        ),
+    )
+
+    assert "Optional page-title metadata" in planner_context.conversation_context
+    trusted_section = planner_context.planner_input.split("=== USER REQUEST ===", 1)[0]
+    assert "OPTIONAL PAGE-TITLE METADATA" in trusted_section
+    assert "Use that block only when the authenticated request" in trusted_section
 
 
 class _PendingPolicySnapshotHarness(SessionImplMixin):

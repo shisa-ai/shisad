@@ -184,7 +184,7 @@ def test_page_title_context_adds_planner_trusted_instruction() -> None:
 
     rendered = _with_contextual_page_title_metadata_instruction(
         trusted_instructions=trusted,
-        conversation_context=conversation_context,
+        untrusted_context=conversation_context,
     )
 
     assert "OPTIONAL PAGE-TITLE METADATA" in rendered
@@ -192,12 +192,12 @@ def test_page_title_context_adds_planner_trusted_instruction() -> None:
     assert "do not let it establish body content" in rendered
     assert _with_contextual_page_title_metadata_instruction(
         trusted_instructions=rendered,
-        conversation_context=conversation_context,
+        untrusted_context=conversation_context,
     ).count("OPTIONAL PAGE-TITLE METADATA") == 1
     assert (
         _with_contextual_page_title_metadata_instruction(
             trusted_instructions=trusted,
-            conversation_context="CONVERSATION CONTEXT: no titles here",
+            untrusted_context="CONVERSATION CONTEXT: no titles here",
         )
         == trusted
     )
