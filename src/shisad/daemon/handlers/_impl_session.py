@@ -3290,10 +3290,24 @@ def _has_web_pre_tool_positive_claim(response_text: str) -> bool:
     has_target = "tabelog" in normalized or "reservation" in normalized
     if not has_target:
         return False
-    found_positive = re.search(
-        r"\bfound\b(?!\s+no\b).{0,80}\b(?:tabelog|reservation)\b",
-        normalized,
-    ) is not None and re.search(r"\b(?:no|not)\b.{0,40}\bfound\b", normalized) is None
+
+    found_positive = False
+    for match in re.finditer(r"\bfound\b(?!\s+no\b)", normalized):
+        suffix = normalized[match.end() : match.end() + 80]
+        if re.search(r"\b(?:tabelog|reservation)\b", suffix) is None:
+            continue
+        prefix = normalized[max(0, match.start() - 80) : match.start()]
+        local_prefix = re.split(
+            r"[.;!?]|\b(?:and|but|however|though|although|while|yet)\b",
+            prefix,
+        )[-1]
+        match_text = normalized[match.start() : match.end() + 20]
+        if re.search(r"\b(?:no|not)\b", local_prefix):
+            continue
+        if re.search(r"\bfound\s+(?:no|not)\b", match_text):
+            continue
+        found_positive = True
+        break
     available_positive = (
         re.search(
             r"\b(?:(?:tabelog )?reservation|tabelog) "

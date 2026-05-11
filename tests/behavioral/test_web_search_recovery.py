@@ -266,6 +266,28 @@ async def _planner_stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "mixed inverse answer test" in goal_lower and "amour" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content=(
+                    "The cancellation policy page does not exist, no page for "
+                    "cancellation policy was found, and the cancellation policy page "
+                    "is unavailable, but I found Amour on Tabelog."
+                ),
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-mixed-inverse-answer-search",
+                    )
+                ],
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "amour" in goal_lower and "tabelog" in goal_lower:
         calls = [
             _tool_call(
@@ -639,6 +661,36 @@ async def test_gh27_mixed_positive_web_answer_keeps_existing_append_path(
     assert "reservation page is available" in response
     assert "cancellation policy" in response
     assert "no evidence of cancellation policy changes" in response
+    assert "cancellation policy page does not exist" in response
+    assert "no page for cancellation policy" in response
+    assert "cancellation policy page is unavailable" in response
+    assert "intermediate tool output" not in response
+
+
+@pytest.mark.asyncio
+async def test_gh27_mixed_inverse_positive_web_answer_keeps_existing_append_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Mixed inverse answer test: find the Tabelog reservation path "
+                    "for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "found Amour on Tabelog" in response
     assert "cancellation policy page does not exist" in response
     assert "no page for cancellation policy" in response
     assert "cancellation policy page is unavailable" in response
