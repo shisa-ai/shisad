@@ -3257,10 +3257,19 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
         r"\bdo not exist\b",
         r"\bdoesn't exist\b",
         r"\bnot exist\b",
-        r"\binsufficient evidence\b",
-        r"\bevidence is insufficient\b",
-        r"\bcurrent evidence is insufficient\b",
-        r"\bno (?:reliable )?(?:tabelog )?(?:reservation )?(?:path|page|result|evidence)\b",
+        (
+            r"\b(?:current )?evidence is insufficient to "
+            r"(?:verify|confirm|find) (?:the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
+        ),
+        (
+            r"\binsufficient evidence to "
+            r"(?:verify|confirm|find) (?:the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
+        ),
+        r"\bno (?:reliable )?(?:tabelog )?(?:reservation )?(?:path|page|result)\b",
+        (
+            r"\bno (?:reliable )?evidence (?:for|of) "
+            r"(?:the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
+        ),
         (
             r"\b(?:could not|cannot|can't) find "
             r"(?:a |the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
