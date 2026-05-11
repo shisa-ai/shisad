@@ -211,9 +211,16 @@ _PAGE_TITLE_RESPONSE_ACTION_PATTERN = r"(?:(?:tell|show|give)\s+me)"
 _PAGE_TITLE_REQUEST_TARGET_PATTERN = (
     r"(?:the|this|that|a|an)?\s*" + _PAGE_TITLE_PHRASE_PATTERN
 )
-_PAGE_TITLE_REQUEST_SUFFIX_PATTERN = (
+_PAGE_TITLE_TERMINAL_SUFFIX_PATTERN = (
     r"(?:\s*(?:[.!?]|$)|\s*,?\s*(?:please|too|only|as\s+well"
     r"|without\s+anything\s+else)\s*(?:[.!?]|$))"
+)
+_PAGE_TITLE_REQUEST_SUFFIX_PATTERN = (
+    r"(?:"
+    + _PAGE_TITLE_TERMINAL_SUFFIX_PATTERN
+    + r"|\s*,?\s+(?:and|then|also)\s+"
+    + r"(?!(?:do\s+not|don't|dont|not|omit|omitted|exclude|excluded|without)\b)"
+    + r")"
 )
 _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"(?:"
