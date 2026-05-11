@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 from shisad.core.types import ToolName
 from shisad.daemon.handlers._impl_session import (
+    _PAGE_TITLE_METADATA_HEADER,
+    _PAGE_TITLE_METADATA_MAX_CHARS,
     _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS,
     _build_post_tool_synthesis_untrusted_content,
     _model_facing_serialized_tool_outputs,
     _should_synthesize_initial_web_tool_response,
-    _user_request_requests_page_title_metadata,
 )
 
 
@@ -150,7 +151,7 @@ def test_synthesis_input_preserves_non_ascii_tool_evidence_literals() -> None:
     assert "\\u672c" not in content
 
 
-def test_synthesis_input_omits_web_fetch_title_metadata() -> None:
+def test_synthesis_input_renders_web_fetch_title_metadata_separately() -> None:
     records = [
         {
             "tool_name": "web.fetch",
@@ -170,12 +171,15 @@ def test_synthesis_input_omits_web_fetch_title_metadata() -> None:
     )
 
     assert "Profile only." in content
-    assert "Reserve Online" not in content
-    assert '"title"' not in content
+    assert _PAGE_TITLE_METADATA_HEADER in content
+    assert "Reserve Online | Venue" in content
+    primary_block = content.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "Reserve Online" not in primary_block
+    assert '"title"' not in primary_block
     assert records[0]["payload"]["title"] == "Reserve Online | Venue"
 
 
-def test_synthesis_input_includes_web_fetch_title_metadata_when_requested() -> None:
+def test_synthesis_input_omits_page_title_metadata_block_when_absent() -> None:
     content = _build_post_tool_synthesis_untrusted_content(
         serialized_tool_outputs=[
             {
@@ -183,22 +187,19 @@ def test_synthesis_input_includes_web_fetch_title_metadata_when_requested() -> N
                 "payload": {
                     "content": "Profile only.",
                     "ok": True,
-                    "title": "Reserve Online | Venue",
                 },
                 "success": True,
                 "taint_labels": ["untrusted"],
             }
         ],
         tool_output_summary="Tool summary",
-        include_page_title_metadata=True,
     )
 
     assert "Profile only." in content
-    assert "Reserve Online | Venue" in content
-    assert '"title"' in content
+    assert _PAGE_TITLE_METADATA_HEADER not in content
 
 
-def test_synthesis_input_omits_browser_page_title_metadata_by_default() -> None:
+def test_synthesis_input_renders_browser_page_title_metadata_separately() -> None:
     content = _build_post_tool_synthesis_untrusted_content(
         serialized_tool_outputs=[
             {
@@ -216,11 +217,14 @@ def test_synthesis_input_omits_browser_page_title_metadata_by_default() -> None:
     )
 
     assert "Profile only." in content
-    assert "Reserve Online" not in content
-    assert '"title"' not in content
+    assert _PAGE_TITLE_METADATA_HEADER in content
+    assert "Reserve Online | Venue" in content
+    primary_block = content.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "Reserve Online" not in primary_block
+    assert '"title"' not in primary_block
 
 
-def test_synthesis_input_omits_browser_screenshot_title_metadata_by_default() -> None:
+def test_synthesis_input_renders_browser_screenshot_title_metadata_separately() -> None:
     content = _build_post_tool_synthesis_untrusted_content(
         serialized_tool_outputs=[
             {
@@ -239,11 +243,14 @@ def test_synthesis_input_omits_browser_screenshot_title_metadata_by_default() ->
     )
 
     assert "Profile only." in content
-    assert "Reserve Online" not in content
-    assert '"title"' not in content
+    assert _PAGE_TITLE_METADATA_HEADER in content
+    assert "Reserve Online | Venue" in content
+    primary_block = content.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "Reserve Online" not in primary_block
+    assert '"title"' not in primary_block
 
 
-def test_synthesis_input_includes_browser_page_title_metadata_when_requested() -> None:
+def test_synthesis_input_renders_browser_page_title_metadata_without_intent_parser() -> None:
     content = _build_post_tool_synthesis_untrusted_content(
         serialized_tool_outputs=[
             {
@@ -258,14 +265,14 @@ def test_synthesis_input_includes_browser_page_title_metadata_when_requested() -
             }
         ],
         tool_output_summary="Tool summary",
-        include_page_title_metadata=True,
     )
 
+    assert _PAGE_TITLE_METADATA_HEADER in content
     assert "Browser Page Title" in content
     assert '"title"' in content
 
 
-def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
+def test_synthesis_input_renders_mixed_fetch_titles_only_in_metadata_block() -> None:
     content = _build_post_tool_synthesis_untrusted_content(
         serialized_tool_outputs=[
             {
@@ -292,124 +299,42 @@ def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
             },
         ],
         tool_output_summary="Tool summary",
-        include_page_title_metadata=True,
     )
 
     assert "Profile A." in content
     assert "Profile B." in content
-    assert "Page A Title" not in content
-    assert "Reserve Online" not in content
-    assert '"title"' not in content
+    assert _PAGE_TITLE_METADATA_HEADER in content
+    assert "Page A Title" in content
+    assert "Reserve Online | Venue" in content
+    primary_block = content.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "Page A Title" not in primary_block
+    assert "Reserve Online" not in primary_block
+    assert '"title"' not in primary_block
 
 
-def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
-    assert _user_request_requests_page_title_metadata("What was the page title?")
-    assert _user_request_requests_page_title_metadata("What's the page title?")
-    assert _user_request_requests_page_title_metadata("What's the title of this page?")
-    assert _user_request_requests_page_title_metadata("Tell me the HTML title.")
-    assert _user_request_requests_page_title_metadata("What is the title of this page?")
-    assert _user_request_requests_page_title_metadata("What is this document's title?")
-    assert _user_request_requests_page_title_metadata("Please show me the page title.")
-    assert _user_request_requests_page_title_metadata(
-        "Can you return the title of this page?"
+def test_synthesis_input_truncates_page_title_metadata_block() -> None:
+    long_title = "Title " + ("A" * (_PAGE_TITLE_METADATA_MAX_CHARS + 100))
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile only.",
+                    "ok": True,
+                    "title": long_title,
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        tool_output_summary="Tool summary",
     )
-    assert _user_request_requests_page_title_metadata("I need this document's title.")
-    assert not _user_request_requests_page_title_metadata(
-        "Tell me whether the title-only reservation marker appears."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Check the page body, not the page title."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Ignore the page title and check reservation availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Check the body, not the title of this page."
-    )
-    assert not _user_request_requests_page_title_metadata("Ignore this document's title.")
-    assert not _user_request_requests_page_title_metadata(
-        "Don't ignore the body, but not the page title; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Check availability; do not include the page title."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Do not use the title of this page; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Do not return this document's title; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I do not care about the page title; check reservation availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I don't want the page title; check reservation availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Do not mention the page title; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Do not show or display the page title; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Do not include or use the page title; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Don't use or return the title of this page; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I want the page title excluded; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I need this document's title not included; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I want the title of this page omitted; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I want the page title, excluded from the answer."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "What's the page title, not included; check availability."
-    )
-    assert _user_request_requests_page_title_metadata("Don't ignore the page title.")
-    assert _user_request_requests_page_title_metadata("Please don't ignore the page title.")
-    assert _user_request_requests_page_title_metadata(
-        "I do not care about reservation availability; tell me the page title."
-    )
-    assert _user_request_requests_page_title_metadata(
-        "Check reservation availability, but tell me the page title too."
-    )
-    assert _user_request_requests_page_title_metadata(
-        "Tell me the page title and check reservation availability."
-    )
-    assert _user_request_requests_page_title_metadata(
-        "I need this document's title, then summarize the page."
-    )
-    assert _user_request_requests_page_title_metadata(
-        "Tell me the page title without anything else."
-    )
-    assert _user_request_requests_page_title_metadata("Tell me the page title please.")
-    assert _user_request_requests_page_title_metadata(
-        "Tell me the title of this page, please."
-    )
-    assert _user_request_requests_page_title_metadata(
-        "Don't ignore the page title, please."
-    )
-    assert _user_request_requests_page_title_metadata("What's the page title please?")
-    assert _user_request_requests_page_title_metadata("Tell me the page title only.")
-    assert not _user_request_requests_page_title_metadata(
-        "Tell me the page title please but omit it."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I want the page title only omitted; check availability."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "Tell me the page title and don't include it."
-    )
-    assert not _user_request_requests_page_title_metadata(
-        "I need this document's title, then omit it."
-    )
+
+    assert _PAGE_TITLE_METADATA_HEADER in content
+    assert "[TRUNCATED:" in content
+    primary_block = content.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "Title A" not in primary_block
+    assert '"title"' not in primary_block
 
 
 def test_model_facing_tool_outputs_preserve_input_records() -> None:

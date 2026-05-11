@@ -70,6 +70,8 @@ async def _planner_stub_complete(
 
     planner_input = messages[-1].content if messages else ""
     normalized_input = planner_input.replace("^", "")
+    goal = _extract_user_request(planner_input).lower()
+    explicit_page_title_request = "page title" in goal or "title of this page" in goal
     if "POST-TOOL SYNTHESIS PASS" in normalized_input:
         if (
             "actionable_evidence_snippets" in normalized_input
@@ -84,16 +86,10 @@ async def _planner_stub_complete(
             )
         ):
             response = "Fetched evidence says Reserve Online is shown."
-        elif (
-            _TITLE_ONLY_RESERVATION_MARKER in normalized_input
-            and (
-                "page title" in normalized_input.casefold()
-                or "title of this page" in normalized_input.casefold()
-            )
-        ):
+        elif _TITLE_ONLY_RESERVATION_MARKER in normalized_input and explicit_page_title_request:
             response = f"The page title is {_TITLE_ONLY_RESERVATION_MARKER}."
         elif _TITLE_ONLY_RESERVATION_MARKER in normalized_input:
-            response = "Fetched evidence used the title-only reservation marker."
+            response = "The current evidence is insufficient; title metadata is not body evidence."
         else:
             response = "The current evidence is insufficient; the fetched page was too large."
         return ProviderResponse(
@@ -103,7 +99,6 @@ async def _planner_stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
-    goal = _extract_user_request(planner_input).lower()
     if "without reservation markers" in goal:
         url = _NO_MARKER_URL
     elif (
