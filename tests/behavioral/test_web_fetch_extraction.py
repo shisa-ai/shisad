@@ -23,9 +23,11 @@ from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 _SUMMARY_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _FETCH_URL = "https://tabelog.com/hokkaido/A0101/A010101/123456/"
 _ENGLISH_MARKER_URL = "https://tabelog.com/hokkaido/A0101/A010101/english-marker/"
+_TITLE_ONLY_MARKER_URL = "https://tabelog.com/hokkaido/A0101/A010101/title-only-marker/"
 _NO_MARKER_URL = "https://tabelog.com/hokkaido/A0101/A010101/no-marker/"
 _RESERVATION_MARKERS = ("本日夜空席あり", "ネット予約")
 _ENGLISH_RESERVATION_MARKER = "Reserve Online"
+_TITLE_ONLY_RESERVATION_MARKER = "Reserve Online | Venue"
 
 
 def _tool_call(tool_name: str, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
@@ -82,6 +84,8 @@ async def _planner_stub_complete(
             )
         ):
             response = "Fetched evidence says Reserve Online is shown."
+        elif _TITLE_ONLY_RESERVATION_MARKER in normalized_input:
+            response = "Fetched evidence used the title-only reservation marker."
         else:
             response = "The current evidence is insufficient; the fetched page was too large."
         return ProviderResponse(
@@ -94,6 +98,8 @@ async def _planner_stub_complete(
     goal = _extract_user_request(planner_input).lower()
     if "without reservation markers" in goal:
         url = _NO_MARKER_URL
+    elif "title-only reservation marker" in goal:
+        url = _TITLE_ONLY_MARKER_URL
     elif "english reservation marker" in goal:
         url = _ENGLISH_MARKER_URL
     elif "reservation availability" in goal:
@@ -158,6 +164,14 @@ def _large_english_marker_html() -> bytes:
     return html.encode("utf-8")
 
 
+def _title_only_marker_html() -> bytes:
+    html = (
+        "<html><head><title>Reserve Online | Venue</title></head>"
+        "<body>Profile only. No booking calendar is shown here.</body></html>"
+    )
+    return html.encode("utf-8")
+
+
 class _FakeHttpResponse:
     def __init__(self, body: bytes, url: str) -> None:
         self._body = body
@@ -188,6 +202,8 @@ def _fake_open_no_redirect(request, *, timeout: float):  # type: ignore[no-untyp
     url = str(getattr(request, "full_url", ""))
     if "english-marker" in url:
         body = _large_english_marker_html()
+    elif "title-only-marker" in url:
+        body = _title_only_marker_html()
     else:
         body = _large_tabelog_html(include_markers="no-marker" not in url)
     return _FakeHttpResponse(body, url)
@@ -311,6 +327,35 @@ async def test_gh28_large_fetch_surfaces_english_reservation_marker(
     assert fetch_payload["taint_labels"] == ["untrusted"]
     assert "Reserve Online" not in fetch_payload["content"]
     assert "actionable_evidence_snippets" in fetch_payload
+
+
+@pytest.mark.asyncio
+async def test_gh28_title_only_marker_does_not_drive_final_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_fetch_extraction_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Check the title-only reservation marker on the Tabelog page "
+                    f"{_TITLE_ONLY_MARKER_URL}."
+                ),
+            },
+        )
+
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "insufficient" in response.casefold()
+    assert "title-only reservation marker" not in response
+    outputs = extract_tool_outputs(reply)
+    fetch_payload = outputs["web.fetch"][0]
+    assert fetch_payload["title"] == _TITLE_ONLY_RESERVATION_MARKER
+    assert "actionable_evidence_snippets" not in fetch_payload
 
 
 @pytest.mark.asyncio

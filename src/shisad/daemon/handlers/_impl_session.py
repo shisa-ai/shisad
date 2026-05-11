@@ -3323,14 +3323,17 @@ def _build_post_tool_synthesis_untrusted_content(
     tool_output_summary: str,
     preliminary_prose: str = "",
 ) -> str:
+    synthesis_tool_outputs = _post_tool_synthesis_serialized_tool_outputs(
+        serialized_tool_outputs
+    )
     serialized_payload = (
         json.dumps(
-            list(serialized_tool_outputs),
+            synthesis_tool_outputs,
             ensure_ascii=False,
             sort_keys=True,
             indent=2,
         )
-        if serialized_tool_outputs
+        if synthesis_tool_outputs
         else ""
     )
     evidence_blocks: list[str] = []
@@ -3367,6 +3370,19 @@ def _build_post_tool_synthesis_untrusted_content(
             ]
         )
     return "\n\n".join(evidence_blocks)
+
+
+def _post_tool_synthesis_serialized_tool_outputs(
+    serialized_tool_outputs: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    synthesis_tool_outputs = deepcopy(list(serialized_tool_outputs))
+    for record in synthesis_tool_outputs:
+        if str(record.get("tool_name", "")).strip().lower() != "web.fetch":
+            continue
+        payload = record.get("payload")
+        if isinstance(payload, dict):
+            payload.pop("title", None)
+    return synthesis_tool_outputs
 
 
 def _response_exposes_internal_tool_narration(text: str) -> bool:

@@ -146,3 +146,28 @@ def test_synthesis_input_preserves_non_ascii_tool_evidence_literals() -> None:
     assert "本日夜空席あり" in content
     assert "ネット予約" in content
     assert "\\u672c" not in content
+
+
+def test_synthesis_input_omits_web_fetch_title_metadata() -> None:
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "payload": {
+                "content": "Profile only.",
+                "ok": True,
+                "title": "Reserve Online | Venue",
+            },
+            "success": True,
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=records,
+        tool_output_summary="Tool summary",
+    )
+
+    assert "Profile only." in content
+    assert "Reserve Online" not in content
+    assert '"title"' not in content
+    assert records[0]["payload"]["title"] == "Reserve Online | Venue"
