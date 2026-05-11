@@ -91,6 +91,20 @@ def test_fetch_actionable_snippets_prioritize_availability_over_repeated_actions
     assert any(item["matched_marker"] == "本日夜空席あり" for item in snippets)
 
 
+def test_fetch_actionable_snippets_select_late_mixed_case_english_marker() -> None:
+    text = ("restaurant profile " * 900) + "Reserve Online from the booking calendar."
+
+    truncated_text = WebToolkit._extract_text(text, max_chars=10_000)
+    snippets = WebToolkit._extract_actionable_evidence_snippets(text)
+
+    assert "Reserve Online" not in truncated_text
+    assert snippets
+    assert snippets[0]["kind"] == "reservation_evidence_marker"
+    assert snippets[0]["matched_marker"] == "reserve online"
+    assert "Reserve Online" in snippets[0]["snippet"]
+    assert snippets[0]["taint_labels"] == ["untrusted"]
+
+
 def test_fetch_actionable_snippets_ignore_page_without_reservation_markers() -> None:
     text = ("店舗紹介のみ。予約状況の表示はありません。 " * 100).strip()
 
