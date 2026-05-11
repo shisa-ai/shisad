@@ -3283,6 +3283,39 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
     return any(re.search(pattern, normalized) is not None for pattern in absence_patterns)
 
 
+def _is_web_pre_tool_target_absence_claim(response_text: str) -> bool:
+    normalized = " ".join(str(response_text or "").casefold().split())
+    if not normalized:
+        return False
+    target_absence_patterns = (
+        (
+            r"\b(?:(?:tabelog )?reservation|tabelog) (?:path|page|result) "
+            r"(?:does not exist|do not exist|doesn't exist|(?:does )?not exist|"
+            r"(?:is )?not found|(?:is )?unavailable)\b"
+        ),
+        (
+            r"\b(?:current )?evidence is insufficient to "
+            r"(?:verify|confirm|find) (?:the )?"
+            r"(?:(?:tabelog )?reservation|tabelog) (?:path|page)\b"
+        ),
+        (
+            r"\binsufficient evidence to "
+            r"(?:verify|confirm|find) (?:the )?"
+            r"(?:(?:tabelog )?reservation|tabelog) (?:path|page)\b"
+        ),
+        r"\bno (?:reliable )?(?:(?:tabelog )?reservation|tabelog) (?:path|page|result)\b",
+        (
+            r"\bno (?:reliable )?evidence (?:for|of) (?:the )?"
+            r"(?:(?:tabelog )?reservation|tabelog) (?:path|page)\b"
+        ),
+        (
+            r"\b(?:could not|cannot|can't) find (?:a |the )?"
+            r"(?:(?:tabelog )?reservation|tabelog) (?:path|page)\b"
+        ),
+    )
+    return any(re.search(pattern, normalized) is not None for pattern in target_absence_patterns)
+
+
 def _has_web_pre_tool_positive_claim(response_text: str) -> bool:
     normalized = " ".join(str(response_text or "").casefold().split())
     if not normalized:
@@ -3298,7 +3331,7 @@ def _has_web_pre_tool_positive_claim(response_text: str) -> bool:
             continue
         prefix = normalized[max(0, match.start() - 80) : match.start()]
         local_prefix = re.split(
-            r"[.;!?]|\b(?:and|but|however|though|although|while|yet)\b",
+            r"[,.;!?]|\b(?:and|but|however|though|although|while|yet)\b",
             prefix,
         )[-1]
         match_text = normalized[match.start() : match.end() + 20]
@@ -10131,10 +10164,22 @@ class SessionImplMixin(HandlerMixinBase):
             else ""
         )
         web_evidence_tool_names = {ToolName("web.search"), ToolName("web.fetch")}
+        initial_response_has_web_absence = _is_web_pre_tool_absence_claim(
+            initial_planner_response_text,
+        )
+        initial_response_has_web_positive = _has_web_pre_tool_positive_claim(
+            initial_planner_response_text,
+        )
+        initial_response_has_target_absence = _is_web_pre_tool_target_absence_claim(
+            initial_planner_response_text,
+        )
         should_synthesize_initial_tool_response = (
             bool(initial_planner_response_text)
-            and _is_web_pre_tool_absence_claim(initial_planner_response_text)
-            and not _has_web_pre_tool_positive_claim(initial_planner_response_text)
+            and initial_response_has_web_absence
+            and (
+                initial_response_has_target_absence
+                or not initial_response_has_web_positive
+            )
             and any(
                 tool_output.tool_name in web_evidence_tool_names
                 for tool_output in execution.executed_tool_outputs
