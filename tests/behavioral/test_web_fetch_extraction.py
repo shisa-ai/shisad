@@ -22,8 +22,10 @@ from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _SUMMARY_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _FETCH_URL = "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+_ENGLISH_MARKER_URL = "https://tabelog.com/hokkaido/A0101/A010101/english-marker/"
 _NO_MARKER_URL = "https://tabelog.com/hokkaido/A0101/A010101/no-marker/"
 _RESERVATION_MARKERS = ("本日夜空席あり", "ネット予約")
+_ENGLISH_RESERVATION_MARKER = "Reserve Online"
 
 
 def _tool_call(tool_name: str, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
@@ -72,6 +74,11 @@ async def _planner_stub_complete(
             and all(marker in normalized_input for marker in _RESERVATION_MARKERS)
         ):
             response = "Fetched evidence says 本日夜空席あり and ネット予約 are shown."
+        elif (
+            "actionable_evidence_snippets" in normalized_input
+            and _ENGLISH_RESERVATION_MARKER in normalized_input
+        ):
+            response = "Fetched evidence says Reserve Online is shown."
         else:
             response = "The current evidence is insufficient; the fetched page was too large."
         return ProviderResponse(
@@ -84,6 +91,8 @@ async def _planner_stub_complete(
     goal = _extract_user_request(planner_input).lower()
     if "without reservation markers" in goal:
         url = _NO_MARKER_URL
+    elif "english reservation marker" in goal:
+        url = _ENGLISH_MARKER_URL
     elif "reservation availability" in goal:
         url = _FETCH_URL
     else:
@@ -130,6 +139,22 @@ def _large_tabelog_html(*, include_markers: bool) -> bytes:
     return html.encode("utf-8")
 
 
+def _large_english_marker_html() -> bytes:
+    filler_before = "restaurant profile " * 900
+    target = (
+        '<section class="reservation">'
+        "Booking calendar: Reserve Online from this page."
+        "</section>"
+    )
+    filler_after = " menu details" * 7000
+    html = (
+        "<html><title>Amour - Tabelog</title><body>"
+        f"{filler_before}{target}{filler_after}"
+        "</body></html>"
+    )
+    return html.encode("utf-8")
+
+
 class _FakeHttpResponse:
     def __init__(self, body: bytes, url: str) -> None:
         self._body = body
@@ -158,7 +183,10 @@ class _FakeHttpResponse:
 def _fake_open_no_redirect(request, *, timeout: float):  # type: ignore[no-untyped-def]
     _ = timeout
     url = str(getattr(request, "full_url", ""))
-    body = _large_tabelog_html(include_markers="no-marker" not in url)
+    if "english-marker" in url:
+        body = _large_english_marker_html()
+    else:
+        body = _large_tabelog_html(include_markers="no-marker" not in url)
     return _FakeHttpResponse(body, url)
 
 
@@ -248,6 +276,37 @@ async def test_gh28_large_fetch_surfaces_japanese_reservation_markers(
     assert fetch_payload["truncated"] is True
     assert fetch_payload["taint_labels"] == ["untrusted"]
     assert "本日夜空席あり" not in fetch_payload["content"]
+    assert "actionable_evidence_snippets" in fetch_payload
+
+
+@pytest.mark.asyncio
+async def test_gh28_large_fetch_surfaces_english_reservation_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_fetch_extraction_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Check the english reservation marker on the Tabelog page "
+                    f"{_ENGLISH_MARKER_URL}."
+                ),
+            },
+        )
+
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "Reserve Online" in response
+    assert "too large" not in response
+    outputs = extract_tool_outputs(reply)
+    fetch_payload = outputs["web.fetch"][0]
+    assert fetch_payload["truncated"] is True
+    assert fetch_payload["taint_labels"] == ["untrusted"]
+    assert "Reserve Online" not in fetch_payload["content"]
     assert "actionable_evidence_snippets" in fetch_payload
 
 
