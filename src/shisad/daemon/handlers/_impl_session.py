@@ -211,6 +211,9 @@ _PAGE_TITLE_RESPONSE_ACTION_PATTERN = r"(?:(?:tell|show|give)\s+me)"
 _PAGE_TITLE_REQUEST_TARGET_PATTERN = (
     r"(?:the|this|that|a|an)?\s*" + _PAGE_TITLE_PHRASE_PATTERN
 )
+_PAGE_TITLE_REQUEST_SUFFIX_PATTERN = (
+    r"(?=\s*(?:$|[.!?;,\n]|\btoo\b|\bas\s+well\b|\bwithout\s+anything\s+else\b))"
+)
 _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"(?:"
     + _PAGE_TITLE_REQUEST_SEGMENT_PREFIX
@@ -221,22 +224,25 @@ _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     + r"|(?:can|could|would)\s+you\s+(?:please\s+)?"
     + _PAGE_TITLE_REQUEST_ACTION_PATTERN
     + r"\s+"
-    + r"|(?:what|which)\s+(?:is|was|are|were)\s+"
+    + r"|(?:what(?:['\u2019]s|\s+(?:is|was|are|were))"
+    + r"|which\s+(?:is|was|are|were))\s+"
     + r"|(?:i\s+)?(?:want|need)\s+"
     + r")"
     + _PAGE_TITLE_REQUEST_TARGET_PATTERN
+    + _PAGE_TITLE_REQUEST_SUFFIX_PATTERN
     + r"|\b(?:and|but|also|then)\s+(?:please\s+)?"
     + _PAGE_TITLE_RESPONSE_ACTION_PATTERN
     + r"\s+"
     + _PAGE_TITLE_REQUEST_TARGET_PATTERN
+    + _PAGE_TITLE_REQUEST_SUFFIX_PATTERN
     + r")",
     re.IGNORECASE,
 )
 _PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE = re.compile(
     _PAGE_TITLE_REQUEST_SEGMENT_PREFIX
-    + r"(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\s+"
-    + r"(?:the|this|that|a|an)?\s*"
-    + _PAGE_TITLE_PHRASE_PATTERN,
+    + r"(?:please\s+)?(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\s+"
+    + _PAGE_TITLE_REQUEST_TARGET_PATTERN
+    + _PAGE_TITLE_REQUEST_SUFFIX_PATTERN,
     re.IGNORECASE,
 )
 _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(

@@ -304,6 +304,8 @@ def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
 
 def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
     assert _user_request_requests_page_title_metadata("What was the page title?")
+    assert _user_request_requests_page_title_metadata("What's the page title?")
+    assert _user_request_requests_page_title_metadata("What's the title of this page?")
     assert _user_request_requests_page_title_metadata("Tell me the HTML title.")
     assert _user_request_requests_page_title_metadata("What is the title of this page?")
     assert _user_request_requests_page_title_metadata("What is this document's title?")
@@ -355,7 +357,17 @@ def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
     assert not _user_request_requests_page_title_metadata(
         "Don't use or return the title of this page; check availability."
     )
+    assert not _user_request_requests_page_title_metadata(
+        "I want the page title excluded; check availability."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "I need this document's title not included; check availability."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "I want the title of this page omitted; check availability."
+    )
     assert _user_request_requests_page_title_metadata("Don't ignore the page title.")
+    assert _user_request_requests_page_title_metadata("Please don't ignore the page title.")
     assert _user_request_requests_page_title_metadata(
         "I do not care about reservation availability; tell me the page title."
     )
