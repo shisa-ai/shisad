@@ -86,7 +86,10 @@ async def _planner_stub_complete(
             response = "Fetched evidence says Reserve Online is shown."
         elif (
             _TITLE_ONLY_RESERVATION_MARKER in normalized_input
-            and "page title" in normalized_input.casefold()
+            and (
+                "page title" in normalized_input.casefold()
+                or "title of this page" in normalized_input.casefold()
+            )
         ):
             response = f"The page title is {_TITLE_ONLY_RESERVATION_MARKER}."
         elif _TITLE_ONLY_RESERVATION_MARKER in normalized_input:
@@ -103,7 +106,11 @@ async def _planner_stub_complete(
     goal = _extract_user_request(planner_input).lower()
     if "without reservation markers" in goal:
         url = _NO_MARKER_URL
-    elif "page title" in goal or "title-only reservation marker" in goal:
+    elif (
+        "page title" in goal
+        or "title of this page" in goal
+        or "title-only reservation marker" in goal
+    ):
         url = _TITLE_ONLY_MARKER_URL
     elif "english reservation marker" in goal:
         url = _ENGLISH_MARKER_URL
@@ -377,7 +384,7 @@ async def test_gh28_user_requested_page_title_still_uses_fetch_title_metadata(
                 "session_id": sid,
                 "content": (
                     "Fetch the Tabelog page "
-                    f"{_TITLE_ONLY_MARKER_URL} and tell me the page title."
+                    f"{_TITLE_ONLY_MARKER_URL} and tell me the title of this page."
                 ),
             },
         )

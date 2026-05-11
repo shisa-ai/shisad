@@ -76,7 +76,7 @@ def test_task_close_gate_keeps_web_fetch_title_metadata_when_requested() -> None
                 "taint_labels": ["untrusted"],
             }
         ],
-        task_description="Fetch the page and tell me the page title.",
+        task_description="Fetch the page and tell me the title of this page.",
     )
 
     assert "Reserve Online | Venue" in block

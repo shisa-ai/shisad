@@ -238,6 +238,8 @@ def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
 def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
     assert _user_request_requests_web_fetch_title_metadata("What was the page title?")
     assert _user_request_requests_web_fetch_title_metadata("Tell me the HTML title.")
+    assert _user_request_requests_web_fetch_title_metadata("What is the title of this page?")
+    assert _user_request_requests_web_fetch_title_metadata("What is this document's title?")
     assert not _user_request_requests_web_fetch_title_metadata(
         "Tell me whether the title-only reservation marker appears."
     )

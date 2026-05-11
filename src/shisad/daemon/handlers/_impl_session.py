@@ -198,7 +198,8 @@ _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"\b(?:page|html|document)\s+title\b"
-    r"|\btitle\s+(?:of|for)\s+(?:the\s+)?(?:page|html|document)\b",
+    r"|\b(?:the|this|that)\s+(?:page|html|document)(?:['\u2019]s)?\s+title\b"
+    r"|\btitle\s+(?:of|for)\s+(?:the|this|that)\s+(?:page|html|document)\b",
     re.IGNORECASE,
 )
 _INTERNAL_TOOL_NARRATION_MARKERS = (
