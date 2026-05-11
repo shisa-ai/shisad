@@ -41,7 +41,7 @@ def test_fetch_actionable_snippets_handle_html_split_negated_availability() -> N
 
     snippets = WebToolkit._extract_actionable_evidence_snippets(text)
 
-    assert "空席あり ません" in text
+    assert "空席ありません" in text
     assert snippets
     assert not any(item["matched_marker"] == "空席あり" for item in snippets)
 
@@ -54,7 +54,7 @@ def test_fetch_actionable_snippets_handle_html_split_negation_suffix() -> None:
 
     snippets = WebToolkit._extract_actionable_evidence_snippets(text)
 
-    assert "空席ありま せん" in text
+    assert "空席ありません" in text
     assert snippets
     assert not any(item["matched_marker"] == "空席あり" for item in snippets)
 
@@ -67,7 +67,7 @@ def test_fetch_actionable_snippets_handle_html_split_positive_availability() -> 
 
     snippets = WebToolkit._extract_actionable_evidence_snippets(text)
 
-    assert "空席 あり" in text
+    assert "空席あり" in text
     assert any(item["matched_marker"] == "空席あり" for item in snippets)
 
 
@@ -121,7 +121,7 @@ def test_fetch_actionable_snippets_handle_html_split_english_marker() -> None:
 
     snippets = WebToolkit._extract_actionable_evidence_snippets(text)
 
-    assert "Reserve On line" in text
+    assert "Reserve Online" in text
     assert snippets
     assert snippets[0]["matched_marker"] == "reserve online"
 
@@ -140,7 +140,7 @@ def test_fetch_actionable_snippets_do_not_match_tag_split_english_prefix() -> No
         max_chars=None,
     )
 
-    assert "Pre serve Online" in text
+    assert "Preserve Online" in text
     assert WebToolkit._extract_actionable_evidence_snippets(text) == []
 
 
@@ -150,7 +150,7 @@ def test_fetch_actionable_snippets_do_not_match_tag_split_english_suffix() -> No
         max_chars=None,
     )
 
-    assert "Reserve Online s" in text
+    assert "Reserve Onlines" in text
     assert WebToolkit._extract_actionable_evidence_snippets(text) == []
 
 

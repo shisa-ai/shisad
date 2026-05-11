@@ -25,6 +25,12 @@ _FETCH_ACTIONABLE_SNIPPET_MAX_CHARS = 560
 _FETCH_ACTIONABLE_SNIPPET_LIMIT = 5
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_BLOCK_TAG_RE = re.compile(
+    r"</?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|"
+    r"footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|"
+    r"tfoot|th|thead|tr|ul)[^>]*>",
+    re.IGNORECASE,
+)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _RESERVATION_EVIDENCE_MARKERS: tuple[str, ...] = (
@@ -532,7 +538,8 @@ class WebToolkit:
     @staticmethod
     def _extract_text(content: str, *, max_chars: int | None = _FETCH_TEXT_MAX_CHARS) -> str:
         stripped = _SCRIPT_STYLE_RE.sub(" ", content)
-        stripped = _TAG_RE.sub(" ", stripped)
+        stripped = _BLOCK_TAG_RE.sub(" ", stripped)
+        stripped = _TAG_RE.sub("", stripped)
         text = _WS_RE.sub(" ", stripped).strip()
         if max_chars is None:
             return text
@@ -588,18 +595,10 @@ class WebToolkit:
     @staticmethod
     def _iter_marker_spans(text: str, marker: str) -> Iterator[tuple[int, int]]:
         if marker.isascii():
-            search_text, index_map = WebToolkit._collapse_ascii_marker_search_text(text)
-            needle = "".join(marker.split())
-            for match in re.finditer(re.escape(needle), search_text, flags=re.IGNORECASE):
-                begin = index_map[match.start()]
-                end = index_map[match.end() - 1] + 1
-                if WebToolkit._has_ascii_word_boundary(
-                    text,
-                    begin=begin,
-                    end=end,
-                    marker=marker,
-                ):
-                    yield begin, end
+            parts = [re.escape(part) for part in marker.split()]
+            pattern = r"(?<![A-Za-z0-9])" + r"\s+".join(parts) + r"(?![A-Za-z0-9])"
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                yield match.start(), match.end()
             return
 
         search_text, index_map = WebToolkit._collapse_japanese_marker_search_text(text)
@@ -622,34 +621,6 @@ class WebToolkit:
             search_chars.append(char)
             index_map.append(index)
         return "".join(search_chars), index_map
-
-    @staticmethod
-    def _collapse_ascii_marker_search_text(text: str) -> tuple[str, list[int]]:
-        search_chars: list[str] = []
-        index_map: list[int] = []
-        for index, char in enumerate(text):
-            if char.isspace():
-                continue
-            search_chars.append(char)
-            index_map.append(index)
-        return "".join(search_chars), index_map
-
-    @staticmethod
-    def _has_ascii_word_boundary(text: str, *, begin: int, end: int, marker: str) -> bool:
-        before = text[begin - 1] if begin > 0 else ""
-        after = text[end] if end < len(text) else ""
-        if WebToolkit._is_ascii_word_char(before) or WebToolkit._is_ascii_word_char(after):
-            return False
-        marker_head = marker.split()[0].casefold()
-        prefix_match = re.search(r"([A-Za-z0-9]+)\s*$", text[:begin])
-        if prefix_match and (prefix_match.group(1) + marker_head).casefold() == "preserve":
-            return False
-        suffix_match = re.match(r"\s+([A-Za-z0-9]+)", text[end:])
-        return not (suffix_match is not None and suffix_match.group(1).casefold() == "s")
-
-    @staticmethod
-    def _is_ascii_word_char(char: str) -> bool:
-        return bool(char) and char.isascii() and char.isalnum()
 
     @staticmethod
     def _is_negated_japanese_availability_marker(
