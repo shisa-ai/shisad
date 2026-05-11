@@ -288,6 +288,27 @@ async def _planner_stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "mixed separator answer test" in goal_lower and "amour" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content=(
+                    "No page for cancellation policy was found: "
+                    "I found Amour on Tabelog."
+                ),
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-mixed-separator-answer-search",
+                    )
+                ],
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "target contradiction answer test" in goal_lower and "amour" in goal_lower:
         return ProviderResponse(
             message=Message(
@@ -300,6 +321,26 @@ async def _planner_stub_complete(
                         "web.search",
                         {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
                         call_id="gh27-target-contradiction-answer-search",
+                    )
+                ],
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "target result contradiction answer test" in goal_lower and "amour" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content=(
+                    "I found Amour on Tabelog, but the Tabelog result is unavailable."
+                ),
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-target-result-contradiction-answer-search",
                     )
                 ],
             ),
@@ -718,6 +759,34 @@ async def test_gh27_mixed_inverse_positive_web_answer_keeps_existing_append_path
 
 
 @pytest.mark.asyncio
+async def test_gh27_mixed_separator_positive_web_answer_keeps_existing_append_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Mixed separator answer test: find the Tabelog reservation path "
+                    "for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "found Amour on Tabelog" in response
+    assert "No page for cancellation policy was found" in response
+    assert "intermediate tool output" not in response
+
+
+@pytest.mark.asyncio
 async def test_gh27_target_absence_overrides_mixed_positive_answer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -743,6 +812,34 @@ async def test_gh27_target_absence_overrides_mixed_positive_answer(
     assert "Found Amour on Tabelog" in response
     assert "reservation page is available" in response
     assert "does not exist" not in response.casefold()
+
+
+@pytest.mark.asyncio
+async def test_gh27_target_result_absence_overrides_mixed_positive_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Target result contradiction answer test: find the Tabelog reservation path "
+                    "for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "Found Amour on Tabelog" in response
+    assert "reservation page is available" in response
+    assert "result is unavailable" not in response.casefold()
 
 
 @pytest.mark.asyncio

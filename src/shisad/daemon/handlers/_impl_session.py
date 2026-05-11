@@ -3278,7 +3278,7 @@ def _is_web_pre_tool_absence_claim(response_text: str) -> bool:
             r"\b(?:could not|cannot|can't) find "
             r"(?:a |the )?(?:tabelog )?(?:reservation )?(?:path|page)\b"
         ),
-        r"\b(?:reservation )?(?:path|page) (?:is )?(?:not found|unavailable)\b",
+        r"\b(?:reservation )?(?:path|page|result) (?:is )?(?:not found|unavailable)\b",
     )
     return any(re.search(pattern, normalized) is not None for pattern in absence_patterns)
 
@@ -3331,7 +3331,7 @@ def _has_web_pre_tool_positive_claim(response_text: str) -> bool:
             continue
         prefix = normalized[max(0, match.start() - 80) : match.start()]
         local_prefix = re.split(
-            r"[,.;!?]|\b(?:and|but|however|though|although|while|yet)\b",
+            r"[,.;!?:]|\bfound\b|\b(?:and|but|however|though|although|while|yet)\b",
             prefix,
         )[-1]
         match_text = normalized[match.start() : match.end() + 20]
