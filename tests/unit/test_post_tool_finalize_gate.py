@@ -220,6 +220,29 @@ def test_synthesis_input_omits_browser_page_title_metadata_by_default() -> None:
     assert '"title"' not in content
 
 
+def test_synthesis_input_omits_browser_screenshot_title_metadata_by_default() -> None:
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "browser.screenshot",
+                "payload": {
+                    "ocr_text": "Profile only.",
+                    "ok": True,
+                    "screenshot_id": "shot-1",
+                    "title": "Reserve Online | Venue",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        tool_output_summary="Tool summary",
+    )
+
+    assert "Profile only." in content
+    assert "Reserve Online" not in content
+    assert '"title"' not in content
+
+
 def test_synthesis_input_includes_browser_page_title_metadata_when_requested() -> None:
     content = _build_post_tool_synthesis_untrusted_content(
         serialized_tool_outputs=[

@@ -207,6 +207,7 @@ _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
         "browser.click",
         "browser.navigate",
         "browser.read_page",
+        "browser.screenshot",
         "browser.type_text",
         "web.fetch",
     }

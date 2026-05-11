@@ -105,6 +105,29 @@ def test_task_close_gate_omits_browser_page_title_metadata_by_default() -> None:
     assert '"title"' not in block
 
 
+def test_task_close_gate_omits_browser_screenshot_title_metadata_by_default() -> None:
+    block = _build_task_close_gate_tool_output_block(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "browser.screenshot",
+                "payload": {
+                    "ocr_text": "Profile only.",
+                    "ok": True,
+                    "screenshot_id": "shot-1",
+                    "title": "Reserve Online | Venue",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        task_description="Check reservation availability.",
+    )
+
+    assert "Profile only." in block
+    assert "Reserve Online" not in block
+    assert '"title"' not in block
+
+
 def test_task_close_gate_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
     block = _build_task_close_gate_tool_output_block(
         serialized_tool_outputs=[
