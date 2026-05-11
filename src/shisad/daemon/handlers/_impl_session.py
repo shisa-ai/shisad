@@ -200,6 +200,7 @@ _PAGE_TITLE_METADATA_MAX_CHARS = 1600
 _PAGE_TITLE_METADATA_HEADER = (
     "Optional page-title metadata (untrusted; separate from primary tool evidence):"
 )
+_PAGE_TITLE_METADATA_CONTEXT_MARKER = "Optional page-title metadata"
 _PAGE_TITLE_METADATA_TRUSTED_INSTRUCTION = (
     "OPTIONAL PAGE-TITLE METADATA: DATA EVIDENCE may include a separately labeled "
     "page-title metadata block. The daemon did not decide whether the user requested "
@@ -218,6 +219,18 @@ _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
         "web.fetch",
     }
 )
+
+
+def _with_contextual_page_title_metadata_instruction(
+    *,
+    trusted_instructions: str,
+    conversation_context: str,
+) -> str:
+    if _PAGE_TITLE_METADATA_CONTEXT_MARKER not in conversation_context:
+        return trusted_instructions
+    if _PAGE_TITLE_METADATA_TRUSTED_INSTRUCTION in trusted_instructions:
+        return trusted_instructions
+    return f"{trusted_instructions}\n\n{_PAGE_TITLE_METADATA_TRUSTED_INSTRUCTION}"
 _INTERNAL_TOOL_NARRATION_MARKERS = (
     "```xml",
     "```json",
@@ -7845,6 +7858,10 @@ class SessionImplMixin(HandlerMixinBase):
                 "when full content is needed; if the packet is insufficient, say what is missing "
                 "instead of substituting generic priors."
             )
+        trusted_instructions = _with_contextual_page_title_metadata_instruction(
+            trusted_instructions=trusted_instructions,
+            conversation_context=conversation_context,
+        )
 
         context_scaffold: ContextScaffold | None = None
         context_scaffold_degraded = False
