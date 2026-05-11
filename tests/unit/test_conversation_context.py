@@ -126,6 +126,42 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
     assert "system: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered_summary
 
 
+def test_pending_bridge_summary_reads_blob_result_portion(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
+    sid = SessionId("sess-pending-bridge-blob")
+    store.append(sid, role="user", content="fetch this page title and then wait")
+    entry = store.append(
+        sid,
+        role="assistant",
+        content=(
+            "[PENDING CONFIRMATIONS]\n"
+            "Queued for your approval:\n"
+            "1. c-1\n"
+            "   In chat: reply with 'confirm 1'\n\n"
+            + "pending detail " * 40
+            + "\n\nCompleted actions:\n"
+            "Completed action result:\n"
+            "Optional page-title metadata (untrusted; separate from primary tool evidence):\n"
+            '[{"title": "ネット予約 | 会場"}]'
+        ),
+        metadata={"pending_confirmation_bridge": True},
+    )
+    assert entry.blob_ref is not None
+    assert "Completed actions:" not in entry.content_preview
+
+    store.append(sid, role="user", content="next request")
+    rendered_summary, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=1,
+        exclude_latest_turn=False,
+    )
+
+    assert "Summary of earlier turns:" in rendered_summary
+    assert "assistant: Completed actions:" in rendered_summary
+    assert "Optional page-title" in rendered_summary
+
+
 def test_c3_legacy_pending_footer_mixed_context_stays_assistant(tmp_path: Path) -> None:
     store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
     sid = SessionId("sess-c3-legacy-footer")

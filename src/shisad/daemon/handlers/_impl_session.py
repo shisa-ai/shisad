@@ -4330,9 +4330,12 @@ def _summarize_context_entries(
             transcript_store=(
                 transcript_store
                 if bool(metadata.get("system_generated_pending_confirmations"))
+                or bool(metadata.get("pending_confirmation_bridge"))
                 else None
             ),
         )
+        if bool(metadata.get("pending_confirmation_bridge")):
+            raw = _mixed_pending_confirmation_result_portion(raw) or raw
         if not raw.strip():
             continue
         role = _transcript_entry_context_role(entry, content=raw)
