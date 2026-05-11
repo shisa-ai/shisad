@@ -127,7 +127,7 @@ def test_synthesis_input_preserves_non_ascii_tool_evidence_literals() -> None:
                 "payload": {
                     "actionable_evidence_snippets": [
                         {
-                            "kind": "reservation_availability",
+                            "kind": "reservation_evidence_marker",
                             "matched_marker": "本日夜空席あり",
                             "snippet": "予約カレンダー 本日夜空席あり。ネット予約できます。",
                             "taint_labels": ["untrusted"],

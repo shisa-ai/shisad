@@ -15,10 +15,22 @@ def test_fetch_actionable_snippets_select_late_japanese_reservation_markers() ->
 
     assert "本日夜空席あり" not in truncated_text
     assert snippets
-    assert snippets[0]["kind"] == "reservation_availability"
+    assert snippets[0]["kind"] == "reservation_evidence_marker"
     assert "本日夜空席あり" in snippets[0]["snippet"]
     assert "ネット予約" in snippets[0]["snippet"]
     assert snippets[0]["taint_labels"] == ["untrusted"]
+
+
+def test_fetch_actionable_snippets_do_not_label_negated_availability_as_positive() -> None:
+    snippets = WebToolkit._extract_actionable_evidence_snippets(
+        "予約カレンダー 本日夜空席ありません。ネット予約不可です。"
+    )
+
+    assert snippets
+    assert all(item["kind"] == "reservation_evidence_marker" for item in snippets)
+    assert not any(item["matched_marker"] == "本日夜空席あり" for item in snippets)
+    assert not any(item["matched_marker"] == "空席あり" for item in snippets)
+    assert "ありません" in snippets[0]["snippet"]
 
 
 def test_fetch_actionable_snippets_ignore_page_without_reservation_markers() -> None:

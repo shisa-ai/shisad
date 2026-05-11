@@ -105,7 +105,17 @@ async def test_assistant_handlers_smoke() -> None:
 
         async def do_web_fetch(self, payload: dict[str, Any]) -> dict[str, Any]:
             assert payload["url"] == "https://example.com"
-            return {"ok": True}
+            return {
+                "ok": True,
+                "actionable_evidence_snippets": [
+                    {
+                        "kind": "reservation_evidence_marker",
+                        "matched_marker": "ネット予約",
+                        "snippet": "ネット予約できます。",
+                        "taint_labels": ["untrusted"],
+                    }
+                ],
+            }
 
         async def do_realitycheck_search(self, payload: dict[str, Any]) -> dict[str, Any]:
             assert payload["query"] == "rc"
@@ -144,9 +154,9 @@ async def test_assistant_handlers_smoke() -> None:
     handlers = AssistantHandlers(DummyImpl(), internal_ingress_marker=marker)
 
     assert (await handlers.handle_web_search(WebSearchParams(query="hello"), ctx)).ok is True
-    assert (
-        await handlers.handle_web_fetch(WebFetchParams(url="https://example.com"), ctx)
-    ).ok is True
+    fetch_result = await handlers.handle_web_fetch(WebFetchParams(url="https://example.com"), ctx)
+    assert fetch_result.ok is True
+    assert fetch_result.actionable_evidence_snippets[0]["matched_marker"] == "ネット予約"
     assert (
         await handlers.handle_realitycheck_search(RealityCheckSearchParams(query="rc"), ctx)
     ).ok is True

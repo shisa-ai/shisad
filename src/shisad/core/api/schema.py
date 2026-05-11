@@ -1475,6 +1475,7 @@ class WebFetchResult(BaseModel):
     url: str = ""
     status_code: int | None = None
     title: str = ""
+    actionable_evidence_snippets: list[dict[str, Any]] = Field(default_factory=list)
     content: str = ""
     blocked_reason: str = ""
     truncated: bool = False

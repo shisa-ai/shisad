@@ -304,7 +304,7 @@ def test_summarize_tool_outputs_for_chat_prefers_actionable_fetch_snippets(tmp_p
                 "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/",
                 "actionable_evidence_snippets": [
                     {
-                        "kind": "reservation_availability",
+                        "kind": "reservation_evidence_marker",
                         "matched_marker": "本日夜空席あり",
                         "snippet": "予約カレンダー 本日夜空席あり。ネット予約できます。",
                         "taint_labels": ["untrusted"],

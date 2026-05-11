@@ -26,13 +26,25 @@ _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
-_RESERVATION_EVIDENCE_MARKERS: tuple[tuple[str, str], ...] = (
-    ("reservation_availability", "\u672c\u65e5\u591c\u7a7a\u5e2d\u3042\u308a"),
-    ("reservation_action", "\u30cd\u30c3\u30c8\u4e88\u7d04"),
-    ("reservation_availability", "\u7a7a\u5e2d\u3042\u308a"),
-    ("reservation_availability", "\u4e88\u7d04\u53ef"),
-    ("reservation_action", "online reservation"),
-    ("reservation_action", "reserve online"),
+_RESERVATION_EVIDENCE_MARKERS: tuple[str, ...] = (
+    "\u672c\u65e5\u591c\u7a7a\u5e2d\u3042\u308a",
+    "\u30cd\u30c3\u30c8\u4e88\u7d04",
+    "\u7a7a\u5e2d\u3042\u308a",
+    "\u4e88\u7d04\u53ef",
+    "online reservation",
+    "reserve online",
+)
+_JAPANESE_AVAILABILITY_MARKERS: frozenset[str] = frozenset(
+    (
+        "\u672c\u65e5\u591c\u7a7a\u5e2d\u3042\u308a",
+        "\u7a7a\u5e2d\u3042\u308a",
+    )
+)
+_JAPANESE_AVAILABILITY_NEGATION_SUFFIXES: tuple[str, ...] = (
+    "\u307e\u305b\u3093",
+    "\u306a\u3057",
+    "\u7121\u3057",
+    "\u306a\u3044",
 )
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "access denied",
@@ -275,7 +287,7 @@ class WebToolkit:
         }
         if actionable_evidence_snippets:
             evidence["actionable_marker_count"] = len(actionable_evidence_snippets)
-            evidence["actionable_marker_profile"] = "reservation_availability_v1"
+            evidence["actionable_marker_profile"] = "reservation_evidence_v1"
         if blocked_reason:
             return {
                 "ok": False,
@@ -520,20 +532,25 @@ class WebToolkit:
             return []
 
         lowered = compacted.casefold()
-        matches: list[tuple[int, str, str]] = []
-        for marker_kind, marker in _RESERVATION_EVIDENCE_MARKERS:
+        matches: list[tuple[int, str]] = []
+        for marker in _RESERVATION_EVIDENCE_MARKERS:
             needle = marker.casefold()
             start = 0
             while True:
                 index = lowered.find(needle, start)
                 if index < 0:
                     break
-                matches.append((index, marker, marker_kind))
+                if not WebToolkit._is_negated_japanese_availability_marker(
+                    compacted,
+                    index=index,
+                    marker=marker,
+                ):
+                    matches.append((index, marker))
                 start = index + max(1, len(needle))
 
         snippets: list[dict[str, Any]] = []
         seen_ranges: list[tuple[int, int]] = []
-        for index, marker, marker_kind in sorted(matches, key=lambda item: item[0]):
+        for index, marker in sorted(matches, key=lambda item: item[0]):
             begin = max(0, index - _FETCH_ACTIONABLE_SNIPPET_CONTEXT_CHARS)
             end = min(
                 len(compacted),
@@ -550,7 +567,7 @@ class WebToolkit:
                 snippet = snippet[: _FETCH_ACTIONABLE_SNIPPET_MAX_CHARS - 3].rstrip() + "..."
             snippets.append(
                 {
-                    "kind": marker_kind,
+                    "kind": "reservation_evidence_marker",
                     "matched_marker": marker,
                     "snippet": snippet,
                     "taint_labels": ["untrusted"],
@@ -560,6 +577,16 @@ class WebToolkit:
             if len(snippets) >= _FETCH_ACTIONABLE_SNIPPET_LIMIT:
                 break
         return snippets
+
+    @staticmethod
+    def _is_negated_japanese_availability_marker(text: str, *, index: int, marker: str) -> bool:
+        if marker not in _JAPANESE_AVAILABILITY_MARKERS:
+            return False
+        suffix = text[index + len(marker) : index + len(marker) + 8]
+        return any(
+            suffix.startswith(negator)
+            for negator in _JAPANESE_AVAILABILITY_NEGATION_SUFFIXES
+        )
 
     @staticmethod
     def _error_payload(
