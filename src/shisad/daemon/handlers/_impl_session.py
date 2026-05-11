@@ -3267,8 +3267,15 @@ def _redacted_output_policy_url_finding(item: Any) -> dict[str, Any]:
     }
 
 
-def _intermediate_tool_summary_response(tool_output_summary: str) -> str:
+def _intermediate_tool_summary_response(
+    tool_output_summary: str,
+    *,
+    page_title_metadata_block: str = "",
+) -> str:
     summary = str(tool_output_summary or "").strip()
+    title_metadata = str(page_title_metadata_block or "").strip()
+    if title_metadata:
+        summary = f"{summary}\n\n{title_metadata}" if summary else title_metadata
     if not summary:
         return ""
     return (
@@ -10226,6 +10233,10 @@ class SessionImplMixin(HandlerMixinBase):
         model_facing_chat_serialized_tool_outputs = _model_facing_serialized_tool_outputs(
             chat_serialized_tool_outputs
         )
+        fallback_page_title_metadata_block = _build_page_title_metadata_block(
+            raw_serialized_tool_outputs,
+            ensure_ascii=False,
+        )
         if chat_serialized_tool_outputs:
             tool_output_summary = (
                 _summarize_tool_outputs_for_chat(model_facing_chat_serialized_tool_outputs) or ""
@@ -10333,7 +10344,8 @@ class SessionImplMixin(HandlerMixinBase):
                         )
                     else:
                         fallback_response = _intermediate_tool_summary_response(
-                            tool_output_summary
+                            tool_output_summary,
+                            page_title_metadata_block=fallback_page_title_metadata_block,
                         )
                         response_text = (
                             f"{action_resolution_text}\n\n{fallback_response}"
@@ -10364,7 +10376,10 @@ class SessionImplMixin(HandlerMixinBase):
                         response_text = (
                             f"{synthesized_response}\n\n{tool_output_summary}"
                             if synthesized_response
-                            else _intermediate_tool_summary_response(tool_output_summary)
+                            else _intermediate_tool_summary_response(
+                                tool_output_summary,
+                                page_title_metadata_block=fallback_page_title_metadata_block,
+                            )
                         )
         if (
             validated.session_mode == SessionMode.ADMIN_CLEANROOM

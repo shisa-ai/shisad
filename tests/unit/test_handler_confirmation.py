@@ -414,6 +414,38 @@ def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) 
     assert entries[0].metadata["workspace_id"] == "w-1"
 
 
+def test_confirmed_browser_tool_output_transcript_strips_page_title(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("browser.screenshot")
+    content = json.dumps(
+        {
+            "ok": True,
+            "title": "Reserve Online | Venue",
+            "ocr_text": "Visible page text only.",
+            "screenshot_id": "shot-1",
+        },
+        sort_keys=True,
+    )
+
+    harness._append_confirmed_tool_output_transcript(
+        pending=pending,
+        tool_output=SimpleNamespace(
+            content=content,
+            taint_labels={TaintLabel.UNTRUSTED},
+            success=True,
+        ),
+        decision_timestamp="2026-05-08T17:15:00+00:00",
+    )
+
+    entries = harness._transcript_store.list_entries(SessionId("s-1"))
+    assert len(entries) == 1
+    assert "Visible page text only." in entries[0].content_preview
+    assert "Reserve Online" not in entries[0].content_preview
+    assert '"title"' not in entries[0].content_preview
+    assert entries[0].metadata["tool_name"] == "browser.screenshot"
+
+
 def test_m5_confirmed_tool_output_rebuild_preserves_shared_channel(
     tmp_path,
 ) -> None:

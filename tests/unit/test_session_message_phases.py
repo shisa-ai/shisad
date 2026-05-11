@@ -3465,6 +3465,45 @@ async def test_finalize_response_marks_unsynthesized_tool_summary_as_intermediat
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_fallback_keeps_page_title_metadata_labeled() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "content": "Profile only.",
+                        "title": "Reserve Online | Venue",
+                        "url": "https://example.test/page",
+                    },
+                    sort_keys=True,
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+        content="Fetch the page and tell me the title of this page.",
+        sanitized_text="Fetch the page and tell me the title of this page.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("I completed the tool step")
+    assert "Optional page-title metadata" in text
+    assert "Reserve Online | Venue" in text
+    primary_summary = text.split("Optional page-title metadata", 1)[0]
+    assert "Reserve Online" not in primary_summary
+    assert '"title"' not in primary_summary
+
+
+@pytest.mark.asyncio
 async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
     tmp_path: Path,
 ) -> None:

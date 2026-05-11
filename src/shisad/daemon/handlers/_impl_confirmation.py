@@ -63,6 +63,16 @@ _STALE_PENDING_APPROVAL_REASONS = frozenset(
 )
 _TERMINAL_PENDING_ACTION_STATUSES = frozenset({"approved", "failed", "rejected"})
 _PURGED_STALE_PENDING_ACTION_REASON = "purged_stale_pending_action"
+_CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
+    {
+        "browser.click",
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+        "browser.type_text",
+        "web.fetch",
+    }
+)
 
 
 def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
@@ -110,6 +120,17 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
     }
 
 
+def _confirmed_tool_output_transcript_content(*, tool_name: str, content: str) -> str:
+    if tool_name.strip().lower() not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
+        return content
+    parsed = _parse_confirmed_tool_output_payload(content)
+    if "title" not in parsed:
+        return content
+    sanitized = dict(parsed)
+    sanitized.pop("title", None)
+    return json.dumps(sanitized, ensure_ascii=True, sort_keys=True)
+
+
 def _apply_delivery_target_metadata(metadata: dict[str, Any], delivery_target: Any) -> None:
     delivery_target_payload: dict[str, Any] | None = None
     if hasattr(delivery_target, "model_dump"):
@@ -150,7 +171,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> None:
         if str(getattr(pending, "tool_name", "")).strip() == "evidence.promote":
             return
-        content = str(getattr(tool_output, "content", "") or "")
+        tool_name = str(getattr(pending, "tool_name", "")).strip()
+        content = _confirmed_tool_output_transcript_content(
+            tool_name=tool_name,
+            content=str(getattr(tool_output, "content", "") or ""),
+        )
         if not content.strip():
             return
         raw_taints: Any = getattr(tool_output, "taint_labels", set())
@@ -159,7 +184,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "channel": "confirmation",
             "actor": "human_confirmation",
             "confirmed_tool_output": True,
-            "tool_name": str(getattr(pending, "tool_name", "")).strip(),
+            "tool_name": tool_name,
             "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
             "tool_success": bool(getattr(tool_output, "success", False)),
             "timestamp_utc": decision_timestamp,
