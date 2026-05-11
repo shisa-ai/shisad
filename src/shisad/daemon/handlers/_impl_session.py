@@ -196,6 +196,13 @@ _POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS = 4200
 _POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
 _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
+_WEB_FETCH_TITLE_REQUEST_RE = re.compile(
+    r"\b(?:page|html|document)\s+title\b"
+    r"|\btitle\s+(?:of|for)\b"
+    r"|\bwhat(?:'s| is)[^.?!]{0,120}\btitle\b"
+    r"|\btell me[^.?!]{0,120}\btitle\b",
+    re.IGNORECASE,
+)
 _INTERNAL_TOOL_NARRATION_MARKERS = (
     "```xml",
     "```json",
@@ -3322,9 +3329,11 @@ def _build_post_tool_synthesis_untrusted_content(
     serialized_tool_outputs: Sequence[dict[str, Any]],
     tool_output_summary: str,
     preliminary_prose: str = "",
+    include_web_fetch_title_metadata: bool = False,
 ) -> str:
-    synthesis_tool_outputs = _post_tool_synthesis_serialized_tool_outputs(
-        serialized_tool_outputs
+    synthesis_tool_outputs = _model_facing_serialized_tool_outputs(
+        serialized_tool_outputs,
+        include_web_fetch_title_metadata=include_web_fetch_title_metadata,
     )
     serialized_payload = (
         json.dumps(
@@ -3372,17 +3381,44 @@ def _build_post_tool_synthesis_untrusted_content(
     return "\n\n".join(evidence_blocks)
 
 
-def _post_tool_synthesis_serialized_tool_outputs(
+def _model_facing_serialized_tool_outputs(
     serialized_tool_outputs: Sequence[dict[str, Any]],
+    *,
+    include_web_fetch_title_metadata: bool = False,
 ) -> list[dict[str, Any]]:
-    synthesis_tool_outputs = deepcopy(list(serialized_tool_outputs))
-    for record in synthesis_tool_outputs:
+    model_facing_tool_outputs = deepcopy(list(serialized_tool_outputs))
+    for record in model_facing_tool_outputs:
         if str(record.get("tool_name", "")).strip().lower() != "web.fetch":
             continue
         payload = record.get("payload")
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and not include_web_fetch_title_metadata:
             payload.pop("title", None)
-    return synthesis_tool_outputs
+    return model_facing_tool_outputs
+
+
+def _user_request_requests_web_fetch_title_metadata(text: str) -> bool:
+    return bool(_WEB_FETCH_TITLE_REQUEST_RE.search(str(text or "")))
+
+
+def _build_task_close_gate_tool_output_block(
+    *,
+    serialized_tool_outputs: Sequence[dict[str, Any]],
+    task_description: str,
+) -> str:
+    model_facing_tool_outputs = _model_facing_serialized_tool_outputs(
+        serialized_tool_outputs,
+        include_web_fetch_title_metadata=_user_request_requests_web_fetch_title_metadata(
+            task_description
+        ),
+    )
+    return (
+        _truncate_close_gate_evidence_text(
+            json.dumps(model_facing_tool_outputs, ensure_ascii=True, sort_keys=True),
+            max_chars=_TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS,
+        )
+        if model_facing_tool_outputs
+        else "(none)"
+    )
 
 
 def _response_exposes_internal_tool_narration(text: str) -> bool:
@@ -9954,6 +9990,9 @@ class SessionImplMixin(HandlerMixinBase):
             serialized_tool_outputs=serialized_tool_outputs,
             tool_output_summary=tool_output_summary,
             preliminary_prose=preliminary_prose,
+            include_web_fetch_title_metadata=_user_request_requests_web_fetch_title_metadata(
+                validated.firewall_result.sanitized_text
+            ),
         )
         has_preliminary_prose = bool(str(preliminary_prose or "").strip())
         synthesis_input = build_planner_input_v2(
@@ -10898,13 +10937,9 @@ class SessionImplMixin(HandlerMixinBase):
             if isinstance(proposal_payload, Mapping)
             else "(none)"
         )
-        tool_output_block = (
-            _truncate_close_gate_evidence_text(
-                json.dumps(list(serialized_tool_outputs), ensure_ascii=True, sort_keys=True),
-                max_chars=_TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS,
-            )
-            if serialized_tool_outputs
-            else "(none)"
+        tool_output_block = _build_task_close_gate_tool_output_block(
+            serialized_tool_outputs=serialized_tool_outputs,
+            task_description=task_request.task_description,
         )
         response_block = _truncate_close_gate_evidence_text(
             raw_response_text or "(empty)",

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from shisad.core.types import Capability, SessionId
 from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
+    _build_task_close_gate_tool_output_block,
     _compose_task_request_content,
     _extract_files_changed_from_task_outputs,
     _normalize_reported_task_path,
@@ -37,6 +38,49 @@ def test_m2_task_capability_scope_rejects_scope_widening() -> None:
             parent_capabilities=parent,
             requested_capabilities=["file.read", "shell.exec"],
         )
+
+
+def test_task_close_gate_omits_web_fetch_title_metadata_by_default() -> None:
+    block = _build_task_close_gate_tool_output_block(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile only.",
+                    "ok": True,
+                    "title": "Reserve Online | Venue",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        task_description="Check reservation availability.",
+    )
+
+    assert "Profile only." in block
+    assert "Reserve Online" not in block
+    assert '"title"' not in block
+
+
+def test_task_close_gate_keeps_web_fetch_title_metadata_when_requested() -> None:
+    block = _build_task_close_gate_tool_output_block(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile only.",
+                    "ok": True,
+                    "title": "Reserve Online | Venue",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        task_description="Fetch the page and tell me the page title.",
+    )
+
+    assert "Reserve Online | Venue" in block
+    assert '"title"' in block
 
 
 def test_m2_compose_task_request_content_includes_deduped_file_refs() -> None:

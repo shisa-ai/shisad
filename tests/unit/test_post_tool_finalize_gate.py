@@ -171,3 +171,26 @@ def test_synthesis_input_omits_web_fetch_title_metadata() -> None:
     assert "Reserve Online" not in content
     assert '"title"' not in content
     assert records[0]["payload"]["title"] == "Reserve Online | Venue"
+
+
+def test_synthesis_input_includes_web_fetch_title_metadata_when_requested() -> None:
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile only.",
+                    "ok": True,
+                    "title": "Reserve Online | Venue",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        tool_output_summary="Tool summary",
+        include_web_fetch_title_metadata=True,
+    )
+
+    assert "Profile only." in content
+    assert "Reserve Online | Venue" in content
+    assert '"title"' in content

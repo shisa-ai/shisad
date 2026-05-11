@@ -84,6 +84,11 @@ async def _planner_stub_complete(
             )
         ):
             response = "Fetched evidence says Reserve Online is shown."
+        elif (
+            _TITLE_ONLY_RESERVATION_MARKER in normalized_input
+            and "page title" in normalized_input.casefold()
+        ):
+            response = f"The page title is {_TITLE_ONLY_RESERVATION_MARKER}."
         elif _TITLE_ONLY_RESERVATION_MARKER in normalized_input:
             response = "Fetched evidence used the title-only reservation marker."
         else:
@@ -98,7 +103,7 @@ async def _planner_stub_complete(
     goal = _extract_user_request(planner_input).lower()
     if "without reservation markers" in goal:
         url = _NO_MARKER_URL
-    elif "title-only reservation marker" in goal:
+    elif "page title" in goal or "title-only reservation marker" in goal:
         url = _TITLE_ONLY_MARKER_URL
     elif "english reservation marker" in goal:
         url = _ENGLISH_MARKER_URL
@@ -356,6 +361,33 @@ async def test_gh28_title_only_marker_does_not_drive_final_answer(
     fetch_payload = outputs["web.fetch"][0]
     assert fetch_payload["title"] == _TITLE_ONLY_RESERVATION_MARKER
     assert "actionable_evidence_snippets" not in fetch_payload
+
+
+@pytest.mark.asyncio
+async def test_gh28_user_requested_page_title_still_uses_fetch_title_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_fetch_extraction_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Fetch the Tabelog page "
+                    f"{_TITLE_ONLY_MARKER_URL} and tell me the page title."
+                ),
+            },
+        )
+
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert _TITLE_ONLY_RESERVATION_MARKER in response
+    outputs = extract_tool_outputs(reply)
+    fetch_payload = outputs["web.fetch"][0]
+    assert fetch_payload["title"] == _TITLE_ONLY_RESERVATION_MARKER
 
 
 @pytest.mark.asyncio
