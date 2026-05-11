@@ -102,7 +102,16 @@ async def _planner_stub_complete(
     if "POST-TOOL SYNTHESIS PASS" in normalized_input:
         if "Synthesis failure test" in normalized_input:
             raise RuntimeError("synthetic GH27 synthesis failure")
-        if "Amour reservation page" in normalized_input:
+        if (
+            "Amour reservation page" in normalized_input
+            and "cancellation policy" in normalized_input
+        ):
+            response = (
+                "Found Amour on Tabelog; the reservation page is available. "
+                "The current web evidence does not establish a separate "
+                "cancellation policy page."
+            )
+        elif "Amour reservation page" in normalized_input:
             response = "Found Amour on Tabelog; the reservation page is available."
         elif _RECOVERY_POLICY_MARKER in normalized_input:
             response = (
@@ -696,7 +705,7 @@ async def test_gh27_web_synthesis_failure_drops_premature_absence_claim(
 
 
 @pytest.mark.asyncio
-async def test_gh27_mixed_positive_web_answer_keeps_existing_append_path(
+async def test_gh27_mixed_positive_web_answer_synthesizes_with_unrelated_caveat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -721,15 +730,12 @@ async def test_gh27_mixed_positive_web_answer_keeps_existing_append_path(
     assert "Found Amour on Tabelog" in response
     assert "reservation page is available" in response
     assert "cancellation policy" in response
-    assert "no evidence of cancellation policy changes" in response
-    assert "cancellation policy page does not exist" in response
-    assert "no page for cancellation policy" in response
-    assert "cancellation policy page is unavailable" in response
+    assert "does not establish a separate cancellation policy page" in response
     assert "intermediate tool output" not in response
 
 
 @pytest.mark.asyncio
-async def test_gh27_mixed_inverse_positive_web_answer_keeps_existing_append_path(
+async def test_gh27_mixed_inverse_positive_web_answer_synthesizes_with_caveat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -751,15 +757,14 @@ async def test_gh27_mixed_inverse_positive_web_answer_keeps_existing_append_path
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
     response = str(reply.get("response", ""))
-    assert "found Amour on Tabelog" in response
-    assert "cancellation policy page does not exist" in response
-    assert "no page for cancellation policy" in response
-    assert "cancellation policy page is unavailable" in response
+    assert "Found Amour on Tabelog" in response
+    assert "reservation page is available" in response
+    assert "does not establish a separate cancellation policy page" in response
     assert "intermediate tool output" not in response
 
 
 @pytest.mark.asyncio
-async def test_gh27_mixed_separator_positive_web_answer_keeps_existing_append_path(
+async def test_gh27_mixed_separator_positive_web_answer_synthesizes_with_caveat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -781,8 +786,9 @@ async def test_gh27_mixed_separator_positive_web_answer_keeps_existing_append_pa
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
     response = str(reply.get("response", ""))
-    assert "found Amour on Tabelog" in response
-    assert "No page for cancellation policy was found" in response
+    assert "Found Amour on Tabelog" in response
+    assert "reservation page is available" in response
+    assert "does not establish a separate cancellation policy page" in response
     assert "intermediate tool output" not in response
 
 

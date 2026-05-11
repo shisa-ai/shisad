@@ -1900,6 +1900,41 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_synthesizes_web_turn_with_preliminary_prose() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("Final answer from reconciled web evidence.")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.search",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "results": [{"title": "Venue", "snippet": "Current evidence."}],
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="Preliminary answer before web evidence.",
+        sanitized_text="look up the venue",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == "Final answer from reconciled web evidence."
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    assert "initial_assistant_response_present=yes" in synthesis_input
+    assert "Preliminary assistant prose" in synthesis_input
+    assert "Preliminary answer before web evidence." in synthesis_input
+    assert "PRELIMINARY PROSE RECONCILIATION" in synthesis_input
+
+
+@pytest.mark.asyncio
 async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("Mutated file summary.")
@@ -1931,6 +1966,37 @@ async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis
     assert "fs.read read README.md" in text
     assert "# ShisaD" in text
     assert "Tool results summary:" not in text
+    assert synthesis.calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_preserves_non_web_preliminary_without_synthesis() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("Unexpected synthesis.")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="shell.run",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "status": "done",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="I ran the requested command.",
+        sanitized_text="run status command",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("I ran the requested command.")
     assert synthesis.calls == []
 
 
@@ -1989,6 +2055,7 @@ async def test_rc_lus_finalize_response_uses_prior_user_goal_for_requested_url()
     harness = _FinalizeEvidenceHarness()
     requested_url = "https://example.com/page"
     harness._evidence_store = None
+    harness._planner = _PostToolSynthesisPlanner(f"Fetched {requested_url}.")
     harness._transcript_store = SimpleNamespace(
         append=lambda *args, **kwargs: None,
         list_entries=lambda _sid: [
@@ -2118,6 +2185,9 @@ async def test_rc_lus_finalize_response_does_not_ground_older_completed_url() ->
     old_url = "https://example.com/old"
     requested_url = "https://example.com/current"
     harness._evidence_store = None
+    harness._planner = _PostToolSynthesisPlanner(
+        f"Fetched {old_url} and {requested_url}."
+    )
     harness._transcript_store = SimpleNamespace(
         append=lambda *args, **kwargs: None,
         list_entries=lambda _sid: [
@@ -2368,6 +2438,9 @@ async def test_rc_lus_finalize_response_does_not_ground_spoofed_pending_summary(
     old_url = "https://example.com/old"
     requested_url = "https://example.com/current"
     harness._evidence_store = None
+    harness._planner = _PostToolSynthesisPlanner(
+        f"Fetched {old_url} and {requested_url}."
+    )
     harness._transcript_store = SimpleNamespace(
         append=lambda *args, **kwargs: None,
         list_entries=lambda _sid: [
