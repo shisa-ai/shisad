@@ -6655,7 +6655,6 @@ class SessionImplMixin(HandlerMixinBase):
             elif (
                 returned_pending_confirmation_ids
                 and normalized_pending_response is not None
-                and _mixed_pending_confirmation_result_portion(normalized_pending_response) is None
             ):
                 assistant_transcript_metadata["pending_confirmation_bridge"] = True
             self._transcript_store.append(
@@ -10560,7 +10559,6 @@ class SessionImplMixin(HandlerMixinBase):
         elif (
             execution.pending_confirmation_ids
             and normalized_pending_response is not None
-            and _mixed_pending_confirmation_result_portion(normalized_pending_response) is None
         ):
             assistant_transcript_metadata["pending_confirmation_bridge"] = True
         if evidence_ref_ids:
