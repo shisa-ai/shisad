@@ -202,6 +202,11 @@ _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"|\btitle\s+(?:of|for)\s+(?:the|this|that)\s+(?:page|html|document)\b",
     re.IGNORECASE,
 )
+_PAGE_TITLE_NEGATION_RE = re.compile(
+    r"\b(?:not|ignore|without|exclude)\b[^.?!]{0,120}"
+    r"\b(?:page|html|document)\s+title\b",
+    re.IGNORECASE,
+)
 _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
     {
         "browser.click",
@@ -265,7 +270,14 @@ _TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_PROPOSAL_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_DIFF_MAX_CHARS = 4000
 _TASK_SUMMARY_CHECKPOINT_FAILURE_REASON = "task_summary_firewall_checkpoint_failed"
-_EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html", "snippet")
+_EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = (
+    "content",
+    "text",
+    "body",
+    "html",
+    "snippet",
+    "ocr_text",
+)
 _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
 _EVIDENCE_GENERIC_WRAP_MIN_BYTES = 256
 _EVIDENCE_REF_ID_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
@@ -3416,7 +3428,10 @@ def _model_facing_serialized_tool_outputs(
 
 
 def _user_request_requests_page_title_metadata(text: str) -> bool:
-    return bool(_WEB_FETCH_TITLE_REQUEST_RE.search(str(text or "")))
+    normalized = str(text or "")
+    if _PAGE_TITLE_NEGATION_RE.search(normalized):
+        return False
+    return bool(_WEB_FETCH_TITLE_REQUEST_RE.search(normalized))
 
 
 def _build_task_close_gate_tool_output_block(

@@ -23,6 +23,7 @@ from shisad.daemon.handlers._impl_session import (
     _build_evidence_supplemental_entries,
     _build_planner_conversation_context,
     _summarize_tool_outputs_for_chat,
+    _summarize_tool_outputs_for_user_response,
     _wrap_serialized_tool_outputs_with_evidence,
 )
 from shisad.memory.timeline import TimelineIndex
@@ -331,6 +332,33 @@ def test_summarize_tool_outputs_for_chat_prefers_actionable_fetch_snippets(tmp_p
     assert ref_ids[0] in summary
     assert ref_ids[1] in summary
     assert 'Use evidence.read("' in summary
+
+
+def test_summarize_tool_outputs_prefers_screenshot_ocr_over_title() -> None:
+    records = [
+        {
+            "tool_name": "browser.screenshot",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "title": "Reserve Online | Venue",
+                "ocr_text": "Visible page text only.",
+                "screenshot_id": "shot-1",
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    chat_summary = _summarize_tool_outputs_for_chat(records)
+    user_summary = _summarize_tool_outputs_for_user_response(
+        records,
+        header="Completed action result",
+    )
+
+    assert "Visible page text only." in chat_summary
+    assert "Visible page text only." in user_summary
+    assert "Reserve Online" not in chat_summary
+    assert "Reserve Online" not in user_summary
 
 
 def test_wrap_serialized_tool_outputs_degrades_to_unavailable_stub_on_store_error() -> None:

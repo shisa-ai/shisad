@@ -310,6 +310,12 @@ def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
     assert not _user_request_requests_page_title_metadata(
         "Tell me whether the title-only reservation marker appears."
     )
+    assert not _user_request_requests_page_title_metadata(
+        "Check the page body, not the page title."
+    )
+    assert not _user_request_requests_page_title_metadata(
+        "Ignore the page title and check reservation availability."
+    )
 
 
 def test_model_facing_tool_outputs_preserve_input_records() -> None:
