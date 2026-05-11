@@ -320,9 +320,15 @@ def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
         "Check the body, not the title of this page."
     )
     assert not _user_request_requests_page_title_metadata("Ignore this document's title.")
+    assert not _user_request_requests_page_title_metadata(
+        "Don't ignore the body, but not the page title; check availability."
+    )
     assert _user_request_requests_page_title_metadata("Don't ignore the page title.")
     assert _user_request_requests_page_title_metadata(
         "I do not care about reservation availability; tell me the page title."
+    )
+    assert _user_request_requests_page_title_metadata(
+        "Tell me the page title without anything else."
     )
 
 

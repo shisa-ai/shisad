@@ -202,12 +202,13 @@ _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"|\btitle\s+(?:of|for)\s+(?:the|this|that)\s+(?:page|html|document)\b",
     re.IGNORECASE,
 )
-_PAGE_TITLE_NEGATION_RE = re.compile(
-    r"\b(?:not|ignore|without|exclude)\b",
+_PAGE_TITLE_LOCAL_NEGATION_RE = re.compile(
+    r"\b(?:not|ignore|without|exclude)\s+(?:the|this|that|a|an)?\s*$",
     re.IGNORECASE,
 )
-_PAGE_TITLE_DOUBLE_NEGATION_RE = re.compile(
-    r"\b(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\b",
+_PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|dont)\s+(?:ignore|exclude)\s+"
+    r"(?:the|this|that|a|an)?\s*$",
     re.IGNORECASE,
 )
 _MODEL_FACING_PAGE_TITLE_TOOL_NAMES = frozenset(
@@ -3432,12 +3433,11 @@ def _model_facing_serialized_tool_outputs(
 
 def _user_request_requests_page_title_metadata(text: str) -> bool:
     normalized = str(text or "")
-    for segment in re.split(r"[.?!;\n]+", normalized):
-        if not _WEB_FETCH_TITLE_REQUEST_RE.search(segment):
-            continue
-        if _PAGE_TITLE_DOUBLE_NEGATION_RE.search(segment):
+    for match in _WEB_FETCH_TITLE_REQUEST_RE.finditer(normalized):
+        prefix = normalized[max(0, match.start() - 80) : match.start()]
+        if _PAGE_TITLE_LOCAL_DOUBLE_NEGATION_RE.search(prefix):
             return True
-        if _PAGE_TITLE_NEGATION_RE.search(segment):
+        if _PAGE_TITLE_LOCAL_NEGATION_RE.search(prefix):
             continue
         return True
     return False
