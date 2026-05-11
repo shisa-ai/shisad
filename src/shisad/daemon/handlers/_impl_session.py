@@ -3290,10 +3290,18 @@ def _has_web_pre_tool_positive_claim(response_text: str) -> bool:
     has_target = "tabelog" in normalized or "reservation" in normalized
     if not has_target:
         return False
-    found_positive = "found" in normalized and not re.search(
-        r"\b(?:found no|not found)\b", normalized
+    found_positive = re.search(
+        r"\bfound\b(?!\s+no\b).{0,80}\b(?:tabelog|reservation)\b",
+        normalized,
+    ) is not None and re.search(r"\b(?:no|not)\b.{0,40}\bfound\b", normalized) is None
+    available_positive = (
+        re.search(
+            r"\b(?:(?:tabelog )?reservation|tabelog) "
+            r"(?:path|page|result) (?:is )?available\b",
+            normalized,
+        )
+        is not None
     )
-    available_positive = "available" in normalized and "unavailable" not in normalized
     return found_positive or available_positive
 
 

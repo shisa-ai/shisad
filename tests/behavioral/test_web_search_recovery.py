@@ -202,6 +202,24 @@ async def _planner_stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "negative found test" in goal_lower and "amour" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="No reservation page was found.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": '"Amour" "Tabelog" site:tabelog.com', "limit": 3},
+                        call_id="gh27-negative-found-search",
+                    )
+                ],
+            ),
+            model="gh27-web-recovery-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "insufficient pretool test" in goal_lower and "amour" in goal_lower:
         return ProviderResponse(
             message=Message(
@@ -229,7 +247,8 @@ async def _planner_stub_complete(
                 role="assistant",
                 content=(
                     "Found Amour on Tabelog, but the current evidence is insufficient "
-                    "to verify the cancellation policy and there is no evidence of "
+                    "to verify the cancellation policy. The reservation page is available, "
+                    "but there is no evidence of "
                     "cancellation policy changes; a separate cancellation policy page "
                     "does not exist, no page for cancellation policy was found, and "
                     "the cancellation policy page is unavailable."
@@ -617,6 +636,7 @@ async def test_gh27_mixed_positive_web_answer_keeps_existing_append_path(
     assert int(reply.get("executed_actions", 0)) == 1
     response = str(reply.get("response", ""))
     assert "Found Amour on Tabelog" in response
+    assert "reservation page is available" in response
     assert "cancellation policy" in response
     assert "no evidence of cancellation policy changes" in response
     assert "cancellation policy page does not exist" in response
@@ -651,6 +671,33 @@ async def test_gh27_shorthand_web_absence_claim_still_synthesizes(
     assert "Found Amour on Tabelog" in response
     assert "page is unavailable" not in response.casefold()
     assert "path does not exist" not in response.casefold()
+
+
+@pytest.mark.asyncio
+async def test_gh27_negative_found_absence_claim_still_synthesizes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_web_recovery_harness(tmp_path, monkeypatch) as client:
+        sid = await _create_session(client)
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Negative found test: find the Tabelog reservation path "
+                    "for Amour on tabelog.com in Sapporo."
+                ),
+            },
+        )
+
+    assert reply["lockdown_level"] == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    response = str(reply.get("response", ""))
+    assert "Found Amour on Tabelog" in response
+    assert "no reservation page was found" not in response.casefold()
 
 
 @pytest.mark.asyncio
