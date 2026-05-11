@@ -10381,7 +10381,10 @@ class SessionImplMixin(HandlerMixinBase):
                 elif response_text.strip():
                     appended_summary = (
                         user_visible_tool_output_summary
-                        if action_resolution_text and user_visible_tool_output_summary
+                        if (
+                            user_visible_tool_output_summary
+                            and (action_resolution_text or fallback_page_title_metadata_block)
+                        )
                         else tool_output_summary
                     )
                     response_text = f"{response_text}\n\n{appended_summary}"

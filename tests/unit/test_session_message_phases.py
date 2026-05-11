@@ -3558,6 +3558,46 @@ async def test_finalize_response_pending_actions_keep_title_metadata_labeled() -
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_browser_prose_keeps_title_metadata_labeled() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="browser.screenshot",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "ocr_text": "Visible page text.",
+                        "screenshot_id": "shot-1",
+                        "title": "ネット予約 | 会場",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="I captured the page.",
+        content="Take a screenshot and tell me the page title.",
+        sanitized_text="Take a screenshot and tell me the page title.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("I captured the page.")
+    assert "Visible page text." in text
+    assert "Optional page-title metadata" in text
+    assert "ネット予約" in text
+    assert "\\u30cd" not in text
+    primary_summary = text.split("Optional page-title metadata", 1)[0]
+    assert "ネット予約" not in primary_summary
+    assert '"title"' not in primary_summary
+
+
+@pytest.mark.asyncio
 async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
     tmp_path: Path,
 ) -> None:
