@@ -162,6 +162,16 @@ shisad is >50K lines. If a user sends "search for news" and gets a lockdown noti
 
 ---
 
+## Fifth Principle: Structure in the Daemon, Meaning in the LLM
+
+The daemon's job is deterministic: authenticate, authorize, enforce, audit, sandbox, taint-track, route. Natural-language judgment — intent, valence, topic, negation scope, reconciling a preliminary claim against new evidence — belongs to the LLM that's already doing that work.
+
+When a decision reduces to parsing free-form prose with regex or edit-distance heuristics, it's in the wrong layer. Relocate the judgment to an LLM and let the daemon enforce the structural consequences (taint, PEP, confirmation, sandbox, audit) deterministically.
+
+This pattern is subtle and has bitten the codebase at least twice. Background, prior incidents, and the checklist for spotting it live in `docs/adr/DESIGN-structural-vs-linguistic.md`.
+
+---
+
 ## For AI Agents Working on This Codebase
 
 If you are an AI coding agent reading this document:
