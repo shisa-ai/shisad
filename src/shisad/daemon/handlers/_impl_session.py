@@ -212,8 +212,8 @@ _PAGE_TITLE_REQUEST_TARGET_PATTERN = (
     r"(?:the|this|that|a|an)?\s*" + _PAGE_TITLE_PHRASE_PATTERN
 )
 _PAGE_TITLE_REQUEST_SUFFIX_PATTERN = (
-    r"(?=\s*(?:$|[.!?]|\b(?:please|too|only)\b|\bas\s+well\b"
-    r"|\bwithout\s+anything\s+else\b))"
+    r"(?:\s*(?:[.!?]|$)|\s*,?\s*(?:please|too|only|as\s+well"
+    r"|without\s+anything\s+else)\s*(?:[.!?]|$))"
 )
 _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"(?:"
