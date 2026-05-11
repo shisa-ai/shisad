@@ -420,7 +420,7 @@ def test_confirmed_summary_renders_page_title_metadata_separately() -> None:
             "payload": {
                 "ok": True,
                 "url": "https://example.com/reserve",
-                "title": "Reserve Online | Venue",
+                "title": "ネット予約 | 会場",
                 "status": "ok",
             },
             "taint_labels": ["untrusted"],
@@ -436,8 +436,9 @@ def test_confirmed_summary_renders_page_title_metadata_separately() -> None:
     assert _PAGE_TITLE_METADATA_HEADER in user_summary
     primary_summary = user_summary.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
     assert '"title"' not in primary_summary
-    assert "Reserve Online" not in primary_summary
-    assert "Reserve Online" in user_summary
+    assert "ネット予約" not in primary_summary
+    assert "ネット予約" in user_summary
+    assert "\\u30cd" not in user_summary
 
 
 def test_wrap_serialized_tool_outputs_degrades_to_unavailable_stub_on_store_error() -> None:

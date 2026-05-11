@@ -3504,6 +3504,60 @@ async def test_finalize_response_fallback_keeps_page_title_metadata_labeled() ->
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_pending_actions_keep_title_metadata_labeled() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._evidence_store = None
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "content": "Profile only.",
+                        "title": "ネット予約 | 会場",
+                        "url": "https://example.test/page",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+        pending_confirmation_ids=["c-1"],
+        content="Fetch this page title, then write it down.",
+        sanitized_text="Fetch this page title, then write it down.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "[PENDING CONFIRMATIONS]" in text
+    assert "Completed actions:" in text
+    assert "Optional page-title metadata" in text
+    assert "ネット予約" in text
+    assert "\\u30cd" not in text
+    primary_summary = text.split("Optional page-title metadata", 1)[0]
+    assert "ネット予約" not in primary_summary
+    assert '"title"' not in primary_summary
+
+
+@pytest.mark.asyncio
 async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
     tmp_path: Path,
 ) -> None:

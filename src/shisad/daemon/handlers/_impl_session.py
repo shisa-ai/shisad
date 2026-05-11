@@ -5732,7 +5732,7 @@ def _summarize_tool_outputs_for_user_response(
         serialized_records = [dict(record) for record in records]
         page_title_metadata_block = _build_page_title_metadata_block(
             serialized_records,
-            ensure_ascii=True,
+            ensure_ascii=False,
         )
         summary_records = _model_facing_serialized_tool_outputs(serialized_records)
     lines = [header.rstrip(":") + ":"]
@@ -10268,8 +10268,9 @@ class SessionImplMixin(HandlerMixinBase):
             )
         user_visible_tool_output_summary = (
             _summarize_tool_outputs_for_user_response(
-                model_facing_chat_serialized_tool_outputs,
+                chat_serialized_tool_outputs,
                 header="Confirmed action result",
+                include_page_title_metadata=True,
             )
             if chat_serialized_tool_outputs
             else ""

@@ -1072,7 +1072,7 @@ def test_result_followup_replays_confirmed_page_title_metadata_block() -> None:
                     "tool_name": "web.fetch",
                     "tool_success": True,
                     "page_title_metadata": {
-                        "title": "Reserve Online | Venue",
+                        "title": "ネット予約 | 会場",
                         "url": "https://example.com/reserve",
                     },
                 },
@@ -1084,9 +1084,10 @@ def test_result_followup_replays_confirmed_page_title_metadata_block() -> None:
     assert response is not None
     assert _PAGE_TITLE_METADATA_HEADER in response.text
     primary_summary = response.text.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
-    assert "Reserve Online" not in primary_summary
+    assert "ネット予約" not in primary_summary
     assert '"title"' not in primary_summary
-    assert "Reserve Online" in response.text
+    assert "ネット予約" in response.text
+    assert "\\u30cd" not in response.text
 
 
 def test_rc_lus_result_followup_does_not_hallucinate_after_outside_root_denial() -> None:
