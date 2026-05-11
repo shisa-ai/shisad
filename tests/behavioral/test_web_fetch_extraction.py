@@ -347,7 +347,7 @@ async def test_gh28_title_only_marker_does_not_drive_final_answer(
             {
                 "session_id": sid,
                 "content": (
-                    "Check the title-only reservation marker on the Tabelog page "
+                    "Tell me whether the title-only reservation marker appears on the Tabelog page "
                     f"{_TITLE_ONLY_MARKER_URL}."
                 ),
             },

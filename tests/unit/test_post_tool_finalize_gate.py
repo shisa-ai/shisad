@@ -6,7 +6,9 @@ from shisad.core.types import ToolName
 from shisad.daemon.handlers._impl_session import (
     _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS,
     _build_post_tool_synthesis_untrusted_content,
+    _model_facing_serialized_tool_outputs,
     _should_synthesize_initial_web_tool_response,
+    _user_request_requests_web_fetch_title_metadata,
 )
 
 
@@ -194,3 +196,62 @@ def test_synthesis_input_includes_web_fetch_title_metadata_when_requested() -> N
     assert "Profile only." in content
     assert "Reserve Online | Venue" in content
     assert '"title"' in content
+
+
+def test_synthesis_input_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
+    content = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile A.",
+                    "ok": True,
+                    "title": "Page A Title",
+                    "url": "https://example.com/a",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            },
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile B.",
+                    "ok": True,
+                    "title": "Reserve Online | Venue",
+                    "url": "https://example.com/b",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            },
+        ],
+        tool_output_summary="Tool summary",
+        include_web_fetch_title_metadata=True,
+    )
+
+    assert "Profile A." in content
+    assert "Profile B." in content
+    assert "Page A Title" not in content
+    assert "Reserve Online" not in content
+    assert '"title"' not in content
+
+
+def test_model_facing_fetch_title_request_detector_is_explicit() -> None:
+    assert _user_request_requests_web_fetch_title_metadata("What was the page title?")
+    assert _user_request_requests_web_fetch_title_metadata("Tell me the HTML title.")
+    assert not _user_request_requests_web_fetch_title_metadata(
+        "Tell me whether the title-only reservation marker appears."
+    )
+
+
+def test_model_facing_tool_outputs_preserve_input_records() -> None:
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "payload": {"content": "Profile.", "ok": True, "title": "Page title"},
+        }
+    ]
+
+    model_facing = _model_facing_serialized_tool_outputs(records)
+
+    assert "title" not in model_facing[0]["payload"]
+    assert records[0]["payload"]["title"] == "Page title"

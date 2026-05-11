@@ -198,9 +198,7 @@ _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _WEB_FETCH_TITLE_REQUEST_RE = re.compile(
     r"\b(?:page|html|document)\s+title\b"
-    r"|\btitle\s+(?:of|for)\b"
-    r"|\bwhat(?:'s| is)[^.?!]{0,120}\btitle\b"
-    r"|\btell me[^.?!]{0,120}\btitle\b",
+    r"|\btitle\s+(?:of|for)\s+(?:the\s+)?(?:page|html|document)\b",
     re.IGNORECASE,
 )
 _INTERNAL_TOOL_NARRATION_MARKERS = (
@@ -3387,11 +3385,17 @@ def _model_facing_serialized_tool_outputs(
     include_web_fetch_title_metadata: bool = False,
 ) -> list[dict[str, Any]]:
     model_facing_tool_outputs = deepcopy(list(serialized_tool_outputs))
+    web_fetch_count = sum(
+        1
+        for record in model_facing_tool_outputs
+        if str(record.get("tool_name", "")).strip().lower() == "web.fetch"
+    )
+    include_fetch_title = include_web_fetch_title_metadata and web_fetch_count == 1
     for record in model_facing_tool_outputs:
         if str(record.get("tool_name", "")).strip().lower() != "web.fetch":
             continue
         payload = record.get("payload")
-        if isinstance(payload, dict) and not include_web_fetch_title_metadata:
+        if isinstance(payload, dict) and not include_fetch_title:
             payload.pop("title", None)
     return model_facing_tool_outputs
 

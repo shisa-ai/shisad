@@ -83,6 +83,42 @@ def test_task_close_gate_keeps_web_fetch_title_metadata_when_requested() -> None
     assert '"title"' in block
 
 
+def test_task_close_gate_omits_fetch_titles_for_mixed_fetch_outputs() -> None:
+    block = _build_task_close_gate_tool_output_block(
+        serialized_tool_outputs=[
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile A.",
+                    "ok": True,
+                    "title": "Page A Title",
+                    "url": "https://example.com/a",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            },
+            {
+                "tool_name": "web.fetch",
+                "payload": {
+                    "content": "Profile B.",
+                    "ok": True,
+                    "title": "Reserve Online | Venue",
+                    "url": "https://example.com/b",
+                },
+                "success": True,
+                "taint_labels": ["untrusted"],
+            },
+        ],
+        task_description="Tell me the page title and check reservation availability.",
+    )
+
+    assert "Profile A." in block
+    assert "Profile B." in block
+    assert "Page A Title" not in block
+    assert "Reserve Online" not in block
+    assert '"title"' not in block
+
+
 def test_m2_compose_task_request_content_includes_deduped_file_refs() -> None:
     content = _compose_task_request_content(
         task_description="Review the listed files.",
