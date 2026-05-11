@@ -236,6 +236,56 @@ def test_wrap_serialized_tool_outputs_wraps_large_unknown_string_fields(tmp_path
     assert store.read(SessionId("sess-a"), ref_ids[0]) == "Untrusted novel-key content. " * 20
 
 
+@pytest.mark.parametrize("tool_name", ["web.fetch", "browser.screenshot"])
+def test_wrap_serialized_tool_outputs_does_not_promote_page_titles_to_working_evidence(
+    tmp_path,
+    tool_name: str,
+) -> None:
+    evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    transcript_store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-a")
+    title = "Reserve Online | Venue " * 40
+    records = [
+        {
+            "tool_name": tool_name,
+            "success": True,
+            "payload": {
+                "ok": True,
+                "title": title,
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+        session_id=sid,
+        records=records,
+        evidence_store=evidence_store,
+        firewall=ContentFirewall(),
+    )
+    transcript_store.append(
+        sid,
+        role="assistant",
+        content="Fetched the page.",
+        taint_labels={TaintLabel.UNTRUSTED},
+        metadata={"evidence_ref_ids": ref_ids},
+    )
+
+    rendered, taints = _build_planner_conversation_context(
+        transcript_store=transcript_store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+        evidence_store=evidence_store,
+    )
+
+    assert ref_ids == []
+    assert records[0]["payload"]["title"] == title
+    assert "WORKING EVIDENCE PACKET" not in rendered
+    assert "Reserve Online" not in rendered
+    assert TaintLabel.UNTRUSTED in taints
+
+
 def test_summarize_tool_outputs_for_chat_surfaces_nested_evidence_stub(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
     records = [

@@ -5362,6 +5362,8 @@ def _wrap_serialized_tool_outputs_with_evidence(
     def _should_wrap_value(*, key: str | None, value: str) -> bool:
         if not value.strip():
             return False
+        if key == "title" and tool_name in _MODEL_FACING_PAGE_TITLE_TOOL_NAMES:
+            return False
         if key in _EVIDENCE_CONTENT_KEYS:
             return True
         return len(value.encode("utf-8")) >= _EVIDENCE_GENERIC_WRAP_MIN_BYTES
