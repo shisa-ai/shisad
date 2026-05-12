@@ -150,6 +150,59 @@ def test_gh29_navigation_url_selection_dedupes_default_port_variants() -> None:
     )
 
 
+def test_gh29_navigation_url_selection_ignores_malformed_failed_urls() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [{"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}],
+                },
+            ),
+            _serialized_tool_output(
+                "browser.navigate",
+                {
+                    "ok": False,
+                    "error": "browser_navigate_failed",
+                },
+                success=False,
+                arguments={"url": "https://[malformed"},
+            ),
+        ],
+    )
+
+    assert selection is not None
+    assert selection.selected_url == "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+
+
+def test_gh29_navigation_url_selection_rejects_credential_bearing_candidates() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [
+                        {"url": "https://attacker@tabelog.com/hokkaido/A0101/A010101/123456/"}
+                    ],
+                },
+            ),
+            _serialized_tool_output(
+                "web.fetch",
+                {
+                    "ok": True,
+                    "url": "https://attacker:secret@tabelog.com/hokkaido/A0101/A010101/654321/",
+                },
+            ),
+        ],
+    )
+
+    assert selection is None
+
+
 def test_gh29_navigation_url_selection_rejects_same_hostname_different_origin() -> None:
     selection = _select_task_specific_navigation_url(
         arguments={"url": "https://tabelog.com/"},

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import ValidationError
 
@@ -5299,11 +5299,20 @@ def _parse_tool_output_payload(raw_content: str) -> dict[str, Any]:
     return {"structured": True, "value": parsed}
 
 
+def _safe_navigation_urlsplit(url: str) -> SplitResult | None:
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
+
+
 def _canonical_navigation_selection_url(url: str) -> str:
     raw_url = str(url or "").strip()
     if not raw_url:
         return ""
-    parsed = urlsplit(raw_url)
+    parsed = _safe_navigation_urlsplit(raw_url)
+    if parsed is None:
+        return ""
     origin = _navigation_url_origin(raw_url)
     if origin is None:
         return ""
@@ -5330,9 +5339,13 @@ def _navigation_url_origin(url: str) -> tuple[str, str, int] | None:
     raw_url = str(url or "").strip()
     if not raw_url:
         return None
-    parsed = urlsplit(raw_url)
+    parsed = _safe_navigation_urlsplit(raw_url)
+    if parsed is None:
+        return None
     scheme = parsed.scheme.lower()
     if scheme not in {"http", "https"}:
+        return None
+    if parsed.username is not None or parsed.password is not None:
         return None
     host = safe_url_hostname(raw_url)
     if not host:
