@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -490,6 +491,99 @@ async def test_gh30_suspicious_turn_does_not_inherit_same_session_destination(
 
     assert planner_context.same_session_user_goal_host_patterns == set()
     assert planner_context.context.same_session_user_goal_host_patterns == set()
+    roots = harness._control_plane.last_begin_precontent_plan["declared_resource_roots"]
+    assert "tabelog.com" not in set(roots)
+    assert "*.tabelog.com" not in set(roots)
+
+
+@pytest.mark.asyncio
+async def test_gh30_archive_imported_turn_does_not_authorize_same_session_destination(
+    tmp_path: Path,
+) -> None:
+    harness = _PlannerContextBuildHarness(tmp_path)
+    sid = SessionId("sess-g1")
+    metadata = {
+        "channel": "cli",
+        "session_mode": SessionMode.DEFAULT.value,
+        "trust_level": "trusted",
+    }
+    harness._transcript_store.append(
+        sid,
+        role="user",
+        content="Use https://tabelog.com/tokyo/A1301/A130101/123456/ for this booking.",
+        metadata={**metadata, "_archive_imported": True},
+    )
+    harness._transcript_store.append(
+        sid,
+        role="user",
+        content="Open the established reservation page.",
+        metadata=metadata,
+    )
+
+    planner_context = await SessionImplMixin._build_context_for_planner(
+        harness,
+        _validation_result(
+            params={"session_id": str(sid), "content": "Open the established reservation page."},
+            sanitized_text="Open the established reservation page.",
+        ),
+    )
+
+    assert planner_context.same_session_user_goal_host_patterns == set()
+    assert planner_context.context.same_session_user_goal_host_patterns == set()
+    assert planner_context.context.untrusted_host_patterns >= {
+        "*.tabelog.com",
+        "tabelog.com",
+    }
+    roots = harness._control_plane.last_begin_precontent_plan["declared_resource_roots"]
+    assert "tabelog.com" not in set(roots)
+    assert "*.tabelog.com" not in set(roots)
+
+
+@pytest.mark.asyncio
+async def test_gh30_stale_same_session_destination_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    harness = _PlannerContextBuildHarness(tmp_path)
+    sid = SessionId("sess-g1")
+    metadata = {
+        "channel": "cli",
+        "session_mode": SessionMode.DEFAULT.value,
+        "trust_level": "trusted",
+    }
+    now = datetime(2026, 5, 12, tzinfo=UTC)
+    harness._transcript_store.append(
+        sid,
+        role="user",
+        content="Use https://tabelog.com/tokyo/A1301/A130101/123456/ for this booking.",
+        metadata=metadata,
+        timestamp=now - impl_session._EPISODE_GAP_THRESHOLD - timedelta(seconds=1),
+    )
+    harness._transcript_store.append(
+        sid,
+        role="user",
+        content="Open the established reservation page.",
+        metadata=metadata,
+        timestamp=now,
+    )
+
+    planner_context = await SessionImplMixin._build_context_for_planner(
+        harness,
+        _validation_result(
+            params={"session_id": str(sid), "content": "Open the established reservation page."},
+            sanitized_text="Open the established reservation page.",
+        ),
+    )
+
+    assert planner_context.same_session_user_goal_host_patterns == set()
+    assert planner_context.context.same_session_user_goal_host_patterns == set()
+    assert planner_context.context_confirmation_host_patterns == {
+        "*.tabelog.com",
+        "tabelog.com",
+    }
+    assert planner_context.context.context_confirmation_host_patterns == {
+        "*.tabelog.com",
+        "tabelog.com",
+    }
     roots = harness._control_plane.last_begin_precontent_plan["declared_resource_roots"]
     assert "tabelog.com" not in set(roots)
     assert "*.tabelog.com" not in set(roots)

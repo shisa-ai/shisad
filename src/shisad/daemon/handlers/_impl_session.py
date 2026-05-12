@@ -258,6 +258,7 @@ _REJECTION_REASON_SPLITTER = ","
 _EPISODE_GAP_THRESHOLD = DEFAULT_EPISODE_GAP_THRESHOLD
 _EPISODE_INTERNAL_TOKEN_BUDGET = DEFAULT_INTERNAL_TIER_TOKEN_BUDGET
 _CONTEXT_SCAFFOLD_DEGRADED_KEY = "context_scaffold_degraded"
+_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY = "_archive_imported"
 _CONTEXT_SCAFFOLD_DEGRADED_REASON_CODES_KEY = "context_scaffold_degraded_reason_codes"
 _DESTINATION_ATTRIBUTION_METADATA_KEY = "destination_attribution"
 _GENERIC_BLOCKED_ACTION_MESSAGE = (
@@ -4417,6 +4418,11 @@ def _transcript_entry_has_firewall_risk_metadata(entry: TranscriptEntry) -> bool
     return False
 
 
+def _transcript_entry_is_archive_imported(entry: TranscriptEntry) -> bool:
+    metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
+    return metadata.get(_ARCHIVE_IMPORTED_TRANSCRIPT_METADATA_KEY) is True
+
+
 def _transcript_entry_is_trusted_same_session_user_context(entry: TranscriptEntry) -> bool:
     if str(entry.role).strip().lower() != "user":
         return False
@@ -4425,6 +4431,8 @@ def _transcript_entry_is_trusted_same_session_user_context(entry: TranscriptEntr
     if _transcript_entry_has_firewall_risk_metadata(entry):
         return False
     metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
+    if _transcript_entry_is_archive_imported(entry):
+        return False
     channel = str(metadata.get("channel", "")).strip().lower()
     session_mode = str(metadata.get("session_mode", "")).strip().lower()
     trust_level = str(metadata.get("trust_level", "")).strip().lower()
@@ -4469,11 +4477,64 @@ def _build_trusted_same_session_user_context(
     return "\n".join(lines)
 
 
+def _normalized_transcript_timestamp(timestamp: datetime) -> datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
+
+
+def _active_same_session_episode_suffix(
+    entries: Sequence[TranscriptEntry],
+    *,
+    current_turn_timestamp: datetime | None,
+    gap_threshold: timedelta = _EPISODE_GAP_THRESHOLD,
+) -> list[TranscriptEntry]:
+    if not entries:
+        return []
+    reference = (
+        _normalized_transcript_timestamp(current_turn_timestamp)
+        if current_turn_timestamp is not None
+        else datetime.now(UTC)
+    )
+    active_reversed: list[TranscriptEntry] = []
+    previous_timestamp = reference
+    for entry in reversed(entries):
+        entry_timestamp = _normalized_transcript_timestamp(entry.timestamp)
+        if previous_timestamp - entry_timestamp >= gap_threshold:
+            break
+        active_reversed.append(entry)
+        previous_timestamp = entry_timestamp
+    active_reversed.reverse()
+    return active_reversed
+
+
+def _same_session_anchor_hosts_from_entries(
+    *,
+    entries: Sequence[TranscriptEntry],
+    transcript_store: TranscriptStore,
+    max_entries: int,
+) -> tuple[str, ...]:
+    return _collapse_same_session_anchor_hosts(
+        {
+            host
+            for entry in entries[-max_entries:]
+            for host in extract_hosts_from_text(
+                _transcript_entry_content(
+                    entry=entry,
+                    transcript_store=transcript_store,
+                ),
+                max_hosts=8,
+            )
+        }
+    )
+
+
 def _same_session_destination_attribution_for_policy(
     *,
     entries: Sequence[TranscriptEntry],
     transcript_store: TranscriptStore,
     current_user_goal_host_patterns: set[str],
+    current_turn_timestamp: datetime | None = None,
     current_turn_allows_same_session_attribution: bool = True,
     max_entries: int = 6,
 ) -> SameSessionDestinationAttribution:
@@ -4491,20 +4552,28 @@ def _same_session_destination_attribution_for_policy(
     trusted_entries = [
         entry for entry in entries if _transcript_entry_is_trusted_same_session_user_context(entry)
     ]
-    anchor_hosts = _collapse_same_session_anchor_hosts(
-        {
-            host
-            for entry in trusted_entries[-max_entries:]
-            for host in extract_hosts_from_text(
-                _transcript_entry_content(
-                    entry=entry,
-                    transcript_store=transcript_store,
-                ),
-                max_hosts=8,
-            )
-        }
+    active_trusted_entries = _active_same_session_episode_suffix(
+        trusted_entries,
+        current_turn_timestamp=current_turn_timestamp,
+    )
+    stale_trusted_entries = trusted_entries[: len(trusted_entries) - len(active_trusted_entries)]
+    anchor_hosts = _same_session_anchor_hosts_from_entries(
+        entries=active_trusted_entries,
+        transcript_store=transcript_store,
+        max_entries=max_entries,
     )
     if not anchor_hosts:
+        stale_anchor_hosts = _same_session_anchor_hosts_from_entries(
+            entries=stale_trusted_entries,
+            transcript_store=transcript_store,
+            max_entries=max_entries,
+        )
+        if stale_anchor_hosts:
+            return SameSessionDestinationAttribution(
+                context_confirmation_host_patterns=host_patterns(set(stale_anchor_hosts)),
+                anchor_hosts=stale_anchor_hosts,
+                reason="stale_same_session_hosts",
+            )
         return SameSessionDestinationAttribution(reason="no_same_session_hosts")
 
     if len(anchor_hosts) == 1:
@@ -7973,6 +8042,9 @@ class SessionImplMixin(HandlerMixinBase):
             entries=context_entries,
             transcript_store=self._transcript_store,
             current_user_goal_host_patterns=user_goal_host_patterns,
+            current_turn_timestamp=transcript_entries[-1].timestamp
+            if transcript_entries
+            else None,
             current_turn_allows_same_session_attribution=(
                 _current_turn_allows_same_session_destination_attribution(validated)
             ),
