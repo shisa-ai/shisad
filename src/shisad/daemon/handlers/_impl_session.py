@@ -4549,25 +4549,32 @@ def _same_session_destination_attribution_for_policy(
     if not current_turn_allows_same_session_attribution:
         return SameSessionDestinationAttribution(reason="current_turn_not_clean_trusted")
 
-    trusted_entries = [
-        entry for entry in entries if _transcript_entry_is_trusted_same_session_user_context(entry)
-    ]
-    active_trusted_entries = _active_same_session_episode_suffix(
-        trusted_entries,
+    active_entries = _active_same_session_episode_suffix(
+        entries,
         current_turn_timestamp=current_turn_timestamp,
     )
-    stale_trusted_entries = trusted_entries[: len(trusted_entries) - len(active_trusted_entries)]
+    stale_entries = entries[: len(entries) - len(active_entries)]
+    active_trusted_entries = [
+        entry
+        for entry in active_entries
+        if _transcript_entry_is_trusted_same_session_user_context(entry)
+    ]
+    stale_trusted_entries = [
+        entry
+        for entry in stale_entries
+        if _transcript_entry_is_trusted_same_session_user_context(entry)
+    ]
     anchor_hosts = _same_session_anchor_hosts_from_entries(
         entries=active_trusted_entries,
         transcript_store=transcript_store,
         max_entries=max_entries,
     )
+    stale_anchor_hosts = _same_session_anchor_hosts_from_entries(
+        entries=stale_trusted_entries,
+        transcript_store=transcript_store,
+        max_entries=max_entries,
+    )
     if not anchor_hosts:
-        stale_anchor_hosts = _same_session_anchor_hosts_from_entries(
-            entries=stale_trusted_entries,
-            transcript_store=transcript_store,
-            max_entries=max_entries,
-        )
         if stale_anchor_hosts:
             return SameSessionDestinationAttribution(
                 context_confirmation_host_patterns=host_patterns(set(stale_anchor_hosts)),
@@ -4579,12 +4586,15 @@ def _same_session_destination_attribution_for_policy(
     if len(anchor_hosts) == 1:
         return SameSessionDestinationAttribution(
             same_session_user_goal_host_patterns=host_patterns(set(anchor_hosts)),
+            context_confirmation_host_patterns=host_patterns(set(stale_anchor_hosts)),
             anchor_hosts=anchor_hosts,
             reason="single_same_session_host",
         )
 
+    context_confirmation_hosts = set(anchor_hosts)
+    context_confirmation_hosts.update(stale_anchor_hosts)
     return SameSessionDestinationAttribution(
-        context_confirmation_host_patterns=host_patterns(set(anchor_hosts)),
+        context_confirmation_host_patterns=host_patterns(context_confirmation_hosts),
         anchor_hosts=anchor_hosts,
         reason="ambiguous_same_session_hosts",
     )
