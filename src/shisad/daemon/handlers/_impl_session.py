@@ -431,6 +431,7 @@ class SessionToolOutputRecord:
     taint_labels: set[TaintLabel] = field(default_factory=set)
     ingress_context: str | None = None
     content_digest: str | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -5375,6 +5376,11 @@ def _failed_browser_navigation_urls(tool_outputs: Sequence[Any]) -> set[str]:
             canonical = _canonical_navigation_selection_url(str(selection.get("selected_url", "")))
             if canonical:
                 failed.add(canonical)
+        arguments = getattr(tool_output, "arguments", None)
+        if isinstance(arguments, Mapping):
+            canonical = _canonical_navigation_selection_url(str(arguments.get("url", "")))
+            if canonical:
+                failed.add(canonical)
     return failed
 
 
@@ -5469,6 +5475,7 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
 def _tool_output_record_from_serialized_dict(item: Mapping[str, Any]) -> SessionToolOutputRecord:
     tool_name = str(item.get("tool_name", "")).strip() or "action.resolve"
     payload = item.get("payload")
+    raw_arguments = item.get("arguments")
     content = json.dumps(
         payload if payload is not None else dict(item),
         ensure_ascii=True,
@@ -5490,6 +5497,7 @@ def _tool_output_record_from_serialized_dict(item: Mapping[str, Any]) -> Session
         taint_labels=taint_labels,
         ingress_context=str(item.get("ingress_context") or "").strip() or None,
         content_digest=str(item.get("content_digest") or "").strip() or None,
+        arguments=dict(raw_arguments) if isinstance(raw_arguments, Mapping) else {},
     )
 
 

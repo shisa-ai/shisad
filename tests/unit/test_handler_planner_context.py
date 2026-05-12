@@ -33,11 +33,13 @@ def _serialized_tool_output(
     payload: dict[str, object],
     *,
     success: bool = True,
+    arguments: dict[str, object] | None = None,
 ) -> SessionToolOutputRecord:
     return SessionToolOutputRecord(
         tool_name=tool_name,
         content=json.dumps(payload, ensure_ascii=True, sort_keys=True),
         success=success,
+        arguments=arguments or {},
     )
 
 
@@ -84,10 +86,10 @@ def test_gh29_navigation_url_selection_keeps_homepage_after_specific_candidate_f
                 "browser.navigate",
                 {
                     "ok": False,
-                    "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/",
                     "error": "browser_navigate_failed",
                 },
                 success=False,
+                arguments={"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
             ),
         ],
     )

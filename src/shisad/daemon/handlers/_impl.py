@@ -1181,6 +1181,7 @@ class ToolOutputRecord:
     taint_labels: set[TaintLabel] = field(default_factory=set)
     ingress_context: str | None = None
     content_digest: str | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1437,6 +1438,7 @@ class HandlerImplementation(
             taint_labels=set(tool_output.taint_labels),
             ingress_context=context.handle_id,
             content_digest=context.content_digest,
+            arguments=dict(tool_output.arguments),
         )
 
     async def reset_test_state(self) -> dict[str, Any]:
@@ -3494,6 +3496,7 @@ class HandlerImplementation(
                         content=result.content,
                         success=result.success,
                         taint_labels=result.taint_labels,
+                        arguments=dict(arguments),
                     ),
                 ),
             )
