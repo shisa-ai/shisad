@@ -1742,6 +1742,16 @@ def _user_goal_host_patterns_for_validated_input(
     return host_patterns(extract_hosts_from_text(validated.firewall_result.sanitized_text))
 
 
+def _current_turn_allows_same_session_destination_attribution(
+    validated: SessionMessageValidationResult,
+) -> bool:
+    return (
+        validated.trusted_input
+        and not validated.incoming_taint_labels
+        and _trusted_cli_firewall_result_is_clean(validated.firewall_result)
+    )
+
+
 def _child_task_trust_level(trust_level: str, *, operator_owned_cli: bool = False) -> str:
     normalized = trust_level.strip().lower() or "untrusted"
     if operator_owned_cli or _is_trusted_cli_confirmation_level(normalized):
@@ -4464,6 +4474,7 @@ def _same_session_destination_attribution_for_policy(
     entries: Sequence[TranscriptEntry],
     transcript_store: TranscriptStore,
     current_user_goal_host_patterns: set[str],
+    current_turn_allows_same_session_attribution: bool = True,
     max_entries: int = 6,
 ) -> SameSessionDestinationAttribution:
     """Build bounded same-session host attribution for destination-sensitive PEP checks.
@@ -4474,6 +4485,8 @@ def _same_session_destination_attribution_for_policy(
     """
     if current_user_goal_host_patterns:
         return SameSessionDestinationAttribution(reason="current_turn_host_override")
+    if not current_turn_allows_same_session_attribution:
+        return SameSessionDestinationAttribution(reason="current_turn_not_clean_trusted")
 
     trusted_entries = [
         entry for entry in entries if _transcript_entry_is_trusted_same_session_user_context(entry)
@@ -7960,6 +7973,9 @@ class SessionImplMixin(HandlerMixinBase):
             entries=context_entries,
             transcript_store=self._transcript_store,
             current_user_goal_host_patterns=user_goal_host_patterns,
+            current_turn_allows_same_session_attribution=(
+                _current_turn_allows_same_session_destination_attribution(validated)
+            ),
         )
         if same_session_destination_attribution.reason != "no_same_session_hosts":
             session.metadata[_DESTINATION_ATTRIBUTION_METADATA_KEY] = {
@@ -8066,6 +8082,10 @@ class SessionImplMixin(HandlerMixinBase):
         planner_origin = self._origin_for(session=session, actor="planner")
         trace_policy = self._policy_loader.policy.control_plane.trace
         previous_plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
+        declared_resource_roots = set(task_declared_tdg_roots(task_envelope))
+        declared_resource_roots.update(
+            same_session_destination_attribution.same_session_user_goal_host_patterns
+        )
         committed_plan_hash = await _call_control_plane(
             self,
             "begin_precontent_plan",
@@ -8075,7 +8095,7 @@ class SessionImplMixin(HandlerMixinBase):
             ttl_seconds=int(trace_policy.ttl_seconds),
             max_actions=int(trace_policy.max_actions),
             capabilities=effective_caps,
-            declared_resource_roots=list(task_declared_tdg_roots(task_envelope)),
+            declared_resource_roots=list(declared_resource_roots),
         )
         if previous_plan_hash:
             await self._event_bus.publish(
