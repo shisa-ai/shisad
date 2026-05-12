@@ -240,6 +240,17 @@ class ToolExecuted(BaseEvent):
     approval_signer_key_id: str = ""
 
 
+class BrowserNavigationURLSelected(BaseEvent):
+    """Browser navigation target was refined from current-task URL evidence."""
+
+    tool_name: ToolName = ToolName("browser.navigate")
+    original_url: str = ""
+    selected_url: str = ""
+    reason: str = ""
+    alternatives_considered: list[str] = Field(default_factory=list)
+    failed_candidates: list[str] = Field(default_factory=list)
+
+
 class TwoFactorEnrolled(BaseEvent):
     """A durable operator approval factor was enrolled."""
 
@@ -724,6 +735,7 @@ type AnyEvent = (
     | ToolApproved
     | ToolRejected
     | ToolExecuted
+    | BrowserNavigationURLSelected
     | AnomalyReported
     | CredentialAccessed
     | MonitorEvaluated
@@ -783,6 +795,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "ToolApproved": ToolApproved,
     "ToolRejected": ToolRejected,
     "ToolExecuted": ToolExecuted,
+    "BrowserNavigationURLSelected": BrowserNavigationURLSelected,
     "AnomalyReported": AnomalyReported,
     "CredentialAccessed": CredentialAccessed,
     "MonitorEvaluated": MonitorEvaluated,

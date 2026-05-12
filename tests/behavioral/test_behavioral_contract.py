@@ -395,6 +395,54 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "gh29 specific navigation regression" in goal_lower:
+        url = _extract_browser_url(goal)
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Opening the venue page from current search evidence.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": "GH29 Amour Tabelog navigation", "limit": 3},
+                        call_id="t-gh29-search-specific",
+                    ),
+                    _tool_call(
+                        "browser.navigate",
+                        {"url": url},
+                        call_id="t-gh29-navigate-generic",
+                    ),
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "gh29 homepage fallback regression" in goal_lower:
+        url = _extract_browser_url(goal)
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Opening the homepage because no precise candidate exists.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": "GH29 homepage fallback no same-host candidate", "limit": 3},
+                        call_id="t-gh29-search-fallback",
+                    ),
+                    _tool_call(
+                        "browser.navigate",
+                        {"url": url},
+                        call_id="t-gh29-navigate-fallback",
+                    ),
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "browser navigate" in goal_lower or "open the browser to" in goal_lower:
         url = _extract_browser_url(goal)
         return ProviderResponse(
@@ -833,6 +881,19 @@ class _StubSearchHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/restaurant/amour":
+            body = (
+                b"<html><head><title>Amour - Tabelog</title></head><body>"
+                b"<h1>Amour</h1>"
+                b"<p>Restaurant-specific reservation page.</p>"
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/browser-form":
             body = (
                 b"<html><head><title>Browser Form</title></head><body>"
@@ -874,6 +935,33 @@ class _StubSearchHandler(BaseHTTPRequestHandler):
             return
         qs = parse_qs(parsed.query)
         query = (qs.get("q") or [""])[0]
+        if "gh29 amour tabelog navigation" in query.casefold():
+            host = self.headers.get("Host", "localhost")
+            specific_url = f"http://{host}/restaurant/amour"
+            homepage_url = f"http://{host}/"
+            payload = {
+                "results": [
+                    {
+                        "title": "Amour - Tabelog",
+                        "url": specific_url,
+                        "content": "Restaurant-specific reservation page.",
+                        "engine": "stub",
+                    },
+                    {
+                        "title": "Tabelog home",
+                        "url": homepage_url,
+                        "content": "Generic site homepage.",
+                        "engine": "stub",
+                    },
+                ]
+            }
+            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         payload = {
             "results": [
                 {
@@ -6720,6 +6808,92 @@ async def test_contract_browser_navigate_executes_and_returns_page(
     payload = outputs["browser.navigate"][0]
     assert payload.get("ok") is True
     assert payload.get("title") == "Browser Home"
+
+
+@pytest.mark.asyncio
+async def test_gh29_browser_navigation_prefers_current_task_specific_url(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    homepage_url = f"{contract_harness.browser_base_url}/"
+    specific_url = f"{contract_harness.browser_base_url}/restaurant/amour"
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": (
+                "GH29 specific navigation regression: search current evidence, "
+                f"then open {homepage_url}"
+            ),
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 2
+    outputs = _extract_tool_outputs(reply)
+    assert "web.search" in outputs
+    assert "browser.navigate" in outputs
+    payload = outputs["browser.navigate"][0]
+    assert payload.get("ok") is True
+    assert payload.get("url") == specific_url
+    assert payload.get("title") == "Amour - Tabelog"
+
+    audit = await contract_harness.client.call(
+        "audit.query",
+        {
+            "event_type": "BrowserNavigationURLSelected",
+            "session_id": sid,
+            "limit": 20,
+        },
+    )
+    events = audit.get("events")
+    assert isinstance(events, list)
+    assert len(events) == 1
+    data = events[0].get("data", {})
+    assert data.get("original_url") == homepage_url
+    assert data.get("selected_url") == specific_url
+    assert data.get("reason") == "current_task_specific_url_candidate"
+    assert specific_url in data.get("alternatives_considered", [])
+
+
+@pytest.mark.asyncio
+async def test_gh29_browser_navigation_keeps_homepage_without_specific_candidate(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    homepage_url = f"{contract_harness.browser_base_url}/"
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": (
+                "GH29 homepage fallback regression: search current evidence, "
+                f"then open {homepage_url}"
+            ),
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 2
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.navigate" in outputs
+    payload = outputs["browser.navigate"][0]
+    assert payload.get("ok") is True
+    assert payload.get("url") == homepage_url
+
+    audit = await contract_harness.client.call(
+        "audit.query",
+        {
+            "event_type": "BrowserNavigationURLSelected",
+            "session_id": sid,
+            "limit": 20,
+        },
+    )
+    assert audit.get("events") == []
 
 
 @pytest.mark.asyncio

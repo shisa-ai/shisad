@@ -11,6 +11,7 @@ from shisad.core.transcript import TranscriptEntry
 from shisad.core.types import Capability, ToolName
 from shisad.daemon.handlers._impl_session import (
     _PAGE_TITLE_METADATA_HEADER,
+    SessionToolOutputRecord,
     _action_monitor_explanation_from_votes,
     _blocked_action_feedback,
     _build_planner_tool_context,
@@ -19,11 +20,79 @@ from shisad.daemon.handlers._impl_session import (
     _coerce_internal_tool_narration_response_text,
     _recent_result_followup_response,
     _rewrite_plain_greeting_planner_result,
+    _select_task_specific_navigation_url,
     _should_prefix_output_confirmation,
     _summarize_tool_outputs_for_chat,
     _summarize_tool_outputs_for_user_response,
 )
 from shisad.security.firewall.output import OutputFirewallResult, UrlFinding
+
+
+def _serialized_tool_output(
+    tool_name: str,
+    payload: dict[str, object],
+    *,
+    success: bool = True,
+) -> SessionToolOutputRecord:
+    return SessionToolOutputRecord(
+        tool_name=tool_name,
+        content=json.dumps(payload, ensure_ascii=True, sort_keys=True),
+        success=success,
+    )
+
+
+def test_gh29_navigation_url_selection_prefers_deep_same_host_candidate() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [
+                        {"url": "https://tabelog.com/hokkaido/"},
+                        {"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
+                        {"url": "https://example.com/other"},
+                    ],
+                },
+            )
+        ],
+    )
+
+    assert selection is not None
+    assert selection.original_url == "https://tabelog.com/"
+    assert selection.selected_url == "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+    assert selection.reason == "current_task_specific_url_candidate"
+    assert selection.alternatives_considered == (
+        "https://tabelog.com/hokkaido/A0101/A010101/123456/",
+        "https://tabelog.com/hokkaido/",
+    )
+
+
+def test_gh29_navigation_url_selection_keeps_homepage_after_specific_candidate_failed() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [{"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}],
+                },
+            ),
+            _serialized_tool_output(
+                "browser.navigate",
+                {
+                    "ok": False,
+                    "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/",
+                    "error": "browser_navigate_failed",
+                },
+                success=False,
+            ),
+        ],
+    )
+
+    assert selection is None
 
 
 def test_m6_planner_tool_context_normalizes_trust_level_casing() -> None:

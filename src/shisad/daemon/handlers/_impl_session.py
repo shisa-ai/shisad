@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -32,6 +33,7 @@ from shisad.core.context import (
 )
 from shisad.core.events import (
     AnomalyReported,
+    BrowserNavigationURLSelected,
     CodingAgentSelected,
     CodingAgentSessionCompleted,
     CodingAgentSessionStarted,
@@ -429,6 +431,15 @@ class SessionToolOutputRecord:
     taint_labels: set[TaintLabel] = field(default_factory=set)
     ingress_context: str | None = None
     content_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserNavigationURLSelection:
+    original_url: str
+    selected_url: str
+    reason: str
+    alternatives_considered: tuple[str, ...] = ()
+    failed_candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -5287,6 +5298,141 @@ def _parse_tool_output_payload(raw_content: str) -> dict[str, Any]:
     return {"structured": True, "value": parsed}
 
 
+def _canonical_navigation_selection_url(url: str) -> str:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return ""
+    host = safe_url_hostname(raw_url)
+    if not host:
+        return ""
+    parsed = urlsplit(raw_url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return ""
+    path = parsed.path or "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}"
+
+
+def _is_generic_navigation_homepage(url: str) -> bool:
+    raw_url = str(url or "").strip()
+    if not safe_url_hostname(raw_url):
+        return False
+    parsed = urlsplit(raw_url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    return (parsed.path or "/") == "/" and not parsed.query and not parsed.fragment
+
+
+def _navigation_url_specificity(url: str) -> tuple[int, int, int]:
+    parsed = urlsplit(str(url or "").strip())
+    path = parsed.path or "/"
+    segments = [segment for segment in path.split("/") if segment]
+    return (len(segments), len(path), 1 if parsed.query else 0)
+
+
+def _candidate_urls_from_tool_output(tool_output: Any) -> list[str]:
+    tool_name = str(getattr(tool_output, "tool_name", "")).strip()
+    payload = _parse_tool_output_payload(str(getattr(tool_output, "content", "")))
+    urls: list[str] = []
+
+    def _append_url(value: Any) -> None:
+        candidate = str(value or "").strip()
+        if candidate and safe_url_hostname(candidate):
+            urls.append(candidate)
+
+    if tool_name == "web.search":
+        results = payload.get("results")
+        if isinstance(results, Sequence) and not isinstance(results, (str, bytes)):
+            for item in results:
+                if isinstance(item, Mapping):
+                    _append_url(item.get("url"))
+                    _append_url(item.get("href"))
+    elif tool_name == "web.fetch":
+        _append_url(payload.get("url"))
+        evidence = payload.get("evidence")
+        if isinstance(evidence, Mapping):
+            _append_url(evidence.get("final_url"))
+            _append_url(evidence.get("url"))
+
+    return urls
+
+
+def _failed_browser_navigation_urls(tool_outputs: Sequence[Any]) -> set[str]:
+    failed: set[str] = set()
+    for tool_output in tool_outputs:
+        if str(getattr(tool_output, "tool_name", "")).strip() != "browser.navigate":
+            continue
+        payload = _parse_tool_output_payload(str(getattr(tool_output, "content", "")))
+        success = bool(getattr(tool_output, "success", False)) and payload.get("ok") is not False
+        if success:
+            continue
+        for key in ("url", "selected_url", "original_url"):
+            canonical = _canonical_navigation_selection_url(str(payload.get(key, "")))
+            if canonical:
+                failed.add(canonical)
+        selection = payload.get("navigation_url_selection")
+        if isinstance(selection, Mapping):
+            canonical = _canonical_navigation_selection_url(str(selection.get("selected_url", "")))
+            if canonical:
+                failed.add(canonical)
+    return failed
+
+
+def _select_task_specific_navigation_url(
+    *,
+    arguments: Mapping[str, Any],
+    executed_tool_outputs: Sequence[Any],
+) -> BrowserNavigationURLSelection | None:
+    original_url = str(arguments.get("url", "")).strip()
+    if not _is_generic_navigation_homepage(original_url):
+        return None
+    original_host = safe_url_hostname(original_url)
+    if not original_host:
+        return None
+
+    failed_urls = _failed_browser_navigation_urls(executed_tool_outputs)
+    indexed_candidates: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for tool_output in executed_tool_outputs:
+        if not bool(getattr(tool_output, "success", False)):
+            continue
+        for candidate in _candidate_urls_from_tool_output(tool_output):
+            if safe_url_hostname(candidate) != original_host:
+                continue
+            if _is_generic_navigation_homepage(candidate):
+                continue
+            canonical = _canonical_navigation_selection_url(candidate)
+            if not canonical or canonical in failed_urls or canonical in seen:
+                continue
+            seen.add(canonical)
+            indexed_candidates.append((len(indexed_candidates), candidate))
+
+    if not indexed_candidates:
+        return None
+
+    ranked = sorted(
+        indexed_candidates,
+        key=lambda item: (
+            -_navigation_url_specificity(item[1])[0],
+            -_navigation_url_specificity(item[1])[1],
+            -_navigation_url_specificity(item[1])[2],
+            item[0],
+        ),
+    )
+    selected_url = ranked[0][1]
+    if _canonical_navigation_selection_url(selected_url) == _canonical_navigation_selection_url(
+        original_url
+    ):
+        return None
+    return BrowserNavigationURLSelection(
+        original_url=original_url,
+        selected_url=selected_url,
+        reason="current_task_specific_url_candidate",
+        alternatives_considered=tuple(candidate for _index, candidate in ranked[:10]),
+        failed_candidates=tuple(sorted(failed_urls)),
+    )
+
+
 def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
     for index, record in enumerate(records, start=1):
@@ -8541,6 +8687,28 @@ class SessionImplMixin(HandlerMixinBase):
                 tool_name=proposal.tool_name,
                 arguments=proposal.arguments,
             )
+            navigation_url_selection: BrowserNavigationURLSelection | None = None
+            if str(proposal.tool_name) == "browser.navigate":
+                navigation_url_selection = _select_task_specific_navigation_url(
+                    arguments=proposal_arguments,
+                    executed_tool_outputs=executed_tool_outputs,
+                )
+                if navigation_url_selection is not None:
+                    proposal_arguments = dict(proposal_arguments)
+                    proposal_arguments["url"] = navigation_url_selection.selected_url
+                    await self._event_bus.publish(
+                        BrowserNavigationURLSelected(
+                            session_id=sid,
+                            actor="planner",
+                            original_url=navigation_url_selection.original_url,
+                            selected_url=navigation_url_selection.selected_url,
+                            reason=navigation_url_selection.reason,
+                            alternatives_considered=list(
+                                navigation_url_selection.alternatives_considered
+                            ),
+                            failed_candidates=list(navigation_url_selection.failed_candidates),
+                        )
+                    )
             pep_arguments = pep_arguments_for_policy_evaluation(
                 proposal.tool_name,
                 proposal_arguments,
