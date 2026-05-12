@@ -99,6 +99,26 @@ def test_gh29_navigation_url_selection_keeps_homepage_after_specific_candidate_f
     assert selection is None
 
 
+def test_gh29_navigation_url_selection_rejects_same_hostname_different_origin() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [
+                        {"url": "http://tabelog.com/hokkaido/A0101/A010101/123456/"},
+                        {"url": "https://tabelog.com:8443/hokkaido/A0101/A010101/123456/"},
+                    ],
+                },
+            )
+        ],
+    )
+
+    assert selection is None
+
+
 def test_gh29_confirmed_navigation_failure_preserves_attempted_url_for_retry_selection() -> None:
     confirmed_failure = _tool_output_record_from_serialized_dict(
         _serialize_confirmed_tool_output(

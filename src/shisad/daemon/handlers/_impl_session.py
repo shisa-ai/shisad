@@ -5324,6 +5324,26 @@ def _is_generic_navigation_homepage(url: str) -> bool:
     return (parsed.path or "/") == "/" and not parsed.query and not parsed.fragment
 
 
+def _navigation_url_origin(url: str) -> tuple[str, str, int] | None:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return None
+    parsed = urlsplit(raw_url)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+    host = safe_url_hostname(raw_url)
+    if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return (scheme, host, port)
+
+
 def _navigation_url_specificity(url: str) -> tuple[int, int, int]:
     parsed = urlsplit(str(url or "").strip())
     path = parsed.path or "/"
@@ -5392,8 +5412,8 @@ def _select_task_specific_navigation_url(
     original_url = str(arguments.get("url", "")).strip()
     if not _is_generic_navigation_homepage(original_url):
         return None
-    original_host = safe_url_hostname(original_url)
-    if not original_host:
+    original_origin = _navigation_url_origin(original_url)
+    if original_origin is None:
         return None
 
     failed_urls = _failed_browser_navigation_urls(executed_tool_outputs)
@@ -5403,7 +5423,7 @@ def _select_task_specific_navigation_url(
         if not bool(getattr(tool_output, "success", False)):
             continue
         for candidate in _candidate_urls_from_tool_output(tool_output):
-            if safe_url_hostname(candidate) != original_host:
+            if _navigation_url_origin(candidate) != original_origin:
                 continue
             if _is_generic_navigation_homepage(candidate):
                 continue
