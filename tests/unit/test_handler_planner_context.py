@@ -9,6 +9,7 @@ from shisad.core.planner import ActionProposal, PlannerOutput, PlannerResult
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptEntry
 from shisad.core.types import Capability, ToolName
+from shisad.daemon.handlers._impl_confirmation import _serialize_confirmed_tool_output
 from shisad.daemon.handlers._impl_session import (
     _PAGE_TITLE_METADATA_HEADER,
     SessionToolOutputRecord,
@@ -24,6 +25,7 @@ from shisad.daemon.handlers._impl_session import (
     _should_prefix_output_confirmation,
     _summarize_tool_outputs_for_chat,
     _summarize_tool_outputs_for_user_response,
+    _tool_output_record_from_serialized_dict,
 )
 from shisad.security.firewall.output import OutputFirewallResult, UrlFinding
 
@@ -91,6 +93,40 @@ def test_gh29_navigation_url_selection_keeps_homepage_after_specific_candidate_f
                 success=False,
                 arguments={"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
             ),
+        ],
+    )
+
+    assert selection is None
+
+
+def test_gh29_confirmed_navigation_failure_preserves_attempted_url_for_retry_selection() -> None:
+    confirmed_failure = _tool_output_record_from_serialized_dict(
+        _serialize_confirmed_tool_output(
+            SimpleNamespace(
+                tool_name="browser.navigate",
+                content=json.dumps(
+                    {"ok": False, "error": "browser_navigate_failed"},
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+                success=False,
+                taint_labels=set(),
+                arguments={"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
+            )
+        )
+    )
+
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [{"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}],
+                },
+            ),
+            confirmed_failure,
         ],
     )
 

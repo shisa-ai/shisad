@@ -110,6 +110,8 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
         )
     ingress_context = str(getattr(record, "ingress_context", "") or "").strip()
     content_digest = str(getattr(record, "content_digest", "") or "").strip()
+    raw_arguments = getattr(record, "arguments", None)
+    arguments = dict(raw_arguments) if isinstance(raw_arguments, Mapping) else {}
     return {
         "tool_name": str(getattr(record, "tool_name", "")).strip() or "tool",
         "success": bool(getattr(record, "success", False)),
@@ -117,6 +119,7 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
         "taint_labels": taint_values,
         **({"ingress_context": ingress_context} if ingress_context else {}),
         **({"content_digest": content_digest} if content_digest else {}),
+        **({"arguments": arguments} if arguments else {}),
     }
 
 
