@@ -133,6 +133,20 @@ def test_gh29_confirmed_navigation_failure_preserves_attempted_url_for_retry_sel
     assert selection is None
 
 
+def test_gh29_confirmed_tool_output_omits_non_navigation_arguments() -> None:
+    serialized = _serialize_confirmed_tool_output(
+        SimpleNamespace(
+            tool_name="browser.type_text",
+            content=json.dumps({"ok": False, "error": "browser_type_failed"}),
+            success=False,
+            taint_labels=set(),
+            arguments={"target": "message box", "text": "private typed text"},
+        )
+    )
+
+    assert "arguments" not in serialized
+
+
 def test_m6_planner_tool_context_normalizes_trust_level_casing() -> None:
     tool = ToolDefinition(
         name=ToolName("web_search"),

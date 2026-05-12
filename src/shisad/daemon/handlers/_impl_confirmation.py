@@ -98,6 +98,7 @@ def _parse_confirmed_tool_output_payload(raw_content: str) -> dict[str, Any]:
 
 
 def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
+    tool_name = str(getattr(record, "tool_name", "")).strip() or "tool"
     taint_values_raw: Any = getattr(record, "taint_labels", set())
     taint_values: list[str] = []
     if isinstance(taint_values_raw, (set, frozenset, list, tuple)):
@@ -111,9 +112,13 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
     ingress_context = str(getattr(record, "ingress_context", "") or "").strip()
     content_digest = str(getattr(record, "content_digest", "") or "").strip()
     raw_arguments = getattr(record, "arguments", None)
-    arguments = dict(raw_arguments) if isinstance(raw_arguments, Mapping) else {}
+    arguments: dict[str, Any] = {}
+    if tool_name == "browser.navigate" and isinstance(raw_arguments, Mapping):
+        url = str(raw_arguments.get("url", "")).strip()
+        if url:
+            arguments["url"] = url
     return {
-        "tool_name": str(getattr(record, "tool_name", "")).strip() or "tool",
+        "tool_name": tool_name,
         "success": bool(getattr(record, "success", False)),
         "payload": _parse_confirmed_tool_output_payload(str(getattr(record, "content", ""))),
         "taint_labels": taint_values,
