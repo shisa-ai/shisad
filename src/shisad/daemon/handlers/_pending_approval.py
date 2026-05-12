@@ -31,6 +31,8 @@ class PendingPepContextSnapshot:
     capabilities: set[Capability] = field(default_factory=set)
     taint_labels: set[TaintLabel] = field(default_factory=set)
     user_goal_host_patterns: set[str] = field(default_factory=set)
+    same_session_user_goal_host_patterns: set[str] = field(default_factory=set)
+    context_confirmation_host_patterns: set[str] = field(default_factory=set)
     untrusted_host_patterns: set[str] = field(default_factory=set)
     tool_allowlist: set[ToolName] | None = None
     trust_level: str = "untrusted"
@@ -101,6 +103,10 @@ def pending_pep_context_to_payload(
         "capabilities": sorted(capability.value for capability in snapshot.capabilities),
         "taint_labels": sorted(label.value for label in snapshot.taint_labels),
         "user_goal_host_patterns": sorted(snapshot.user_goal_host_patterns),
+        "same_session_user_goal_host_patterns": sorted(
+            snapshot.same_session_user_goal_host_patterns
+        ),
+        "context_confirmation_host_patterns": sorted(snapshot.context_confirmation_host_patterns),
         "untrusted_host_patterns": sorted(snapshot.untrusted_host_patterns),
         "tool_allowlist": (
             sorted(str(tool_name) for tool_name in snapshot.tool_allowlist)
@@ -135,6 +141,16 @@ def pending_pep_context_from_payload(raw: Mapping[str, Any]) -> PendingPepContex
         user_goal_host_patterns={
             str(pattern).strip()
             for pattern in raw.get("user_goal_host_patterns", [])
+            if str(pattern).strip()
+        },
+        same_session_user_goal_host_patterns={
+            str(pattern).strip()
+            for pattern in raw.get("same_session_user_goal_host_patterns", [])
+            if str(pattern).strip()
+        },
+        context_confirmation_host_patterns={
+            str(pattern).strip()
+            for pattern in raw.get("context_confirmation_host_patterns", [])
             if str(pattern).strip()
         },
         untrusted_host_patterns={
@@ -214,6 +230,8 @@ def build_policy_context_for_pending_action(
         capabilities=capabilities,
         taint_labels=set(snapshot.taint_labels),
         user_goal_host_patterns=set(snapshot.user_goal_host_patterns),
+        same_session_user_goal_host_patterns=set(snapshot.same_session_user_goal_host_patterns),
+        context_confirmation_host_patterns=set(snapshot.context_confirmation_host_patterns),
         untrusted_host_patterns=set(snapshot.untrusted_host_patterns),
         session_id=pending_session_id,
         workspace_id=pending_workspace_id,

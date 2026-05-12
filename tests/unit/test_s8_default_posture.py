@@ -27,6 +27,7 @@ from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
     _child_task_trust_level,
     _is_trusted_level,
+    _same_session_destination_attribution_for_policy,
     _transcript_metadata_for_firewall_risk,
     _trusted_cli_firewall_result_is_clean,
     _user_goal_host_patterns_for_validated_input,
@@ -595,6 +596,97 @@ async def test_lt1_clean_default_cli_turn_restores_user_goal_egress_hosts(
         "*.news.example",
         "news.example",
     }
+
+
+def test_gh30_same_session_destination_anchor_authorizes_single_prior_host(tmp_path) -> None:
+    store = TranscriptStore(tmp_path / "transcripts")
+    sid = SessionId("s-gh30")
+    store.append(
+        sid,
+        role="user",
+        content="Use https://tabelog.com/tokyo/A1301/A130101/123456/ for this booking.",
+        metadata={
+            "channel": "cli",
+            "session_mode": SessionMode.DEFAULT.value,
+            "trust_level": "trusted",
+        },
+    )
+
+    attribution = _same_session_destination_attribution_for_policy(
+        entries=store.list_entries(sid),
+        transcript_store=store,
+        current_user_goal_host_patterns=set(),
+    )
+
+    assert attribution.same_session_user_goal_host_patterns == {
+        "*.tabelog.com",
+        "tabelog.com",
+    }
+    assert attribution.context_confirmation_host_patterns == set()
+    assert attribution.anchor_hosts == ("tabelog.com",)
+
+
+def test_gh30_current_url_override_suppresses_prior_same_session_anchor(tmp_path) -> None:
+    store = TranscriptStore(tmp_path / "transcripts")
+    sid = SessionId("s-gh30")
+    store.append(
+        sid,
+        role="user",
+        content="Use https://tabelog.com/tokyo/A1301/A130101/123456/ for this booking.",
+        metadata={
+            "channel": "cli",
+            "session_mode": SessionMode.DEFAULT.value,
+            "trust_level": "trusted",
+        },
+    )
+
+    attribution = _same_session_destination_attribution_for_policy(
+        entries=store.list_entries(sid),
+        transcript_store=store,
+        current_user_goal_host_patterns={"example.com", "*.example.com"},
+    )
+
+    assert attribution.same_session_user_goal_host_patterns == set()
+    assert attribution.context_confirmation_host_patterns == set()
+    assert attribution.reason == "current_turn_host_override"
+
+
+def test_gh30_ambiguous_same_session_anchors_require_confirmation(tmp_path) -> None:
+    store = TranscriptStore(tmp_path / "transcripts")
+    sid = SessionId("s-gh30")
+    metadata = {
+        "channel": "cli",
+        "session_mode": SessionMode.DEFAULT.value,
+        "trust_level": "trusted",
+    }
+    store.append(
+        sid,
+        role="user",
+        content="Research https://tabelog.com/tokyo/A1301/A130101/123456/.",
+        metadata=metadata,
+    )
+    store.append(
+        sid,
+        role="user",
+        content="Also compare https://example-reservations.test/listing.",
+        metadata=metadata,
+    )
+
+    attribution = _same_session_destination_attribution_for_policy(
+        entries=store.list_entries(sid),
+        transcript_store=store,
+        current_user_goal_host_patterns=set(),
+    )
+
+    assert attribution.same_session_user_goal_host_patterns == set()
+    assert attribution.context_confirmation_host_patterns == {
+        "*.example-reservations.test",
+        "*.tabelog.com",
+        "example-reservations.test",
+        "tabelog.com",
+    }
+    assert attribution.anchor_hosts == ("example-reservations.test", "tabelog.com")
+    assert attribution.reason == "ambiguous_same_session_hosts"
 
 
 @pytest.mark.asyncio

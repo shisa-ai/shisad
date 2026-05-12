@@ -259,6 +259,7 @@ _EPISODE_GAP_THRESHOLD = DEFAULT_EPISODE_GAP_THRESHOLD
 _EPISODE_INTERNAL_TOKEN_BUDGET = DEFAULT_INTERNAL_TIER_TOKEN_BUDGET
 _CONTEXT_SCAFFOLD_DEGRADED_KEY = "context_scaffold_degraded"
 _CONTEXT_SCAFFOLD_DEGRADED_REASON_CODES_KEY = "context_scaffold_degraded_reason_codes"
+_DESTINATION_ATTRIBUTION_METADATA_KEY = "destination_attribution"
 _GENERIC_BLOCKED_ACTION_MESSAGE = (
     "I could not safely execute the proposed action(s) under current policy."
 )
@@ -384,6 +385,18 @@ class SessionMessagePlannerContextResult:
     planner_input: str
     assistant_tone_override: AssistantTone | None
     pending_action_binding_ids: tuple[str, ...] = ()
+    same_session_user_goal_host_patterns: set[str] = field(default_factory=set)
+    context_confirmation_host_patterns: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True, slots=True)
+class SameSessionDestinationAttribution:
+    """Bounded same-session host anchors passed into PEP attribution."""
+
+    same_session_user_goal_host_patterns: set[str] = field(default_factory=set)
+    context_confirmation_host_patterns: set[str] = field(default_factory=set)
+    anchor_hosts: tuple[str, ...] = ()
+    reason: str = "no_same_session_hosts"
 
 
 @dataclass(slots=True)
@@ -2290,6 +2303,8 @@ def _pending_pep_context_snapshot(context: PolicyContext) -> PendingPepContextSn
         capabilities=set(context.capabilities),
         taint_labels=set(context.taint_labels),
         user_goal_host_patterns=set(context.user_goal_host_patterns),
+        same_session_user_goal_host_patterns=set(context.same_session_user_goal_host_patterns),
+        context_confirmation_host_patterns=set(context.context_confirmation_host_patterns),
         untrusted_host_patterns=set(context.untrusted_host_patterns),
         tool_allowlist=(
             set(context.tool_allowlist) if context.tool_allowlist is not None else None
@@ -4442,6 +4457,70 @@ def _build_trusted_same_session_user_context(
         return ""
     lines.append("=== END TRUSTED SAME-SESSION USER CONTEXT ===")
     return "\n".join(lines)
+
+
+def _same_session_destination_attribution_for_policy(
+    *,
+    entries: Sequence[TranscriptEntry],
+    transcript_store: TranscriptStore,
+    current_user_goal_host_patterns: set[str],
+    max_entries: int = 6,
+) -> SameSessionDestinationAttribution:
+    """Build bounded same-session host attribution for destination-sensitive PEP checks.
+
+    Current-turn hosts remain authoritative. Prior authenticated user turns only
+    carry a destination anchor when they contain exactly one recent clean host.
+    Multiple recent hosts are context for confirmation, not auto-authorization.
+    """
+    if current_user_goal_host_patterns:
+        return SameSessionDestinationAttribution(reason="current_turn_host_override")
+
+    trusted_entries = [
+        entry for entry in entries if _transcript_entry_is_trusted_same_session_user_context(entry)
+    ]
+    anchor_hosts = _collapse_same_session_anchor_hosts(
+        {
+            host
+            for entry in trusted_entries[-max_entries:]
+            for host in extract_hosts_from_text(
+                _transcript_entry_content(
+                    entry=entry,
+                    transcript_store=transcript_store,
+                ),
+                max_hosts=8,
+            )
+        }
+    )
+    if not anchor_hosts:
+        return SameSessionDestinationAttribution(reason="no_same_session_hosts")
+
+    if len(anchor_hosts) == 1:
+        return SameSessionDestinationAttribution(
+            same_session_user_goal_host_patterns=host_patterns(set(anchor_hosts)),
+            anchor_hosts=anchor_hosts,
+            reason="single_same_session_host",
+        )
+
+    return SameSessionDestinationAttribution(
+        context_confirmation_host_patterns=host_patterns(set(anchor_hosts)),
+        anchor_hosts=anchor_hosts,
+        reason="ambiguous_same_session_hosts",
+    )
+
+
+def _collapse_same_session_anchor_hosts(hosts: set[str]) -> tuple[str, ...]:
+    normalized_hosts = sorted(
+        {host.strip().lower().rstrip(".") for host in hosts if host.strip()}
+    )
+    collapsed: list[str] = []
+    for host in normalized_hosts:
+        if any(
+            host != candidate and host.endswith(f".{candidate}")
+            for candidate in normalized_hosts
+        ):
+            continue
+        collapsed.append(host)
+    return tuple(collapsed)
 
 
 def _build_planner_conversation_context(
@@ -7877,6 +7956,25 @@ class SessionImplMixin(HandlerMixinBase):
 
         user_goal_host_patterns: set[str] = set()
         user_goal_host_patterns = _user_goal_host_patterns_for_validated_input(validated)
+        same_session_destination_attribution = _same_session_destination_attribution_for_policy(
+            entries=context_entries,
+            transcript_store=self._transcript_store,
+            current_user_goal_host_patterns=user_goal_host_patterns,
+        )
+        if same_session_destination_attribution.reason != "no_same_session_hosts":
+            session.metadata[_DESTINATION_ATTRIBUTION_METADATA_KEY] = {
+                "reason": same_session_destination_attribution.reason,
+                "anchor_hosts": list(same_session_destination_attribution.anchor_hosts),
+                "current_user_goal_host_patterns": sorted(user_goal_host_patterns),
+                "same_session_user_goal_host_patterns": sorted(
+                    same_session_destination_attribution.same_session_user_goal_host_patterns
+                ),
+                "context_confirmation_host_patterns": sorted(
+                    same_session_destination_attribution.context_confirmation_host_patterns
+                ),
+            }
+        else:
+            session.metadata.pop(_DESTINATION_ATTRIBUTION_METADATA_KEY, None)
         untrusted_current_turn = (
             firewall_result.sanitized_text
             if TaintLabel.UNTRUSTED in validated.incoming_taint_labels
@@ -7937,6 +8035,12 @@ class SessionImplMixin(HandlerMixinBase):
             capabilities=effective_caps,
             taint_labels=policy_taint_labels,
             user_goal_host_patterns=user_goal_host_patterns,
+            same_session_user_goal_host_patterns=(
+                same_session_destination_attribution.same_session_user_goal_host_patterns
+            ),
+            context_confirmation_host_patterns=(
+                same_session_destination_attribution.context_confirmation_host_patterns
+            ),
             untrusted_host_patterns=untrusted_host_patterns,
             session_id=sid,
             workspace_id=session.workspace_id,
@@ -8180,6 +8284,12 @@ class SessionImplMixin(HandlerMixinBase):
             planner_input=planner_input,
             assistant_tone_override=assistant_tone_override,
             pending_action_binding_ids=pending_action_binding_ids,
+            same_session_user_goal_host_patterns=(
+                same_session_destination_attribution.same_session_user_goal_host_patterns
+            ),
+            context_confirmation_host_patterns=(
+                same_session_destination_attribution.context_confirmation_host_patterns
+            ),
         )
 
     async def _dispatch_to_planner(
@@ -8995,6 +9105,7 @@ class SessionImplMixin(HandlerMixinBase):
             declared_domains: set[str] = set()
             declared_domains.update(planner_context.policy_egress_host_patterns)
             declared_domains.update(planner_context.user_goal_host_patterns)
+            declared_domains.update(planner_context.same_session_user_goal_host_patterns)
             if tool_def is not None:
                 for destination in tool_def.destinations:
                     raw_destination = str(destination).strip().lower()

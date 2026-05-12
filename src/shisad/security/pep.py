@@ -88,6 +88,8 @@ class PolicyContext:
         capabilities: set[Capability] | None = None,
         taint_labels: set[TaintLabel] | None = None,
         user_goal_host_patterns: set[str] | None = None,
+        same_session_user_goal_host_patterns: set[str] | None = None,
+        context_confirmation_host_patterns: set[str] | None = None,
         untrusted_host_patterns: set[str] | None = None,
         session_id: SessionId | None = None,
         workspace_id: WorkspaceId | None = None,
@@ -104,6 +106,12 @@ class PolicyContext:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
         self.user_goal_host_patterns: set[str] = user_goal_host_patterns or set()
+        self.same_session_user_goal_host_patterns: set[str] = (
+            same_session_user_goal_host_patterns or set()
+        )
+        self.context_confirmation_host_patterns: set[str] = (
+            context_confirmation_host_patterns or set()
+        )
         self.untrusted_host_patterns: set[str] = untrusted_host_patterns or set()
         self.session_id: SessionId = session_id or SessionId("")
         self.workspace_id: WorkspaceId = workspace_id or WorkspaceId("")
@@ -307,6 +315,12 @@ class PEP:
             user_requested = self._host_matches_any(
                 destination.host, context.user_goal_host_patterns
             )
+            same_session_user_requested = self._host_matches_any(
+                destination.host, context.same_session_user_goal_host_patterns
+            )
+            context_confirmation_required = self._host_matches_any(
+                destination.host, context.context_confirmation_host_patterns
+            )
             untrusted_suggested = self._host_matches_any(
                 destination.host, context.untrusted_host_patterns
             )
@@ -381,6 +395,30 @@ class PEP:
                         port=destination.port,
                         allowed=True,
                         reason="user_goal",
+                    )
+                )
+            elif same_session_user_requested:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=True,
+                        reason="same_session_user_goal",
+                    )
+                )
+            elif context_confirmation_required:
+                egress_requires_confirmation = True
+                egress_reason = "context_destination_requires_confirmation"
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=False,
+                        reason="confirmation_required_context_destination",
                     )
                 )
             elif untrusted_suggested:

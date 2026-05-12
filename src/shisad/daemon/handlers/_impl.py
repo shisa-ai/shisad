@@ -2787,6 +2787,12 @@ class HandlerImplementation(
                     capabilities=set(pep_context.capabilities),
                     taint_labels=set(pep_context.taint_labels),
                     user_goal_host_patterns=set(pep_context.user_goal_host_patterns),
+                    same_session_user_goal_host_patterns=set(
+                        pep_context.same_session_user_goal_host_patterns
+                    ),
+                    context_confirmation_host_patterns=set(
+                        pep_context.context_confirmation_host_patterns
+                    ),
                     untrusted_host_patterns=set(pep_context.untrusted_host_patterns),
                     tool_allowlist=(
                         set(pep_context.tool_allowlist)

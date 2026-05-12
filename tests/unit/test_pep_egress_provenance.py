@@ -77,6 +77,22 @@ def test_pep_allows_user_goal_destination_without_allowlist() -> None:
     assert decision.kind == PEPDecisionKind.ALLOW
 
 
+def test_pep_allows_same_session_user_goal_destination_without_allowlist() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_web_fetch())
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        same_session_user_goal_host_patterns={"tabelog.com", "*.tabelog.com"},
+        trust_level="trusted",
+    )
+    decision = pep.evaluate(
+        ToolName("web.fetch"),
+        {"url": "https://tabelog.com/tokyo/A1301/A130101/123456/"},
+        context,
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+    assert pep.egress_attempts[-1].reason == "same_session_user_goal"
+
+
 def test_pep_allows_tool_declared_destination_without_allowlist_or_user_goal() -> None:
     pep = PEP(PolicyBundle(), _registry_with_web_search("https://search.example.com"))
     context = PolicyContext(
@@ -118,6 +134,22 @@ def test_pep_requires_confirmation_for_untrusted_suggested_destination() -> None
         context,
     )
     assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+
+
+def test_pep_requires_confirmation_for_context_confirmation_destination() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_web_fetch())
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        context_confirmation_host_patterns={"tabelog.com", "*.tabelog.com"},
+        trust_level="trusted",
+    )
+    decision = pep.evaluate(
+        ToolName("web.fetch"),
+        {"url": "https://tabelog.com/tokyo/A1301/A130101/123456/"},
+        context,
+    )
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert pep.egress_attempts[-1].reason == "confirmation_required_context_destination"
 
 
 def test_pep_rejects_unattributed_unknown_destination() -> None:

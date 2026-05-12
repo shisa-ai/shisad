@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from shisad.core.types import Capability
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.types import Capability, PEPDecisionKind, ToolName
 from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.schema import (
     _CAPABILITY_TO_ACTION_KINDS,
@@ -22,6 +24,22 @@ from shisad.security.control_plane.schema import (
     RiskTier,
     action_kinds_for_capabilities,
 )
+from shisad.security.pep import PEP, PolicyContext
+from shisad.security.policy import PolicyBundle
+
+
+def _web_fetch_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web.fetch"),
+            description="Fetch URL with structured evidence payload.",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    return registry
 
 # ---------------------------------------------------------------------------
 # CC.7 Test 1: Session with HTTP_REQUEST → web.search does not trigger lockdown
@@ -94,6 +112,38 @@ async def test_h4_explicit_goal_rooted_web_fetch_stays_allowed(
     )
     assert "trace:tdg_confirmation_required" not in result.reason_codes
     assert "trace:tdg_dependency_path_missing" not in result.reason_codes
+
+
+def test_gh30_same_session_followup_destination_stays_allowed() -> None:
+    pep = PEP(PolicyBundle(), _web_fetch_registry())
+    decision = pep.evaluate(
+        ToolName("web.fetch"),
+        {"url": "https://tabelog.com/tokyo/A1301/A130101/123456/"},
+        PolicyContext(
+            capabilities={Capability.HTTP_REQUEST},
+            same_session_user_goal_host_patterns={"tabelog.com", "*.tabelog.com"},
+            trust_level="trusted",
+        ),
+    )
+
+    assert decision.kind == PEPDecisionKind.ALLOW
+    assert pep.egress_attempts[-1].reason == "same_session_user_goal"
+
+
+def test_gh30_ambiguous_followup_destination_routes_to_confirmation() -> None:
+    pep = PEP(PolicyBundle(), _web_fetch_registry())
+    decision = pep.evaluate(
+        ToolName("web.fetch"),
+        {"url": "https://tabelog.com/tokyo/A1301/A130101/123456/"},
+        PolicyContext(
+            capabilities={Capability.HTTP_REQUEST},
+            context_confirmation_host_patterns={"tabelog.com", "*.tabelog.com"},
+            trust_level="trusted",
+        ),
+    )
+
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert pep.egress_attempts[-1].reason == "confirmation_required_context_destination"
 
 
 # ---------------------------------------------------------------------------
