@@ -99,6 +99,57 @@ def test_gh29_navigation_url_selection_keeps_homepage_after_specific_candidate_f
     assert selection is None
 
 
+def test_gh29_navigation_url_selection_treats_default_port_variant_as_failed() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [
+                        {"url": "https://tabelog.com:443/hokkaido/A0101/A010101/123456/"}
+                    ],
+                },
+            ),
+            _serialized_tool_output(
+                "browser.navigate",
+                {
+                    "ok": False,
+                    "error": "browser_navigate_failed",
+                },
+                success=False,
+                arguments={"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
+            ),
+        ],
+    )
+
+    assert selection is None
+
+
+def test_gh29_navigation_url_selection_dedupes_default_port_variants() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [
+                        {"url": "https://tabelog.com:443/hokkaido/A0101/A010101/123456/"},
+                        {"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
+                    ],
+                },
+            )
+        ],
+    )
+
+    assert selection is not None
+    assert selection.alternatives_considered == (
+        "https://tabelog.com:443/hokkaido/A0101/A010101/123456/",
+    )
+
+
 def test_gh29_navigation_url_selection_rejects_same_hostname_different_origin() -> None:
     selection = _select_task_specific_navigation_url(
         arguments={"url": "https://tabelog.com/"},

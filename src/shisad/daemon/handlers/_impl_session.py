@@ -5303,15 +5303,17 @@ def _canonical_navigation_selection_url(url: str) -> str:
     raw_url = str(url or "").strip()
     if not raw_url:
         return ""
-    host = safe_url_hostname(raw_url)
-    if not host:
-        return ""
     parsed = urlsplit(raw_url)
-    if parsed.scheme.lower() not in {"http", "https"}:
+    origin = _navigation_url_origin(raw_url)
+    if origin is None:
         return ""
+    scheme, host, port = origin
+    default_port = 443 if scheme == "https" else 80
+    normalized_host = f"[{host}]" if ":" in host else host
+    netloc = normalized_host if port == default_port else f"{normalized_host}:{port}"
     path = parsed.path or "/"
     query = f"?{parsed.query}" if parsed.query else ""
-    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}"
+    return f"{scheme}://{netloc}{path}{query}"
 
 
 def _is_generic_navigation_homepage(url: str) -> bool:
