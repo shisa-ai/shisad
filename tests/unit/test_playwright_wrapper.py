@@ -44,6 +44,12 @@ class Locator {
     this.page.fields[this.selector] = text;
   }
   async inputValue() {
+    if (this.selector === "#editor") {
+      throw new Error("not an input");
+    }
+    return this.page.fields[this.selector] || "";
+  }
+  async evaluate() {
     return this.page.fields[this.selector] || "";
   }
   async press(key) {
@@ -116,7 +122,9 @@ class Page {
       title: await this.title(),
       visible_text: this._url.includes("/submitted")
         ? `Form submitted ${this._url}`
-        : `Hello browser Continue Submit field:${this.fields["#search"] || ""}`,
+        : `Hello browser Continue Submit field:${this.fields["#search"] || ""} editor:${
+            this.fields["#editor"] || ""
+          }`,
     };
   }
 }
@@ -206,6 +214,13 @@ exports.chromium = {
     submit_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert submit_text["url"] == "http://example.test/"
     assert "--submit" in submit_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "rich-secret").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    rich_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert rich_text["url"] == "http://example.test/"
+    assert "rich-secret" in rich_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0

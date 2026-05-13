@@ -293,12 +293,27 @@ async function syncFieldState(page, state) {
   }
   const nextFields = {};
   for (const selector of selectors) {
+    let value = "";
     try {
       const locator = await firstLocator(page, selector);
-      if (typeof locator.inputValue !== "function") {
-        continue;
+      if (typeof locator.inputValue === "function") {
+        try {
+          value = await locator.inputValue({ timeout: Math.min(timeoutMs(), 1000) });
+        } catch {
+          value = "";
+        }
       }
-      const value = await locator.inputValue({ timeout: Math.min(timeoutMs(), 1000) });
+      if (!String(value || "") && typeof locator.evaluate === "function") {
+        value = await locator.evaluate((element) => {
+          if (element && "value" in element) {
+            return String(element.value || "");
+          }
+          if (element && element.isContentEditable) {
+            return String(element.innerText || element.textContent || "");
+          }
+          return "";
+        });
+      }
       if (String(value || "")) {
         nextFields[selector] = String(value);
       }
