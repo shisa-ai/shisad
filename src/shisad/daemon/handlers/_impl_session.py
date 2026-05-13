@@ -829,6 +829,20 @@ _LOCKDOWN_RESUME_INTENT_OBJECTS = (
     "session lockdown",
     "the session lockdown",
 )
+_LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS = (
+    *_LOCKDOWN_RESUME_INTENT_OBJECTS,
+    "it",
+    "this session",
+    "the session",
+)
+_LOCKDOWN_RECOVERY_DECLINE_PREFIXES = (
+    "please ",
+    "please, ",
+    "ok, ",
+    "ok ",
+    "okay, ",
+    "okay ",
+)
 
 
 def _classify_lockdown_resume_current_turn_intent(text: str) -> bool:
@@ -946,6 +960,7 @@ def _strip_lockdown_resume_intent_prefix(normalized: str) -> str:
     """
     for prefix in (
         "please ",
+        "go ahead, ",
         "go ahead and ",
         "let's ",
         "lets ",
@@ -973,7 +988,26 @@ def _classify_lockdown_resume_decline_current_turn_intent(text: str) -> bool:
     if not normalized:
         return False
     stripped = normalized.strip(" .,!;:")
-    if stripped in {"no", "nope", "not yet", "do not clear", "do not resume"}:
+    for prefix in _LOCKDOWN_RECOVERY_DECLINE_PREFIXES:
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix) :].strip(" .,!;:")
+            break
+    if stripped in {
+        "no",
+        "nope",
+        "no thanks",
+        "no thank you",
+        "not now",
+        "not yet",
+        "do not clear",
+        "do not resume",
+        "do not lift",
+        "do not unlock",
+        "don't clear",
+        "don't resume",
+        "dont clear",
+        "dont resume",
+    }:
         return True
     if stripped.startswith(("no ", "no, ", "nope ", "nope, ")):
         return any(
@@ -999,6 +1033,12 @@ def _classify_lockdown_resume_decline_current_turn_intent(text: str) -> bool:
 
 
 def _lockdown_recovery_reply_current_turn_is_clear(text: str) -> bool:
+    """Return True for finite action replies to a prior lockdown notice.
+
+    This is intentionally narrower than "any reply after the agent asked what
+    to do": neutral acknowledgements and explanation-only replies stay
+    ambiguous, so a mistaken planner `lockdown.resume` call still fails closed.
+    """
     normalized = " ".join(text.strip().lower().split())
     if not normalized or "?" in normalized:
         return False
@@ -1006,7 +1046,16 @@ def _lockdown_recovery_reply_current_turn_is_clear(text: str) -> bool:
         return False
     if _classify_lockdown_resume_decline_current_turn_intent(normalized):
         return False
-    return not has_follow_on_command_verb(normalized)
+    normalized = _strip_lockdown_resume_intent_prefix(normalized)
+    for verb in _LOCKDOWN_RESUME_INTENT_VERBS:
+        for obj in _LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS:
+            phrase = f"{verb} {obj}"
+            if not normalized.startswith(phrase):
+                continue
+            tail = normalized[len(phrase) :]
+            if _lockdown_resume_command_tail_is_clear(tail):
+                return True
+    return False
 
 
 def _action_resolve_command_tail_is_clear(tail: str) -> bool:
@@ -4296,9 +4345,14 @@ def _transcript_entry_is_lockdown_recovery_notice(entry: TranscriptEntry) -> boo
 
 
 def _strip_lockdown_recovery_notice_from_content(content: str, metadata: Mapping[str, Any]) -> str:
-    if not bool(metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY)):
+    if not (
+        bool(metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY))
+        or bool(metadata.get(_DAEMON_CONTROL_NOTICE_METADATA_KEY))
+    ):
         return content
-    marker_index = content.find(_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER)
+    marker_index = content.rfind(f"\n\n{_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER}")
+    if marker_index < 0:
+        marker_index = content.rfind(_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER)
     if marker_index < 0:
         return content
     return content[:marker_index].rstrip()

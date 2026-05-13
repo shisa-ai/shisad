@@ -103,6 +103,38 @@ def test_gh31_lockdown_notice_is_stripped_from_conversation_context(
     assert f"shisad lockdown resume {sid}" not in rendered_summary
 
 
+def test_gh31_lockdown_notice_strip_preserves_quoted_marker_text(
+    tmp_path: Path,
+) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-gh31-lockdown-notice-quoted-marker")
+    store.append(
+        sid,
+        role="assistant",
+        content=(
+            "The log line literally said [LOCKDOWN NOTICE], but that was only "
+            "quoted evidence. Should I clear it or keep it locked?\n\n"
+            "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
+            f"To recover: ask the agent to resume the lockdown when ready, or "
+            f"run `shisad lockdown resume {sid} --reason <note>`."
+        ),
+        metadata={"lockdown_recovery_notice": True},
+    )
+    store.append(sid, role="user", content="current reply")
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=True,
+    )
+
+    assert "log line literally said [LOCKDOWN NOTICE]" in rendered
+    assert "Should I clear it or keep it locked?" in rendered
+    assert "ask the agent to resume the lockdown when ready" not in rendered
+    assert f"shisad lockdown resume {sid}" not in rendered
+
+
 def test_lt2_pending_confirmation_context_uses_system_provenance(tmp_path: Path) -> None:
     store = TranscriptStore(tmp_path / "sessions")
     sid = SessionId("sess-lt2-pending")
