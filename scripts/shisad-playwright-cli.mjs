@@ -97,6 +97,7 @@ async function loadState(cwd, session) {
       return {
         opened: Boolean(parsed.opened),
         current_url: String(parsed.current_url || ""),
+        fields_url: String(parsed.fields_url || parsed.current_url || ""),
         fields:
           parsed.fields && typeof parsed.fields === "object" && !Array.isArray(parsed.fields)
             ? parsed.fields
@@ -106,7 +107,7 @@ async function loadState(cwd, session) {
   } catch {
     // Missing or corrupt state starts a clean browser session.
   }
-  return { opened: false, current_url: "", fields: {} };
+  return { opened: false, current_url: "", fields_url: "", fields: {} };
 }
 
 async function saveState(cwd, session, state) {
@@ -269,8 +270,17 @@ async function firstLocator(page, target) {
   return locator;
 }
 
-async function applyFieldState(page, fields) {
-  for (const [selector, value] of Object.entries(fields || {})) {
+function clearFieldState(state) {
+  state.fields = {};
+  state.fields_url = "";
+}
+
+async function applyFieldState(page, state) {
+  if (!state.fields_url || state.fields_url !== state.current_url) {
+    clearFieldState(state);
+    return;
+  }
+  for (const [selector, value] of Object.entries(state.fields || {})) {
     try {
       const locator = await firstLocator(page, selector);
       await locator.fill(String(value));
@@ -280,7 +290,9 @@ async function applyFieldState(page, fields) {
   }
 }
 
-async function withPage(cwd, session, state, action) {
+async function withPage(cwd, session, state, action, options = {}) {
+  const loadCurrentUrl = options.loadCurrentUrl !== false;
+  const restoreFields = options.restoreFields !== false;
   const { chromium } = loadPlaywright();
   if (!chromium || typeof chromium.launchPersistentContext !== "function") {
     throw new Error("@playwright/test did not expose chromium.launchPersistentContext");
@@ -289,17 +301,25 @@ async function withPage(cwd, session, state, action) {
   const context = await chromium.launchPersistentContext(profilePath(cwd, session), {
     headless: process.env.SHISAD_PLAYWRIGHT_HEADLESS !== "0",
     viewport: { width: 1280, height: 900 },
-  });
+    });
   try {
     const pages = typeof context.pages === "function" ? context.pages() : [];
     const page = pages[0] || (await context.newPage());
-    if (state.current_url) {
+    const beforeUrl = state.current_url;
+    if (loadCurrentUrl && state.current_url) {
       await goto(page, state.current_url);
-      await applyFieldState(page, state.fields);
+      if (restoreFields) {
+        await applyFieldState(page, state);
+      }
     }
     await action(page);
     state.opened = true;
     state.current_url = typeof page.url === "function" ? page.url() : state.current_url;
+    if (beforeUrl && state.current_url !== beforeUrl) {
+      clearFieldState(state);
+    } else if (Object.keys(state.fields || {}).length > 0) {
+      state.fields_url = state.current_url;
+    }
     await saveState(cwd, session, state);
   } finally {
     await context.close();
@@ -325,7 +345,10 @@ async function main() {
       state.opened = true;
       const url = args[0] || "";
       if (url) {
-        await withPage(cwd, parsed.session, state, (page) => goto(page, url));
+        await withPage(cwd, parsed.session, state, (page) => goto(page, url), {
+          loadCurrentUrl: false,
+          restoreFields: false,
+        });
       } else {
         await saveState(cwd, parsed.session, state);
       }
@@ -337,7 +360,10 @@ async function main() {
       if (!url) {
         throw new Error("goto requires url");
       }
-      await withPage(cwd, parsed.session, state, (page) => goto(page, url));
+      await withPage(cwd, parsed.session, state, (page) => goto(page, url), {
+        loadCurrentUrl: false,
+        restoreFields: false,
+      });
       return 0;
     }
     case "eval": {
@@ -367,6 +393,7 @@ async function main() {
         const locator = await firstLocator(page, target);
         await locator.fill(String(text || ""));
         state.fields = { ...(state.fields || {}), [target]: String(text || "") };
+        state.fields_url = state.current_url;
         if (submit && typeof locator.press === "function") {
           await locator.press("Enter");
           await waitForSettled(page);

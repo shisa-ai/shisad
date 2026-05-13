@@ -13,7 +13,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -103,6 +102,8 @@ _BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(r"(?<![/\w.-])/(?!/)[^\r\n]+")
 _BROWSER_FAILURE_URL_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 _BROWSER_FAILURE_DRIVE_SCHEME_RE = re.compile(r"^[A-Za-z]://")
 _BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_BROWSER_SANDBOX_MEMORY_MB = 2048
+_BROWSER_SANDBOX_PIDS = 4096
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -637,7 +638,7 @@ class BrowserToolkit:
             "current_url": current_url if opened else "",
         }
 
-    def doctor_status(self) -> dict[str, Any]:
+    async def doctor_status(self) -> dict[str, Any]:
         """Return operator-facing browser command readiness diagnostics."""
         command_display = shlex.join(self._command) if self._command else ""
         base_payload: dict[str, Any] = {
@@ -663,7 +664,7 @@ class BrowserToolkit:
                 problems.append(dependency_error)
         protocol: dict[str, Any] = {"supported": False, "probe": "", "reason": ""}
         if runtime_command and not dependency_error:
-            protocol = self._probe_browser_command_protocol(runtime_command)
+            protocol = await self._probe_browser_command_protocol(runtime_command)
             if not protocol["supported"]:
                 problems.append(protocol["reason"])
         status = "ok" if not problems else "misconfigured"
@@ -830,8 +831,10 @@ class BrowserToolkit:
             network=network_policy,
             environment=self._browser_environment_policy(),
             limits=ResourceLimits(
+                memory_mb=_BROWSER_SANDBOX_MEMORY_MB,
                 timeout_seconds=max(1, math.ceil(self._timeout_seconds)),
                 output_bytes=max(self._max_read_bytes * 2, 32_768),
+                pids=_BROWSER_SANDBOX_PIDS,
             ),
             degraded_mode=(
                 DegradedModePolicy.FAIL_CLOSED
@@ -880,70 +883,94 @@ class BrowserToolkit:
             env=cache.env,
         )
 
-    @classmethod
-    def _probe_browser_command_protocol(cls, command: list[str]) -> dict[str, Any]:
-        sentinel = cls._run_browser_command_probe(command, [_SHISAD_BROWSER_WRAPPER_SENTINEL])
-        sentinel_output = cls._probe_text(sentinel)
+    async def _probe_browser_command_protocol(self, command: list[str]) -> dict[str, Any]:
+        sentinel = await self._run_browser_command_probe(
+            command,
+            [_SHISAD_BROWSER_WRAPPER_SENTINEL],
+        )
+        sentinel_output = self._probe_text(sentinel)
         if sentinel["exit_code"] == 0 and "shisad-browser-wrapper" in sentinel_output:
             return {"supported": True, "probe": "sentinel", "reason": ""}
 
-        help_probe = cls._run_browser_command_probe(command, ["--help"])
-        help_output = cls._probe_text(help_probe)
+        help_probe = await self._run_browser_command_probe(command, ["--help"])
+        help_output = self._probe_text(help_probe)
         if help_probe["exit_code"] == 0 and (
             _SHISAD_BROWSER_WRAPPER_SENTINEL in help_output
             or ("-s=" in help_output and "shisad" in help_output.lower())
         ):
             return {"supported": True, "probe": "help", "reason": ""}
 
+        probe_error = str(sentinel.get("error") or help_probe.get("error") or "")
         reason = "browser_command_protocol_incompatible"
-        if sentinel["timed_out"] or help_probe["timed_out"]:
+        if probe_error:
+            reason = probe_error
+        elif sentinel["timed_out"] or help_probe["timed_out"]:
             reason = "browser_command_protocol_probe_timeout"
-        elif sentinel["error"] or help_probe["error"]:
-            reason = "browser_command_protocol_probe_failed"
         return {
             "supported": False,
             "probe": "sentinel,help",
             "reason": reason,
-            "stderr": cls._sanitize_browser_failure_text(
+            "stderr": self._sanitize_browser_failure_text(
                 sentinel["stderr"] or help_probe["stderr"]
             ),
-            "stdout": cls._sanitize_browser_failure_text(
+            "stdout": self._sanitize_browser_failure_text(
                 sentinel["stdout"] or help_probe["stdout"]
+            ),
+            "degraded_controls": sorted(
+                {
+                    *sentinel.get("degraded_controls", []),
+                    *help_probe.get("degraded_controls", []),
+                }
             ),
         }
 
-    @staticmethod
-    def _run_browser_command_probe(command: list[str], args: list[str]) -> dict[str, Any]:
-        try:
-            completed = subprocess.run(
-                [*command, *args],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-        except subprocess.TimeoutExpired as exc:
-            return {
-                "exit_code": None,
-                "stdout": str(exc.stdout or ""),
-                "stderr": str(exc.stderr or ""),
-                "timed_out": True,
-                "error": "",
-            }
-        except OSError as exc:
-            return {
-                "exit_code": None,
-                "stdout": "",
-                "stderr": str(exc),
-                "timed_out": False,
-                "error": exc.__class__.__name__,
-            }
+    async def _run_browser_command_probe(
+        self,
+        command: list[str],
+        args: list[str],
+    ) -> dict[str, Any]:
+        probe_dir = self._session_root / "_doctor"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        read_paths = self._dedupe_paths([probe_dir, *self._browser_command_dependency_roots()[0]])
+        config = SandboxConfig(
+            tool_name="browser.doctor",
+            command=[*command, *args],
+            sandbox_type=SandboxType.CONTAINER,
+            session_id="browser-doctor",
+            cwd=str(probe_dir),
+            read_paths=[str(path) for path in read_paths],
+            write_paths=[str(probe_dir)],
+            env={},
+            filesystem=self._filesystem_policy(read_paths=read_paths, write_paths=[probe_dir]),
+            network_urls=[],
+            network=NetworkPolicy(allow_network=False, allowed_domains=[]),
+            environment=self._browser_environment_policy(),
+            limits=ResourceLimits(
+                memory_mb=_BROWSER_SANDBOX_MEMORY_MB,
+                timeout_seconds=5,
+                output_bytes=16_384,
+                pids=_BROWSER_SANDBOX_PIDS,
+            ),
+            degraded_mode=(
+                DegradedModePolicy.FAIL_CLOSED
+                if self._require_hardened_isolation
+                else DegradedModePolicy.FAIL_OPEN
+            ),
+            security_critical=self._require_hardened_isolation,
+            approved_by_pep=True,
+            origin={"actor": "browser_doctor"},
+        )
+        result = await self._sandbox_runner.execute_async(config, session=None)
+        error = ""
+        if not result.allowed or result.timed_out:
+            error = self._result_error_reason(result)
         return {
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "timed_out": False,
-            "error": "",
+            "exit_code": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "timed_out": result.timed_out,
+            "error": error,
+            "degraded_controls": list(result.degraded_controls),
         }
 
     @staticmethod
@@ -1654,6 +1681,7 @@ class BrowserToolkit:
             "browser_command_protocol_incompatible": "command_protocol",
             "browser_command_protocol_probe_failed": "command_protocol",
             "browser_command_protocol_probe_timeout": "command_protocol",
+            "browser_runtime_isolation_unavailable": "runtime_isolation",
         }.get(reason, "preflight")
         return {"reason": reason, "stage": stage}
 

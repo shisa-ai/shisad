@@ -307,22 +307,35 @@ def _toolkit(
     )
 
 
-def test_gh33_browser_toolkit_doctor_accepts_shisad_playwright_wrapper(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_doctor_accepts_shisad_playwright_wrapper(
+    tmp_path: Path,
+) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for the browser wrapper protocol probe")
-    runner = _CapturingSuccessRunner()
+    runner = _DirectRunner()
     toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(_PLAYWRIGHT_WRAPPER)])
 
-    status = toolkit.doctor_status()
+    status = await toolkit.doctor_status()
 
     assert status["status"] == "ok"
     assert status["enabled"] is True
     assert status["protocol"]["supported"] is True
     assert status["protocol"]["probe"] == "sentinel"
     assert status["problems"] == []
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    assert config.tool_name == "browser.doctor"
+    assert config.network.allow_network is False
+    assert config.limits.memory_mb >= 2048
+    assert config.limits.pids >= 4096
+    assert config.command[-1] == "--shisad-browser-wrapper-version"
 
 
-def test_gh33_browser_toolkit_doctor_rejects_plain_playwright_cli(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_doctor_rejects_plain_playwright_cli(
+    tmp_path: Path,
+) -> None:
     command = tmp_path / "playwright-cli"
     command.write_text(
         "\n".join(
@@ -345,15 +358,51 @@ def test_gh33_browser_toolkit_doctor_rejects_plain_playwright_cli(tmp_path: Path
         encoding="utf-8",
     )
     command.chmod(0o755)
-    runner = _CapturingSuccessRunner()
+    runner = _DirectRunner()
     toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
 
-    status = toolkit.doctor_status()
+    status = await toolkit.doctor_status()
 
     assert status["status"] == "misconfigured"
     assert "browser_command_protocol_incompatible" in status["problems"]
     assert status["protocol"]["supported"] is False
     assert status["protocol"]["reason"] == "browser_command_protocol_incompatible"
+    assert [config.tool_name for config in runner.configs] == [
+        "browser.doctor",
+        "browser.doctor",
+    ]
+    assert all(config.network.allow_network is False for config in runner.configs)
+
+
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_doctor_reports_sandbox_degraded_probe(
+    tmp_path: Path,
+) -> None:
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=False,
+            reason="degraded_enforcement",
+            degraded_controls=["filesystem", "network", "seccomp"],
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner, command=[sys.executable])
+
+    status = await toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_runtime_isolation_unavailable" in status["problems"]
+    assert status["protocol"]["supported"] is False
+    assert status["protocol"]["reason"] == "browser_runtime_isolation_unavailable"
+    assert status["protocol"]["degraded_controls"] == [
+        "filesystem",
+        "network",
+        "seccomp",
+    ]
+    assert [config.tool_name for config in runner.configs] == [
+        "browser.doctor",
+        "browser.doctor",
+    ]
+    assert all(config.network.allow_network is False for config in runner.configs)
 
 
 def test_gh33_browser_unknown_session_flag_reports_protocol_error(tmp_path: Path) -> None:

@@ -110,7 +110,7 @@ class Page {
       title: await this.title(),
       visible_text: this._url.includes("/submitted")
         ? `Form submitted ${this._url}`
-        : "Hello browser Continue Submit",
+        : `Hello browser Continue Submit field:${this.fields["#search"] || ""}`,
     };
   }
 }
@@ -166,6 +166,15 @@ exports.chromium = {
     assert '[e1] link "Continue" selector="#continue" href="/next"' in snapshot
     assert '[e3] button "Submit" selector="#submit"' in snapshot
 
+    assert run_wrapper("fill", "#search", "secret").returncode == 0
+    assert run_wrapper("goto", "http://other.test/").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    other = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert other["url"] == "http://other.test/"
+    assert "secret" not in other["visible_text"]
+
+    assert run_wrapper("goto", "http://example.test/").returncode == 0
     assert run_wrapper("fill", "#search", "hello").returncode == 0
     assert run_wrapper("click", "#submit").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))

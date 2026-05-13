@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1821,10 +1822,12 @@ class AdminImplMixin(HandlerMixinBase):
             "realitycheck": self._realitycheck_toolkit.doctor_status,
         }
 
-        def _run_component(name: str) -> dict[str, Any]:
+        async def _run_component(name: str) -> dict[str, Any]:
             factory = component_factories[name]
             try:
                 payload = factory()
+                if inspect.isawaitable(payload):
+                    payload = await payload
             except Exception as exc:
                 logger.exception("doctor check component failed: %s", name)
                 return {
@@ -1846,9 +1849,9 @@ class AdminImplMixin(HandlerMixinBase):
         checks: dict[str, Any] = {}
         if component == "all":
             for key in _DOCTOR_COMPONENTS:
-                checks[key] = _run_component(key)
+                checks[key] = await _run_component(key)
         elif component in component_factories:
-            checks[component] = _run_component(component)
+            checks[component] = await _run_component(component)
         else:
             return {
                 "status": "error",
