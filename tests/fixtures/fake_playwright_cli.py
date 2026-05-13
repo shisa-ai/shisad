@@ -279,6 +279,11 @@ def _handle_fill(
     store_field: bool,
 ) -> int:
     _require_opened(state)
+    if not store_field:
+        fields = dict(state.get("fields", {}))
+        fields.pop(target, None)
+        state["fields"] = fields
+        _save_state(cwd, session, state)
     parser, final_url = _parse_page(str(state.get("current_url", "")))
     element = _resolve_target(parser, target)
     if element is None:

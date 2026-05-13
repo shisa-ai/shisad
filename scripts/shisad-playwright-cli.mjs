@@ -532,6 +532,7 @@ async function main() {
       }
       if (!storeField) {
         dropFieldState(state, target);
+        await saveState(cwd, parsed.session, state);
       }
       await withPage(cwd, parsed.session, state, async (page) => {
         const locator = await firstLocator(page, target);

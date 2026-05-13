@@ -767,6 +767,48 @@ async def test_gh33_browser_toolkit_sensitive_type_text_fake_cli_no_store(
     assert "sensitive-secret" not in json.dumps(fake_state, sort_keys=True)
 
 
+def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    fixture_cli = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+    state_dir = tmp_path / ".fake-playwright"
+    state_dir.mkdir()
+    state_path = state_dir / "shisad-browser-session.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "opened": True,
+                "current_url": f"{browser_fixture_server.base_url}/",
+                "fields": {"#missing": "old-sensitive"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(fixture_cli),
+            "-s=shisad-browser-session",
+            "fill",
+            "#missing",
+            "replacement-secret",
+            "--no-store",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode != 0
+    fake_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "old-sensitive" not in json.dumps(fake_state, sort_keys=True)
+    assert "replacement-secret" not in json.dumps(fake_state, sort_keys=True)
+
+
 @pytest.mark.asyncio
 async def test_m6_browser_toolkit_type_submit_submits_form_directly(
     tmp_path: Path,

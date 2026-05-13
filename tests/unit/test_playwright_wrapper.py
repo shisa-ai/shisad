@@ -41,6 +41,9 @@ class Locator {
     return this;
   }
   async fill(text) {
+    if (this.selector === "#missing") {
+      throw new Error("missing target");
+    }
     this.page.fields[this.selector] = text;
     if (text === "old-sensitive") {
       this.page._url = new URL(
@@ -412,6 +415,23 @@ exports.chromium = {
     assert "old-sensitive" not in json.dumps(restored_state, sort_keys=True)
     assert "replacement-secret" not in json.dumps(restored_state, sort_keys=True)
     assert restored_state["current_url"] == "http://example.test/"
+
+    state_path.write_text(
+        json.dumps(
+            {
+                "opened": True,
+                "current_url": "http://example.test/",
+                "fields_url": "http://example.test/",
+                "fields": {"#missing": "old-sensitive"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing = run_wrapper("fill", "#missing", "replacement-secret", "--no-store")
+    assert missing.returncode != 0
+    failed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "old-sensitive" not in json.dumps(failed_state, sort_keys=True)
+    assert "replacement-secret" not in json.dumps(failed_state, sort_keys=True)
 
     assert run_wrapper("fill", "#editor", "rich-secret").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
