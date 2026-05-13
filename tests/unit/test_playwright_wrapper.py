@@ -82,6 +82,9 @@ class FakeText {
     this.nodeType = 3;
     this.textContent = text;
   }
+  cloneNode() {
+    return new FakeText(this.textContent);
+  }
 }
 
 class FakeElement {
@@ -106,6 +109,37 @@ class FakeElement {
   setEditableText(text) {
     this.textNode.textContent = text;
     this.refreshText();
+  }
+  cloneNode(deep) {
+    const children = deep ? this.children.map((child) => child.cloneNode(true)) : [];
+    return new FakeElement(
+      this.tagName.toLowerCase(),
+      { ...this.attrs },
+      this.textNode.textContent,
+      children,
+    );
+  }
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (element) => {
+      for (const child of element.children) {
+        if (selector === "[contenteditable]" && child.getAttribute("contenteditable") !== null) {
+          matches.push(child);
+        }
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
+  remove() {
+    if (!this.parentElement) {
+      return;
+    }
+    this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+    this.parentElement.childNodes = this.parentElement.childNodes.filter((child) => child !== this);
+    this.parentElement.refreshText();
+    this.parentElement = null;
   }
   getAttribute(name) {
     return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
@@ -328,6 +362,15 @@ exports.chromium = {
     assert rich_text["url"] == "http://example.test/"
     assert "rich-secret" in rich_text["visible_text"]
     assert "Locked" not in rich_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "line one\nline two").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    multiline_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert multiline_text["url"] == "http://example.test/"
+    assert "line one\nline two" in multiline_text["visible_text"]
+    assert "line one line two" not in multiline_text["visible_text"]
+    assert "Locked" not in multiline_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0
