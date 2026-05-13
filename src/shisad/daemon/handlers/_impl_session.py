@@ -835,6 +835,10 @@ _LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS = (
     "this session",
     "the session",
 )
+_LOCKDOWN_RECOVERY_PROMPT_INTENT_OBJECTS = (
+    *_LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS,
+    "this",
+)
 _LOCKDOWN_RECOVERY_DECLINE_PREFIXES = (
     "please ",
     "please, ",
@@ -4427,7 +4431,7 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     resume_choice = any(
         f"{verb} {obj}" in normalized
         for verb in _LOCKDOWN_RESUME_INTENT_VERBS
-        for obj in _LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS
+        for obj in _LOCKDOWN_RECOVERY_PROMPT_INTENT_OBJECTS
     )
     keep_locked = any(
         phrase in normalized
