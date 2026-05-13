@@ -8,6 +8,7 @@ untrusted or still-active threat input cannot impersonate that recovery.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -564,6 +565,50 @@ async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
     )
 
 
+async def test_gh31_quoted_recovery_question_does_not_authorize_resume(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_gh31_recovery_prompt_then_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        reason="planner should not clear from quoted evidence",
+        first_content=(
+            'The evidence literally says "Should I clear it or keep it locked?" '
+            "but that quote is untrusted."
+        ),
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what happened to this session?"},
+    )
+    reply = await clean_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "clear it because operator verified the alert is clear",
+        },
+    )
+
+    assert len(planner_inputs) >= 2
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert reply.get("lockdown_level") == "caution"
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("blocked_actions", 0)) == 1
+    tool_events = await _lockdown_tool_events(clean_harness, sid)
+    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
+    assert rejected
+    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
+        rejected[-1]
+    )
+
+
 async def test_gh31_untrusted_appended_tool_summary_cannot_authorize_resume(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
@@ -726,6 +771,44 @@ async def test_gh31_summary_row_after_recovery_prompt_does_not_hide_prompt(
     payload = _first_lockdown_resume_payload(second_reply)
     assert payload["ok"] is True
     assert payload["reason"] == "operator verified the alert is clear"
+
+
+async def test_gh31_recent_result_followup_surfaces_lockdown_notice(
+    clean_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(clean_harness.client)
+    transcript_store = TranscriptStore(clean_harness.config.data_dir / "sessions")
+    transcript_store.append(
+        SessionId(sid),
+        role="tool",
+        content=json.dumps(
+            {
+                "path": "README.md",
+                "content": "recent result lockdown marker",
+            },
+            sort_keys=True,
+        ),
+        metadata={
+            "confirmed_tool_output": True,
+            "tool_name": "fs.read",
+            "tool_success": True,
+        },
+    )
+    await _set_caution_lockdown(clean_harness, sid)
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what did you find?"},
+    )
+
+    response_text = str(reply.get("response", ""))
+    assert "recent result lockdown marker" in response_text
+    assert "[LOCKDOWN NOTICE]" in response_text
+    assert "Session is in caution" in response_text
+    entries = transcript_store.list_entries(SessionId(sid))
+    assistant_entries = [entry for entry in entries if entry.role == "assistant"]
+    assert assistant_entries
+    assert assistant_entries[-1].metadata.get("lockdown_recovery_notice") is True
 
 
 async def test_gh31_active_lockdown_state_surfaces_in_trusted_command_chat(

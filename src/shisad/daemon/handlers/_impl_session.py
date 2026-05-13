@@ -4474,6 +4474,18 @@ def _previous_turn_is_lockdown_recovery_prompt(
 
 def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     prompt_candidate = _strip_appended_untrusted_response_sections_for_recovery_prompt(content)
+    if not prompt_candidate.rstrip().endswith("?"):
+        return False
+    question_text = prompt_candidate.strip()
+    for delimiter in ("\n", ". ", "! "):
+        index = question_text.rfind(delimiter)
+        if index >= 0:
+            question_text = question_text[index + len(delimiter) :].strip()
+    normalized_question = " ".join(
+        question_text.strip("\"'`").casefold().split()
+    )
+    if not normalized_question.startswith("should i "):
+        return False
     normalized = " ".join(prompt_candidate.casefold().split())
     if "?" not in normalized:
         return False
@@ -10449,12 +10461,25 @@ class SessionImplMixin(HandlerMixinBase):
             )
         ):
             response_text = f"{_CONFIRMATION_REQUIRED_PREFIX} {response_text}"
+        lockdown_notice_state = None
+        lockdown_manager = getattr(self, "_lockdown_manager", None)
+        if lockdown_manager is not None:
+            lockdown_notice = lockdown_manager.user_notification(validated.sid)
+            if lockdown_notice:
+                response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
+                lockdown_notice_state = lockdown_manager.state_for(validated.sid)
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
             user_id=validated.user_id,
             workspace_id=validated.workspace_id,
         )
+        if lockdown_notice_state is not None:
+            _annotate_lockdown_recovery_notice_metadata(
+                assistant_transcript_metadata,
+                level=lockdown_notice_state.level.value,
+                trigger=lockdown_notice_state.trigger,
+            )
         transcript_delivery_target = (
             validated.delivery_target or _stored_delivery_target_from_session(validated.session)
         )
