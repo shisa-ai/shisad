@@ -3205,6 +3205,14 @@ _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "Treat the following as intermediate tool output, not the final answer:"
 )
 _LOCKDOWN_RECOVERY_PROMPT_UNTRUSTED_SUFFIX_MARKERS = (
+    f"{_COMPLETED_ACTIONS_HEADER}\n{_TOOL_RESULTS_SUMMARY_HEADER}",
+    *(
+        f"{_COMPLETED_ACTIONS_HEADER}\n{header}"
+        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
+    ),
+    f"{_TOOL_RESULTS_SUMMARY_HEADER}",
+    *_USER_VISIBLE_TOOL_OUTPUT_HEADERS,
+    _INTERMEDIATE_TOOL_OUTPUT_HEADER,
     f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{_TOOL_RESULTS_SUMMARY_HEADER}",
     *(
         f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{header}"
@@ -3749,9 +3757,9 @@ def _strip_appended_untrusted_response_sections_for_recovery_prompt(text: str) -
     earliest_index = -1
     for marker in _LOCKDOWN_RECOVERY_PROMPT_UNTRUSTED_SUFFIX_MARKERS:
         index = stripped.find(marker)
-        if index > 0 and (earliest_index < 0 or index < earliest_index):
+        if index >= 0 and (earliest_index < 0 or index < earliest_index):
             earliest_index = index
-    if earliest_index > 0:
+    if earliest_index >= 0:
         return stripped[:earliest_index].strip()
     return stripped
 
