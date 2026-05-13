@@ -9,6 +9,10 @@ LOCKDOWN_NOTICE_TRANSCRIPT_MARKER = "[LOCKDOWN NOTICE]"
 LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = "lockdown_recovery_notice"
 LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = "lockdown_recovery_prompt"
 DAEMON_CONTROL_NOTICE_METADATA_KEY = "daemon_control_notice"
+_STRUCTURAL_RECOVERY_PROMPT_TEXT = (
+    "what should i do: keep the session locked, or clear the lockdown?"
+)
+_STRUCTURAL_ACTIVE_PROMPT_TEXT = "what should i do next?"
 LOCKDOWN_NOTICE_METADATA_KEYS = frozenset(
     {
         LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY,
@@ -74,17 +78,13 @@ def _looks_like_structural_lockdown_notice(suffix: str) -> bool:
         return False
     return (
         (
-            "what should i do:" in normalized
+            normalized.endswith(_STRUCTURAL_RECOVERY_PROMPT_TEXT)
             and "keep the session locked" in normalized
             and "clear the lockdown" in normalized
         )
         or (
-            "what should i do next?" in normalized
+            normalized.endswith(_STRUCTURAL_ACTIVE_PROMPT_TEXT)
             and "session is in " in normalized
             and "lockdown" in normalized
-        )
-        or (
-            "ask the agent what to do" in normalized
-            and "to resume the lockdown" in normalized
         )
     )

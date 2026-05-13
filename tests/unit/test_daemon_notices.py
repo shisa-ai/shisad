@@ -25,6 +25,19 @@ def test_non_imported_structural_lockdown_notice_quote_is_preserved() -> None:
     assert strip_daemon_lockdown_notice_suffix(content, {}, role="assistant") == content
 
 
+def test_archive_imported_structural_lockdown_notice_with_trailing_prose_is_preserved() -> None:
+    content = f"{_STRUCTURAL_NOTICE}\nThe operator chose to keep working."
+
+    assert (
+        strip_daemon_lockdown_notice_suffix(
+            content,
+            {"_archive_imported": True},
+            role="assistant",
+        )
+        == content
+    )
+
+
 def test_legacy_lockdown_notice_strips_without_metadata() -> None:
     content = (
         "Prior answer.\n\n"
