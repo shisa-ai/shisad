@@ -4493,6 +4493,17 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     ) and (
         " lockdown" in context_before_question or " locked" in context_before_question
     )
+    context_is_attributed_evidence = any(
+        marker in context_before_question
+        for marker in (
+            "according to the evidence",
+            "according to evidence",
+            "evidence says",
+            "evidence literally says",
+        )
+    )
+    if context_is_attributed_evidence:
+        context_mentions_lockdown = False
     if not question_mentions_lockdown and not context_mentions_lockdown:
         return False
     normalized = " ".join(prompt_candidate.casefold().split())
