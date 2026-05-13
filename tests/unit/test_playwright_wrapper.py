@@ -88,7 +88,11 @@ class FakeElement {
     return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
   }
   get isContentEditable() {
-    return this.getAttribute("contenteditable") !== null;
+    const ownValue = this.getAttribute("contenteditable");
+    if (ownValue !== null) {
+      return String(ownValue).toLowerCase() !== "false";
+    }
+    return Boolean(this.parentElement && this.parentElement.isContentEditable);
   }
   closest(tagName) {
     let current = this.parentElement;
@@ -107,7 +111,17 @@ const section = new FakeElement("section", {}, "", [nestedButton]);
 const continueLink = new FakeElement("a", { id: "continue", href: "/next" }, "Continue");
 const searchInput = new FakeElement("input", { id: "search", name: "q" });
 const submitButton = new FakeElement("button", { id: "submit" }, "Submit");
-const editor = new FakeElement("div", { id: "editor", contenteditable: "true" }, "Editable");
+const lockedToken = new FakeElement(
+  "span",
+  { id: "locked-token", contenteditable: "false" },
+  "Locked",
+);
+const editor = new FakeElement(
+  "div",
+  { id: "editor", contenteditable: "true" },
+  "Editable",
+  [lockedToken],
+);
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -123,6 +137,7 @@ const allElements = [
   searchInput,
   submitButton,
   editor,
+  lockedToken,
   section,
   nestedButton,
 ];
@@ -134,7 +149,7 @@ const fakeDocument = {
         const tag = element.tagName.toLowerCase();
         return (
           ["a", "button", "input", "textarea", "select"].includes(tag) ||
-          element.isContentEditable
+          element.getAttribute("contenteditable") !== null
         );
       });
     }
@@ -259,6 +274,8 @@ exports.chromium = {
     assert '[e4] field "Editable" selector="#editor"' in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
     assert "button:nth-of-type(2)" not in snapshot
+    assert "Locked" not in snapshot
+    assert "#locked-token" not in snapshot
 
     assert run_wrapper("fill", "#search", "--help").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))

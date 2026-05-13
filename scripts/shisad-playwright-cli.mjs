@@ -258,7 +258,17 @@ async function snapshot(page) {
       };
       return Array.from(
         document.querySelectorAll("a, button, input, textarea, select, [contenteditable]"),
-      ).map(
+      ).filter((element) => {
+        const tag = element.tagName.toLowerCase();
+        return (
+          tag === "a" ||
+          tag === "button" ||
+          tag === "input" ||
+          tag === "textarea" ||
+          tag === "select" ||
+          Boolean(element.isContentEditable)
+        );
+      }).map(
         (element) => {
           const tag = element.tagName.toLowerCase();
           const form = element.closest("form");
