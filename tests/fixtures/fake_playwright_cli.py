@@ -279,21 +279,21 @@ def _handle_fill(
     store_field: bool,
 ) -> int:
     _require_opened(state)
+    original_fields = dict(state.get("fields", {}))
     if not store_field:
-        fields = dict(state.get("fields", {}))
-        fields.pop(target, None)
-        state["fields"] = fields
+        state["fields"] = {}
         _save_state(cwd, session, state)
     parser, final_url = _parse_page(str(state.get("current_url", "")))
     element = _resolve_target(parser, target)
     if element is None:
         raise SystemExit(f"unknown target: {target}")
-    fields = dict(state.get("fields", {}))
+    fields = dict(state.get("fields", {}) if store_field else original_fields)
     field_name = element.get("name") or element.get("id") or element.get("selector") or target
     submission_fields = {**fields, field_name: text}
     if store_field:
         fields[field_name] = text
     else:
+        fields.pop(target, None)
         fields.pop(field_name, None)
     state["fields"] = fields
     next_url = final_url or str(state.get("current_url", ""))

@@ -779,8 +779,8 @@ def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
         json.dumps(
             {
                 "opened": True,
-                "current_url": f"{browser_fixture_server.base_url}/",
-                "fields": {"#missing": "old-sensitive"},
+                "current_url": f"{browser_fixture_server.base_url}/next",
+                "fields": {"q": "old-sensitive"},
             }
         ),
         encoding="utf-8",
@@ -792,7 +792,7 @@ def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
             str(fixture_cli),
             "-s=shisad-browser-session",
             "fill",
-            "#missing",
+            "#search",
             "replacement-secret",
             "--no-store",
         ],
