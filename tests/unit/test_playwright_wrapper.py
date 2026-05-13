@@ -71,13 +71,22 @@ class Locator {
   }
 }
 
+class FakeText {
+  constructor(text) {
+    this.nodeType = 3;
+    this.textContent = text;
+  }
+}
+
 class FakeElement {
   constructor(tagName, attrs = {}, text = "", children = []) {
     this.tagName = tagName.toUpperCase();
     this.attrs = attrs;
-    this.innerText = text;
-    this.textContent = text;
     this.children = children;
+    this.childNodes = text ? [new FakeText(text), ...children] : [...children];
+    const childText = children.map((child) => child.textContent || "").join("");
+    this.innerText = `${text}${childText}`;
+    this.textContent = `${text}${childText}`;
     this.parentElement = null;
     this.nodeType = 1;
     for (const child of children) {
@@ -119,7 +128,7 @@ const lockedToken = new FakeElement(
 const editor = new FakeElement(
   "div",
   { id: "editor", contenteditable: "true" },
-  "Editable",
+  "Editable ",
   [lockedToken],
 );
 const body = new FakeElement("body", {}, "", [

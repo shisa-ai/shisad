@@ -243,11 +243,44 @@ async function snapshot(page) {
         }
         return parts.join(" > ") || tag;
       };
+      const hasContenteditableFalse = (element) => {
+        const value = element.getAttribute("contenteditable");
+        return value !== null && String(value).toLowerCase() === "false";
+      };
+      const editableTextFor = (element) => {
+        const textFor = (node) => {
+          if (!node) {
+            return "";
+          }
+          if (node.nodeType === 3) {
+            return node.textContent || "";
+          }
+          if (node.nodeType !== 1 || hasContenteditableFalse(node)) {
+            return "";
+          }
+          return Array.from(node.childNodes || []).map((child) => textFor(child)).join(" ");
+        };
+        return Array.from(element.childNodes || [])
+          .map((child) => textFor(child))
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+      };
       const labelFor = (element) => {
         const tag = element.tagName.toLowerCase();
         if (tag === "input" || tag === "textarea" || tag === "select") {
           return (
             element.getAttribute("aria-label") ||
+            element.getAttribute("placeholder") ||
+            element.getAttribute("name") ||
+            element.getAttribute("id") ||
+            tag
+          );
+        }
+        if (element.isContentEditable) {
+          return (
+            element.getAttribute("aria-label") ||
+            editableTextFor(element) ||
             element.getAttribute("placeholder") ||
             element.getAttribute("name") ||
             element.getAttribute("id") ||
