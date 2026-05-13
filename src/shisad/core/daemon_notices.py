@@ -30,28 +30,43 @@ def strip_daemon_lockdown_notice_suffix(
     legacy_assistant_row = str(role).strip().lower() == "assistant"
     marker_index = content.rfind(f"\n\n{LOCKDOWN_NOTICE_TRANSCRIPT_MARKER}")
     if marker_index < 0:
-        if not metadata_tagged:
+        if not (metadata_tagged or legacy_assistant_row):
             return content
         marker_index = content.rfind(LOCKDOWN_NOTICE_TRANSCRIPT_MARKER)
     if marker_index < 0:
         return content
     suffix = content[marker_index:]
     if not metadata_tagged and not (
-        legacy_assistant_row and _looks_like_legacy_lockdown_recovery_notice(suffix)
+        legacy_assistant_row and _looks_like_daemon_lockdown_notice(suffix)
     ):
         return content
     return content[:marker_index].rstrip()
 
 
-def _looks_like_legacy_lockdown_recovery_notice(suffix: str) -> bool:
+def _looks_like_daemon_lockdown_notice(suffix: str) -> bool:
     normalized = " ".join(suffix.casefold().split())
     if not normalized.startswith(LOCKDOWN_NOTICE_TRANSCRIPT_MARKER.casefold()):
         return False
-    if "to recover:" not in normalized:
-        return False
+    if "to recover:" in normalized:
+        return (
+            "shisad lockdown resume" in normalized
+            or "ask the agent to resume" in normalized
+            or (
+                "ask the agent what to do" in normalized
+                and "to resume the lockdown" in normalized
+            )
+        )
     return (
-        "shisad lockdown resume" in normalized
-        or "ask the agent to resume" in normalized
+        (
+            "what should i do:" in normalized
+            and "keep the session locked" in normalized
+            and "clear the lockdown" in normalized
+        )
+        or (
+            "what should i do next?" in normalized
+            and "session is in " in normalized
+            and "lockdown" in normalized
+        )
         or (
             "ask the agent what to do" in normalized
             and "to resume the lockdown" in normalized

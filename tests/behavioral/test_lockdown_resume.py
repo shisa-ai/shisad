@@ -696,6 +696,55 @@ async def test_gh31_archive_imported_structural_prompt_does_not_authorize_resume
     )
 
 
+async def test_gh31_archive_imported_structural_notice_not_replayed_to_planner(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+
+    def _direct_responder(
+        _call_index: int,
+        _planner_input: str,
+        _tool_names: set[str],
+    ) -> ProviderResponse:
+        return ProviderResponse(
+            message=Message(role="assistant", content="The session is still locked."),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        responder=_direct_responder,
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+    TranscriptStore(clean_harness.config.data_dir / "sessions").append(
+        SessionId(sid),
+        role="assistant",
+        content=(
+            "[LOCKDOWN NOTICE] Session is in caution due to manual: imported.\n"
+            "What should I do: keep the session locked, or clear the lockdown?"
+        ),
+        metadata={"_archive_imported": True},
+    )
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what happened to this session?"},
+    )
+
+    assert planner_inputs
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert "[LOCKDOWN NOTICE]" not in planner_inputs[-1]
+    assert "What should I do: keep the session locked" not in planner_inputs[-1]
+    assert reply.get("lockdown_level") == "caution"
+
+
 async def test_gh31_appended_tool_summary_does_not_block_daemon_prompt_recovery(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
