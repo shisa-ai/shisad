@@ -235,6 +235,18 @@ class Page {
   async screenshot(options) {
     fs.writeFileSync(options.path, Buffer.from("89504e470d0a1a0a", "hex"));
   }
+  visibleText() {
+    const editorClone = editor.cloneNode(true);
+    for (const node of editorClone.querySelectorAll("[contenteditable]")) {
+      if (String(node.getAttribute("contenteditable")).toLowerCase() === "false") {
+        node.remove();
+      }
+    }
+    const editorText = editorClone.innerText || "";
+    return this._url.includes("/submitted")
+      ? `Form submitted ${this._url}`
+      : `Hello browser Continue Submit field:${this.fields["#search"] || ""} editor:${editorText}`;
+  }
   async evaluate(_fn, mode) {
     if (mode === "snapshot") {
       const previousDocument = globalThis.document;
@@ -245,15 +257,22 @@ class Page {
         globalThis.document = previousDocument;
       }
     }
-    return {
-      url: this._url,
-      title: await this.title(),
-      visible_text: this._url.includes("/submitted")
-        ? `Form submitted ${this._url}`
-        : `Hello browser Continue Submit field:${this.fields["#search"] || ""} editor:${
-            this.fields["#editor"] || ""
-          }`,
-    };
+    if (mode === "metadata") {
+      const previousDocument = globalThis.document;
+      const previousWindow = globalThis.window;
+      globalThis.window = { location: { href: this._url } };
+      globalThis.document = {
+        title: await this.title(),
+        body: { innerText: this.visibleText() },
+      };
+      try {
+        return _fn(mode);
+      } finally {
+        globalThis.document = previousDocument;
+        globalThis.window = previousWindow;
+      }
+    }
+    return {};
   }
 }
 

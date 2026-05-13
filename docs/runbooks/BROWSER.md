@@ -67,8 +67,10 @@ The shipped wrapper implements:
 | `list` | List known wrapper sessions. |
 | `close` | Delete wrapper session state and browser profile data. |
 
-The wrapper also supports `--shisad-browser-wrapper-version`; doctor uses this
-sentinel to distinguish the shisad protocol from upstream Playwright.
+The wrapper also supports `--shisad-browser-wrapper-version` and
+`--shisad-browser-wrapper-doctor`; doctor uses these probes to distinguish the
+shisad protocol from upstream Playwright and verify that `@playwright/test`
+can be loaded.
 
 Snapshot lines use the form:
 
@@ -87,6 +89,9 @@ actions still go through the daemon's confirmation and policy flow.
   upstream Playwright (`playwright` / `npx playwright`) or another command that
   does not accept the shisad `-s=...` protocol. Point it at
   `scripts/shisad-playwright-cli.mjs`.
+- `browser_dependency_unavailable`: the wrapper is present but cannot load its
+  Node/Playwright dependency. Run `npm install @playwright/test` from the
+  checkout containing `scripts/shisad-playwright-cli.mjs`.
 - `browser_browser_not_installed`: run `npx playwright install chromium`.
 - `browser_cache_not_writable`: make the Playwright browser cache directory
   writable by the daemon user, or set `PLAYWRIGHT_BROWSERS_PATH` to a writable

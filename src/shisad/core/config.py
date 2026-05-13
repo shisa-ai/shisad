@@ -473,8 +473,11 @@ class DaemonConfig(BaseSettings):
         description="Enable browser automation surface.",
     )
     browser_command: str = Field(
-        default="playwright-cli",
-        description="Browser automation command (for example 'playwright-cli').",
+        default="",
+        description=(
+            "Shisad browser wrapper command "
+            "(for example '/path/to/shisad/scripts/shisad-playwright-cli.mjs')."
+        ),
     )
     browser_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,

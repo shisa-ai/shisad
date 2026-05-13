@@ -230,7 +230,7 @@ export SHISAD_WEB_ALLOWED_DOMAINS='["search.example.com","docs.example.com"]'
 # Optional: browser automation baseline (read-mostly navigation plus
 # confirmation-gated write actions) via a Playwright-compatible CLI wrapper.
 export SHISAD_BROWSER_ENABLED=true
-export SHISAD_BROWSER_COMMAND="/path/to/playwright-cli"
+export SHISAD_BROWSER_COMMAND="/path/to/shisad/scripts/shisad-playwright-cli.mjs"
 export SHISAD_BROWSER_ALLOWED_DOMAINS='["example.com"]'
 
 export SHISAD_ASSISTANT_FS_ROOTS='["/tmp/shisad-workspace"]'

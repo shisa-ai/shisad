@@ -49,6 +49,7 @@ _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
 _PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
 _SHISAD_BROWSER_WRAPPER_SENTINEL = "--shisad-browser-wrapper-version"
+_SHISAD_BROWSER_WRAPPER_DOCTOR = "--shisad-browser-wrapper-doctor"
 _PATHLIKE_COMMAND_ARG_SUFFIXES = {
     ".cjs",
     ".js",
@@ -893,7 +894,21 @@ class BrowserToolkit:
         )
         sentinel_output = self._probe_text(sentinel)
         if sentinel["exit_code"] == 0 and "shisad-browser-wrapper" in sentinel_output:
-            return {"supported": True, "probe": "sentinel", "reason": ""}
+            readiness = await self._run_browser_command_probe(
+                command,
+                [_SHISAD_BROWSER_WRAPPER_DOCTOR],
+            )
+            readiness_output = self._probe_text(readiness)
+            if readiness["exit_code"] == 0 and "doctor ok" in readiness_output:
+                return {"supported": True, "probe": "sentinel,readiness", "reason": ""}
+            return {
+                "supported": False,
+                "probe": "sentinel,readiness",
+                "reason": self._readiness_probe_reason(readiness),
+                "stderr": self._sanitize_browser_failure_text(readiness["stderr"]),
+                "stdout": self._sanitize_browser_failure_text(readiness["stdout"]),
+                "degraded_controls": sorted(readiness.get("degraded_controls", [])),
+            }
 
         help_probe = await self._run_browser_command_probe(command, ["--help"])
         help_output = self._probe_text(help_probe)
@@ -979,6 +994,20 @@ class BrowserToolkit:
     @staticmethod
     def _probe_text(probe: Mapping[str, Any]) -> str:
         return " ".join(str(probe.get(key, "")) for key in ("stdout", "stderr"))
+
+    def _readiness_probe_reason(self, probe: Mapping[str, Any]) -> str:
+        error = str(probe.get("error") or "")
+        if error:
+            return error
+        if probe.get("timed_out"):
+            return "browser_command_protocol_probe_timeout"
+        text = self._probe_text(probe).lower()
+        if (
+            "@playwright/test is not available" in text
+            or "did not expose chromium.launchpersistentcontext" in text
+        ):
+            return "browser_dependency_unavailable"
+        return "browser_command_failed"
 
     def _browser_command_dependency_roots(self) -> tuple[list[Path], str]:
         _, read_paths, error = self._browser_command_runtime()

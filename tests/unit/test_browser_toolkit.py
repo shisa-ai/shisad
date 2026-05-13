@@ -28,6 +28,20 @@ _UNREACHABLE_LOOPBACK_URL = "http://127.0.0.1:9/"
 _PLAYWRIGHT_WRAPPER = Path(__file__).resolve().parents[2] / "scripts" / "shisad-playwright-cli.mjs"
 
 
+def _wrapper_with_fake_playwright(tmp_path: Path) -> Path:
+    project = tmp_path / "browser-wrapper"
+    project.mkdir()
+    wrapper = project / "shisad-playwright-cli.mjs"
+    shutil.copy2(_PLAYWRIGHT_WRAPPER, wrapper)
+    fake_module = project / "node_modules" / "@playwright" / "test"
+    fake_module.mkdir(parents=True)
+    (fake_module / "index.js").write_text(
+        "exports.chromium = { launchPersistentContext: async () => ({}) };\n",
+        encoding="utf-8",
+    )
+    return wrapper
+
+
 def _make_browser_fixture_handler(
     *,
     link_href: str = "/next",
@@ -314,22 +328,52 @@ async def test_gh33_browser_toolkit_doctor_accepts_shisad_playwright_wrapper(
     if shutil.which("node") is None:
         pytest.skip("node is required for the browser wrapper protocol probe")
     runner = _DirectRunner()
-    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(_PLAYWRIGHT_WRAPPER)])
+    wrapper = _wrapper_with_fake_playwright(tmp_path)
+    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(wrapper)])
 
     status = await toolkit.doctor_status()
 
     assert status["status"] == "ok"
     assert status["enabled"] is True
     assert status["protocol"]["supported"] is True
-    assert status["protocol"]["probe"] == "sentinel"
+    assert status["protocol"]["probe"] == "sentinel,readiness"
     assert status["problems"] == []
-    assert len(runner.configs) == 1
-    config = runner.configs[0]
-    assert config.tool_name == "browser.doctor"
-    assert config.network.allow_network is False
-    assert config.limits.memory_mb >= 2048
-    assert config.limits.pids >= 4096
-    assert config.command[-1] == "--shisad-browser-wrapper-version"
+    assert len(runner.configs) == 2
+    assert [config.command[-1] for config in runner.configs] == [
+        "--shisad-browser-wrapper-version",
+        "--shisad-browser-wrapper-doctor",
+    ]
+    for config in runner.configs:
+        assert config.tool_name == "browser.doctor"
+        assert config.network.allow_network is False
+        assert config.limits.memory_mb >= 2048
+        assert config.limits.pids >= 4096
+
+
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_doctor_rejects_wrapper_missing_playwright(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for the browser wrapper protocol probe")
+    project = tmp_path / "browser-wrapper"
+    project.mkdir()
+    wrapper = project / "shisad-playwright-cli.mjs"
+    shutil.copy2(_PLAYWRIGHT_WRAPPER, wrapper)
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(wrapper)])
+
+    status = await toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_dependency_unavailable" in status["problems"]
+    assert status["protocol"]["supported"] is False
+    assert status["protocol"]["probe"] == "sentinel,readiness"
+    assert status["protocol"]["reason"] == "browser_dependency_unavailable"
+    assert [config.command[-1] for config in runner.configs] == [
+        "--shisad-browser-wrapper-version",
+        "--shisad-browser-wrapper-doctor",
+    ]
 
 
 @pytest.mark.asyncio
@@ -417,16 +461,17 @@ async def test_gh33_browser_toolkit_doctor_reports_unwritable_playwright_cache(
     monkeypatch.setenv("HOME", str(home))
     (home / ".cache").write_text("not a directory", encoding="utf-8")
     runner = _DirectRunner()
-    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(_PLAYWRIGHT_WRAPPER)])
+    wrapper = _wrapper_with_fake_playwright(tmp_path)
+    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(wrapper)])
 
     status = await toolkit.doctor_status()
 
     assert status["status"] == "misconfigured"
     assert "browser_cache_not_writable" in status["problems"]
     assert status["protocol"]["supported"] is True
-    assert status["protocol"]["probe"] == "sentinel"
-    assert len(runner.configs) == 1
-    assert runner.configs[0].tool_name == "browser.doctor"
+    assert status["protocol"]["probe"] == "sentinel,readiness"
+    assert len(runner.configs) == 2
+    assert all(config.tool_name == "browser.doctor" for config in runner.configs)
 
 
 def test_gh33_browser_unknown_session_flag_reports_protocol_error(tmp_path: Path) -> None:

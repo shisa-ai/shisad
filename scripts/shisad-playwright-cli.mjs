@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const VERSION = "shisad-browser-wrapper 1";
+const DOCTOR_OK = "shisad-browser-wrapper doctor ok";
 const STATE_DIR = ".shisad-playwright";
 const DEFAULT_TIMEOUT_MS = 15000;
 const PNG_1X1_BASE64 =
@@ -34,6 +35,7 @@ function usage() {
     "",
     "Protocol probe:",
     "  --shisad-browser-wrapper-version",
+    "  --shisad-browser-wrapper-doctor",
     "  -s=<session> is the shisad session selector.",
   ].join("\n");
 }
@@ -47,6 +49,9 @@ function parseArgv(argv) {
   const command = args.shift() || "";
   if (command === "--shisad-browser-wrapper-version") {
     return { probe: "version" };
+  }
+  if (command === "--shisad-browser-wrapper-doctor") {
+    return { probe: "doctor" };
   }
   if (command === "--help" || command === "-h") {
     return { probe: "help" };
@@ -438,6 +443,14 @@ async function main() {
   const parsed = parseArgv(process.argv.slice(2));
   if (parsed.probe === "version") {
     process.stdout.write(`${VERSION}\n`);
+    return 0;
+  }
+  if (parsed.probe === "doctor") {
+    const { chromium } = loadPlaywright();
+    if (!chromium || typeof chromium.launchPersistentContext !== "function") {
+      throw new Error("@playwright/test did not expose chromium.launchPersistentContext");
+    }
+    process.stdout.write(`${DOCTOR_OK}\n`);
     return 0;
   }
   if (parsed.probe === "help") {
