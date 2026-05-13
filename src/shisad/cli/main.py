@@ -1000,7 +1000,8 @@ def doctor(ctx: click.Context) -> None:
     "--component",
     default="all",
     help=(
-        "Component to check (all, dependencies, provider, policy, channels, sandbox, realitycheck)"
+        "Component to check (all, dependencies, provider, policy, channels, sandbox, "
+        "browser, realitycheck)"
     ),
 )
 def doctor_check(component: str) -> None:

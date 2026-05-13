@@ -206,13 +206,24 @@ Browser:
 Browser notes:
 
 - `SHISAD_BROWSER_ENABLED=1` turns on the planner-visible browser tool surface (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, `browser.end_session`).
-- `SHISAD_BROWSER_COMMAND` must point at a Playwright-compatible browser CLI. In tests and local harness runs this can be a wrapper script; in normal environments it is typically a real Playwright CLI install.
+- `SHISAD_BROWSER_COMMAND` must point at the shisad browser wrapper protocol, not the upstream Playwright CLI. For source checkouts, the default production wrapper is `scripts/shisad-playwright-cli.mjs`; set `SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs` after installing the prerequisites in `docs/runbooks/BROWSER.md`.
+- Upstream `playwright` / `npx playwright` is not protocol-compatible with shisad because the daemon passes a shisad session selector (`-s=shisad-...`) and uses wrapper-specific subcommands.
 - If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, both the runtime browser sandbox policy and the planner/PEP browser tool registry fall back to `SHISAD_WEB_ALLOWED_DOMAINS`.
+- `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept either comma-separated values (`example.com,api.example.com`) or JSON arrays (`["example.com","api.example.com"]`) from environment variables.
 - `SHISAD_BROWSER_ALLOWED_DOMAINS` acts as an auto-approve/browser-egress scope seed, not a hard deny wall for explicit public-host navigation; the runtime still adds the concrete requested browser host to the per-action sandbox allowlist.
 - Hardened browser isolation currently requires literal browser scope entries. If `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1`, wildcard host patterns in `SHISAD_BROWSER_ALLOWED_DOMAINS` or the `SHISAD_WEB_ALLOWED_DOMAINS` fallback are rejected fail-closed because the connect-path runtime cannot precompute wildcard sibling hosts safely.
 - Read-mostly browser actions (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are intended to proceed without confirmation when the destination is authorized. Browser write actions (`browser.click`, `browser.type_text`) are confirmation-gated.
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
+- `shisad doctor check --component browser` probes the configured command for the shisad wrapper sentinel and reports `browser_command_protocol_incompatible` when the command looks like the real Playwright CLI or another wrapper that does not implement the shisad protocol.
+
+Browser host prerequisites:
+
+- `bubblewrap` must be installed for the default hardened container sandbox.
+- `nodejs` and `npm` must be installed to run the shipped wrapper.
+- Install the wrapper dependency in the shisad checkout with `npm install @playwright/test`.
+- Install both the Chromium browser binary and native shared libraries: `npx playwright install chromium` and `npx playwright install-deps chromium`.
+- See `docs/runbooks/BROWSER.md` for a complete setup and protocol reference.
 
 MCP interop:
 

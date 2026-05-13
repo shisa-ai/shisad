@@ -67,6 +67,7 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "policy",
     "channels",
     "sandbox",
+    "browser",
     "realitycheck",
 )
 
@@ -1816,6 +1817,7 @@ class AdminImplMixin(HandlerMixinBase):
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,
             "sandbox": self._doctor_sandbox_status,
+            "browser": self._doctor_browser_status,
             "realitycheck": self._realitycheck_toolkit.doctor_status,
         }
 

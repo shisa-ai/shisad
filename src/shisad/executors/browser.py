@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -48,6 +49,7 @@ _SNAPSHOT_ELEMENT_RE = re.compile(
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
 _PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+_SHISAD_BROWSER_WRAPPER_SENTINEL = "--shisad-browser-wrapper-version"
 _PATHLIKE_COMMAND_ARG_SUFFIXES = {
     ".cjs",
     ".js",
@@ -635,6 +637,43 @@ class BrowserToolkit:
             "current_url": current_url if opened else "",
         }
 
+    def doctor_status(self) -> dict[str, Any]:
+        """Return operator-facing browser command readiness diagnostics."""
+        command_display = shlex.join(self._command) if self._command else ""
+        base_payload: dict[str, Any] = {
+            "enabled": bool(self._enabled),
+            "command": command_display,
+            "allowed_domains": list(self._allowed_domains),
+            "require_hardened_isolation": bool(self._require_hardened_isolation),
+            "problems": [],
+            "protocol": {"supported": False, "probe": "", "reason": ""},
+        }
+        if not self._enabled:
+            return {**base_payload, "status": "disabled"}
+        problems: list[str] = []
+        if self._has_unsupported_hardened_wildcard_scope():
+            problems.append("browser_hardened_wildcard_scope_unsupported")
+        if not self._command:
+            problems.append("browser_command_unconfigured")
+        runtime_command: list[str] = []
+        dependency_error = ""
+        if self._command:
+            runtime_command, _read_paths, dependency_error = self._browser_command_runtime()
+            if dependency_error:
+                problems.append(dependency_error)
+        protocol: dict[str, Any] = {"supported": False, "probe": "", "reason": ""}
+        if runtime_command and not dependency_error:
+            protocol = self._probe_browser_command_protocol(runtime_command)
+            if not protocol["supported"]:
+                problems.append(protocol["reason"])
+        status = "ok" if not problems else "misconfigured"
+        return {
+            **base_payload,
+            "status": status,
+            "problems": sorted(set(problems)),
+            "protocol": protocol,
+        }
+
     def _availability_error(self) -> dict[str, Any] | None:
         if not self._enabled:
             return self._error_payload("browser_disabled")
@@ -840,6 +879,76 @@ class BrowserToolkit:
             write_paths=cache.write_paths,
             env=cache.env,
         )
+
+    @classmethod
+    def _probe_browser_command_protocol(cls, command: list[str]) -> dict[str, Any]:
+        sentinel = cls._run_browser_command_probe(command, [_SHISAD_BROWSER_WRAPPER_SENTINEL])
+        sentinel_output = cls._probe_text(sentinel)
+        if sentinel["exit_code"] == 0 and "shisad-browser-wrapper" in sentinel_output:
+            return {"supported": True, "probe": "sentinel", "reason": ""}
+
+        help_probe = cls._run_browser_command_probe(command, ["--help"])
+        help_output = cls._probe_text(help_probe)
+        if help_probe["exit_code"] == 0 and (
+            _SHISAD_BROWSER_WRAPPER_SENTINEL in help_output
+            or ("-s=" in help_output and "shisad" in help_output.lower())
+        ):
+            return {"supported": True, "probe": "help", "reason": ""}
+
+        reason = "browser_command_protocol_incompatible"
+        if sentinel["timed_out"] or help_probe["timed_out"]:
+            reason = "browser_command_protocol_probe_timeout"
+        elif sentinel["error"] or help_probe["error"]:
+            reason = "browser_command_protocol_probe_failed"
+        return {
+            "supported": False,
+            "probe": "sentinel,help",
+            "reason": reason,
+            "stderr": cls._sanitize_browser_failure_text(
+                sentinel["stderr"] or help_probe["stderr"]
+            ),
+            "stdout": cls._sanitize_browser_failure_text(
+                sentinel["stdout"] or help_probe["stdout"]
+            ),
+        }
+
+    @staticmethod
+    def _run_browser_command_probe(command: list[str], args: list[str]) -> dict[str, Any]:
+        try:
+            completed = subprocess.run(
+                [*command, *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "exit_code": None,
+                "stdout": str(exc.stdout or ""),
+                "stderr": str(exc.stderr or ""),
+                "timed_out": True,
+                "error": "",
+            }
+        except OSError as exc:
+            return {
+                "exit_code": None,
+                "stdout": "",
+                "stderr": str(exc),
+                "timed_out": False,
+                "error": exc.__class__.__name__,
+            }
+        return {
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "timed_out": False,
+            "error": "",
+        }
+
+    @staticmethod
+    def _probe_text(probe: Mapping[str, Any]) -> str:
+        return " ".join(str(probe.get(key, "")) for key in ("stdout", "stderr"))
 
     def _browser_command_dependency_roots(self) -> tuple[list[Path], str]:
         _, read_paths, error = self._browser_command_runtime()
@@ -1140,11 +1249,30 @@ class BrowserToolkit:
                 [
                     self._browser_dependency_root(candidate),
                     self._browser_dependency_root(resolved),
+                    *self._node_modules_dependency_roots(candidate),
+                    *self._node_modules_dependency_roots(resolved),
                 ]
             ), ""
         if not candidate.exists():
             return [], "browser_dependency_unavailable"
-        return [self._browser_dependency_root(candidate)], ""
+        return self._dedupe_paths(
+            [
+                self._browser_dependency_root(candidate),
+                *self._node_modules_dependency_roots(candidate),
+            ]
+        ), ""
+
+    @staticmethod
+    def _node_modules_dependency_roots(path: Path) -> list[Path]:
+        candidate = path if path.is_dir() else path.parent
+        if "node_modules" in candidate.parts:
+            return []
+        roots: list[Path] = []
+        for parent in (candidate, *candidate.parents):
+            node_modules = parent / "node_modules"
+            if node_modules.is_dir():
+                roots.append(node_modules)
+        return roots
 
     def _shebang_dependency_roots(
         self,
@@ -1523,6 +1651,9 @@ class BrowserToolkit:
             "browser_command_unconfigured": "command_preflight",
             "browser_dependency_unavailable": "dependency_preflight",
             "browser_cache_not_writable": "cache_preflight",
+            "browser_command_protocol_incompatible": "command_protocol",
+            "browser_command_protocol_probe_failed": "command_protocol",
+            "browser_command_protocol_probe_timeout": "command_protocol",
         }.get(reason, "preflight")
         return {"reason": reason, "stage": stage}
 
@@ -1540,6 +1671,8 @@ class BrowserToolkit:
         detail = " ".join(
             part for part in [result.reason, result.stderr, result.stdout] if part
         ).lower()
+        if "unknown option" in detail and ("-s=" in detail or "shisad-browser-wrapper" in detail):
+            return "browser_command_protocol_incompatible"
         if (
             "distribution" in detail
             or "install-browser" in detail

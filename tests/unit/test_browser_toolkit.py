@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ from shisad.executors.sandbox import SandboxConfig, SandboxResult
 from shisad.security.firewall.output import OutputFirewall
 
 _UNREACHABLE_LOOPBACK_URL = "http://127.0.0.1:9/"
+_PLAYWRIGHT_WRAPPER = Path(__file__).resolve().parents[2] / "scripts" / "shisad-playwright-cli.mjs"
 
 
 def _make_browser_fixture_handler(
@@ -303,6 +305,69 @@ def _toolkit(
         sandbox_runner=runner,
         browser_sandbox=browser_sandbox,
     )
+
+
+def test_gh33_browser_toolkit_doctor_accepts_shisad_playwright_wrapper(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for the browser wrapper protocol probe")
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(_PLAYWRIGHT_WRAPPER)])
+
+    status = toolkit.doctor_status()
+
+    assert status["status"] == "ok"
+    assert status["enabled"] is True
+    assert status["protocol"]["supported"] is True
+    assert status["protocol"]["probe"] == "sentinel"
+    assert status["problems"] == []
+
+
+def test_gh33_browser_toolkit_doctor_rejects_plain_playwright_cli(tmp_path: Path) -> None:
+    command = tmp_path / "playwright-cli"
+    command.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "if '--shisad-browser-wrapper-version' in sys.argv:",
+                "    print(",
+                "        'error: unknown option --shisad-browser-wrapper-version',",
+                "        file=sys.stderr,",
+                "    )",
+                "    raise SystemExit(1)",
+                "if '--help' in sys.argv:",
+                "    print('Usage: playwright [options] [command]')",
+                "    raise SystemExit(0)",
+                "raise SystemExit(0)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    status = toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_command_protocol_incompatible" in status["problems"]
+    assert status["protocol"]["supported"] is False
+    assert status["protocol"]["reason"] == "browser_command_protocol_incompatible"
+
+
+def test_gh33_browser_unknown_session_flag_reports_protocol_error(tmp_path: Path) -> None:
+    toolkit = _toolkit(tmp_path, runner=_CapturingSuccessRunner())
+    result = SandboxResult(
+        allowed=True,
+        exit_code=1,
+        stderr="error: unknown option '-s=shisad-browser-session'",
+        reason="browser_command_failed",
+    )
+
+    reason = toolkit._result_error_reason(result)
+
+    assert reason == "browser_command_protocol_incompatible"
 
 
 def test_m6_browser_toolkit_allowlisted_loopback_disables_private_range_block(

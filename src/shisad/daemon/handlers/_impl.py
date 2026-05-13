@@ -218,6 +218,9 @@ class _LazyBrowserToolkit:
     def current_state(self, **kwargs: Any) -> dict[str, Any]:
         return dict(self._load().current_state(**kwargs))
 
+    def doctor_status(self) -> dict[str, Any]:
+        return dict(self._load().doctor_status())
+
 
 def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
     if trigger == "never":
@@ -2327,6 +2330,9 @@ class HandlerImplementation(
                 ),
             },
         }
+
+    def _doctor_browser_status(self) -> dict[str, Any]:
+        return dict(self._browser_toolkit.doctor_status())
 
     @staticmethod
     def _normalized_pairing_request_entry(raw: Mapping[str, Any]) -> dict[str, str] | None:

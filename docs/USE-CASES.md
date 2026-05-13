@@ -824,7 +824,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | **shisad support** | Partial (`v0.6.0` M6 ships `browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, and `browser.end_session`) |
 | **Gap** | Baseline browser automation is present, but authenticated/admin-heavy workflows still need stronger session/cookie ergonomics and broader live-site coverage. |
 | **Needed** | Follow-on browser hardening for authenticated sites, richer form flows, and broader operator-facing validation coverage. |
-| **Security notes** | Browser automation remains one of the highest-risk surfaces: web pages are untrusted, side effects must be attributable, and browser writes need confirmation. The current baseline ships sandboxed execution, URL allowlisting, taint-marked reads, and confirmation-gated click/type actions. |
+| **Security notes** | Browser automation remains one of the highest-risk surfaces: web pages are untrusted, side effects must be attributable, and browser writes need confirmation. The current baseline ships sandboxed execution, a production Playwright wrapper (`docs/runbooks/BROWSER.md`), URL allowlisting, taint-marked reads, and confirmation-gated click/type actions. |
 
 ---
 

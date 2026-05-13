@@ -387,7 +387,7 @@ See `AGENTS.md` for full development process, validation matrix, and commit conv
 | `docs/TOOL-STATUS.md` | Current tool surface snapshot |
 | `docs/adr/` | Architectural decision records |
 | `docs/analysis/` | Security case studies and supply chain analysis |
-| `docs/runbooks/` | Operator runbooks (incident response, key rotation, rollback, skill revocation) |
+| `docs/runbooks/` | Operator runbooks (browser setup, incident response, key rotation, rollback, skill revocation) |
 | `runner/RUNBOOK.md` | Dev harness operator runbook |
 
 - [agentic-security](https://github.com/lhl/agentic-security) — literature survey on LLM agent security (78 papers, defense taxonomy, production readiness assessment)

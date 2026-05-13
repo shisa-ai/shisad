@@ -419,7 +419,7 @@ class DaemonConfig(BaseSettings):
         default=True,
         description="Enable web fetch primitive.",
     )
-    web_allowed_domains: list[str] = Field(
+    web_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description="Allowlisted web domains for web search/fetch egress.",
     )
@@ -476,7 +476,7 @@ class DaemonConfig(BaseSettings):
         default="playwright-cli",
         description="Browser automation command (for example 'playwright-cli').",
     )
-    browser_allowed_domains: list[str] = Field(
+    browser_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description="Allowlisted domains for browser automation egress.",
     )
