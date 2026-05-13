@@ -3056,15 +3056,17 @@ def test_lockdown_notice_fragment_blocks_unsanitized_notice_reason() -> None:
         inspect=lambda text, context: _blocked_output_policy_result(text)
     )
 
-    fragment, state = SessionImplMixin._lockdown_notice_response_fragment(
+    fragment, state, recovery_prompt = SessionImplMixin._lockdown_notice_response_fragment(
         harness,
         session_id=SessionId("sess-g1"),
     )
 
     assert state is not None
+    assert recovery_prompt is True
     assert fragment == (
         "[LOCKDOWN NOTICE] Session is in caution lockdown. "
-        "Lockdown notice details were blocked by output policy."
+        "Lockdown notice details were blocked by output policy.\n"
+        "What should I do: keep the session locked, or clear the lockdown?"
     )
     assert "http://[2001:db8::1" not in fragment
 

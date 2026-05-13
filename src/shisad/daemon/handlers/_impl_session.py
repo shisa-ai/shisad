@@ -186,6 +186,7 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
 _LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY
+_LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY
 _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
@@ -835,10 +836,6 @@ _LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS = (
     "this session",
     "the session",
 )
-_LOCKDOWN_RECOVERY_PROMPT_INTENT_OBJECTS = (
-    *_LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS,
-    "this",
-)
 _LOCKDOWN_RECOVERY_DECLINE_PREFIXES = (
     "please ",
     "please, ",
@@ -847,6 +844,10 @@ _LOCKDOWN_RECOVERY_DECLINE_PREFIXES = (
     "okay, ",
     "okay ",
 )
+_LOCKDOWN_RECOVERY_PROMPT_TEXT = (
+    "What should I do: keep the session locked, or clear the lockdown?"
+)
+_LOCKDOWN_ACTIVE_PROMPT_TEXT = "What should I do next?"
 
 
 def _classify_lockdown_resume_current_turn_intent(text: str) -> bool:
@@ -3204,32 +3205,6 @@ _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
     "Treat the following as intermediate tool output, not the final answer:"
 )
-_LOCKDOWN_RECOVERY_PROMPT_UNTRUSTED_SUFFIX_MARKERS = (
-    f"{_COMPLETED_ACTIONS_HEADER}\n{_TOOL_RESULTS_SUMMARY_HEADER}",
-    *(
-        f"{_COMPLETED_ACTIONS_HEADER}\n{header}"
-        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
-    ),
-    f"{_TOOL_RESULTS_SUMMARY_HEADER}",
-    *_USER_VISIBLE_TOOL_OUTPUT_HEADERS,
-    _INTERMEDIATE_TOOL_OUTPUT_HEADER,
-    f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{_TOOL_RESULTS_SUMMARY_HEADER}",
-    *(
-        f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{header}"
-        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
-    ),
-    f"\n\n{_TOOL_RESULTS_SUMMARY_HEADER}",
-    *(f"\n\n{header}" for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS),
-    f"\n\n{_INTERMEDIATE_TOOL_OUTPUT_HEADER}",
-    f" {_COMPLETED_ACTIONS_HEADER} {_TOOL_RESULTS_SUMMARY_HEADER}",
-    *(
-        f" {_COMPLETED_ACTIONS_HEADER} {header}"
-        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
-    ),
-    f" {_TOOL_RESULTS_SUMMARY_HEADER}",
-    *(f" {header}" for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS),
-    f" {_INTERMEDIATE_TOOL_OUTPUT_HEADER}",
-)
 _PENDING_COMPLETED_ACTIONS_RE = re.compile(
     rf"(?:{'|'.join(re.escape(footer) for footer in _PENDING_CONFIRMATIONS_FOOTERS)})\s+"
     rf"{re.escape(_COMPLETED_ACTIONS_HEADER)}\s+"
@@ -3747,20 +3722,6 @@ def _strip_appended_tool_results_summary(text: str) -> str:
         index = stripped.find(marker)
         if index > 0:
             return stripped[:index].strip()
-    return stripped
-
-
-def _strip_appended_untrusted_response_sections_for_recovery_prompt(text: str) -> str:
-    stripped = str(text or "").strip()
-    if not stripped:
-        return ""
-    earliest_index = -1
-    for marker in _LOCKDOWN_RECOVERY_PROMPT_UNTRUSTED_SUFFIX_MARKERS:
-        index = stripped.find(marker)
-        if index >= 0 and (earliest_index < 0 or index < earliest_index):
-            earliest_index = index
-    if earliest_index >= 0:
-        return stripped[:earliest_index].strip()
     return stripped
 
 
@@ -4412,9 +4373,12 @@ def _annotate_lockdown_recovery_notice_metadata(
     *,
     level: str,
     trigger: str,
+    recovery_prompt: bool = False,
 ) -> None:
     metadata[_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY] = True
     metadata[_DAEMON_CONTROL_NOTICE_METADATA_KEY] = True
+    if recovery_prompt:
+        metadata[_LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY] = True
     metadata["lockdown_level"] = level
     if trigger:
         metadata["lockdown_trigger"] = trigger
@@ -4465,65 +4429,10 @@ def _previous_turn_is_lockdown_recovery_prompt(
         return False
     if not _transcript_entry_is_lockdown_recovery_notice(previous):
         return False
-    content = _transcript_entry_content(
-        entry=previous,
-        transcript_store=transcript_store,
-    )
-    return _assistant_content_is_lockdown_recovery_prompt(content)
-
-
-def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
-    prompt_candidate = _strip_appended_untrusted_response_sections_for_recovery_prompt(content)
-    if not prompt_candidate.rstrip().endswith("?"):
+    metadata = previous.metadata if isinstance(previous.metadata, dict) else {}
+    if not metadata.get(_LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY):
         return False
-    question_text = prompt_candidate.strip()
-    question_start = 0
-    for delimiter in ("\n", ". ", "! "):
-        index = question_text.rfind(delimiter)
-        if index >= 0 and index + len(delimiter) > question_start:
-            question_start = index + len(delimiter)
-    question_text = question_text[question_start:].strip()
-    normalized_question = " ".join(question_text.strip("\"'`").casefold().split())
-    if not normalized_question.startswith("should i "):
-        return False
-    context_before_question = " ".join(prompt_candidate[:question_start].casefold().split())
-    context_mentions_lockdown = context_before_question.startswith(
-        "the session is in "
-    ) and (
-        " lockdown" in context_before_question or " locked" in context_before_question
-    )
-    context_is_attributed_evidence = any(
-        marker in context_before_question
-        for marker in (
-            "according to the evidence",
-            "according to evidence",
-            "evidence says",
-            "evidence literally says",
-        )
-    )
-    if context_is_attributed_evidence:
-        context_mentions_lockdown = False
-    if not context_mentions_lockdown:
-        return False
-    normalized = " ".join(prompt_candidate.casefold().split())
-    if "?" not in normalized:
-        return False
-    resume_choice = any(
-        f"{verb} {obj}" in normalized
-        for verb in _LOCKDOWN_RESUME_INTENT_VERBS
-        for obj in _LOCKDOWN_RECOVERY_PROMPT_INTENT_OBJECTS
-    )
-    keep_locked = any(
-        phrase in normalized
-        for phrase in (
-            "keep it locked",
-            "keep this locked",
-            "keep the lockdown",
-            "leave it locked",
-            "leave this locked",
-        )
-    )
-    return resume_choice and keep_locked
+    return str(metadata.get("lockdown_level", "")).strip().casefold() == "caution"
 
 
 def _append_evidence_ref_id(ref_ids: list[str], value: Any) -> None:
@@ -7294,7 +7203,7 @@ class SessionImplMixin(HandlerMixinBase):
                     ),
                 ):
                     response_text = f"[CONFIRMATION REQUIRED] {response_text}"
-            lockdown_notice_fragment, lockdown_notice_state = (
+            lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
                 self._lockdown_notice_response_fragment(session_id=sid)
             )
             if lockdown_notice_fragment:
@@ -7310,6 +7219,7 @@ class SessionImplMixin(HandlerMixinBase):
                     assistant_transcript_metadata,
                     level=lockdown_notice_state.level.value,
                     trigger=lockdown_notice_state.trigger,
+                    recovery_prompt=lockdown_recovery_prompt,
                 )
             transcript_delivery_target = delivery_target or stored_delivery_target
             if transcript_delivery_target is not None:
@@ -10447,31 +10357,42 @@ class SessionImplMixin(HandlerMixinBase):
         self,
         *,
         session_id: SessionId,
-    ) -> tuple[str, Any | None]:
+    ) -> tuple[str, Any | None, bool]:
         lockdown_manager = getattr(self, "_lockdown_manager", None)
         if lockdown_manager is None:
-            return "", None
+            return "", None, False
         lockdown_notice = lockdown_manager.user_notification(session_id)
         if not lockdown_notice:
-            return "", None
+            return "", None, False
         lockdown_notice_state = lockdown_manager.state_for(session_id)
-        fragment = f"[LOCKDOWN NOTICE] {lockdown_notice}"
+        lockdown_level = str(
+            getattr(getattr(lockdown_notice_state, "level", None), "value", "")
+        ).strip()
+        recovery_prompt = lockdown_level.casefold() == "caution"
+        prompt_text = (
+            _LOCKDOWN_RECOVERY_PROMPT_TEXT
+            if recovery_prompt
+            else _LOCKDOWN_ACTIVE_PROMPT_TEXT
+        )
+        fragment = f"[LOCKDOWN NOTICE] {lockdown_notice}\n{prompt_text}"
         output_firewall = getattr(self, "_output_firewall", None)
         if output_firewall is None:
-            return fragment, lockdown_notice_state
+            return fragment, lockdown_notice_state, recovery_prompt
         output_result = output_firewall.inspect(
             fragment,
             context={"session_id": str(session_id), "actor": "assistant_lockdown_notice"},
         )
         if output_result.blocked:
-            level = str(lockdown_notice_state.level.value)
+            level = lockdown_level or "active"
             return (
                 "[LOCKDOWN NOTICE] "
                 f"Session is in {level} lockdown. "
-                "Lockdown notice details were blocked by output policy.",
+                "Lockdown notice details were blocked by output policy.\n"
+                f"{prompt_text}",
                 lockdown_notice_state,
+                recovery_prompt,
             )
-        return str(output_result.sanitized_text), lockdown_notice_state
+        return str(output_result.sanitized_text), lockdown_notice_state, recovery_prompt
 
     def _direct_response_with_transcript(
         self,
@@ -10510,7 +10431,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
         ):
             response_text = f"{_CONFIRMATION_REQUIRED_PREFIX} {response_text}"
-        lockdown_notice_fragment, lockdown_notice_state = (
+        lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
             self._lockdown_notice_response_fragment(session_id=validated.sid)
         )
         if lockdown_notice_fragment:
@@ -10526,6 +10447,7 @@ class SessionImplMixin(HandlerMixinBase):
                 assistant_transcript_metadata,
                 level=lockdown_notice_state.level.value,
                 trigger=lockdown_notice_state.trigger,
+                recovery_prompt=lockdown_recovery_prompt,
             )
         transcript_delivery_target = (
             validated.delivery_target or _stored_delivery_target_from_session(validated.session)
@@ -11383,7 +11305,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
             self._commit_skill_suggestion(validated=validated, suggestion=skill_suggestion)
 
-        lockdown_notice_fragment, lockdown_notice_state = (
+        lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
             self._lockdown_notice_response_fragment(session_id=sid)
         )
         if lockdown_notice_fragment:
@@ -11411,6 +11333,7 @@ class SessionImplMixin(HandlerMixinBase):
                 assistant_transcript_metadata,
                 level=lockdown_notice_state.level.value,
                 trigger=lockdown_notice_state.trigger,
+                recovery_prompt=lockdown_recovery_prompt,
             )
         normalized_pending_response = _normalized_pending_confirmation_text(response_text)
         if execution.pending_confirmation_ids and system_generated_pending_confirmation_response:
@@ -12337,7 +12260,7 @@ class SessionImplMixin(HandlerMixinBase):
             if _should_prefix_output_confirmation(output_result=output_result):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
 
-        lockdown_notice_fragment, lockdown_notice_state = (
+        lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
             self._lockdown_notice_response_fragment(session_id=sid)
         )
         if lockdown_notice_fragment:
@@ -12370,6 +12293,7 @@ class SessionImplMixin(HandlerMixinBase):
                 assistant_transcript_metadata,
                 level=lockdown_notice_state.level.value,
                 trigger=lockdown_notice_state.trigger,
+                recovery_prompt=lockdown_recovery_prompt,
             )
         transcript_delivery_target = (
             validated.delivery_target or _stored_delivery_target_from_session(validated.session)

@@ -14,6 +14,10 @@ from typing import Any
 
 import pytest
 
+from shisad.core.daemon_notices import (
+    LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY,
+    LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY,
+)
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.transcript import TranscriptStore
@@ -520,16 +524,19 @@ async def test_gh31_two_turn_lockdown_resume_ambiguous_or_decline_fails_closed(
 
 
 @pytest.mark.parametrize(
-    "second_content",
+    ("second_content", "expected_level", "expected_executed", "expected_rejection"),
     [
-        "it came from the monitor",
-        "clear it because operator verified the alert is clear",
+        ("it came from the monitor", "caution", 0, True),
+        ("clear it because operator verified the alert is clear", "normal", 1, False),
     ],
 )
-async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
+async def test_gh31_daemon_notice_prompt_binds_clean_recovery_reply(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
     second_content: str,
+    expected_level: str,
+    expected_executed: int,
+    expected_rejection: bool,
 ) -> None:
     planner_inputs: list[str] = []
     visible_toolsets: list[set[str]] = []
@@ -554,15 +561,19 @@ async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
 
     assert len(planner_inputs) >= 2
     assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
-    assert reply.get("lockdown_level") == "caution"
-    assert int(reply.get("executed_actions", 0)) == 0
-    assert int(reply.get("blocked_actions", 0)) == 1
+    assert reply.get("lockdown_level") == expected_level
+    assert int(reply.get("executed_actions", 0)) == expected_executed
     tool_events = await _lockdown_tool_events(clean_harness, sid)
-    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
-    assert rejected
-    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
-        rejected[-1]
-    )
+    if expected_rejection:
+        assert int(reply.get("blocked_actions", 0)) == 1
+        rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
+        assert rejected
+        assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
+            rejected[-1]
+        )
+    else:
+        assert int(reply.get("blocked_actions", 0)) == 0
+        assert [event for event in tool_events if event.get("event_type") == "ToolExecuted"]
 
 
 @pytest.mark.parametrize(
@@ -594,26 +605,26 @@ async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
         ),
     ],
 )
-async def test_gh31_quoted_recovery_question_does_not_authorize_resume(
+async def test_gh31_legacy_notice_metadata_without_structural_prompt_does_not_authorize_resume(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
     first_content: str,
 ) -> None:
     planner_inputs: list[str] = []
     visible_toolsets: list[set[str]] = []
-    _install_gh31_recovery_prompt_then_resume_planner(
+    _install_lockdown_resume_planner(
         monkeypatch,
         planner_inputs=planner_inputs,
         visible_toolsets=visible_toolsets,
         reason="planner should not clear from quoted evidence",
-        first_content=first_content,
     )
     sid = await _create_session(clean_harness.client)
     await _set_caution_lockdown(clean_harness, sid)
-
-    await clean_harness.client.call(
-        "session.message",
-        {"session_id": sid, "content": "what happened to this session?"},
+    TranscriptStore(clean_harness.config.data_dir / "sessions").append(
+        SessionId(sid),
+        role="assistant",
+        content=first_content,
+        metadata={LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY: True, "lockdown_level": "caution"},
     )
     reply = await clean_harness.client.call(
         "session.message",
@@ -623,7 +634,7 @@ async def test_gh31_quoted_recovery_question_does_not_authorize_resume(
         },
     )
 
-    assert len(planner_inputs) >= 2
+    assert len(planner_inputs) >= 1
     assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
     assert reply.get("lockdown_level") == "caution"
     assert int(reply.get("executed_actions", 0)) == 0
@@ -636,7 +647,7 @@ async def test_gh31_quoted_recovery_question_does_not_authorize_resume(
     )
 
 
-async def test_gh31_untrusted_appended_tool_summary_cannot_authorize_resume(
+async def test_gh31_appended_tool_summary_does_not_block_daemon_prompt_recovery(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -671,15 +682,8 @@ async def test_gh31_untrusted_appended_tool_summary_cannot_authorize_resume(
 
     assert len(planner_inputs) >= 2
     assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
-    assert reply.get("lockdown_level") == "caution"
-    assert int(reply.get("executed_actions", 0)) == 0
-    assert int(reply.get("blocked_actions", 0)) == 1
-    tool_events = await _lockdown_tool_events(clean_harness, sid)
-    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
-    assert rejected
-    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
-        rejected[-1]
-    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("executed_actions", 0)) == 1
 
 
 @pytest.mark.parametrize(
@@ -717,7 +721,7 @@ async def test_gh31_untrusted_appended_tool_summary_cannot_authorize_resume(
         ),
     ],
 )
-async def test_gh31_top_level_tool_summary_cannot_authorize_resume(
+async def test_gh31_top_level_tool_summary_does_not_block_daemon_prompt_recovery(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
     first_content: str,
@@ -748,15 +752,8 @@ async def test_gh31_top_level_tool_summary_cannot_authorize_resume(
 
     assert len(planner_inputs) >= 2
     assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
-    assert reply.get("lockdown_level") == "caution"
-    assert int(reply.get("executed_actions", 0)) == 0
-    assert int(reply.get("blocked_actions", 0)) == 1
-    tool_events = await _lockdown_tool_events(clean_harness, sid)
-    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
-    assert rejected
-    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
-        rejected[-1]
-    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("executed_actions", 0)) == 1
 
 
 async def test_gh31_summary_row_after_recovery_prompt_does_not_hide_prompt(
@@ -836,6 +833,7 @@ async def test_gh31_recent_result_followup_surfaces_lockdown_notice(
     assistant_entries = [entry for entry in entries if entry.role == "assistant"]
     assert assistant_entries
     assert assistant_entries[-1].metadata.get("lockdown_recovery_notice") is True
+    assert assistant_entries[-1].metadata.get(LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY) is True
 
 
 async def test_gh31_recent_result_followup_sanitizes_lockdown_notice_reason(
