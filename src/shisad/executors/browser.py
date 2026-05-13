@@ -664,6 +664,9 @@ class BrowserToolkit:
                 problems.append(dependency_error)
         protocol: dict[str, Any] = {"supported": False, "probe": "", "reason": ""}
         if runtime_command and not dependency_error:
+            cache = self._prepare_browser_cache_dir()
+            if cache.error:
+                problems.append(cache.error)
             protocol = await self._probe_browser_command_protocol(runtime_command)
             if not protocol["supported"]:
                 problems.append(protocol["reason"])

@@ -40,37 +40,28 @@ function usage() {
 
 function parseArgv(argv) {
   const args = [...argv];
-  if (args.includes("--shisad-browser-wrapper-version")) {
-    return { probe: "version" };
-  }
-  if (args.includes("--help") || args.includes("-h")) {
-    return { probe: "help" };
-  }
   let session = "default";
   if (args.length > 0 && args[0].startsWith("-s=")) {
     session = args.shift().slice(3) || "default";
   }
   const command = args.shift() || "";
+  if (command === "--shisad-browser-wrapper-version") {
+    return { probe: "version" };
+  }
+  if (command === "--help" || command === "-h") {
+    return { probe: "help" };
+  }
   return { session, command, args };
 }
 
 function extractOption(args, option) {
-  const index = args.indexOf(option);
-  if (index < 0) {
+  const index = args.length - 2;
+  if (index < 0 || args[index] !== option) {
     return "";
   }
   const value = args[index + 1] || "";
   args.splice(index, 2);
   return value;
-}
-
-function hasFlag(args, flag) {
-  const index = args.indexOf(flag);
-  if (index < 0) {
-    return false;
-  }
-  args.splice(index, 1);
-  return true;
 }
 
 function sessionToken(raw) {
@@ -388,19 +379,25 @@ async function main() {
     }
     case "fill": {
       requireOpened(state);
-      const submit = hasFlag(args, "--submit");
-      const [target, text] = args;
+      const target = args.shift();
       if (!target) {
         throw new Error("fill requires target");
       }
+      let submit = false;
+      if (args.length >= 2 && args[args.length - 1] === "--submit") {
+        submit = true;
+        args.pop();
+      }
+      const text = args.shift() || "";
       await withPage(cwd, parsed.session, state, async (page) => {
         const locator = await firstLocator(page, target);
-        await locator.fill(String(text || ""));
-        state.fields = { ...(state.fields || {}), [target]: String(text || "") };
+        await locator.fill(String(text));
+        state.fields = { ...(state.fields || {}), [target]: String(text) };
         state.fields_url = state.current_url;
         if (submit && typeof locator.press === "function") {
           await locator.press("Enter");
           await waitForSettled(page);
+          clearFieldState(state);
         }
       });
       return 0;
@@ -415,6 +412,7 @@ async function main() {
         const locator = await firstLocator(page, target);
         await locator.click();
         await waitForSettled(page);
+        clearFieldState(state);
       });
       return 0;
     }

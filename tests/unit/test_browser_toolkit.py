@@ -405,6 +405,30 @@ async def test_gh33_browser_toolkit_doctor_reports_sandbox_degraded_probe(
     assert all(config.network.allow_network is False for config in runner.configs)
 
 
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_doctor_reports_unwritable_playwright_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for the browser wrapper protocol probe")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".cache").write_text("not a directory", encoding="utf-8")
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=["node", str(_PLAYWRIGHT_WRAPPER)])
+
+    status = await toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_cache_not_writable" in status["problems"]
+    assert status["protocol"]["supported"] is True
+    assert status["protocol"]["probe"] == "sentinel"
+    assert len(runner.configs) == 1
+    assert runner.configs[0].tool_name == "browser.doctor"
+
+
 def test_gh33_browser_unknown_session_flag_reports_protocol_error(tmp_path: Path) -> None:
     toolkit = _toolkit(tmp_path, runner=_CapturingSuccessRunner())
     result = SandboxResult(

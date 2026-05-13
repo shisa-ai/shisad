@@ -187,6 +187,28 @@ exports.chromium = {
     assert '[e1] link "Continue" selector="#continue" href="/next"' in snapshot
     assert '[e3] button "Submit" selector="#submit"' in snapshot
 
+    assert run_wrapper("fill", "#search", "--help").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    flag_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert flag_text["url"] == "http://example.test/"
+    assert "--help" in flag_text["visible_text"]
+
+    assert run_wrapper("fill", "#search", "--submit").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    submit_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert submit_text["url"] == "http://example.test/"
+    assert "--submit" in submit_text["visible_text"]
+
+    assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
+    assert run_wrapper("click", "#same-url").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    same_url = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert same_url["url"] == "http://example.test/"
+    assert "same-url-secret" not in same_url["visible_text"]
+
     assert run_wrapper("fill", "#search", "secret").returncode == 0
     assert run_wrapper("goto", "http://other.test/").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
