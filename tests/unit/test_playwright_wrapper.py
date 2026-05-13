@@ -42,6 +42,12 @@ class Locator {
   }
   async fill(text) {
     this.page.fields[this.selector] = text;
+    if (text === "old-sensitive") {
+      this.page._url = new URL(
+        `/replayed?value=${encodeURIComponent(text)}`,
+        this.page._url || "http://example.test/",
+      ).toString();
+    }
     if (this.selector === "#editor") {
       editor.setEditableText(text);
     }
@@ -389,6 +395,23 @@ exports.chromium = {
     sensitive_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert sensitive_text["url"] == "http://example.test/"
     assert "sensitive-secret" not in sensitive_text["visible_text"]
+
+    state_path.write_text(
+        json.dumps(
+            {
+                "opened": True,
+                "current_url": "http://example.test/",
+                "fields_url": "http://example.test/",
+                "fields": {"#search": "old-sensitive"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert run_wrapper("fill", "#search", "replacement-secret", "--no-store").returncode == 0
+    restored_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "old-sensitive" not in json.dumps(restored_state, sort_keys=True)
+    assert "replacement-secret" not in json.dumps(restored_state, sort_keys=True)
+    assert restored_state["current_url"] == "http://example.test/"
 
     assert run_wrapper("fill", "#editor", "rich-secret").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))

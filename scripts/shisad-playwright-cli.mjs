@@ -338,6 +338,15 @@ function clearFieldState(state) {
   state.fields_url = "";
 }
 
+function dropFieldState(state, selector) {
+  const nextFields = { ...(state.fields || {}) };
+  delete nextFields[selector];
+  state.fields = nextFields;
+  if (Object.keys(nextFields).length === 0) {
+    state.fields_url = "";
+  }
+}
+
 async function applyFieldState(page, state) {
   if (!state.fields_url || state.fields_url !== state.current_url) {
     clearFieldState(state);
@@ -521,6 +530,9 @@ async function main() {
           throw new Error(`unsupported fill option: ${option}`);
         }
       }
+      if (!storeField) {
+        dropFieldState(state, target);
+      }
       await withPage(cwd, parsed.session, state, async (page) => {
         const locator = await firstLocator(page, target);
         await locator.fill(String(text));
@@ -528,10 +540,7 @@ async function main() {
           state.fields = { ...(state.fields || {}), [target]: String(text) };
           state.fields_url = state.current_url;
         } else {
-          const nextFields = { ...(state.fields || {}) };
-          delete nextFields[target];
-          state.fields = nextFields;
-          state.fields_url = Object.keys(nextFields).length > 0 ? state.current_url : "";
+          dropFieldState(state, target);
         }
         if (submit && typeof locator.press === "function") {
           await locator.press("Enter");

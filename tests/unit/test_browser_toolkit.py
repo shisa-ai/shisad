@@ -741,6 +741,33 @@ async def test_gh33_browser_toolkit_sensitive_type_text_avoids_wrapper_state(
 
 
 @pytest.mark.asyncio
+async def test_gh33_browser_toolkit_sensitive_type_text_fake_cli_no_store(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        text="sensitive-secret",
+        is_sensitive=True,
+    )
+
+    assert typed["ok"] is True
+    state_path = (
+        toolkit._session_dir(session) / ".fake-playwright" / "shisad-browser-session.json"
+    )
+    fake_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "sensitive-secret" not in json.dumps(fake_state, sort_keys=True)
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_type_submit_submits_form_directly(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
