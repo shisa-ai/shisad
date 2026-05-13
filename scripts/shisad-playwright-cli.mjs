@@ -94,12 +94,16 @@ async function loadState(cwd, session) {
     const raw = await fs.readFile(statePath(cwd, session), "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
+      const fieldsUrl = String(parsed.fields_url || "");
       return {
         opened: Boolean(parsed.opened),
         current_url: String(parsed.current_url || ""),
-        fields_url: String(parsed.fields_url || parsed.current_url || ""),
+        fields_url: fieldsUrl,
         fields:
-          parsed.fields && typeof parsed.fields === "object" && !Array.isArray(parsed.fields)
+          fieldsUrl &&
+          parsed.fields &&
+          typeof parsed.fields === "object" &&
+          !Array.isArray(parsed.fields)
             ? parsed.fields
             : {},
       };

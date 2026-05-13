@@ -159,7 +159,28 @@ exports.chromium = {
     assert metadata["title"] == "Browser Home"
     assert "Hello browser" in metadata["visible_text"]
 
+    state_path = session_dir / ".shisad-playwright" / "shisad-browser-session.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "opened": True,
+                "current_url": "http://other.test/",
+                "fields": {"#search": "legacy-secret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    legacy = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert legacy["url"] == "http://other.test/"
+    assert "legacy-secret" not in legacy["visible_text"]
+    migrated_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert migrated_state["fields"] == {}
+    assert migrated_state["fields_url"] == ""
+
     snapshot_path = session_dir / "snapshot.txt"
+    assert run_wrapper("goto", "http://example.test/").returncode == 0
     result = run_wrapper("snapshot", "--filename", str(snapshot_path))
     assert result.returncode == 0, result.stderr
     snapshot = snapshot_path.read_text(encoding="utf-8")
