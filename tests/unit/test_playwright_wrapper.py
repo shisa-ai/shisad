@@ -42,6 +42,9 @@ class Locator {
   }
   async fill(text) {
     this.page.fields[this.selector] = text;
+    if (this.selector === "#editor") {
+      editor.setEditableText(text);
+    }
   }
   async inputValue() {
     if (this.selector === "#editor") {
@@ -49,7 +52,10 @@ class Locator {
     }
     return this.page.fields[this.selector] || "";
   }
-  async evaluate() {
+  async evaluate(callback) {
+    if (this.selector === "#editor") {
+      return callback(editor);
+    }
     return this.page.fields[this.selector] || "";
   }
   async press(key) {
@@ -83,15 +89,23 @@ class FakeElement {
     this.tagName = tagName.toUpperCase();
     this.attrs = attrs;
     this.children = children;
-    this.childNodes = text ? [new FakeText(text), ...children] : [...children];
-    const childText = children.map((child) => child.textContent || "").join("");
-    this.innerText = `${text}${childText}`;
-    this.textContent = `${text}${childText}`;
+    this.textNode = new FakeText(text);
+    this.childNodes = [this.textNode, ...children];
     this.parentElement = null;
     this.nodeType = 1;
     for (const child of children) {
       child.parentElement = this;
     }
+    this.refreshText();
+  }
+  refreshText() {
+    const childText = this.children.map((child) => child.textContent || "").join("");
+    this.innerText = `${this.textNode.textContent}${childText}`;
+    this.textContent = `${this.textNode.textContent}${childText}`;
+  }
+  setEditableText(text) {
+    this.textNode.textContent = text;
+    this.refreshText();
   }
   getAttribute(name) {
     return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
@@ -313,6 +327,7 @@ exports.chromium = {
     rich_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert rich_text["url"] == "http://example.test/"
     assert "rich-secret" in rich_text["visible_text"]
+    assert "Locked" not in rich_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0

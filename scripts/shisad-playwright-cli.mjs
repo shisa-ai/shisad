@@ -374,7 +374,27 @@ async function syncFieldState(page, state) {
             return String(element.value || "");
           }
           if (element && element.isContentEditable) {
-            return String(element.innerText || element.textContent || "");
+            const hasContenteditableFalse = (candidate) => {
+              const attrValue = candidate.getAttribute("contenteditable");
+              return attrValue !== null && String(attrValue).toLowerCase() === "false";
+            };
+            const textFor = (node) => {
+              if (!node) {
+                return "";
+              }
+              if (node.nodeType === 3) {
+                return node.textContent || "";
+              }
+              if (node.nodeType !== 1 || hasContenteditableFalse(node)) {
+                return "";
+              }
+              return Array.from(node.childNodes || []).map((child) => textFor(child)).join(" ");
+            };
+            return Array.from(element.childNodes || [])
+              .map((child) => textFor(child))
+              .join(" ")
+              .replace(/\s+/g, " ")
+              .trim();
           }
           return "";
         });
