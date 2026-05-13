@@ -29,6 +29,10 @@ _SUMMARY_USER_PROMPT_HEADER = (
     "Extract durable memory entries from the transcript data below. "
     "Prefer stable facts/preferences over ephemeral chatter."
 )
+_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER = "[LOCKDOWN NOTICE]"
+_LOCKDOWN_NOTICE_METADATA_KEYS = frozenset(
+    {"lockdown_recovery_notice", "daemon_control_notice"}
+)
 
 _RE_PROJECT_CODENAME = re.compile(
     r"\bproject codename is ([a-z0-9][a-z0-9 _-]{1,40})",
@@ -128,11 +132,34 @@ class ConversationSummarizer:
         return cls._dedupe(envelope.entries, limit=limit)
 
     @staticmethod
-    def _render_entries(entries: list[TranscriptEntry]) -> str:
+    def _strip_daemon_lockdown_notice_suffix(
+        content: str,
+        metadata: dict[str, Any],
+    ) -> str:
+        if not any(bool(metadata.get(key)) for key in _LOCKDOWN_NOTICE_METADATA_KEYS):
+            return content
+        marker_index = content.rfind(f"\n\n{_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER}")
+        if marker_index < 0:
+            marker_index = content.rfind(_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER)
+        if marker_index < 0:
+            return content
+        return content[:marker_index].rstrip()
+
+    @classmethod
+    def _entry_text(cls, entry: TranscriptEntry) -> str:
+        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+        content = cls._strip_daemon_lockdown_notice_suffix(
+            entry.content_preview,
+            metadata,
+        )
+        return " ".join(content.split()).strip()
+
+    @classmethod
+    def _render_entries(cls, entries: list[TranscriptEntry]) -> str:
         lines: list[str] = []
         for entry in entries:
             role = entry.role.strip().lower() or "system"
-            text = " ".join(entry.content_preview.split()).strip()
+            text = cls._entry_text(entry)
             if not text:
                 continue
             lines.append(f"{role}: {text[:260]}")
@@ -150,7 +177,7 @@ class ConversationSummarizer:
             role = entry.role.strip().lower()
             if role not in {"user", "assistant"}:
                 continue
-            text = " ".join(entry.content_preview.split()).strip()
+            text = cls._entry_text(entry)
             if not text:
                 continue
 
