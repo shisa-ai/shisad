@@ -4427,6 +4427,8 @@ def _previous_turn_is_lockdown_recovery_prompt(
         return False
     if str(previous.role).strip().lower() != "assistant":
         return False
+    if _transcript_entry_is_archive_imported(previous):
+        return False
     if not _transcript_entry_is_lockdown_recovery_notice(previous):
         return False
     metadata = previous.metadata if isinstance(previous.metadata, dict) else {}

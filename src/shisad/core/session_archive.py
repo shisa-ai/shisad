@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shisad.core import daemon_notices as _daemon_notices
 from shisad.core.session import Checkpoint, CheckpointStore, Session, SessionManager
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import SessionId, TaintLabel
@@ -51,8 +52,17 @@ _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA = frozenset(
         "tool_name",
     }
 )
+_UNTRUSTED_TRANSCRIPT_CONTROL_METADATA = frozenset(
+    {
+        *_daemon_notices.LOCKDOWN_NOTICE_METADATA_KEYS,
+        "lockdown_level",
+        "lockdown_trigger",
+    }
+)
 _UNTRUSTED_TRANSCRIPT_IMPORT_METADATA = (
-    _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA | _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA
+    _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA
+    | _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA
+    | _UNTRUSTED_TRANSCRIPT_CONTROL_METADATA
 )
 
 

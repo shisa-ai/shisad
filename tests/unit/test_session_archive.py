@@ -13,6 +13,11 @@ from typing import Any
 import pytest
 
 import shisad.core.session_archive as session_archive_module
+from shisad.core.daemon_notices import (
+    DAEMON_CONTROL_NOTICE_METADATA_KEY,
+    LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY,
+    LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY,
+)
 from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.session_archive import SessionArchiveError, SessionArchiveManager
 from shisad.core.transcript import TranscriptStore
@@ -338,6 +343,11 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
             "user_id": "mallory",
             "visibility": "public",
             "workspace_id": "other-workspace",
+            DAEMON_CONTROL_NOTICE_METADATA_KEY: True,
+            LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY: True,
+            LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY: True,
+            "lockdown_level": "caution",
+            "lockdown_trigger": "manual",
         }
     )
     members["transcript.json"] = json.dumps(
@@ -362,6 +372,11 @@ def test_m5_session_archive_import_strips_publication_metadata(tmp_path: Path) -
         "task_result",
         "tool_name",
         "visibility",
+        DAEMON_CONTROL_NOTICE_METADATA_KEY,
+        LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY,
+        LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY,
+        "lockdown_level",
+        "lockdown_trigger",
     ):
         assert key not in imported_entries[0].metadata
     assert imported_entries[0].metadata["channel"] == "slack"
