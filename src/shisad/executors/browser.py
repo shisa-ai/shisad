@@ -916,7 +916,23 @@ class BrowserToolkit:
             _SHISAD_BROWSER_WRAPPER_SENTINEL in help_output
             or ("-s=" in help_output and "shisad" in help_output.lower())
         ):
-            return {"supported": True, "probe": "help", "reason": ""}
+            return {
+                "supported": False,
+                "probe": "sentinel,help",
+                "reason": "browser_command_protocol_incompatible",
+                "stderr": self._sanitize_browser_failure_text(
+                    sentinel["stderr"] or help_probe["stderr"]
+                ),
+                "stdout": self._sanitize_browser_failure_text(
+                    sentinel["stdout"] or help_probe["stdout"]
+                ),
+                "degraded_controls": sorted(
+                    {
+                        *sentinel.get("degraded_controls", []),
+                        *help_probe.get("degraded_controls", []),
+                    }
+                ),
+            }
 
         probe_error = str(sentinel.get("error") or help_probe.get("error") or "")
         reason = "browser_command_protocol_incompatible"

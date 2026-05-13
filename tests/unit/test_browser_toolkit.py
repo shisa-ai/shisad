@@ -415,6 +415,42 @@ async def test_gh33_browser_toolkit_doctor_rejects_old_wrapper_without_readiness
 
 
 @pytest.mark.asyncio
+async def test_gh33_browser_toolkit_doctor_rejects_help_only_wrapper(
+    tmp_path: Path,
+) -> None:
+    command = tmp_path / "help-only-wrapper"
+    command.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "if '--help' in sys.argv:",
+                "    print('Usage: shisad-compatible wrapper -s=<session>')",
+                "    raise SystemExit(0)",
+                "raise SystemExit(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    status = await toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_command_protocol_incompatible" in status["problems"]
+    assert status["protocol"]["supported"] is False
+    assert status["protocol"]["probe"] == "sentinel,help"
+    assert status["protocol"]["reason"] == "browser_command_protocol_incompatible"
+    assert [config.command[-1] for config in runner.configs] == [
+        "--shisad-browser-wrapper-version",
+        "--help",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_gh33_browser_toolkit_doctor_rejects_plain_playwright_cli(
     tmp_path: Path,
 ) -> None:
