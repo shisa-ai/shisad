@@ -917,6 +917,116 @@ async def test_gh33_browser_toolkit_sensitive_type_click_rejects_stale_click_bin
         browser_server.close()
 
 
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_prepare_click_ignores_caller_runtime_fields(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+
+    original_load_snapshot = toolkit._load_interaction_snapshot
+
+    async def no_prepare_snapshot(**_: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", no_prepare_snapshot)
+    prepared = await toolkit.prepare_action_arguments(
+        session=session,
+        tool_name="browser.click",
+        arguments={
+            "target": "#continue",
+            "destination": f"{browser_fixture_server.base_url}/submitted?smuggled=1",
+            "resolved_target": "#submit",
+            "source_url": "http://attacker.invalid/",
+            "source_binding": "",
+        },
+    )
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", original_load_snapshot)
+
+    assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
+    assert prepared.get("destination") != f"{browser_fixture_server.base_url}/submitted?smuggled=1"
+    assert prepared.get("resolved_target") != "#submit"
+    assert prepared.get("source_binding") in {None, ""}
+
+    clicked = await toolkit.click(
+        session=session,
+        target=str(prepared["target"]),
+        resolved_target=str(prepared.get("resolved_target", "")),
+        source_url=str(prepared["source_url"]),
+        source_binding=str(prepared.get("source_binding", "")),
+    )
+
+    assert clicked["ok"] is True
+    assert clicked["url"].endswith("/next")
+
+
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_prepare_type_click_ignores_caller_runtime_fields(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+
+    original_load_snapshot = toolkit._load_interaction_snapshot
+
+    async def no_prepare_snapshot(**_: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", no_prepare_snapshot)
+    prepared = await toolkit.prepare_action_arguments(
+        session=session,
+        tool_name="browser.type_text",
+        arguments={
+            "target": "#search",
+            "text": "hello",
+            "is_sensitive": True,
+            "click_target": "#submit",
+            "destination": f"{browser_fixture_server.base_url}/next?smuggled=1",
+            "resolved_target": "#continue",
+            "resolved_click_target": "#continue",
+            "source_url": "http://attacker.invalid/",
+            "source_binding": "",
+            "click_source_binding": "",
+        },
+    )
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", original_load_snapshot)
+
+    assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
+    assert prepared.get("destination") != f"{browser_fixture_server.base_url}/next?smuggled=1"
+    assert prepared.get("resolved_target") != "#continue"
+    assert prepared.get("resolved_click_target") != "#continue"
+    assert prepared.get("source_binding") in {None, ""}
+    assert prepared.get("click_source_binding") in {None, ""}
+
+    typed = await toolkit.type_text(
+        session=session,
+        target=str(prepared["target"]),
+        text="hello",
+        is_sensitive=True,
+        click_target=str(prepared["click_target"]),
+        resolved_target=str(prepared.get("resolved_target", "")),
+        resolved_click_target=str(prepared.get("resolved_click_target", "")),
+        source_url=str(prepared["source_url"]),
+        source_binding=str(prepared.get("source_binding", "")),
+        click_source_binding=str(prepared.get("click_source_binding", "")),
+    )
+
+    assert typed["ok"] is True
+    assert typed["url"].endswith("/submitted?q=hello")
+
+
 def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,

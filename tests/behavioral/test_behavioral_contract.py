@@ -568,6 +568,40 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if (
+        "browser type " in goal_lower
+        and "name field" in goal_lower
+        and "click send" in goal_lower
+    ):
+        match = re.search(
+            r"browser type (?P<text>.+?) into the name field and click send$",
+            goal,
+            flags=re.IGNORECASE,
+        )
+        text = match.group("text").strip() if match else "hello"
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Typing into the browser form and clicking send.",
+                tool_calls=[
+                    _tool_call(
+                        "browser.type_text",
+                        {
+                            "target": "#name",
+                            "text": text,
+                            "is_sensitive": True,
+                            "click_target": "#send",
+                            "description": "name field",
+                        },
+                        call_id="t-browser-type-click",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "browser type " in goal_lower and "name field" in goal_lower:
         submit = "submit" in goal_lower
         match = re.search(
@@ -7221,6 +7255,67 @@ async def test_contract_browser_type_text_confirmation_approve_executes_after_co
     assert "browser.read_page" in outputs
     payload = outputs["browser.read_page"][0]
     assert "Submitted: hello" in str(payload.get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_type_text_click_target_confirmation_approve_executes_atomically(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser-form",
+        },
+    )
+    proposed = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "browser type hello-click into the name field and click send",
+        },
+    )
+    assert proposed.get("lockdown_level") == "normal"
+    assert int(proposed.get("blocked_actions", 0)) == 0
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    pending = await contract_harness.client.call(
+        "action.pending",
+        {"confirmation_id": str(pending_ids[0])},
+    )
+    actions = pending.get("actions", [])
+    assert actions
+    arguments = dict(actions[0].get("arguments", {}))
+    assert arguments.get("target") == "#name"
+    assert arguments.get("click_target") == "#send"
+    assert arguments.get("is_sensitive") is True
+    assert str(arguments.get("source_url", "")).endswith("/browser-form")
+    assert str(arguments.get("source_binding", "")).strip()
+    assert str(arguments.get("click_source_binding", "")).strip()
+    assert str(arguments.get("destination", "")).endswith("/browser-submitted")
+
+    confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
+    assert confirmed.get("confirmed") is True
+    await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="ToolExecuted",
+        session_id=sid,
+        predicate=lambda event: (
+            str(event.get("data", {}).get("tool_name", "")) == "browser.type_text"
+            and bool(event.get("data", {}).get("success")) is True
+        ),
+    )
+    reread = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser read page"},
+    )
+    outputs = _extract_tool_outputs(reread)
+    assert "browser.read_page" in outputs
+    payload = outputs["browser.read_page"][0]
+    assert "Submitted: hello-click" in str(payload.get("content", ""))
 
 
 @pytest.mark.asyncio

@@ -357,6 +357,15 @@ class BrowserToolkit:
             return prepared
         if tool_name not in {"browser.click", "browser.type_text"}:
             return prepared
+        for runtime_field in (
+            "resolved_target",
+            "resolved_click_target",
+            "destination",
+            "source_url",
+            "source_binding",
+            "click_source_binding",
+        ):
+            prepared.pop(runtime_field, None)
         current_url = self._current_url(session)
         if not current_url:
             return prepared
