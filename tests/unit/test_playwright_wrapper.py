@@ -71,10 +71,81 @@ class Locator {
   }
 }
 
+class FakeElement {
+  constructor(tagName, attrs = {}, text = "", children = []) {
+    this.tagName = tagName.toUpperCase();
+    this.attrs = attrs;
+    this.innerText = text;
+    this.textContent = text;
+    this.children = children;
+    this.parentElement = null;
+    this.nodeType = 1;
+    for (const child of children) {
+      child.parentElement = this;
+    }
+  }
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+  }
+  get isContentEditable() {
+    return this.getAttribute("contenteditable") !== null;
+  }
+  closest(tagName) {
+    let current = this.parentElement;
+    while (current) {
+      if (current.tagName.toLowerCase() === tagName) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+}
+
+const nestedButton = new FakeElement("button", {}, "Nested");
+const section = new FakeElement("section", {}, "", [nestedButton]);
+const continueLink = new FakeElement("a", { id: "continue", href: "/next" }, "Continue");
+const searchInput = new FakeElement("input", { id: "search", name: "q" });
+const submitButton = new FakeElement("button", { id: "submit" }, "Submit");
+const editor = new FakeElement("div", { id: "editor", contenteditable: "true" }, "Editable");
+const body = new FakeElement("body", {}, "", [
+  continueLink,
+  searchInput,
+  submitButton,
+  editor,
+  section,
+]);
+const html = new FakeElement("html", {}, "", [body]);
+const allElements = [
+  html,
+  body,
+  continueLink,
+  searchInput,
+  submitButton,
+  editor,
+  section,
+  nestedButton,
+];
+const fakeDocument = {
+  documentElement: html,
+  querySelectorAll(selector) {
+    if (selector.includes(",")) {
+      return allElements.filter((element) => {
+        const tag = element.tagName.toLowerCase();
+        return (
+          ["a", "button", "input", "textarea", "select"].includes(tag) ||
+          element.isContentEditable
+        );
+      });
+    }
+    return allElements.filter((element) => element.tagName.toLowerCase() === selector);
+  },
+};
+
 class Page {
   constructor() {
     this._url = "about:blank";
-    this.fields = {};
+    this.fields = { "#search": "default" };
   }
   async goto(url) {
     this._url = url;
@@ -94,28 +165,13 @@ class Page {
   }
   async evaluate(_fn, mode) {
     if (mode === "snapshot") {
-      return [
-        {
-          kind: "link",
-          label: "Continue",
-          selector: "#continue",
-          href: "/next",
-        },
-        {
-          kind: "field",
-          label: "q",
-          selector: "#search",
-          form_action: "/submitted",
-          form_method: "get",
-        },
-        {
-          kind: "button",
-          label: "Submit",
-          selector: "#submit",
-          form_action: "/submitted",
-          form_method: "get",
-        },
-      ];
+      const previousDocument = globalThis.document;
+      globalThis.document = fakeDocument;
+      try {
+        return _fn(mode);
+      } finally {
+        globalThis.document = previousDocument;
+      }
     }
     return {
       url: this._url,
@@ -200,6 +256,9 @@ exports.chromium = {
     snapshot = snapshot_path.read_text(encoding="utf-8")
     assert '[e1] link "Continue" selector="#continue" href="/next"' in snapshot
     assert '[e3] button "Submit" selector="#submit"' in snapshot
+    assert '[e4] field "Editable" selector="#editor"' in snapshot
+    assert 'button "Nested" selector="html > body > section > button"' in snapshot
+    assert "button:nth-of-type(2)" not in snapshot
 
     assert run_wrapper("fill", "#search", "--help").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
@@ -214,6 +273,13 @@ exports.chromium = {
     submit_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert submit_text["url"] == "http://example.test/"
     assert "--submit" in submit_text["visible_text"]
+
+    assert run_wrapper("fill", "#search", "").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    empty_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert empty_text["url"] == "http://example.test/"
+    assert "field:default" not in empty_text["visible_text"]
 
     assert run_wrapper("fill", "#editor", "rich-secret").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))

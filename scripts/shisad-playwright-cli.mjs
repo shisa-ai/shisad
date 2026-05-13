@@ -221,9 +221,27 @@ async function snapshot(page) {
         if (aria) {
           return `${tag}[aria-label='${attrValue(aria)}']`;
         }
-        const siblings = Array.from(document.querySelectorAll(tag));
-        const index = siblings.indexOf(element) + 1;
-        return index > 0 ? `${tag}:nth-of-type(${index})` : tag;
+        const parts = [];
+        let current = element;
+        while (current && current.nodeType === 1) {
+          const currentTag = current.tagName.toLowerCase();
+          let part = currentTag;
+          const parent = current.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter(
+              (item) => item.tagName.toLowerCase() === currentTag,
+            );
+            if (siblings.length > 1) {
+              part = `${currentTag}:nth-of-type(${siblings.indexOf(current) + 1})`;
+            }
+          }
+          parts.unshift(part);
+          if (current === document.documentElement) {
+            break;
+          }
+          current = parent;
+        }
+        return parts.join(" > ") || tag;
       };
       const labelFor = (element) => {
         const tag = element.tagName.toLowerCase();
@@ -238,7 +256,9 @@ async function snapshot(page) {
         }
         return element.innerText || element.textContent || element.getAttribute("aria-label") || tag;
       };
-      return Array.from(document.querySelectorAll("a, button, input, textarea, select")).map(
+      return Array.from(
+        document.querySelectorAll("a, button, input, textarea, select, [contenteditable]"),
+      ).map(
         (element) => {
           const tag = element.tagName.toLowerCase();
           const form = element.closest("form");
@@ -294,11 +314,13 @@ async function syncFieldState(page, state) {
   const nextFields = {};
   for (const selector of selectors) {
     let value = "";
+    let readable = false;
     try {
       const locator = await firstLocator(page, selector);
       if (typeof locator.inputValue === "function") {
         try {
           value = await locator.inputValue({ timeout: Math.min(timeoutMs(), 1000) });
+          readable = true;
         } catch {
           value = "";
         }
@@ -313,8 +335,9 @@ async function syncFieldState(page, state) {
           }
           return "";
         });
+        readable = true;
       }
-      if (String(value || "")) {
+      if (readable) {
         nextFields[selector] = String(value);
       }
     } catch {
