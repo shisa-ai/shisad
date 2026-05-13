@@ -3196,6 +3196,32 @@ _PENDING_CONFIRMATIONS_FOOTERS = (
 )
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
 _TOOL_RESULTS_SUMMARY_HEADER = "Tool results summary:"
+_USER_VISIBLE_TOOL_OUTPUT_HEADERS = (
+    "Completed action result:",
+    "Confirmed action result:",
+)
+_INTERMEDIATE_TOOL_OUTPUT_HEADER = (
+    "I completed the tool step, but I could not generate a final answer in this turn. "
+    "Treat the following as intermediate tool output, not the final answer:"
+)
+_LOCKDOWN_RECOVERY_PROMPT_UNTRUSTED_SUFFIX_MARKERS = (
+    f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{_TOOL_RESULTS_SUMMARY_HEADER}",
+    *(
+        f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{header}"
+        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
+    ),
+    f"\n\n{_TOOL_RESULTS_SUMMARY_HEADER}",
+    *(f"\n\n{header}" for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS),
+    f"\n\n{_INTERMEDIATE_TOOL_OUTPUT_HEADER}",
+    f" {_COMPLETED_ACTIONS_HEADER} {_TOOL_RESULTS_SUMMARY_HEADER}",
+    *(
+        f" {_COMPLETED_ACTIONS_HEADER} {header}"
+        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
+    ),
+    f" {_TOOL_RESULTS_SUMMARY_HEADER}",
+    *(f" {header}" for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS),
+    f" {_INTERMEDIATE_TOOL_OUTPUT_HEADER}",
+)
 _PENDING_COMPLETED_ACTIONS_RE = re.compile(
     rf"(?:{'|'.join(re.escape(footer) for footer in _PENDING_CONFIRMATIONS_FOOTERS)})\s+"
     rf"{re.escape(_COMPLETED_ACTIONS_HEADER)}\s+"
@@ -3428,9 +3454,7 @@ def _intermediate_tool_summary_response(
     if not summary:
         return ""
     return (
-        "I completed the tool step, but I could not generate a final answer in this turn. "
-        "Treat the following as intermediate tool output, not the final answer:\n\n"
-        f"{summary}"
+        f"{_INTERMEDIATE_TOOL_OUTPUT_HEADER}\n\n{summary}"
     )
 
 
@@ -3715,6 +3739,20 @@ def _strip_appended_tool_results_summary(text: str) -> str:
         index = stripped.find(marker)
         if index > 0:
             return stripped[:index].strip()
+    return stripped
+
+
+def _strip_appended_untrusted_response_sections_for_recovery_prompt(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return ""
+    earliest_index = -1
+    for marker in _LOCKDOWN_RECOVERY_PROMPT_UNTRUSTED_SUFFIX_MARKERS:
+        index = stripped.find(marker)
+        if index > 0 and (earliest_index < 0 or index < earliest_index):
+            earliest_index = index
+    if earliest_index > 0:
+        return stripped[:earliest_index].strip()
     return stripped
 
 
@@ -4394,6 +4432,8 @@ def _previous_visible_transcript_entry(
     elif entries:
         context_entries = entries[:-1]
     for entry in reversed(context_entries):
+        if str(entry.role).strip().lower() not in {"user", "assistant"}:
+            continue
         if _entry_is_ephemeral_evidence_read(entry):
             continue
         return entry
@@ -4425,7 +4465,8 @@ def _previous_turn_is_lockdown_recovery_prompt(
 
 
 def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
-    normalized = " ".join(content.casefold().split())
+    prompt_candidate = _strip_appended_untrusted_response_sections_for_recovery_prompt(content)
+    normalized = " ".join(prompt_candidate.casefold().split())
     if "?" not in normalized:
         return False
     resume_choice = any(
