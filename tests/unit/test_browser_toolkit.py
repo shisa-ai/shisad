@@ -699,6 +699,48 @@ async def test_m6_browser_toolkit_type_and_click_follow_form_submission(
 
 
 @pytest.mark.asyncio
+async def test_gh33_browser_toolkit_sensitive_type_text_avoids_wrapper_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    toolkit._save_state(session, {"opened": True, "current_url": "http://example.test/"})
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/",
+            "title": "Browser Home",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="sensitive-secret",
+        is_sensitive=True,
+    )
+
+    assert typed["ok"] is True
+    assert typed["is_sensitive"] is True
+    fill_commands = [
+        config.command
+        for config in runner.configs
+        if config.tool_name == "browser.type_text" and "fill" in config.command
+    ]
+    assert fill_commands
+    assert fill_commands[-1][-4:] == ["fill", "#search", "sensitive-secret", "--no-store"]
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_type_submit_submits_form_directly(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,

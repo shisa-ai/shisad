@@ -524,6 +524,8 @@ class BrowserToolkit:
         args = ["fill", concrete_target, text]
         if submit:
             args.append("--submit")
+        if is_sensitive:
+            args.append("--no-store")
         destination_url = destination.strip()
         network_urls = self._merge_network_urls(current_url, prepared_source_url, destination_url)
         result = await self._run_cli(

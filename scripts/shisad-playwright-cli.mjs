@@ -27,7 +27,7 @@ function usage() {
     "  goto <url>",
     "  eval <function> [element] [--filename <path>]",
     "  snapshot [element] [--filename <path>]",
-    "  fill <selector> <text> [--submit]",
+    "  fill <selector> <text> [--submit] [--no-store]",
     "  click <selector>",
     "  screenshot [target] --filename <path>",
     "  list",
@@ -509,17 +509,30 @@ async function main() {
       if (!target) {
         throw new Error("fill requires target");
       }
-      let submit = false;
-      if (args.length >= 2 && args[args.length - 1] === "--submit") {
-        submit = true;
-        args.pop();
-      }
       const text = args.shift() || "";
+      let submit = false;
+      let storeField = true;
+      for (const option of args) {
+        if (option === "--submit") {
+          submit = true;
+        } else if (option === "--no-store") {
+          storeField = false;
+        } else {
+          throw new Error(`unsupported fill option: ${option}`);
+        }
+      }
       await withPage(cwd, parsed.session, state, async (page) => {
         const locator = await firstLocator(page, target);
         await locator.fill(String(text));
-        state.fields = { ...(state.fields || {}), [target]: String(text) };
-        state.fields_url = state.current_url;
+        if (storeField) {
+          state.fields = { ...(state.fields || {}), [target]: String(text) };
+          state.fields_url = state.current_url;
+        } else {
+          const nextFields = { ...(state.fields || {}) };
+          delete nextFields[target];
+          state.fields = nextFields;
+          state.fields_url = Object.keys(nextFields).length > 0 ? state.current_url : "";
+        }
         if (submit && typeof locator.press === "function") {
           await locator.press("Enter");
           await waitForSettled(page);

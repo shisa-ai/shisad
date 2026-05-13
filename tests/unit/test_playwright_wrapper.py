@@ -367,12 +367,28 @@ exports.chromium = {
     assert submit_text["url"] == "http://example.test/"
     assert "--submit" in submit_text["visible_text"]
 
+    assert run_wrapper("fill", "#search", "--no-store").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    no_store_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert no_store_text["url"] == "http://example.test/"
+    assert "--no-store" in no_store_text["visible_text"]
+
     assert run_wrapper("fill", "#search", "").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
     assert result.returncode == 0, result.stderr
     empty_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert empty_text["url"] == "http://example.test/"
     assert "field:default" not in empty_text["visible_text"]
+
+    assert run_wrapper("fill", "#search", "sensitive-secret", "--no-store").returncode == 0
+    sensitive_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "sensitive-secret" not in json.dumps(sensitive_state, sort_keys=True)
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    sensitive_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert sensitive_text["url"] == "http://example.test/"
+    assert "sensitive-secret" not in sensitive_text["visible_text"]
 
     assert run_wrapper("fill", "#editor", "rich-secret").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
