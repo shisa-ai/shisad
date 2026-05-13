@@ -43,6 +43,9 @@ class Locator {
   async fill(text) {
     this.page.fields[this.selector] = text;
   }
+  async inputValue() {
+    return this.page.fields[this.selector] || "";
+  }
   async press(key) {
     if (key === "Enter") {
       this.page._url = submittedUrl(this.page);
@@ -55,6 +58,9 @@ class Locator {
     }
     if (this.selector === "#submit") {
       this.page._url = submittedUrl(this.page);
+    }
+    if (this.selector === "#same-url-clear") {
+      this.page.fields = {};
     }
   }
 }
@@ -207,7 +213,14 @@ exports.chromium = {
     assert result.returncode == 0, result.stderr
     same_url = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert same_url["url"] == "http://example.test/"
-    assert "same-url-secret" not in same_url["visible_text"]
+    assert "same-url-secret" in same_url["visible_text"]
+
+    assert run_wrapper("click", "#same-url-clear").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    same_url_cleared = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert same_url_cleared["url"] == "http://example.test/"
+    assert "same-url-secret" not in same_url_cleared["visible_text"]
 
     assert run_wrapper("fill", "#search", "secret").returncode == 0
     assert run_wrapper("goto", "http://other.test/").returncode == 0

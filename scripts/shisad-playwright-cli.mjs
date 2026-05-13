@@ -285,6 +285,31 @@ async function applyFieldState(page, state) {
   }
 }
 
+async function syncFieldState(page, state) {
+  const selectors = Object.keys(state.fields || {});
+  if (selectors.length === 0) {
+    clearFieldState(state);
+    return;
+  }
+  const nextFields = {};
+  for (const selector of selectors) {
+    try {
+      const locator = await firstLocator(page, selector);
+      if (typeof locator.inputValue !== "function") {
+        continue;
+      }
+      const value = await locator.inputValue({ timeout: Math.min(timeoutMs(), 1000) });
+      if (String(value || "")) {
+        nextFields[selector] = String(value);
+      }
+    } catch {
+      // Missing/non-input selectors are dropped from replay state.
+    }
+  }
+  state.fields = nextFields;
+  state.fields_url = Object.keys(nextFields).length > 0 ? state.current_url : "";
+}
+
 async function withPage(cwd, session, state, action, options = {}) {
   const loadCurrentUrl = options.loadCurrentUrl !== false;
   const restoreFields = options.restoreFields !== false;
@@ -312,8 +337,8 @@ async function withPage(cwd, session, state, action, options = {}) {
     state.current_url = typeof page.url === "function" ? page.url() : state.current_url;
     if (beforeUrl && state.current_url !== beforeUrl) {
       clearFieldState(state);
-    } else if (Object.keys(state.fields || {}).length > 0) {
-      state.fields_url = state.current_url;
+    } else {
+      await syncFieldState(page, state);
     }
     await saveState(cwd, session, state);
   } finally {
@@ -397,7 +422,6 @@ async function main() {
         if (submit && typeof locator.press === "function") {
           await locator.press("Enter");
           await waitForSettled(page);
-          clearFieldState(state);
         }
       });
       return 0;
@@ -412,7 +436,6 @@ async function main() {
         const locator = await firstLocator(page, target);
         await locator.click();
         await waitForSettled(page);
-        clearFieldState(state);
       });
       return 0;
     }

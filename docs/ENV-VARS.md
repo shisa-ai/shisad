@@ -215,7 +215,7 @@ Browser notes:
 - Read-mostly browser actions (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are intended to proceed without confirmation when the destination is authorized. Browser write actions (`browser.click`, `browser.type_text`) are confirmation-gated.
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
-- `shisad doctor check --component browser` probes the configured command for the shisad wrapper sentinel and reports `browser_command_protocol_incompatible` when the command looks like the real Playwright CLI or another wrapper that does not implement the shisad protocol.
+- `shisad doctor check --component browser` probes the configured command for the shisad wrapper sentinel and reports `browser_command_protocol_incompatible` when the command looks like the real Playwright CLI or another wrapper that does not implement the shisad protocol. It also checks the Playwright browser cache path and reports `browser_cache_not_writable` when the daemon user cannot create/use it.
 
 Browser host prerequisites:
 

@@ -88,6 +88,10 @@ actions still go through the daemon's confirmation and policy flow.
   does not accept the shisad `-s=...` protocol. Point it at
   `scripts/shisad-playwright-cli.mjs`.
 - `browser_browser_not_installed`: run `npx playwright install chromium`.
+- `browser_cache_not_writable`: make the Playwright browser cache directory
+  writable by the daemon user, or set `PLAYWRIGHT_BROWSERS_PATH` to a writable
+  cache directory. `PLAYWRIGHT_BROWSERS_PATH=0` uses Playwright's package-local
+  browser lookup.
 - Native library errors such as `libatk-1.0.so.0: cannot open shared object
   file`: run `sudo npx playwright install-deps chromium`.
 - `browser_runtime_isolation_unavailable` or sandbox setup errors: confirm
