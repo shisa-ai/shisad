@@ -48,11 +48,44 @@ def test_legacy_lockdown_notice_strips_without_metadata() -> None:
     assert strip_daemon_lockdown_notice_suffix(content, {}, role="assistant") == "Prior answer."
 
 
+def test_legacy_lockdown_notice_with_session_id_strips_without_metadata() -> None:
+    content = (
+        "Prior answer.\n\n"
+        "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
+        "To recover: ask the agent what to do; if ready, ask the agent "
+        "to resume the lockdown, or run "
+        "`shisad lockdown resume sess-gh31 --reason <note>` from the trusted CLI. "
+        "Session id: sess-gh31."
+    )
+
+    assert strip_daemon_lockdown_notice_suffix(content, {}, role="assistant") == "Prior answer."
+
+
 def test_legacy_lockdown_notice_with_trailing_prose_is_preserved_without_metadata() -> None:
     content = (
         "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
         "To recover: ask the agent to resume the lockdown when ready, "
         "or run `shisad lockdown resume sess-gh31 --reason <note>`.\n"
+        "The operator chose to keep working."
+    )
+
+    assert (
+        strip_daemon_lockdown_notice_suffix(
+            content,
+            {"_archive_imported": True},
+            role="assistant",
+        )
+        == content
+    )
+
+
+def test_legacy_lockdown_notice_with_session_id_and_trailing_prose_is_preserved() -> None:
+    content = (
+        "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
+        "To recover: ask the agent what to do; if ready, ask the agent "
+        "to resume the lockdown, or run "
+        "`shisad lockdown resume sess-gh31 --reason <note>` from the trusted CLI. "
+        "Session id: sess-gh31.\n"
         "The operator chose to keep working."
     )
 
