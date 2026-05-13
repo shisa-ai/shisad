@@ -818,6 +818,105 @@ async def test_gh33_browser_toolkit_sensitive_type_text_can_click_atomically(
     ]
 
 
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_prepares_sensitive_type_click_binding(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+    prepared = await toolkit.prepare_action_arguments(
+        session=session,
+        tool_name="browser.type_text",
+        arguments={
+            "target": "#search",
+            "text": "hello",
+            "is_sensitive": True,
+            "click_target": "#submit",
+        },
+    )
+
+    assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
+    assert str(prepared.get("source_binding", "")).strip()
+    assert str(prepared.get("click_source_binding", "")).strip()
+    assert str(prepared["destination"]).endswith("/submitted")
+
+    typed = await toolkit.type_text(
+        session=session,
+        target=str(prepared["target"]),
+        text="hello",
+        is_sensitive=True,
+        click_target=str(prepared["click_target"]),
+        resolved_target=str(prepared.get("resolved_target", "")),
+        resolved_click_target=str(prepared.get("resolved_click_target", "")),
+        destination=str(prepared["destination"]),
+        source_url=str(prepared["source_url"]),
+        source_binding=str(prepared["source_binding"]),
+        click_source_binding=str(prepared["click_source_binding"]),
+    )
+
+    assert typed["ok"] is True
+    assert typed["url"].endswith("/submitted?q=hello")
+
+
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_sensitive_type_click_rejects_stale_click_binding(
+    tmp_path: Path,
+) -> None:
+    state = {"form_action": "/submitted-a"}
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={
+                "target": "#search",
+                "text": "hello",
+                "is_sensitive": True,
+                "click_target": "#submit",
+            },
+        )
+        assert str(prepared["destination"]).endswith("/submitted-a")
+        assert str(prepared.get("click_source_binding", "")).strip()
+
+        state["form_action"] = "/submitted-b"
+        config_count = len(runner.configs)
+        blocked = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            text="hello",
+            is_sensitive=True,
+            click_target=str(prepared["click_target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            resolved_click_target=str(prepared.get("resolved_click_target", "")),
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+            click_source_binding=str(prepared["click_source_binding"]),
+        )
+
+        assert blocked == {
+            "ok": False,
+            "error": "browser_confirmation_context_changed",
+            "taint_labels": [],
+        }
+        new_configs = runner.configs[config_count:]
+        assert new_configs
+        assert not any("fill" in config.command for config in new_configs)
+    finally:
+        browser_server.close()
+
+
 def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
