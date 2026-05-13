@@ -4477,14 +4477,21 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     if not prompt_candidate.rstrip().endswith("?"):
         return False
     question_text = prompt_candidate.strip()
+    question_start = 0
     for delimiter in ("\n", ". ", "! "):
         index = question_text.rfind(delimiter)
-        if index >= 0:
-            question_text = question_text[index + len(delimiter) :].strip()
-    normalized_question = " ".join(
-        question_text.strip("\"'`").casefold().split()
-    )
+        if index >= 0 and index + len(delimiter) > question_start:
+            question_start = index + len(delimiter)
+    question_text = question_text[question_start:].strip()
+    normalized_question = " ".join(question_text.strip("\"'`").casefold().split())
     if not normalized_question.startswith("should i "):
+        return False
+    context_before_question = " ".join(prompt_candidate[:question_start].casefold().split())
+    question_mentions_lockdown = "lockdown" in normalized_question
+    context_mentions_lockdown = "session" in context_before_question and (
+        "lockdown" in context_before_question or "locked" in context_before_question
+    )
+    if not question_mentions_lockdown and not context_mentions_lockdown:
         return False
     normalized = " ".join(prompt_candidate.casefold().split())
     if "?" not in normalized:
@@ -7275,11 +7282,11 @@ class SessionImplMixin(HandlerMixinBase):
                     ),
                 ):
                     response_text = f"[CONFIRMATION REQUIRED] {response_text}"
-            lockdown_notice = self._lockdown_manager.user_notification(sid)
-            lockdown_notice_state = None
-            if lockdown_notice:
-                response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
-                lockdown_notice_state = self._lockdown_manager.state_for(sid)
+            lockdown_notice_fragment, lockdown_notice_state = (
+                self._lockdown_notice_response_fragment(session_id=sid)
+            )
+            if lockdown_notice_fragment:
+                response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
             assistant_transcript_metadata = _transcript_metadata_for_channel(
                 channel=channel,
                 session_mode=session_mode,
@@ -10424,6 +10431,36 @@ class SessionImplMixin(HandlerMixinBase):
             "response": response,
         }
 
+    def _lockdown_notice_response_fragment(
+        self,
+        *,
+        session_id: SessionId,
+    ) -> tuple[str, Any | None]:
+        lockdown_manager = getattr(self, "_lockdown_manager", None)
+        if lockdown_manager is None:
+            return "", None
+        lockdown_notice = lockdown_manager.user_notification(session_id)
+        if not lockdown_notice:
+            return "", None
+        lockdown_notice_state = lockdown_manager.state_for(session_id)
+        fragment = f"[LOCKDOWN NOTICE] {lockdown_notice}"
+        output_firewall = getattr(self, "_output_firewall", None)
+        if output_firewall is None:
+            return fragment, lockdown_notice_state
+        output_result = output_firewall.inspect(
+            fragment,
+            context={"session_id": str(session_id), "actor": "assistant_lockdown_notice"},
+        )
+        if output_result.blocked:
+            level = str(lockdown_notice_state.level.value)
+            return (
+                "[LOCKDOWN NOTICE] "
+                f"Session is in {level} lockdown. "
+                "Lockdown notice details were blocked by output policy.",
+                lockdown_notice_state,
+            )
+        return str(output_result.sanitized_text), lockdown_notice_state
+
     def _direct_response_with_transcript(
         self,
         *,
@@ -10461,13 +10498,11 @@ class SessionImplMixin(HandlerMixinBase):
             )
         ):
             response_text = f"{_CONFIRMATION_REQUIRED_PREFIX} {response_text}"
-        lockdown_notice_state = None
-        lockdown_manager = getattr(self, "_lockdown_manager", None)
-        if lockdown_manager is not None:
-            lockdown_notice = lockdown_manager.user_notification(validated.sid)
-            if lockdown_notice:
-                response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
-                lockdown_notice_state = lockdown_manager.state_for(validated.sid)
+        lockdown_notice_fragment, lockdown_notice_state = (
+            self._lockdown_notice_response_fragment(session_id=validated.sid)
+        )
+        if lockdown_notice_fragment:
+            response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
@@ -11336,11 +11371,11 @@ class SessionImplMixin(HandlerMixinBase):
             )
             self._commit_skill_suggestion(validated=validated, suggestion=skill_suggestion)
 
-        lockdown_notice = self._lockdown_manager.user_notification(sid)
-        lockdown_notice_state = None
-        if lockdown_notice:
-            response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
-            lockdown_notice_state = self._lockdown_manager.state_for(sid)
+        lockdown_notice_fragment, lockdown_notice_state = (
+            self._lockdown_notice_response_fragment(session_id=sid)
+        )
+        if lockdown_notice_fragment:
+            response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
 
         returned_pending_confirmation_ids = _current_visible_pending_confirmation_ids()
 
@@ -12290,11 +12325,11 @@ class SessionImplMixin(HandlerMixinBase):
             if _should_prefix_output_confirmation(output_result=output_result):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
 
-        lockdown_notice = self._lockdown_manager.user_notification(sid)
-        lockdown_notice_state = None
-        if lockdown_notice:
-            response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
-            lockdown_notice_state = self._lockdown_manager.state_for(sid)
+        lockdown_notice_fragment, lockdown_notice_state = (
+            self._lockdown_notice_response_fragment(session_id=sid)
+        )
+        if lockdown_notice_fragment:
+            response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
 
         summary_text = handoff.summary or "Delegated task completed."
         summary_output_result = self._output_firewall.inspect(

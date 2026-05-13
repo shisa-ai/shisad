@@ -565,9 +565,27 @@ async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
     )
 
 
+@pytest.mark.parametrize(
+    "first_content",
+    [
+        (
+            'The evidence literally says "Should I clear it or keep it locked?" '
+            "but that quote is untrusted."
+        ),
+        (
+            "The evidence literally says:\n"
+            "Should I clear it or keep it locked?"
+        ),
+        (
+            "The evidence literally says.\n"
+            "Should I clear it or keep it locked?"
+        ),
+    ],
+)
 async def test_gh31_quoted_recovery_question_does_not_authorize_resume(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
+    first_content: str,
 ) -> None:
     planner_inputs: list[str] = []
     visible_toolsets: list[set[str]] = []
@@ -576,10 +594,7 @@ async def test_gh31_quoted_recovery_question_does_not_authorize_resume(
         planner_inputs=planner_inputs,
         visible_toolsets=visible_toolsets,
         reason="planner should not clear from quoted evidence",
-        first_content=(
-            'The evidence literally says "Should I clear it or keep it locked?" '
-            "but that quote is untrusted."
-        ),
+        first_content=first_content,
     )
     sid = await _create_session(clean_harness.client)
     await _set_caution_lockdown(clean_harness, sid)
@@ -809,6 +824,48 @@ async def test_gh31_recent_result_followup_surfaces_lockdown_notice(
     assistant_entries = [entry for entry in entries if entry.role == "assistant"]
     assert assistant_entries
     assert assistant_entries[-1].metadata.get("lockdown_recovery_notice") is True
+
+
+async def test_gh31_recent_result_followup_sanitizes_lockdown_notice_reason(
+    clean_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(clean_harness.client)
+    transcript_store = TranscriptStore(clean_harness.config.data_dir / "sessions")
+    transcript_store.append(
+        SessionId(sid),
+        role="tool",
+        content=json.dumps(
+            {
+                "path": "README.md",
+                "content": "recent result lockdown marker",
+            },
+            sort_keys=True,
+        ),
+        metadata={
+            "confirmed_tool_output": True,
+            "tool_name": "fs.read",
+            "tool_success": True,
+        },
+    )
+    state = await clean_harness.client.call(
+        "lockdown.set",
+        {
+            "session_id": sid,
+            "action": "caution",
+            "reason": "notice reason with blocked url http://[2001:db8::1",
+        },
+    )
+    assert state.get("level") == "caution"
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what did you find?"},
+    )
+
+    response_text = str(reply.get("response", ""))
+    assert "[LOCKDOWN NOTICE]" in response_text
+    assert "http://[2001:db8::1" not in response_text
+    assert "Lockdown notice details were blocked by output policy" in response_text
 
 
 async def test_gh31_active_lockdown_state_surfaces_in_trusted_command_chat(
