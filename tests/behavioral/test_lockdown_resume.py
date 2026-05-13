@@ -379,6 +379,46 @@ async def test_gh31_two_turn_lockdown_resume_from_recovery_prompt_succeeds(
     assert payload["reason"] == "operator verified the alert is clear"
 
 
+async def test_gh31_two_turn_lockdown_resume_from_paraphrased_prompt_succeeds(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_gh31_recovery_prompt_then_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        reason="operator verified the alert is clear",
+        first_content=(
+            "The session is in caution lockdown because behavioral c2 setup. "
+            "Should I lift the lockdown or leave it locked?"
+        ),
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what happened to this session?"},
+    )
+    second_reply = await clean_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "clear it because operator verified the alert is clear",
+        },
+    )
+
+    assert len(planner_inputs) >= 2
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert second_reply.get("lockdown_level") == "normal"
+    assert int(second_reply.get("executed_actions", 0)) == 1
+    payload = _first_lockdown_resume_payload(second_reply)
+    assert payload["ok"] is True
+    assert payload["reason"] == "operator verified the alert is clear"
+
+
 async def test_gh31_two_turn_lockdown_resume_decline_fails_closed(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,

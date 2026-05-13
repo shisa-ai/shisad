@@ -4424,16 +4424,10 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     normalized = " ".join(content.casefold().split())
     if "?" not in normalized:
         return False
-    clear_or_resume = any(
-        phrase in normalized
-        for phrase in (
-            "clear it",
-            "clear this",
-            "clear the lockdown",
-            "resume it",
-            "resume this",
-            "resume the lockdown",
-        )
+    resume_choice = any(
+        f"{verb} {obj}" in normalized
+        for verb in _LOCKDOWN_RESUME_INTENT_VERBS
+        for obj in _LOCKDOWN_RECOVERY_REPLY_INTENT_OBJECTS
     )
     keep_locked = any(
         phrase in normalized
@@ -4445,7 +4439,7 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
             "leave this locked",
         )
     )
-    return clear_or_resume and keep_locked
+    return resume_choice and keep_locked
 
 
 def _append_evidence_ref_id(ref_ids: list[str], value: Any) -> None:
