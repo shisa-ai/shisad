@@ -4487,7 +4487,6 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     if not normalized_question.startswith("should i "):
         return False
     context_before_question = " ".join(prompt_candidate[:question_start].casefold().split())
-    question_mentions_lockdown = "lockdown" in normalized_question
     context_mentions_lockdown = context_before_question.startswith(
         "the session is in "
     ) and (
@@ -4504,7 +4503,7 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
     )
     if context_is_attributed_evidence:
         context_mentions_lockdown = False
-    if not question_mentions_lockdown and not context_mentions_lockdown:
+    if not context_mentions_lockdown:
         return False
     normalized = " ".join(prompt_candidate.casefold().split())
     if "?" not in normalized:
