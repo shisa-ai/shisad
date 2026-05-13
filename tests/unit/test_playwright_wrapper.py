@@ -80,6 +80,12 @@ class Locator {
     if (this.selector === "#submit") {
       this.page._url = submittedUrl(this.page);
     }
+    if (this.selector === "#login") {
+      this.page._url = new URL(
+        this.page.fields["#search"] === "sensitive-secret" ? "/logged-in" : "/missing-password",
+        this.page._url || "http://example.test/",
+      ).toString();
+    }
     if (this.selector === "#same-url-clear") {
       this.page.fields = {};
     }
@@ -177,6 +183,7 @@ const section = new FakeElement("section", {}, "", [nestedButton]);
 const continueLink = new FakeElement("a", { id: "continue", href: "/next" }, "Continue");
 const searchInput = new FakeElement("input", { id: "search", name: "q" });
 const submitButton = new FakeElement("button", { id: "submit" }, "Submit");
+const loginButton = new FakeElement("button", { id: "login" }, "Log in");
 const lockedToken = new FakeElement(
   "span",
   { id: "locked-token", contenteditable: "false" },
@@ -193,6 +200,7 @@ const body = new FakeElement("body", {}, "", [
   searchInput,
   submitButton,
   editor,
+  loginButton,
   section,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
@@ -203,6 +211,7 @@ const allElements = [
   searchInput,
   submitButton,
   editor,
+  loginButton,
   lockedToken,
   section,
   nestedButton,
@@ -433,6 +442,14 @@ exports.chromium = {
     assert "old-sensitive" not in json.dumps(failed_state, sort_keys=True)
     assert "replacement-secret" not in json.dumps(failed_state, sort_keys=True)
 
+    assert run_wrapper("goto", "http://example.test/").returncode == 0
+    login = run_wrapper("fill", "#search", "sensitive-secret", "--click", "#login", "--no-store")
+    assert login.returncode == 0, login.stderr
+    login_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert login_state["current_url"] == "http://example.test/logged-in"
+    assert "sensitive-secret" not in json.dumps(login_state, sort_keys=True)
+
+    assert run_wrapper("goto", "http://example.test/").returncode == 0
     assert run_wrapper("fill", "#editor", "rich-secret").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
     assert result.returncode == 0, result.stderr

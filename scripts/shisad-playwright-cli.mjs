@@ -27,7 +27,7 @@ function usage() {
     "  goto <url>",
     "  eval <function> [element] [--filename <path>]",
     "  snapshot [element] [--filename <path>]",
-    "  fill <selector> <text> [--submit] [--no-store]",
+    "  fill <selector> <text> [--submit] [--click <selector>] [--no-store]",
     "  click <selector>",
     "  screenshot [target] --filename <path>",
     "  list",
@@ -520,15 +520,26 @@ async function main() {
       }
       const text = args.shift() || "";
       let submit = false;
+      let clickTarget = "";
       let storeField = true;
-      for (const option of args) {
+      for (let index = 0; index < args.length; index += 1) {
+        const option = args[index];
         if (option === "--submit") {
           submit = true;
+        } else if (option === "--click") {
+          clickTarget = args[index + 1] || "";
+          if (!clickTarget) {
+            throw new Error("fill --click requires target");
+          }
+          index += 1;
         } else if (option === "--no-store") {
           storeField = false;
         } else {
           throw new Error(`unsupported fill option: ${option}`);
         }
+      }
+      if (submit && clickTarget) {
+        throw new Error("fill accepts --submit or --click, not both");
       }
       if (!storeField) {
         dropFieldState(state, target);
@@ -545,6 +556,10 @@ async function main() {
         }
         if (submit && typeof locator.press === "function") {
           await locator.press("Enter");
+          await waitForSettled(page);
+        } else if (clickTarget) {
+          const clickLocator = await firstLocator(page, clickTarget);
+          await clickLocator.click();
           await waitForSettled(page);
         }
       });

@@ -61,7 +61,7 @@ The shipped wrapper implements:
 | `goto <url>` | Navigate the current session to a URL. |
 | `eval <function> [element] --filename <path>` | Write JSON metadata with `url`, `title`, and `visible_text`. |
 | `snapshot [element] --filename <path>` | Write a text snapshot with element refs, labels, selectors, hrefs, and form metadata. |
-| `fill <selector> <text> [--submit] [--no-store]` | Fill a selector, optionally submit with Enter, and optionally skip replay-state persistence. |
+| `fill <selector> <text> [--submit] [--click <selector>] [--no-store]` | Fill a selector, optionally submit with Enter or click a selector in the same action, and optionally skip replay-state persistence. |
 | `click <selector>` | Click a selector. |
 | `screenshot [target] --filename <path>` | Write a PNG screenshot. |
 | `list` | List known wrapper sessions. |
@@ -70,7 +70,8 @@ The shipped wrapper implements:
 The daemon emits `--no-store` for `browser.type_text` calls marked
 `is_sensitive=true`. A compliant wrapper must fill the value for the current
 action, but must not persist or replay that value in wrapper-managed field
-state.
+state. When a sensitive fill must be followed by a click, the daemon emits
+`--click <selector>` so the value and click happen in one wrapper action.
 
 The wrapper also supports `--shisad-browser-wrapper-version` and
 `--shisad-browser-wrapper-doctor`; doctor uses these probes to distinguish the

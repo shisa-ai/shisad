@@ -349,10 +349,13 @@ async def _structured_browser_type_text(
             text=_argument_string(arguments, "text"),
             is_sensitive=bool(arguments.get("is_sensitive", False)),
             submit=bool(arguments.get("submit", False)),
+            click_target=_argument_string(arguments, "click_target"),
             resolved_target=_argument_string(arguments, "resolved_target"),
+            resolved_click_target=_argument_string(arguments, "resolved_click_target"),
             destination=_argument_string(arguments, "destination"),
             source_url=_argument_string(arguments, "source_url"),
             source_binding=_argument_string(arguments, "source_binding"),
+            click_source_binding=_argument_string(arguments, "click_source_binding"),
         )
     )
 

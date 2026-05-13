@@ -59,8 +59,10 @@ def pep_arguments_for_policy_evaluation(
     normalized_tool_name = str(tool_name).strip()
     if normalized_tool_name in {"browser.click", "browser.type_text"}:
         payload.pop("resolved_target", None)
+        payload.pop("resolved_click_target", None)
         payload.pop("source_url", None)
         payload.pop("source_binding", None)
+        payload.pop("click_source_binding", None)
     if normalized_tool_name == "browser.type_text":
         payload.pop("description", None)
     return payload

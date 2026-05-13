@@ -1680,6 +1680,7 @@ def _build_tool_registry(
                     ToolParameter(name="text", type="string", required=True),
                     ToolParameter(name="is_sensitive", type="boolean", required=False),
                     ToolParameter(name="submit", type="boolean", required=False),
+                    ToolParameter(name="click_target", type="string", required=False),
                     ToolParameter(
                         name="destination",
                         type="string",

@@ -374,6 +374,25 @@ class BrowserToolkit:
             prepared["destination"] = resolution.destination_url
         if resolution.binding_hash:
             prepared["source_binding"] = resolution.binding_hash
+        if tool_name == "browser.type_text":
+            click_target = str(prepared.get("click_target", "")).strip()
+            if click_target:
+                click_resolution = await self._resolve_target_details(
+                    session=session,
+                    tool_name="browser.click",
+                    target=click_target,
+                    current_url=current_url,
+                    submit=False,
+                )
+                if (
+                    click_resolution.resolved_target
+                    and click_resolution.resolved_target != click_resolution.requested_target
+                ):
+                    prepared["resolved_click_target"] = click_resolution.resolved_target
+                if click_resolution.destination_url:
+                    prepared["destination"] = click_resolution.destination_url
+                if click_resolution.binding_hash:
+                    prepared["click_source_binding"] = click_resolution.binding_hash
         return prepared
 
     async def navigate(self, *, session: Session, url: str) -> dict[str, Any]:
@@ -490,10 +509,13 @@ class BrowserToolkit:
         text: str,
         is_sensitive: bool = False,
         submit: bool = False,
+        click_target: str = "",
         resolved_target: str = "",
+        resolved_click_target: str = "",
         destination: str = "",
         source_url: str = "",
         source_binding: str = "",
+        click_source_binding: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -521,9 +543,32 @@ class BrowserToolkit:
         )
         if binding_error is not None:
             return binding_error
+        requested_click_target = click_target.strip()
+        concrete_click_target = ""
+        if requested_click_target:
+            if submit:
+                return self._error_payload("browser_type_text_submit_or_click")
+            concrete_click_target = resolved_click_target.strip() or await self._resolve_target(
+                session=session,
+                tool_name="browser.click",
+                target=requested_click_target,
+                current_url=current_url,
+            )
+            click_binding_error = await self._validate_prepared_binding(
+                session=session,
+                tool_name="browser.click",
+                current_url=current_url,
+                binding_target=concrete_click_target,
+                expected_binding=click_source_binding.strip(),
+                submit=False,
+            )
+            if click_binding_error is not None:
+                return click_binding_error
         args = ["fill", concrete_target, text]
         if submit:
             args.append("--submit")
+        if concrete_click_target:
+            args.extend(["--click", concrete_click_target])
         if is_sensitive:
             args.append("--no-store")
         destination_url = destination.strip()
@@ -548,6 +593,9 @@ class BrowserToolkit:
             payload["target"] = concrete_target
             payload["requested_target"] = requested_target
             payload["is_sensitive"] = bool(is_sensitive)
+            if concrete_click_target:
+                payload["click_target"] = concrete_click_target
+                payload["requested_click_target"] = requested_click_target
             if prepared_source_url:
                 payload["source_url"] = prepared_source_url
             if destination_url:

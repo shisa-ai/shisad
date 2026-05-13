@@ -767,6 +767,57 @@ async def test_gh33_browser_toolkit_sensitive_type_text_fake_cli_no_store(
     assert "sensitive-secret" not in json.dumps(fake_state, sort_keys=True)
 
 
+@pytest.mark.asyncio
+async def test_gh33_browser_toolkit_sensitive_type_text_can_click_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    toolkit._save_state(session, {"opened": True, "current_url": "http://example.test/"})
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/logged-in",
+            "title": "Logged In",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="sensitive-secret",
+        is_sensitive=True,
+        click_target="#login",
+        resolved_click_target="#login",
+    )
+
+    assert typed["ok"] is True
+    assert typed["click_target"] == "#login"
+    fill_commands = [
+        config.command
+        for config in runner.configs
+        if config.tool_name == "browser.type_text" and "fill" in config.command
+    ]
+    assert fill_commands
+    assert fill_commands[-1][-6:] == [
+        "fill",
+        "#search",
+        "sensitive-secret",
+        "--click",
+        "#login",
+        "--no-store",
+    ]
+
+
 def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,

@@ -277,6 +277,7 @@ def _handle_fill(
     text: str,
     submit: bool,
     store_field: bool,
+    click_target: str,
 ) -> int:
     _require_opened(state)
     original_fields = dict(state.get("fields", {}))
@@ -297,16 +298,24 @@ def _handle_fill(
         fields.pop(field_name, None)
     state["fields"] = fields
     next_url = final_url or str(state.get("current_url", ""))
-    if submit:
-        action = element.get("form_action", "") or next_url
-        method = element.get("form_method", "get").lower()
-        if method == "get" and submission_fields:
-            encoded = urlencode(submission_fields)
-            separator = "&" if "?" in action else "?"
-            next_url = urljoin(next_url, action)
-            next_url = f"{next_url}{separator}{encoded}"
+    if submit or click_target:
+        target_element = element
+        if click_target:
+            target_element = _resolve_target(parser, click_target) or {}
+            if not target_element:
+                raise SystemExit(f"unknown target: {click_target}")
+        if target_element.get("kind") == "link" and target_element.get("href"):
+            next_url = urljoin(next_url, target_element["href"])
         else:
-            next_url = urljoin(next_url, action)
+            action = target_element.get("form_action", "") or next_url
+            method = target_element.get("form_method", "get").lower()
+            if method == "get" and submission_fields:
+                encoded = urlencode(submission_fields)
+                separator = "&" if "?" in action else "?"
+                next_url = urljoin(next_url, action)
+                next_url = f"{next_url}{separator}{encoded}"
+            else:
+                next_url = urljoin(next_url, action)
     state["current_url"] = next_url
     _save_state(cwd, session, state)
     return 0
@@ -367,21 +376,32 @@ def _handle_close(cwd: Path, session: str) -> int:
     return 0
 
 
-def _parse_fill_args(args: list[str]) -> tuple[str, str, bool, bool]:
+def _parse_fill_args(args: list[str]) -> tuple[str, str, bool, bool, str]:
     if len(args) < 2:
         raise SystemExit("fill requires target and text")
     target = args.pop(0)
     text = args.pop(0)
     submit = False
     store_field = True
-    for option in args:
+    click_target = ""
+    index = 0
+    while index < len(args):
+        option = args[index]
         if option == "--submit":
             submit = True
+        elif option == "--click":
+            click_target = args[index + 1] if index + 1 < len(args) else ""
+            if not click_target:
+                raise SystemExit("fill --click requires target")
+            index += 1
         elif option == "--no-store":
             store_field = False
         else:
             raise SystemExit(f"unsupported fill option: {option}")
-    return target, text, submit, store_field
+        index += 1
+    if submit and click_target:
+        raise SystemExit("fill accepts --submit or --click, not both")
+    return target, text, submit, store_field, click_target
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -419,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         _ = parsed.element
         return _handle_snapshot(state, cwd=cwd, session=session, filename=parsed.filename)
     if command == "fill":
-        target, text, submit, store_field = _parse_fill_args(args)
+        target, text, submit, store_field, click_target = _parse_fill_args(args)
         return _handle_fill(
             state,
             cwd=cwd,
@@ -428,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             text=text,
             submit=submit,
             store_field=store_field,
+            click_target=click_target,
         )
     if command == "click":
         parser = argparse.ArgumentParser(add_help=False)
