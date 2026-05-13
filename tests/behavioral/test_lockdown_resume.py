@@ -465,9 +465,17 @@ async def test_gh31_two_turn_lockdown_resume_ambiguous_or_decline_fails_closed(
     assert expected_reason in _event_reason(rejected[-1])
 
 
-async def test_gh31_notice_only_prior_turn_does_not_authorize_ambiguous_resume(
+@pytest.mark.parametrize(
+    "second_content",
+    [
+        "it came from the monitor",
+        "clear it because operator verified the alert is clear",
+    ],
+)
+async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,
+    second_content: str,
 ) -> None:
     planner_inputs: list[str] = []
     visible_toolsets: list[set[str]] = []
@@ -487,7 +495,7 @@ async def test_gh31_notice_only_prior_turn_does_not_authorize_ambiguous_resume(
     )
     reply = await clean_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "it came from the monitor"},
+        {"session_id": sid, "content": second_content},
     )
 
     assert len(planner_inputs) >= 2

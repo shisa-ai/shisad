@@ -91,6 +91,81 @@ def test_m5_timeline_index_projects_rows_and_searches_owner_scope(tmp_path) -> N
     assert "Bob also mentioned" not in hit.snippet
 
 
+def test_gh31_timeline_strips_daemon_lockdown_notice_from_indexed_content(
+    tmp_path,
+) -> None:
+    sessions = SessionManager(state_dir=tmp_path / "sessions")
+    transcripts = TranscriptStore(tmp_path / "transcripts")
+    timeline = TimelineIndex(
+        tmp_path / "timeline",
+        transcript_store=transcripts,
+        session_lookup=sessions.get,
+    )
+    transcripts.add_append_observer(timeline.index_transcript_entry)
+    session = sessions.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    when = datetime(2026, 5, 5, 10, 0, tzinfo=UTC)
+    _append(
+        transcripts,
+        session.id,
+        role="assistant",
+        content=(
+            "The operator asked for status.\n\n"
+            "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
+            "To recover: ask the agent to resume the lockdown when ready, "
+            f"or run `shisad lockdown resume {session.id} --reason <note>`."
+        ),
+        timestamp=when,
+        metadata={"lockdown_recovery_notice": True},
+    )
+
+    notice_search = timeline.search(
+        query="resume lockdown",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    assert notice_search.results_count == 0
+
+    result = timeline.search(
+        query="operator status",
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+        now=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.results_count == 1
+    hit = result.results[0]
+    assert "operator asked for status" in hit.snippet
+    assert "[LOCKDOWN NOTICE]" not in hit.snippet
+    assert "ask the agent to resume the lockdown when ready" not in hit.snippet
+
+    read = timeline.read(
+        hit.handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    assert read.found is True
+    assert read.selected_content == "The operator asked for status."
+    assert "[LOCKDOWN NOTICE]" not in read.packet
+    assert "ask the agent to resume the lockdown when ready" not in read.packet
+
+    promoted_content, reason = timeline.content_for_handle(
+        hit.handle,
+        user_id="alice",
+        workspace_id="ws1",
+        context_channel="cli",
+    )
+    assert reason == ""
+    assert promoted_content == "The operator asked for status."
+
+
 def test_m5_timeline_search_fuzzy_last_time_uses_most_recent_sort(tmp_path) -> None:
     sessions = SessionManager(state_dir=tmp_path / "sessions")
     transcripts = TranscriptStore(tmp_path / "transcripts")

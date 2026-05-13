@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shisad.core.daemon_notices import strip_daemon_lockdown_notice_suffix
 from shisad.core.providers.base import Message, ModelProvider
 from shisad.core.transcript import TranscriptEntry
 
@@ -29,11 +30,6 @@ _SUMMARY_USER_PROMPT_HEADER = (
     "Extract durable memory entries from the transcript data below. "
     "Prefer stable facts/preferences over ephemeral chatter."
 )
-_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER = "[LOCKDOWN NOTICE]"
-_LOCKDOWN_NOTICE_METADATA_KEYS = frozenset(
-    {"lockdown_recovery_notice", "daemon_control_notice"}
-)
-
 _RE_PROJECT_CODENAME = re.compile(
     r"\bproject codename is ([a-z0-9][a-z0-9 _-]{1,40})",
     re.IGNORECASE,
@@ -135,15 +131,10 @@ class ConversationSummarizer:
     def _strip_daemon_lockdown_notice_suffix(
         content: str,
         metadata: dict[str, Any],
+        *,
+        role: str = "",
     ) -> str:
-        if not any(bool(metadata.get(key)) for key in _LOCKDOWN_NOTICE_METADATA_KEYS):
-            return content
-        marker_index = content.rfind(f"\n\n{_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER}")
-        if marker_index < 0:
-            marker_index = content.rfind(_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER)
-        if marker_index < 0:
-            return content
-        return content[:marker_index].rstrip()
+        return strip_daemon_lockdown_notice_suffix(content, metadata, role=role)
 
     @classmethod
     def _entry_text(cls, entry: TranscriptEntry) -> str:
@@ -151,6 +142,7 @@ class ConversationSummarizer:
         content = cls._strip_daemon_lockdown_notice_suffix(
             entry.content_preview,
             metadata,
+            role=entry.role,
         )
         return " ".join(content.split()).strip()
 

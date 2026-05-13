@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, Field
 
 from shisad.core.context import DEFAULT_EPISODE_GAP_THRESHOLD
+from shisad.core.daemon_notices import strip_daemon_lockdown_notice_suffix
 from shisad.core.session import Session
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import SessionId
@@ -198,7 +199,12 @@ class TimelineIndex:
             if related_id:
                 related_memory_ids.append(related_id)
         taint_labels = [str(label) for label in entry.taint_labels]
-        indexed_content = _timeline_index_content(content, taint_labels)
+        sanitized_content = strip_daemon_lockdown_notice_suffix(
+            content,
+            metadata,
+            role=entry.role,
+        )
+        indexed_content = _timeline_index_content(sanitized_content, taint_labels)
         payload = (
             handle,
             str(session_id),
@@ -310,7 +316,8 @@ class TimelineIndex:
             if not self._row_current(row):
                 self._delete_handle(str(row["handle"]))
                 continue
-            relevance_score = _query_relevance_score(str(row["content"]), tokens)
+            row_content = _sanitized_timeline_row_content(row)
+            relevance_score = _query_relevance_score(row_content, tokens)
             if tokens and relevance_score <= 0:
                 continue
             publication_state = _publication_state(
@@ -404,7 +411,7 @@ class TimelineIndex:
             found=True,
             handle=handle,
             packet=packet,
-            selected_content=str(row["content"]),
+            selected_content=_sanitized_timeline_row_content(row),
             rows=hits,
             grouping=grouping,
         )
@@ -437,7 +444,7 @@ class TimelineIndex:
         if not self._row_current(row):
             self._delete_handle(handle)
             return None, "timeline_row_stale"
-        return str(row["content"]), ""
+        return _sanitized_timeline_row_content(row), ""
 
     def clear(self) -> int:
         with self._connect() as conn:
@@ -692,13 +699,14 @@ def _timeline_timezone(timezone: str | None) -> tuple[Any, str, str]:
 
 
 def _hit_from_row(row: sqlite3.Row, *, publication_state: str) -> TimelineSearchHit:
+    content = _sanitized_timeline_row_content(row)
     return TimelineSearchHit(
         handle=str(row["handle"]),
         session_id=str(row["session_id"]),
         episode_id=str(row["episode_id"]),
         entry_id=str(row["entry_id"]),
         role=str(row["role"]),
-        snippet=str(row["snippet"]),
+        snippet=_snippet(content),
         timestamp=str(row["timestamp"]),
         user_id=str(row["user_id"]),
         workspace_id=str(row["workspace_id"]),
@@ -714,6 +722,22 @@ def _hit_from_row(row: sqlite3.Row, *, publication_state: str) -> TimelineSearch
         taint_labels=_json_list(str(row["taint_labels"])),
         related_memory_ids=_json_list(str(row["related_memory_ids"])),
     )
+
+
+def _sanitized_timeline_row_content(row: sqlite3.Row) -> str:
+    return strip_daemon_lockdown_notice_suffix(
+        str(row["content"]),
+        _metadata_from_row(row),
+        role=str(row["role"]),
+    )
+
+
+def _metadata_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        value = json.loads(str(row["metadata_json"]))
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _render_read_packet(hits: list[TimelineSearchHit], *, grouping: dict[str, Any]) -> str:

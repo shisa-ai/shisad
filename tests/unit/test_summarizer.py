@@ -171,6 +171,32 @@ async def test_gh31_summarizer_model_prompt_strips_daemon_lockdown_notice() -> N
 
 
 @pytest.mark.asyncio
+async def test_gh31_summarizer_strips_legacy_daemon_notice_without_metadata() -> None:
+    provider = _CapturingSummaryProvider()
+    summarizer = ConversationSummarizer(provider=provider)
+    entries = [
+        _entry(
+            "assistant",
+            (
+                "The log quoted [LOCKDOWN NOTICE], but that was only evidence. "
+                "Should I clear it or keep it locked?\n\n"
+                "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
+                "To recover: ask the agent to resume the lockdown when ready, "
+                "or run `shisad lockdown resume sess-1 --reason <note>`."
+            ),
+        )
+    ]
+
+    await summarizer.summarize_entries(entries)
+
+    prompt = provider.messages[-1].content
+    assert "log quoted [LOCKDOWN NOTICE]" in prompt
+    assert "Should I clear it or keep it locked?" in prompt
+    assert "ask the agent to resume the lockdown when ready" not in prompt
+    assert "shisad lockdown resume sess-1" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_gh31_summarizer_heuristic_strips_daemon_lockdown_notice() -> None:
     summarizer = ConversationSummarizer(provider=None)
     entries = [
@@ -183,6 +209,26 @@ async def test_gh31_summarizer_heuristic_strips_daemon_lockdown_notice() -> None
                 "lockdown when ready."
             ),
             metadata={"daemon_control_notice": True},
+        )
+    ]
+
+    proposals = await summarizer.summarize_entries(entries)
+
+    assert [proposal.key for proposal in proposals] == []
+
+
+@pytest.mark.asyncio
+async def test_gh31_summarizer_heuristic_strips_legacy_daemon_notice_without_metadata() -> None:
+    summarizer = ConversationSummarizer(provider=None)
+    entries = [
+        _entry(
+            "assistant",
+            (
+                "The operator asked for lockdown status.\n\n"
+                "[LOCKDOWN NOTICE] Session is in caution due to manual: setup. "
+                "To recover: Remember that the operator can ask the agent to "
+                "resume the lockdown when ready."
+            ),
         )
     ]
 

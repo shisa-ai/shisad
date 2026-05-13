@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from shisad.channels.base import DeliveryTarget
 from shisad.coding.models import CodingAgentConfig
+from shisad.core import daemon_notices as _daemon_notices
 from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
@@ -184,9 +185,8 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 )
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
-_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER = "[LOCKDOWN NOTICE]"
-_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = "lockdown_recovery_notice"
-_DAEMON_CONTROL_NOTICE_METADATA_KEY = "daemon_control_notice"
+_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY
+_DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
@@ -4344,18 +4344,17 @@ def _transcript_entry_is_lockdown_recovery_notice(entry: TranscriptEntry) -> boo
     return bool(metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY))
 
 
-def _strip_lockdown_recovery_notice_from_content(content: str, metadata: Mapping[str, Any]) -> str:
-    if not (
-        bool(metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY))
-        or bool(metadata.get(_DAEMON_CONTROL_NOTICE_METADATA_KEY))
-    ):
-        return content
-    marker_index = content.rfind(f"\n\n{_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER}")
-    if marker_index < 0:
-        marker_index = content.rfind(_LOCKDOWN_NOTICE_TRANSCRIPT_MARKER)
-    if marker_index < 0:
-        return content
-    return content[:marker_index].rstrip()
+def _strip_lockdown_recovery_notice_from_content(
+    content: str,
+    metadata: Mapping[str, Any],
+    *,
+    role: str = "",
+) -> str:
+    return _daemon_notices.strip_daemon_lockdown_notice_suffix(
+        content,
+        metadata,
+        role=role,
+    )
 
 
 def _annotate_lockdown_recovery_notice_metadata(
@@ -4412,7 +4411,41 @@ def _previous_turn_is_lockdown_recovery_prompt(
         return False
     if str(previous.role).strip().lower() != "assistant":
         return False
-    return _transcript_entry_is_lockdown_recovery_notice(previous)
+    if not _transcript_entry_is_lockdown_recovery_notice(previous):
+        return False
+    content = _transcript_entry_content(
+        entry=previous,
+        transcript_store=transcript_store,
+    )
+    return _assistant_content_is_lockdown_recovery_prompt(content)
+
+
+def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
+    normalized = " ".join(content.casefold().split())
+    if "?" not in normalized:
+        return False
+    clear_or_resume = any(
+        phrase in normalized
+        for phrase in (
+            "clear it",
+            "clear this",
+            "clear the lockdown",
+            "resume it",
+            "resume this",
+            "resume the lockdown",
+        )
+    )
+    keep_locked = any(
+        phrase in normalized
+        for phrase in (
+            "keep it locked",
+            "keep this locked",
+            "keep the lockdown",
+            "leave it locked",
+            "leave this locked",
+        )
+    )
+    return clear_or_resume and keep_locked
 
 
 def _append_evidence_ref_id(ref_ids: list[str], value: Any) -> None:
@@ -4533,8 +4566,16 @@ def _transcript_entry_content(
     ):
         blob = transcript_store.read_blob(entry.blob_ref)
         if isinstance(blob, str) and blob.strip():
-            return _strip_lockdown_recovery_notice_from_content(blob, metadata)
-    return _strip_lockdown_recovery_notice_from_content(entry.content_preview, metadata)
+            return _strip_lockdown_recovery_notice_from_content(
+                blob,
+                metadata,
+                role=entry.role,
+            )
+    return _strip_lockdown_recovery_notice_from_content(
+        entry.content_preview,
+        metadata,
+        role=entry.role,
+    )
 
 
 def _summarize_context_entries(
