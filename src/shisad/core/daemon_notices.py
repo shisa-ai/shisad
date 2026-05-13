@@ -62,6 +62,12 @@ def _looks_like_legacy_lockdown_recovery_notice(suffix: str) -> bool:
     normalized = _normalized_notice_suffix(suffix)
     if not normalized or "to recover:" not in normalized:
         return False
+    return _has_legacy_recovery_guidance(normalized) and _has_legacy_recovery_terminal(
+        normalized
+    )
+
+
+def _has_legacy_recovery_guidance(normalized: str) -> bool:
     return (
         "shisad lockdown resume" in normalized
         or "ask the agent to resume" in normalized
@@ -70,6 +76,27 @@ def _looks_like_legacy_lockdown_recovery_notice(suffix: str) -> bool:
             and "to resume the lockdown" in normalized
         )
     )
+
+
+def _has_legacy_recovery_terminal(normalized: str) -> bool:
+    recovery_text = normalized.rsplit("to recover:", 1)[1].strip()
+    if recovery_text.endswith("shisad lockdown resume when ready."):
+        return True
+    if recovery_text.endswith("resume the lockdown when ready."):
+        return True
+    if recovery_text.endswith("--reason <note>`."):
+        return True
+    if recovery_text.endswith("--reason <note>` from the trusted cli."):
+        return True
+
+    terminal_session_marker = "` from the trusted cli. session id: "
+    if terminal_session_marker not in recovery_text:
+        return False
+    session_tail = recovery_text.rsplit(terminal_session_marker, 1)[1].strip()
+    if not session_tail.endswith("."):
+        return False
+    session_id = session_tail[:-1].strip()
+    return bool(session_id) and not any(char.isspace() for char in session_id)
 
 
 def _looks_like_structural_lockdown_notice(suffix: str) -> bool:
