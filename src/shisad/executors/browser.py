@@ -1007,6 +1007,11 @@ class BrowserToolkit:
             or "did not expose chromium.launchpersistentcontext" in text
         ):
             return "browser_dependency_unavailable"
+        if (
+            _SHISAD_BROWSER_WRAPPER_DOCTOR in text
+            and ("unsupported" in text or "unknown option" in text or "unknown command" in text)
+        ):
+            return "browser_command_protocol_incompatible"
         return "browser_command_failed"
 
     def _browser_command_dependency_roots(self) -> tuple[list[Path], str]:
