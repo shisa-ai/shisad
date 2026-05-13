@@ -3043,6 +3043,32 @@ def test_direct_response_blocked_output_policy_includes_reason_hint() -> None:
     assert appended["content"] == response["response"]
 
 
+def test_lockdown_notice_fragment_blocks_unsanitized_notice_reason() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._lockdown_manager = SimpleNamespace(
+        user_notification=lambda _sid: (
+            "Session is in caution due to manual: "
+            "notice reason http://[2001:db8::1."
+        ),
+        state_for=lambda _sid: SimpleNamespace(level=SimpleNamespace(value="caution")),
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: _blocked_output_policy_result(text)
+    )
+
+    fragment, state = SessionImplMixin._lockdown_notice_response_fragment(
+        harness,
+        session_id=SessionId("sess-g1"),
+    )
+
+    assert state is not None
+    assert fragment == (
+        "[LOCKDOWN NOTICE] Session is in caution lockdown. "
+        "Lockdown notice details were blocked by output policy."
+    )
+    assert "http://[2001:db8::1" not in fragment
+
+
 @pytest.mark.asyncio
 async def test_task_handoff_blocked_output_policy_includes_reason_hint() -> None:
     harness = _FinalizeEvidenceHarness()

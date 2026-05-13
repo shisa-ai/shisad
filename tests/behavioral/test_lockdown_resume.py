@@ -580,6 +580,10 @@ async def test_gh31_notice_only_prior_turn_does_not_authorize_resume(
             "The evidence literally says.\n"
             "Should I clear it or keep it locked?"
         ),
+        (
+            "The evidence literally says the session is in caution lockdown.\n"
+            "Should I clear it or keep it locked?"
+        ),
     ],
 )
 async def test_gh31_quoted_recovery_question_does_not_authorize_resume(

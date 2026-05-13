@@ -4488,8 +4488,10 @@ def _assistant_content_is_lockdown_recovery_prompt(content: str) -> bool:
         return False
     context_before_question = " ".join(prompt_candidate[:question_start].casefold().split())
     question_mentions_lockdown = "lockdown" in normalized_question
-    context_mentions_lockdown = "session" in context_before_question and (
-        "lockdown" in context_before_question or "locked" in context_before_question
+    context_mentions_lockdown = context_before_question.startswith(
+        "the session is in "
+    ) and (
+        " lockdown" in context_before_question or " locked" in context_before_question
     )
     if not question_mentions_lockdown and not context_mentions_lockdown:
         return False
