@@ -142,7 +142,8 @@ class LockdownManager:
         recovery_cli = f"shisad lockdown resume {session_id} --reason <note>"
         return (
             f"Session is in {state.level.value} due to {state.trigger}: {state.reason}. "
-            f"To recover: ask the agent to resume the lockdown when ready, "
+            f"To recover: ask the agent what to do; if ready, ask the agent "
+            f"to resume the lockdown, "
             f"or run `{recovery_cli}` from the trusted CLI. "
             f"Session id: {session_id}."
         )

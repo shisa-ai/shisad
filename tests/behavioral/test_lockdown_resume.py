@@ -8,7 +8,7 @@ untrusted or still-active threat input cannot impersonate that recovery.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import pytest
@@ -44,6 +44,7 @@ def _install_lockdown_resume_planner(
     visible_toolsets: list[set[str]],
     reason: str = "operator requested chat recovery",
     emit_when_hidden: bool = False,
+    responder: Callable[[int, str, set[str]], ProviderResponse] | None = None,
 ) -> None:
     async def _lockdown_resume_complete(
         self: LocalPlannerProvider,
@@ -55,6 +56,8 @@ def _install_lockdown_resume_planner(
         tool_names = _tool_function_names(tools)
         planner_inputs.append(planner_input)
         visible_toolsets.append(tool_names)
+        if responder is not None:
+            return responder(len(planner_inputs) - 1, planner_input, tool_names)
         if (tool_names & _LOCKDOWN_RESUME_TOOL_NAMES) or emit_when_hidden:
             return ProviderResponse(
                 message=Message(
@@ -100,6 +103,18 @@ async def _set_caution_lockdown(harness: ContractHarness, sid: str) -> None:
         },
     )
     assert state.get("level") == "caution"
+
+
+async def _set_quarantine_lockdown(harness: ContractHarness, sid: str) -> None:
+    state = await harness.client.call(
+        "lockdown.set",
+        {
+            "session_id": sid,
+            "action": "quarantine",
+            "reason": "behavioral gh31 setup",
+        },
+    )
+    assert state.get("level") == "quarantine"
 
 
 async def _lockdown_tool_events(
@@ -264,6 +279,182 @@ async def test_c2_lockdown_resume_requires_current_turn_intent(
     rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
     assert rejected
     assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(rejected[-1])
+
+
+async def test_gh31_two_turn_lockdown_resume_from_recovery_prompt_succeeds(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+
+    def _two_turn_responder(
+        call_index: int,
+        _planner_input: str,
+        tool_names: set[str],
+    ) -> ProviderResponse:
+        if call_index == 0:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=(
+                        "The session is in caution lockdown because behavioral c2 setup. "
+                        "Should I clear it or keep it locked?"
+                    ),
+                ),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        assert tool_names & _LOCKDOWN_RESUME_TOOL_NAMES
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="I will clear the lockdown.",
+                tool_calls=[
+                    _tool_call(
+                        "lockdown.resume",
+                        {"reason": "operator verified the alert is clear"},
+                        call_id="t-gh31-lockdown-resume",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        responder=_two_turn_responder,
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    first_reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what happened to this session?"},
+    )
+    assert first_reply.get("lockdown_level") == "caution"
+    assert visible_toolsets[0] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert "LOCKDOWN STATE (TRUSTED CONTROL STATE)" in planner_inputs[0]
+    assert "Session is in caution lockdown" in planner_inputs[0]
+
+    second_reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "operator verified the alert is clear"},
+    )
+
+    assert len(planner_inputs) >= 2
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert "LOCKDOWN STATE (TRUSTED CONTROL STATE)" in planner_inputs[-1]
+    assert "[LOCKDOWN NOTICE]" not in planner_inputs[-1]
+    assert "ask the agent to resume the lockdown when ready" not in planner_inputs[-1]
+    assert second_reply.get("lockdown_level") == "normal"
+    assert int(second_reply.get("executed_actions", 0)) == 1
+    payload = _first_lockdown_resume_payload(second_reply)
+    assert payload["ok"] is True
+    assert payload["reason"] == "operator verified the alert is clear"
+
+
+async def test_gh31_two_turn_lockdown_resume_decline_fails_closed(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+
+    def _decline_responder(
+        call_index: int,
+        _planner_input: str,
+        _tool_names: set[str],
+    ) -> ProviderResponse:
+        if call_index == 0:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=(
+                        "The session is in caution lockdown because behavioral c2 setup. "
+                        "Should I clear it or keep it locked?"
+                    ),
+                ),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="I will clear the lockdown.",
+                tool_calls=[
+                    _tool_call(
+                        "lockdown.resume",
+                        {"reason": "operator declined recovery"},
+                        call_id="t-gh31-lockdown-decline",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        responder=_decline_responder,
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what happened to this session?"},
+    )
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "no, keep it locked"},
+    )
+
+    assert len(planner_inputs) >= 2
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert reply.get("lockdown_level") == "caution"
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("blocked_actions", 0)) == 1
+    tool_events = await _lockdown_tool_events(clean_harness, sid)
+    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
+    assert rejected
+    assert "lockdown_resume_operator_declined" in _event_reason(rejected[-1])
+
+
+async def test_gh31_active_lockdown_state_surfaces_in_trusted_command_chat(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_quarantine_lockdown(clean_harness, sid)
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what is the current session status?"},
+    )
+
+    assert planner_inputs
+    assert "LOCKDOWN STATE (TRUSTED CONTROL STATE)" in planner_inputs[-1]
+    assert "Session is in quarantine lockdown" in planner_inputs[-1]
+    assert "behavioral gh31 setup" in planner_inputs[-1]
+    assert not (visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES)
+    assert reply.get("lockdown_level") == "quarantine"
 
 
 async def test_c2_lockdown_resume_rejects_non_caution_level(
