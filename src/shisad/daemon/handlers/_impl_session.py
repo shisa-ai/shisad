@@ -217,6 +217,8 @@ def _redact_sensitive_browser_event_arguments(
         and "text" in payload
     ):
         payload["text"] = _SENSITIVE_BROWSER_TEXT_REDACTION
+        if "description" in payload:
+            payload["description"] = _SENSITIVE_BROWSER_TEXT_REDACTION
     return payload
 _PAGE_TITLE_METADATA_HEADER = (
     "Optional page-title metadata (untrusted; separate from primary tool evidence):"

@@ -641,6 +641,7 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
         "text": "browser-sensitive-token",
         "is_sensitive": True,
         "click_target": "#send",
+        "description": "browser-sensitive-token",
     }
     pending.safe_preview = "browser.type_text text=browser-sensitive-token"
 
@@ -649,6 +650,7 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     serialized = json.dumps(payload, sort_keys=True)
     assert "browser-sensitive-token" not in serialized
     assert payload["arguments"]["text"] == "[sensitive text redacted]"
+    assert payload["arguments"]["description"] == "[sensitive text redacted]"
     pending_actions_file = tmp_path / "data" / "pending_actions.json"
     pending_actions_file.parent.mkdir(parents=True)
     pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
@@ -667,7 +669,12 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
 
     short_pending = _pending_action(nonce="expected")
     short_pending.tool_name = ToolName("browser.type_text")
-    short_pending.arguments = {"target": "#name", "text": "a", "is_sensitive": True}
+    short_pending.arguments = {
+        "target": "#name",
+        "text": "a",
+        "is_sensitive": True,
+        "description": "a",
+    }
     short_pending.approval_envelope = short_pending.approval_envelope.model_copy(
         update={"action_summary": "text=a", "intent_envelope_hash": "old-intent-hash"}
     )
@@ -695,16 +702,35 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     short_pending.approval_envelope = short_pending.approval_envelope.model_copy(
         update={"intent_envelope_hash": intent_envelope_hash(short_pending.intent_envelope)}
     )
+    short_pending.approval_envelope_hash = approval_envelope_hash(
+        short_pending.approval_envelope
+    )
+    short_pending.confirmation_evidence = ConfirmationEvidence(
+        level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+        method="signed",
+        backend_id="signed.default",
+        approval_envelope_hash=short_pending.approval_envelope_hash,
+        action_digest="sha256:test-action-digest",
+        decision_nonce="expected",
+        evidence_hash="sha256:test-evidence",
+        intent_envelope_hash=intent_envelope_hash(short_pending.intent_envelope),
+        signature="base64:test-signature",
+        signer_key_id="signer-1",
+    )
     short_payload = HandlerImplementation._pending_to_dict(short_pending)
     assert short_payload["arguments"]["text"] == "[sensitive text redacted]"
-    assert short_payload["approval_envelope"]["action_digest"] == "sha256:test-action-digest"
-    assert short_payload["approval_envelope"]["schema_version"] == "shisad.approval.v1"
-    assert short_payload["approval_envelope"]["action_summary"] == (
-        "browser.type_text: is_sensitive=true, target=#name, "
-        "text=[sensitive text redacted]"
-    )
+    assert short_payload["arguments"]["description"] == "[sensitive text redacted]"
+    assert short_payload["approval_envelope_hash"] == ""
+    assert short_payload["approval_envelope_redacted"] is True
+    assert "approval_envelope" not in short_payload
+    assert short_payload["confirmation_evidence_redacted"] is True
+    assert "confirmation_evidence" not in short_payload
     assert short_payload["intent_envelope_redacted"] is True
     assert "intent_envelope" not in short_payload
+    short_serialized = json.dumps(short_payload, sort_keys=True)
+    assert "sha256:test-action-digest" not in short_serialized
+    assert "sha256:test-evidence" not in short_serialized
+    assert "base64:test-signature" not in short_serialized
 
     raw_payload = HandlerImplementation._pending_to_dict(pending)
     raw_payload["confirmation_id"] = "c-raw"

@@ -190,6 +190,8 @@ def _redact_sensitive_pending_arguments(
     payload = dict(arguments)
     if _has_sensitive_pending_text(tool_name, payload):
         payload["text"] = _SENSITIVE_PENDING_TEXT_REDACTION
+        if "description" in payload:
+            payload["description"] = _SENSITIVE_PENDING_TEXT_REDACTION
     return payload
 
 
@@ -2554,10 +2556,11 @@ class HandlerImplementation(
 
     @staticmethod
     def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
+        sensitive_pending = _has_sensitive_pending_text(pending.tool_name, pending.arguments)
         arguments = _redact_sensitive_pending_arguments(pending.tool_name, pending.arguments)
         sensitive_summary = None
         sensitive_action_summary = ""
-        if _has_sensitive_pending_text(pending.tool_name, pending.arguments):
+        if sensitive_pending:
             sensitive_summary, sensitive_action_summary = _redacted_sensitive_confirmation_summary(
                 pending.tool_name,
                 pending.arguments,
@@ -2597,7 +2600,7 @@ class HandlerImplementation(
             "allowed_principals": list(pending.allowed_principals),
             "allowed_credentials": list(pending.allowed_credentials),
             "required_capabilities": pending.required_capabilities.model_dump(mode="json"),
-            "approval_envelope_hash": pending.approval_envelope_hash,
+            "approval_envelope_hash": "" if sensitive_pending else pending.approval_envelope_hash,
             "fallback": pending.fallback.model_dump(mode="json"),
             "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
             "selected_backend_id": pending.selected_backend_id,
@@ -2618,17 +2621,23 @@ class HandlerImplementation(
         if pending.pep_elevation is not None:
             payload["pep_elevation"] = pending_pep_elevation_to_payload(pending.pep_elevation)
         if pending.approval_envelope is not None:
-            approval_envelope_payload = pending.approval_envelope.model_dump(mode="json")
-            if sensitive_action_summary:
-                approval_envelope_payload["action_summary"] = sensitive_action_summary
-            payload["approval_envelope"] = approval_envelope_payload
+            if sensitive_pending:
+                payload["approval_envelope_redacted"] = True
+            else:
+                approval_envelope_payload = pending.approval_envelope.model_dump(mode="json")
+                payload["approval_envelope"] = approval_envelope_payload
         if pending.intent_envelope is not None:
             if sensitive_action_summary:
                 payload["intent_envelope_redacted"] = True
             else:
                 payload["intent_envelope"] = pending.intent_envelope.model_dump(mode="json")
         if pending.confirmation_evidence is not None:
-            payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(mode="json")
+            if sensitive_pending:
+                payload["confirmation_evidence_redacted"] = True
+            else:
+                payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(
+                    mode="json"
+                )
         return payload
 
     @staticmethod
