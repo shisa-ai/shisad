@@ -76,17 +76,21 @@ class RoutedOpenAIProvider:
         tools: list[dict[str, Any]] | None,
         *,
         fallback_mode: str,
+        fallback_error: str = "",
     ) -> ProviderResponse:
         if self._fallback is None:
             raise RuntimeError("planner fallback unavailable")
-        supports_fallback_mode = (
-            "fallback_mode" in inspect.signature(self._fallback.complete).parameters
-        )
+        fallback_parameters = inspect.signature(self._fallback.complete).parameters
+        supports_fallback_mode = "fallback_mode" in fallback_parameters
+        supports_fallback_error = "fallback_error" in fallback_parameters
         if supports_fallback_mode:
+            kwargs: dict[str, Any] = {"fallback_mode": fallback_mode}
+            if supports_fallback_error:
+                kwargs["fallback_error"] = fallback_error
             return await self._fallback.complete(
                 messages,
                 tools,
-                fallback_mode=fallback_mode,
+                **kwargs,
             )
         return await self._fallback.complete(messages, tools)
 
@@ -180,6 +184,7 @@ class RoutedOpenAIProvider:
                 messages,
                 tools,
                 fallback_mode="route_error",
+                fallback_error=str(exc),
             )
 
     async def embeddings(

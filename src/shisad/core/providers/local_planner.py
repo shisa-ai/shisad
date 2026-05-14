@@ -27,6 +27,7 @@ _TASK_CLOSE_GATE_SECTION_HEADERS = (
 )
 _PLANNER_FALLBACK_CONFIGURATION_PREFIX = "[PLANNER FALLBACK: CONFIGURATION]"
 _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX = "[PLANNER FALLBACK: ROUTE ERROR]"
+_PROVIDER_HTTP_ERROR_RE = re.compile(r"\bProvider HTTP error (?P<status>[1-5][0-9]{2})\b")
 
 
 def _extract_marked_untrusted_payload(planner_input: str) -> str:
@@ -211,6 +212,7 @@ def _planner_fallback_message(
     *,
     fallback_mode: str,
     deterministic_tools_available: bool,
+    fallback_error: str = "",
 ) -> str:
     if fallback_mode == "route_error":
         prefix = _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX
@@ -220,10 +222,7 @@ def _planner_fallback_message(
             if deterministic_tools_available
             else " Conversational planning is unavailable until the planner route recovers."
         )
-        guidance = (
-            " Check provider connectivity or credentials, then run "
-            "`shisad doctor check --component provider`."
-        )
+        guidance = _planner_route_error_guidance(fallback_error)
         return f"{prefix} {intro}{detail}{guidance}"
 
     prefix = _PLANNER_FALLBACK_CONFIGURATION_PREFIX
@@ -241,6 +240,33 @@ def _planner_fallback_message(
     return f"{prefix} {intro}{detail}{guidance}"
 
 
+def _planner_route_error_guidance(fallback_error: str) -> str:
+    match = _PROVIDER_HTTP_ERROR_RE.search(fallback_error)
+    if match is not None:
+        status = int(match.group("status"))
+        if 500 <= status <= 599:
+            return (
+                f" The configured provider is currently unavailable (HTTP {status}). "
+                "This is usually a provider-side capacity issue; retry in a few "
+                "minutes. Run `shisad doctor check --component provider` if it persists."
+            )
+        if 400 <= status <= 499:
+            return (
+                f" The provider route returned HTTP {status}. Check provider "
+                "connectivity or credentials, then run "
+                "`shisad doctor check --component provider`."
+            )
+    if fallback_error.startswith("Provider request failed"):
+        return (
+            " Could not reach the provider. Check your network, then run "
+            "`shisad doctor check --component provider` if it persists."
+        )
+    return (
+        " Check provider connectivity or credentials, then run "
+        "`shisad doctor check --component provider`."
+    )
+
+
 class LocalPlannerProvider:
     """Local fallback planner provider for daemon operation."""
 
@@ -250,6 +276,7 @@ class LocalPlannerProvider:
         tools: list[dict[str, Any]] | None = None,
         *,
         fallback_mode: str = "configuration",
+        fallback_error: str = "",
     ) -> ProviderResponse:
         _ = tools
         user_content = messages[-1].content if messages else ""
@@ -367,6 +394,7 @@ class LocalPlannerProvider:
         assistant_content = _planner_fallback_message(
             fallback_mode=fallback_mode,
             deterministic_tools_available=bool(tool_calls),
+            fallback_error=fallback_error,
         )
         return ProviderResponse(
             message=Message(

@@ -729,3 +729,112 @@ async def test_u3_routed_openai_provider_distinguishes_route_failure_from_unconf
     )
     assert "shisad doctor check --component provider" in response.message.content
     assert "No language model configured." not in response.message.content
+
+
+def _openai_provider_raising(error_message: str) -> type[Any]:
+    class _FailingOpenAIProvider:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            force_json_response: bool = False,
+            request_parameters: Any | None = None,
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (
+                base_url,
+                model_id,
+                headers,
+                force_json_response,
+                request_parameters,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            raise RuntimeError(error_message)
+
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            raise RuntimeError("unused")
+
+    return _FailingOpenAIProvider
+
+
+@pytest.mark.asyncio
+async def test_gh38_routed_openai_provider_reports_provider_5xx_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "token")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _openai_provider_raising(
+            "Provider HTTP error 529 for https://api.example.com/v1: "
+            '{"error":{"code":"overloaded_error","message":"Overloaded"}}'
+        ),
+    )
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=LocalPlannerProvider(),
+    )
+
+    response = await provider.complete([Message(role="user", content="hello")])
+
+    content = response.message.content
+    assert content.startswith("[PLANNER FALLBACK: ROUTE ERROR]")
+    assert "HTTP 529" in content
+    assert "provider-side capacity issue" in content
+    assert "credentials" not in content.lower()
+    assert "shisad doctor check --component provider" in content
+
+
+@pytest.mark.asyncio
+async def test_gh38_routed_openai_provider_reports_provider_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "token")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _openai_provider_raising(
+            "Provider request failed for https://api.example.com/v1: timed out"
+        ),
+    )
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=LocalPlannerProvider(),
+    )
+
+    response = await provider.complete([Message(role="user", content="hello")])
+
+    content = response.message.content
+    assert content.startswith("[PLANNER FALLBACK: ROUTE ERROR]")
+    assert "Could not reach the provider" in content
+    assert "credentials" not in content.lower()
+    assert "shisad doctor check --component provider" in content
