@@ -414,7 +414,7 @@ class OutputFirewall:
                 return False
             if cls._looks_like_short_secret_path_segment(segment):
                 short_secret_like_segments += 1
-                if source_suffix and index == final_index:
+                if index == final_index:
                     return False
             segment_entropy = cls._shannon_entropy(segment)
             if len(segment) >= 10 and segment_entropy >= 3.6 and not (
