@@ -830,6 +830,68 @@ def test_gh33_pending_sensitive_mixed_sibling_uses_public_payload(tmp_path) -> N
     assert persisted[0]["status_reason"] == "sensitive_confirmation_secret_unavailable"
 
 
+def test_gh33_load_pending_actions_fails_legacy_mixed_sensitive_sibling(tmp_path) -> None:
+    browser_pending = _pending_action(nonce="browser")
+    browser_pending.confirmation_id = "c-browser"
+    browser_pending.decision_nonce = "browser-nonce"
+    browser_pending.tool_name = ToolName("browser.type_text")
+    browser_pending.arguments = {
+        "target": "#token",
+        "text": "legacy-mixed-secret",
+        "is_sensitive": True,
+    }
+    browser_pending.safe_preview = "browser.type_text text=legacy-mixed-secret"
+    browser_payload = HandlerImplementation._pending_to_dict(browser_pending)
+    browser_payload["status"] = "pending"
+    browser_payload["status_reason"] = ""
+    browser_payload.pop("sensitive_public_payload", None)
+    assert "legacy-mixed-secret" not in json.dumps(browser_payload, sort_keys=True)
+
+    sibling_pending = _pending_action(nonce="sibling")
+    sibling_pending.confirmation_id = "c-shell"
+    sibling_pending.decision_nonce = "sibling-nonce"
+    sibling_pending.tool_name = ToolName("shell.exec")
+    sibling_pending.arguments = {"command": ["echo", "legacy-mixed-secret"]}
+    sibling_pending.safe_preview = "shell.exec command=legacy-mixed-secret"
+    sibling_payload = HandlerImplementation._pending_to_dict(sibling_pending)
+    sibling_payload["status"] = "pending"
+    sibling_payload["status_reason"] = ""
+    sibling_payload.pop("sensitive_public_payload", None)
+
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(
+        json.dumps([browser_payload, sibling_payload]),
+        encoding="utf-8",
+    )
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded_browser = harness._pending_actions["c-browser"]
+    assert loaded_browser.status == "failed"
+    assert loaded_browser.status_reason == "sensitive_confirmation_secret_unavailable"
+    assert loaded_browser.arguments["text"] == "[sensitive text redacted]"
+
+    loaded_sibling = harness._pending_actions["c-shell"]
+    assert loaded_sibling.status == "failed"
+    assert loaded_sibling.status_reason == "sensitive_confirmation_secret_unavailable"
+    assert loaded_sibling.arguments == {}
+    assert loaded_sibling.public_arguments == {}
+    assert loaded_sibling.sensitive_public_payload is True
+
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted_by_id = {item["confirmation_id"]: item for item in persisted}
+    persisted_serialized = json.dumps(persisted, sort_keys=True)
+    assert "legacy-mixed-secret" not in persisted_serialized
+    assert persisted_by_id["c-shell"]["arguments"] == {}
+    assert persisted_by_id["c-shell"]["sensitive_public_payload"] is True
+    assert persisted_by_id["c-shell"]["status"] == "failed"
+    assert persisted_by_id["c-shell"]["status_reason"] == (
+        "sensitive_confirmation_secret_unavailable"
+    )
+
+
 def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
     pending.tool_name = ToolName("mcp.docs.lookup-doc")

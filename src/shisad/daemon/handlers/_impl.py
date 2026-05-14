@@ -183,6 +183,13 @@ def _has_sensitive_pending_text(tool_name: ToolName | str, arguments: Mapping[st
     )
 
 
+def _pending_payload_group(item: Mapping[str, Any]) -> tuple[str, str] | None:
+    session_id = str(item.get("session_id", "")).strip()
+    if not session_id:
+        return None
+    return (session_id, str(item.get("task_id", "")).strip())
+
+
 def _redact_sensitive_pending_arguments(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
@@ -2987,11 +2994,31 @@ class HandlerImplementation(
             return
         if not isinstance(raw, list):
             return
+        sensitive_pending_groups: set[tuple[str, str]] = set()
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            status = str(item.get("status", "pending")).strip() or "pending"
+            if status != "pending":
+                continue
+            arguments_payload = item.get("arguments")
+            if not isinstance(arguments_payload, Mapping):
+                continue
+            if not _has_sensitive_pending_text(
+                str(item.get("tool_name", "")),
+                arguments_payload,
+            ):
+                continue
+            group = _pending_payload_group(item)
+            if group is None:
+                continue
+            sensitive_pending_groups.add(group)
         pruned_stale = False
         migrated_legacy_strip_intent = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            legacy_mixed_sensitive_payload = False
             try:
                 confirmation_id = str(item.get("confirmation_id", "")).strip()
                 if not confirmation_id:
@@ -3054,6 +3081,15 @@ class HandlerImplementation(
                 )
                 raw_arguments = dict(item.get("arguments", {}))
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
+                group = _pending_payload_group(item)
+                legacy_mixed_sensitive_payload = (
+                    group in sensitive_pending_groups
+                    and not sensitive_public_payload
+                    and not _has_sensitive_pending_text(
+                        str(item.get("tool_name", "")),
+                        raw_arguments,
+                    )
+                )
                 public_arguments = dict(raw_arguments) if sensitive_public_payload else None
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
@@ -3146,6 +3182,14 @@ class HandlerImplementation(
                         pending.tool_name,
                         pending.arguments,
                     )
+                if pending.status == "pending":
+                    pending.status = "failed"
+                    pending.status_reason = "sensitive_confirmation_secret_unavailable"
+                pruned_stale = True
+            elif legacy_mixed_sensitive_payload:
+                pending.arguments = {}
+                pending.public_arguments = {}
+                pending.sensitive_public_payload = True
                 if pending.status == "pending":
                     pending.status = "failed"
                     pending.status_reason = "sensitive_confirmation_secret_unavailable"
