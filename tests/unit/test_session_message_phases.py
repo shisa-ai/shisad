@@ -39,6 +39,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.daemon.handlers._impl import HandlerImplementation
 from shisad.daemon.handlers._impl_session import (
     _PENDING_SKILL_SUGGESTION_ID_KEY,
     _PENDING_STRONG_INVALIDATION_KEY,
@@ -51,6 +52,7 @@ from shisad.daemon.handlers._impl_session import (
     TaskSessionHandoff,
     _active_attention_defaults_for_validated,
 )
+from shisad.executors.sandbox import SandboxType
 from shisad.memory.consolidation import ConsolidationWorker
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
@@ -981,6 +983,64 @@ class _BrowserAliasExecutionHarness(_PendingPolicySnapshotHarness):
         )
 
 
+class _AliasPendingPolicySnapshotHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.policy_floor_tool_names: list[ToolName] = []
+        self._policy_loader = SimpleNamespace(
+            policy=PolicyBundle.model_validate(
+                {
+                    "sandbox": {
+                        "tool_overrides": {
+                            "shell_exec": {
+                                "sandbox_type": "container",
+                                "security_critical": True,
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        self._registry = SimpleNamespace(
+            get_tool=lambda _tool_name: ToolDefinition(
+                name=ToolName("shell.exec"),
+                description="shell",
+                capabilities_required=[Capability.SHELL_EXEC],
+            )
+        )
+
+    def _compute_tool_policy_floor(
+        self,
+        *,
+        tool_name: ToolName,
+        tool_definition: ToolDefinition | None,
+        operator_surface: bool = False,
+    ) -> object:
+        self.policy_floor_tool_names.append(tool_name)
+        return HandlerImplementation._compute_tool_policy_floor(
+            self,
+            tool_name=tool_name,
+            tool_definition=tool_definition,
+            operator_surface=operator_surface,
+        )
+
+    def _build_merged_policy(
+        self,
+        *,
+        tool_name: ToolName,
+        arguments: Mapping[str, Any],
+        tool_definition: ToolDefinition | None,
+        operator_surface: bool = False,
+    ) -> object:
+        return HandlerImplementation._build_merged_policy(
+            self,
+            tool_name=tool_name,
+            arguments=arguments,
+            tool_definition=tool_definition,
+            operator_surface=operator_surface,
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("browser_tool_name", ["browser.type_text", "browser-type-text"])
 async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier(
@@ -1577,6 +1637,83 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell_alias", ["shell_exec", "shell-exec"])
+async def test_gh34_alias_pending_confirmation_policy_snapshot_uses_canonical_override(
+    shell_alias: str,
+) -> None:
+    harness = _AliasPendingPolicySnapshotHarness()
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "run shell"})
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.SHELL_EXEC},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName(shell_alias),
+        arguments={"command": ["echo", "ok"]},
+        reasoning="Run the operator-requested command.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.pending_confirmation == 1
+    assert harness.policy_floor_tool_names == [ToolName("shell.exec")]
+    assert harness.captured_merged_policy is not None
+    assert harness.captured_merged_policy.sandbox_type == SandboxType.CONTAINER
+    assert harness.captured_merged_policy.security_critical is True
 
 
 @pytest.mark.asyncio

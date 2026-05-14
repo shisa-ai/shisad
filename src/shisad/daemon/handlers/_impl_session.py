@@ -10047,7 +10047,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if tool_def is not None:
                     try:
                         merged_policy = self._build_merged_policy(
-                            tool_name=proposal.tool_name,
+                            tool_name=canonical_proposal_tool,
                             arguments=proposal_arguments,
                             tool_definition=tool_def,
                         )
