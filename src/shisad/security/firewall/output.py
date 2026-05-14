@@ -7,6 +7,7 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import Any, ClassVar
 from urllib.parse import unquote
 
@@ -413,6 +414,8 @@ class OutputFirewall:
                 return False
             if cls._looks_like_short_secret_path_segment(segment):
                 short_secret_like_segments += 1
+                if source_suffix and index == final_index:
+                    return False
             segment_entropy = cls._shannon_entropy(segment)
             if len(segment) >= 10 and segment_entropy >= 3.6 and not (
                 source_suffix and index == final_index and cls._looks_like_source_file_stem(segment)
@@ -463,15 +466,26 @@ class OutputFirewall:
 
     @staticmethod
     def _looks_like_short_secret_path_segment(segment: str) -> bool:
-        if not 8 <= len(segment) <= 16:
+        if not 6 <= len(segment) <= 16:
             return False
         if re.fullmatch(r"[A-Za-z0-9]+", segment) is None:
             return False
+        digit_count = sum(char.isdigit() for char in segment)
+        alpha_count = len(segment) - digit_count
+        if digit_count < 2 or alpha_count < 2:
+            return False
+        max_alpha_run = max(
+            (len(match.group(0)) for match in re.finditer(r"[A-Za-z]+", segment)),
+            default=0,
+        )
+        if max_alpha_run >= 4:
+            return False
+        transitions = sum(
+            left.isdigit() != right.isdigit() for left, right in pairwise(segment)
+        )
         return (
-            any(char.islower() for char in segment)
-            and any(char.isupper() for char in segment)
-            and any(char.isdigit() for char in segment)
-            and len(set(segment.lower())) >= 6
+            transitions >= 3
+            and len(set(segment.lower())) >= 5
         )
 
     @staticmethod

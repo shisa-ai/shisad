@@ -266,6 +266,45 @@ def test_gh34_entropy_detector_redacts_short_secret_chunks_with_readable_prefix(
     assert "high_entropy_secret" in result.secret_findings
 
 
+def test_gh34_entropy_detector_redacts_lowercase_short_secret_chunks() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/tmp/a1b2c3/d4e5f6/g7h8i9"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+def test_gh34_entropy_detector_redacts_single_short_secret_like_source_stem() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/home/ubuntu/project/a1B2c3D4.py"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/Users/Alice/MyDocs2025/Backup2024/notes.txt",
+        "/Users/Alice/Documents2025/Photos2024/img.jpg",
+        "/home/me/Project2025/MyApp2024/build/index.html",
+    ],
+)
+def test_gh34_entropy_detector_keeps_camelcase_year_directory_paths(path: str) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+
+    result = firewall.inspect(f"path {path}")
+
+    assert path in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
+
+
 @pytest.mark.parametrize(
     "path",
     [
