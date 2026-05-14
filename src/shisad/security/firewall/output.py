@@ -93,6 +93,47 @@ class OutputFirewall:
         ";",
         ":",
     }
+    _SOURCE_PATH_SUFFIXES: ClassVar[set[str]] = {
+        ".bash",
+        ".c",
+        ".cfg",
+        ".cjs",
+        ".conf",
+        ".cpp",
+        ".cs",
+        ".css",
+        ".fish",
+        ".go",
+        ".h",
+        ".hpp",
+        ".html",
+        ".ini",
+        ".java",
+        ".js",
+        ".json",
+        ".jsx",
+        ".kt",
+        ".lock",
+        ".md",
+        ".mjs",
+        ".php",
+        ".py",
+        ".pyi",
+        ".rb",
+        ".rs",
+        ".rst",
+        ".scss",
+        ".sh",
+        ".sql",
+        ".swift",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".yaml",
+        ".yml",
+        ".zsh",
+    }
     _TOXIC_PHRASES: ClassVar[dict[str, float]] = {
         "kill yourself": 0.95,
         "end your life": 0.95,
@@ -354,16 +395,39 @@ class OutputFirewall:
             return False
         if any(len(segment) > 64 for segment in segments):
             return False
+        source_suffix = cls._source_path_suffix_after(text, end=end)
+        final_index = len(segments) - 1
         has_human_readable_segment = False
-        for segment in segments:
+        for index, segment in enumerate(segments):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", segment):
                 return False
             segment_entropy = cls._shannon_entropy(segment)
-            if len(segment) >= 10 and segment_entropy >= 3.6:
+            if len(segment) >= 10 and segment_entropy >= 3.6 and not (
+                source_suffix and index == final_index and cls._looks_like_source_file_stem(segment)
+            ):
                 return False
             if re.fullmatch(r"[A-Za-z_-]+", segment) and segment_entropy < 3.4:
                 has_human_readable_segment = True
         return has_human_readable_segment
+
+    @classmethod
+    def _source_path_suffix_after(cls, text: str, *, end: int) -> str:
+        suffix_match = re.match(r"\.[A-Za-z0-9]{1,8}\b", text[end:])
+        if suffix_match is None:
+            return ""
+        suffix = suffix_match.group(0).lower()
+        return suffix if suffix in cls._SOURCE_PATH_SUFFIXES else ""
+
+    @staticmethod
+    def _looks_like_source_file_stem(segment: str) -> bool:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", segment):
+            return False
+        if "_" in segment or "-" in segment:
+            parts = [part for part in re.split(r"[_-]+", segment) if part]
+            return len(parts) >= 2 and all(
+                re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", part) for part in parts
+            )
+        return segment.islower() or segment.isupper()
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:

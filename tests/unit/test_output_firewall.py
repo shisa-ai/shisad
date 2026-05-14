@@ -164,6 +164,19 @@ def test_m5_dlp1_entropy_detector_keeps_filesystem_paths_unredacted() -> None:
     assert "high_entropy_secret" not in result.secret_findings
 
 
+def test_gh34_entropy_detector_keeps_source_fixture_paths_unredacted() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    path = "/home/ubuntu/shisad/tests/fixtures/fake_playwright_cli.py"
+
+    result = firewall.inspect(
+        f"browser.navigate failed: [Errno 13] Permission denied: '{path}'"
+    )
+
+    assert path in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
+    assert "entropy_secret_redaction" not in result.reason_codes
+
+
 def test_m5_dlp1_entropy_detector_still_redacts_secret_like_tokens() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     secret_blob = "QWxhZGRpbjpPcGVuU2VzYW1lLTIwMjYtWFlaMTIzNDU2Nzg5MA=="
@@ -177,4 +190,14 @@ def test_m5_rr2_entropy_detector_redacts_slash_separated_high_entropy_tokens() -
     token = "/a8F2kL9pQ4rT1vN3/b7D4mS8xZ1cV6nH2/u9J3qW5eR7tY2iK4"
     result = firewall.inspect(f"debug={token}")
     assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+def test_gh34_entropy_detector_still_redacts_secret_like_path_with_source_suffix() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/tmp/a8F2kL9pQ4rT1vN3/b7D4mS8xZ1cV6nH2.py"
+
+    result = firewall.inspect(f"debug={token}")
+
+    assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
     assert "high_entropy_secret" in result.secret_findings
