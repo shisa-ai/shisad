@@ -188,6 +188,7 @@ _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
 _LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY
 _LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY
 _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
+_ACTION_RESOLVE_COOLDOWN_RETRY_MAX_SECONDS = 3.5
 _SENSITIVE_BROWSER_TEXT_REDACTION = "[sensitive text redacted]"
 _SENSITIVE_BROWSER_TYPE_TEXT_NAMES = frozenset({"browser.type_text", "browser_type_text"})
 _CONTEXT_ENTRY_MAX_CHARS = 280
@@ -1233,6 +1234,13 @@ def _action_resolve_command_tail_is_clear(tail: str) -> bool:
             "; then ",
         )
     )
+
+
+def _action_resolve_retry_after_seconds(result: Mapping[str, Any]) -> float:
+    try:
+        return float(result.get("retry_after_seconds", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return _ACTION_RESOLVE_COOLDOWN_RETRY_MAX_SECONDS + 1.0
 
 
 def _levenshtein_distance_at_most(left: str, right: str, *, limit: int) -> int | None:
@@ -9084,6 +9092,12 @@ class SessionImplMixin(HandlerMixinBase):
             if decision == "confirm":
                 result = await self.do_action_confirm(payload)
                 confirmed = bool(result.get("confirmed", False))
+                if not confirmed and str(result.get("reason", "")).strip() == "cooldown_active":
+                    retry_after_seconds = _action_resolve_retry_after_seconds(result)
+                    if 0 <= retry_after_seconds <= _ACTION_RESOLVE_COOLDOWN_RETRY_MAX_SECONDS:
+                        await asyncio.sleep(max(0.0, retry_after_seconds) + 0.05)
+                        result = await self.do_action_confirm(payload)
+                        confirmed = bool(result.get("confirmed", False))
                 if confirmed:
                     executed += 1
                 else:

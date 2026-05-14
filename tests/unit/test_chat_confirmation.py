@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -2607,6 +2607,123 @@ async def test_rc_lus_action_resolve_uses_current_turn_intent_over_bad_planner_d
     ]
     assert harness.reject_calls == []
     assert harness._pending_actions["c-1"].status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_gh35_action_resolve_waits_short_confirmation_cooldown_once(tmp_path) -> None:
+    class _CooldownHarness(_ChatConfirmationHarness):
+        async def do_action_confirm(self, params: dict[str, object]) -> dict[str, object]:
+            self.confirm_calls.append(dict(params))
+            pending = self._pending_actions[str(params["confirmation_id"])]
+            if len(self.confirm_calls) == 1:
+                return {
+                    "confirmed": False,
+                    "confirmation_id": pending.confirmation_id,
+                    "reason": "cooldown_active",
+                    "retry_after_seconds": 0,
+                }
+            pending.status = "approved"
+            pending.status_reason = "chat_confirmation"
+            return {"confirmed": True, "status": "approved"}
+
+    harness = _CooldownHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("browser.navigate"),
+        arguments={"url": "https://example.com/"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        execute_after=datetime.now(UTC) + timedelta(seconds=3),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    result = await SessionImplMixin._execute_planner_action_resolve(
+        harness,
+        validated=validated,
+        arguments={"decision": "confirm", "target": "1", "scope": "one"},
+        pending_action_binding_ids=("c-1",),
+        requires_explicit_current_turn_intent=True,
+    )
+
+    assert result.success is True
+    assert result.executed == 1
+    assert result.rejected == 0
+    assert len(harness.confirm_calls) == 2
+    assert harness._pending_actions["c-1"].status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_gh35_action_resolve_preserves_long_confirmation_cooldown(tmp_path) -> None:
+    class _LongCooldownHarness(_ChatConfirmationHarness):
+        async def do_action_confirm(self, params: dict[str, object]) -> dict[str, object]:
+            self.confirm_calls.append(dict(params))
+            pending = self._pending_actions[str(params["confirmation_id"])]
+            return {
+                "confirmed": False,
+                "confirmation_id": pending.confirmation_id,
+                "reason": "cooldown_active",
+                "retry_after_seconds": 30,
+            }
+
+    harness = _LongCooldownHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("browser.navigate"),
+        arguments={"url": "https://example.com/"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        execute_after=datetime.now(UTC) + timedelta(seconds=30),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    result = await SessionImplMixin._execute_planner_action_resolve(
+        harness,
+        validated=validated,
+        arguments={"decision": "confirm", "target": "1", "scope": "one"},
+        pending_action_binding_ids=("c-1",),
+        requires_explicit_current_turn_intent=True,
+    )
+
+    assert result.success is False
+    assert result.executed == 0
+    assert result.rejected == 1
+    assert result.rejection_reasons == ["cooldown_active"]
+    assert len(harness.confirm_calls) == 1
+    assert harness._pending_actions["c-1"].status == "pending"
 
 
 def test_u9_action_resolve_pending_context_filters_totp_by_delivery_target() -> None:
