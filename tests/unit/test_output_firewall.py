@@ -432,6 +432,22 @@ def test_gh34_entropy_detector_redacts_compact_secret_url_path_segment(
     assert result.require_confirmation is False
 
 
+def test_gh34_entropy_detector_does_not_prefix_replace_readable_url_sibling() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    secret_url = "https://api.good.com/reset/a1B2c3D4"
+    readable_url = "https://api.good.com/reset/a1B2c3D4readme"
+
+    result = firewall.inspect(f"urls {secret_url} {readable_url}")
+
+    assert "https://api.good.com/reset/[REDACTED:high_entropy_secret]" in (
+        result.sanitized_text
+    )
+    assert readable_url in result.sanitized_text
+    assert "[REDACTED:high_entropy_secret]readme" not in result.sanitized_text
+    assert result.sanitized_text.count("[REDACTED:high_entropy_secret]") == 1
+    assert all(finding.allowed for finding in result.url_findings)
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -396,12 +396,24 @@ class OutputFirewall:
     def _redact_short_secret_path_tokens(cls, text: str) -> tuple[str, list[str]]:
         redacted = text
         redacted_any = False
+        url_spans: list[tuple[int, int]] = []
+        url_replacements: list[tuple[int, int, str]] = []
         for match in _URL_RE.finditer(text):
             token = match.group(0)
+            url_spans.append((match.start(), match.end()))
             replacement = cls._short_secret_url_replacement(token)
             if replacement is None:
                 continue
-            redacted = redacted.replace(token, replacement)
+            url_replacements.append((match.start(), match.end(), replacement))
+        if url_replacements:
+            parts: list[str] = []
+            last_end = 0
+            for start, end, replacement in url_replacements:
+                parts.append(text[last_end:start])
+                parts.append(replacement)
+                last_end = end
+            parts.append(text[last_end:])
+            redacted = "".join(parts)
             redacted_any = True
         matches = sorted(
             cls._PATHISH_TOKEN_RE.finditer(text),
@@ -410,6 +422,8 @@ class OutputFirewall:
         )
         for match in matches:
             token = match.group(0)
+            if any(start <= match.start() < end for start, end in url_spans):
+                continue
             if token.startswith("http"):
                 continue
             replacement = cls._short_secret_path_replacement(token)
