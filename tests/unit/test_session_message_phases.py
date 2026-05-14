@@ -57,7 +57,15 @@ from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import compose_channel_binding
 from shisad.memory.schema import MemorySource
 from shisad.memory.timeline import TimelineIndex
-from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
+from shisad.security.control_plane.consensus import ActionMonitorVoter, ConsensusInput
+from shisad.security.control_plane.schema import (
+    ActionKind,
+    ControlDecision,
+    Origin,
+    RiskTier,
+    build_action,
+)
+from shisad.security.control_plane.trace import PlanVerificationResult
 from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import MonitorDecisionType
 from shisad.security.pep import PEP, PolicyContext
@@ -807,6 +815,177 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
     ) -> dict[str, object]:
         _ = (session, tool_name)
         return dict(arguments)
+
+
+class _CapturingIntentProvider:
+    def __init__(self) -> None:
+        self.messages: list[list[Message]] = []
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, object]] | None = None,
+    ) -> ProviderResponse:
+        _ = tools
+        self.messages.append(list(messages))
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content='{"decision":"UNCLEAR","explanation":"needs confirmation"}',
+            ),
+            finish_reason="stop",
+            usage={},
+        )
+
+
+class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.intent_provider = _CapturingIntentProvider()
+        self._registry = SimpleNamespace(
+            get_tool=lambda _tool_name: ToolDefinition(
+                name=ToolName("browser.type_text"),
+                description="type text in the active page",
+            )
+        )
+
+    async def _evaluate_action(self, **kwargs: object) -> object:
+        self.control_plane_calls.append(dict(kwargs))
+        arguments = kwargs.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        tool_name = str(kwargs.get("tool_name", "browser.type_text"))
+        action = build_action(
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            origin=Origin(
+                session_id="sess-g1",
+                user_id="user-g1",
+                workspace_id="workspace-g1",
+                actor="planner",
+                trust_level="trusted",
+            ),
+        )
+        vote = await ActionMonitorVoter(intent_provider=self.intent_provider).cast_vote(
+            ConsensusInput(
+                action=action,
+                trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+                metadata_payload={
+                    "session_tainted": kwargs.get("session_tainted", True),
+                    "trusted_input": kwargs.get("trusted_input", True),
+                    "operator_owned_cli_input": kwargs.get("operator_owned_cli_input", False),
+                    "raw_user_text": kwargs.get("raw_user_text", ""),
+                    "action_arguments": dict(arguments),
+                },
+            )
+        )
+        return SimpleNamespace(
+            decision=ControlDecision.ALLOW,
+            reason_codes=[],
+            trace_result=SimpleNamespace(
+                allowed=True,
+                reason_code="trace:allowed",
+                risk_tier=RiskTier.LOW,
+            ),
+            consensus=SimpleNamespace(votes=[vote]),
+            action=action,
+        )
+
+
+@pytest.mark.asyncio
+async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier() -> None:
+    sensitive_text = "control plane alpha bravo ledger"
+    harness = _SensitiveBrowserControlPlaneHarness()
+    harness._trace_recorder = object()
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": f"type {sensitive_text} into the password field",
+        }
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps=set(),
+        memory_query="",
+        memory_context="tainted prior page content",
+        memory_context_taints={TaintLabel.UNTRUSTED},
+        memory_context_tainted_for_amv=True,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="browser-secret",
+        tool_name=ToolName("browser.type_text"),
+        arguments={
+            "target": "#password",
+            "is_sensitive": True,
+            "text": sensitive_text,
+            "description": sensitive_text,
+        },
+        reasoning="Type the user-provided sensitive text.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.pending_confirmation == 1
+    assert harness.control_plane_calls
+    control_plane_call = harness.control_plane_calls[0]
+    assert control_plane_call["arguments"] == {
+        "target": "#password",
+        "is_sensitive": True,
+        "text": "[sensitive text redacted]",
+        "description": "[sensitive text redacted]",
+    }
+    assert sensitive_text not in str(control_plane_call.get("raw_user_text", ""))
+    assert harness.intent_provider.messages
+    classifier_prompt = "\n".join(
+        message.content for message in harness.intent_provider.messages[0]
+    )
+    assert sensitive_text not in classifier_prompt
+    assert "[sensitive text redacted]" in classifier_prompt
+    assert result.trace_tool_calls
+    assert result.trace_tool_calls[0].arguments["text"] == "[sensitive text redacted]"
 
 
 class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):

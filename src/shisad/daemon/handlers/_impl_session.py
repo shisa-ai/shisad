@@ -221,6 +221,91 @@ def _redact_sensitive_browser_event_arguments(
         if "description" in payload:
             payload["description"] = _SENSITIVE_BROWSER_TEXT_REDACTION
     return payload
+
+
+def _sensitive_browser_event_values(
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if str(tool_name).strip() != "browser.type_text":
+        return ()
+    if not bool(arguments.get("is_sensitive", False)):
+        return ()
+    values: list[str] = []
+    for key in ("text", "description"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value:
+            values.append(value)
+    return tuple(dict.fromkeys(values))
+
+
+def _redact_sensitive_browser_values(value: Any, values: Sequence[str]) -> Any:
+    if not values:
+        return value
+    if isinstance(value, str):
+        redacted = value
+        for sensitive_value in sorted(values, key=len, reverse=True):
+            if sensitive_value:
+                redacted = redacted.replace(
+                    sensitive_value,
+                    _SENSITIVE_BROWSER_TEXT_REDACTION,
+                )
+        return redacted
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_browser_values(child, values)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_browser_values(item, values) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_browser_values(item, values) for item in value)
+    return value
+
+
+def _redact_sensitive_browser_text(text: str, values: Sequence[str]) -> str:
+    redacted = _redact_sensitive_browser_values(text, values)
+    return redacted if isinstance(redacted, str) else text
+
+
+def _redact_sensitive_browser_trace_message(
+    message: Any,
+    values: Sequence[str],
+) -> TraceMessage:
+    return TraceMessage(
+        role=message.role,
+        content=_redact_sensitive_browser_text(str(message.content), values),
+        tool_calls=cast(
+            list[dict[str, Any]],
+            _redact_sensitive_browser_values(message.tool_calls, values),
+        ),
+        tool_call_id=(
+            _redact_sensitive_browser_text(message.tool_call_id, values)
+            if message.tool_call_id is not None
+            else None
+        ),
+    )
+
+
+def _redact_sensitive_browser_trace_tool_call(
+    tool_call: TraceToolCall,
+    values: Sequence[str],
+) -> TraceToolCall:
+    return TraceToolCall(
+        tool_name=tool_call.tool_name,
+        arguments=cast(
+            dict[str, Any],
+            _redact_sensitive_browser_values(tool_call.arguments, values),
+        ),
+        pep_decision=tool_call.pep_decision,
+        monitor_decision=tool_call.monitor_decision,
+        control_plane_decision=tool_call.control_plane_decision,
+        final_decision=tool_call.final_decision,
+        executed=tool_call.executed,
+        execution_success=tool_call.execution_success,
+    )
+
+
 _PAGE_TITLE_METADATA_HEADER = (
     "Optional page-title metadata (untrusted; separate from primary tool evidence):"
 )
@@ -446,6 +531,7 @@ class SessionMessageExecutionResult:
     cleanroom_block_reasons: list[str] = field(default_factory=list)
     action_resolve_summaries: list[str] = field(default_factory=list)
     trace_tool_calls: list[TraceToolCall] = field(default_factory=list)
+    trace_sensitive_browser_values: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -9150,6 +9236,15 @@ class SessionImplMixin(HandlerMixinBase):
         sid = validated.sid
         planner_result = planner_dispatch.planner_result
         trace_tool_calls = list(planner_dispatch.trace_tool_calls)
+        turn_sensitive_browser_values = [
+            value
+            for evaluated in planner_result.evaluated
+            for value in _sensitive_browser_event_values(
+                evaluated.proposal.tool_name,
+                evaluated.proposal.arguments,
+            )
+        ]
+        trace_sensitive_browser_values: list[str] = list(turn_sensitive_browser_values)
         session = self._session_manager.get(sid)
         if session is None:
             return SessionMessageExecutionResult(
@@ -9243,6 +9338,28 @@ class SessionImplMixin(HandlerMixinBase):
                 proposal.tool_name,
                 proposal_arguments,
             )
+            proposal_sensitive_browser_values = _sensitive_browser_event_values(
+                proposal.tool_name,
+                proposal_arguments,
+            )
+            trace_sensitive_browser_values.extend(proposal_sensitive_browser_values)
+            control_plane_sensitive_browser_values = tuple(
+                dict.fromkeys(
+                    [
+                        *turn_sensitive_browser_values,
+                        *proposal_sensitive_browser_values,
+                    ]
+                )
+            )
+            trace_proposal_arguments = _redact_sensitive_browser_event_arguments(
+                proposal.tool_name,
+                proposal_arguments,
+            )
+            control_plane_arguments = dict(trace_proposal_arguments)
+            control_plane_user_text = _redact_sensitive_browser_text(
+                validated.content,
+                control_plane_sensitive_browser_values,
+            )
             pep_decision = self._pep.evaluate(
                 proposal.tool_name,
                 pep_arguments,
@@ -9281,7 +9398,7 @@ class SessionImplMixin(HandlerMixinBase):
                         trace_tool_calls.append(
                             TraceToolCall(
                                 tool_name=str(proposal.tool_name),
-                                arguments=dict(proposal_arguments),
+                                arguments=dict(trace_proposal_arguments),
                                 pep_decision=pep_decision.kind.value,
                                 monitor_decision="skipped:action_resolve",
                                 control_plane_decision="skipped:action_resolve",
@@ -9310,7 +9427,7 @@ class SessionImplMixin(HandlerMixinBase):
                         trace_tool_calls.append(
                             TraceToolCall(
                                 tool_name=str(proposal.tool_name),
-                                arguments=dict(proposal_arguments),
+                                arguments=dict(trace_proposal_arguments),
                                 pep_decision=pep_decision.kind.value,
                                 monitor_decision="skipped:action_resolve",
                                 control_plane_decision="skipped:action_resolve",
@@ -9357,7 +9474,7 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal_arguments),
+                            arguments=dict(trace_proposal_arguments),
                             pep_decision=pep_decision.kind.value,
                             monitor_decision="skipped:action_resolve",
                             control_plane_decision="skipped:action_resolve",
@@ -9402,7 +9519,7 @@ class SessionImplMixin(HandlerMixinBase):
                         trace_tool_calls.append(
                             TraceToolCall(
                                 tool_name=str(proposal.tool_name),
-                                arguments=dict(proposal_arguments),
+                                arguments=dict(trace_proposal_arguments),
                                 pep_decision=pep_decision.kind.value,
                                 monitor_decision="skipped:lockdown_resume",
                                 control_plane_decision="skipped:lockdown_resume",
@@ -9446,7 +9563,7 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal_arguments),
+                            arguments=dict(trace_proposal_arguments),
                             pep_decision=pep_decision.kind.value,
                             monitor_decision="skipped:lockdown_resume",
                             control_plane_decision="skipped:lockdown_resume",
@@ -9498,14 +9615,14 @@ class SessionImplMixin(HandlerMixinBase):
                 self,
                 "evaluate_action",
                 tool_name=str(proposal.tool_name),
-                arguments=dict(proposal_arguments),
+                arguments=dict(control_plane_arguments),
                 origin=planner_context.planner_origin,
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
                 session_tainted=session_tainted,
                 trusted_input=clean_trusted_input,
                 operator_owned_cli_input=operator_owned_cli_input,
-                raw_user_text=validated.content,
+                raw_user_text=control_plane_user_text,
             )
             blocking_voters = [
                 str(getattr(vote, "voter", ""))
@@ -9550,7 +9667,7 @@ class SessionImplMixin(HandlerMixinBase):
             await self._publish_control_plane_evaluation(
                 sid=sid,
                 tool_name=proposal.tool_name,
-                arguments=proposal_arguments,
+                arguments=control_plane_arguments,
                 evaluation=cp_eval,
             )
             cp_user_reason_codes = list(cp_eval.reason_codes)
@@ -9744,7 +9861,7 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal_arguments),
+                            arguments=dict(trace_proposal_arguments),
                             pep_decision=pep_decision.kind.value,
                             monitor_decision=monitor_decision.kind.value,
                             control_plane_decision=cp_eval.decision.value,
@@ -9798,7 +9915,7 @@ class SessionImplMixin(HandlerMixinBase):
                             trace_tool_calls.append(
                                 TraceToolCall(
                                     tool_name=str(proposal.tool_name),
-                                    arguments=dict(proposal_arguments),
+                                    arguments=dict(trace_proposal_arguments),
                                     pep_decision=pep_decision.kind.value,
                                     monitor_decision=monitor_decision.kind.value,
                                     control_plane_decision=cp_eval.decision.value,
@@ -9856,7 +9973,7 @@ class SessionImplMixin(HandlerMixinBase):
                         trace_tool_calls.append(
                             TraceToolCall(
                                 tool_name=str(proposal.tool_name),
-                                arguments=dict(proposal_arguments),
+                                arguments=dict(trace_proposal_arguments),
                                 pep_decision=pep_decision.kind.value,
                                 monitor_decision=monitor_decision.kind.value,
                                 control_plane_decision=cp_eval.decision.value,
@@ -9882,7 +9999,7 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal_arguments),
+                            arguments=dict(trace_proposal_arguments),
                             pep_decision=pep_decision.kind.value,
                             monitor_decision=monitor_decision.kind.value,
                             control_plane_decision=cp_eval.decision.value,
@@ -9924,7 +10041,7 @@ class SessionImplMixin(HandlerMixinBase):
                 trace_tool_calls.append(
                     TraceToolCall(
                         tool_name=str(proposal.tool_name),
-                        arguments=dict(proposal_arguments),
+                        arguments=dict(trace_proposal_arguments),
                         pep_decision=pep_decision.kind.value,
                         monitor_decision=monitor_decision.kind.value,
                         control_plane_decision=cp_eval.decision.value,
@@ -9947,6 +10064,7 @@ class SessionImplMixin(HandlerMixinBase):
             cleanroom_block_reasons=cleanroom_block_reasons,
             action_resolve_summaries=action_resolve_summaries,
             trace_tool_calls=trace_tool_calls,
+            trace_sensitive_browser_values=tuple(dict.fromkeys(trace_sensitive_browser_values)),
         )
 
     def _mint_explicit_memory_ingress_context(
@@ -11411,13 +11529,12 @@ class SessionImplMixin(HandlerMixinBase):
                     post_tool_synthesis_result.provider_response
                     or planner_dispatch.planner_result.provider_response
                 )
+                sensitive_browser_values = execution.trace_sensitive_browser_values
                 trace_messages = (
                     [
-                        TraceMessage(
-                            role=message.role,
-                            content=message.content,
-                            tool_calls=message.tool_calls,
-                            tool_call_id=message.tool_call_id,
+                        _redact_sensitive_browser_trace_message(
+                            message,
+                            sensitive_browser_values,
                         )
                         for message in planner_dispatch.planner_result.messages_sent
                     ]
@@ -11432,11 +11549,9 @@ class SessionImplMixin(HandlerMixinBase):
                         )
                     )
                     trace_messages.extend(
-                        TraceMessage(
-                            role=message.role,
-                            content=message.content,
-                            tool_calls=message.tool_calls,
-                            tool_call_id=message.tool_call_id,
+                        _redact_sensitive_browser_trace_message(
+                            message,
+                            sensitive_browser_values,
                         )
                         for message in post_tool_synthesis_result.messages_sent
                     )
@@ -11446,13 +11561,32 @@ class SessionImplMixin(HandlerMixinBase):
                 self._trace_recorder.record(
                     TraceTurn(
                         session_id=str(sid),
-                        user_content=validated.content,
+                        user_content=_redact_sensitive_browser_text(
+                            validated.content,
+                            sensitive_browser_values,
+                        ),
                         messages_sent=trace_messages,
-                        llm_response=provider_resp.message.content if provider_resp else "",
+                        llm_response=(
+                            _redact_sensitive_browser_text(
+                                provider_resp.message.content,
+                                sensitive_browser_values,
+                            )
+                            if provider_resp
+                            else ""
+                        ),
                         usage=dict(provider_resp.usage) if provider_resp else {},
                         finish_reason=provider_resp.finish_reason if provider_resp else "",
-                        tool_calls=execution.trace_tool_calls,
-                        assistant_response=response_text,
+                        tool_calls=[
+                            _redact_sensitive_browser_trace_tool_call(
+                                tool_call,
+                                sensitive_browser_values,
+                            )
+                            for tool_call in execution.trace_tool_calls
+                        ],
+                        assistant_response=_redact_sensitive_browser_text(
+                            response_text,
+                            sensitive_browser_values,
+                        ),
                         model_id=model_id,
                         risk_score=validated.firewall_result.risk_score,
                         trust_level=validated.trust_level,

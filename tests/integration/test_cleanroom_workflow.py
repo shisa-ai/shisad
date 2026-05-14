@@ -19,6 +19,7 @@ from shisad.core.planner import (
     PlannerOutput,
     PlannerResult,
 )
+from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
@@ -347,6 +348,118 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
 
         audit_text = (config.data_dir / "audit.jsonl").read_text(encoding="utf-8")
         assert sensitive_text not in audit_text
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_gh33_cleanroom_trace_redacts_sensitive_browser_text(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_text = "cleanroom trace alpha bravo ledger"
+
+    async def _propose_sensitive_browser_type(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        proposal = ActionProposal(
+            action_id="browser-secret-trace",
+            tool_name=ToolName("browser.type_text"),
+            arguments={
+                "target": "#password",
+                "is_sensitive": True,
+                "text": sensitive_text,
+                "description": sensitive_text,
+            },
+            reasoning="Draft a sensitive browser write proposal.",
+            data_sources=[],
+        )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Prepared sensitive browser proposal.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="test-allow",
+                        tool_name=ToolName("browser.type_text"),
+                        risk_score=0.1,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=f"Planner response mentioned {sensitive_text}.",
+                ),
+                model="test-planner",
+                finish_reason="stop",
+                usage={},
+            ),
+            messages_sent=(
+                Message(role="user", content=user_content),
+                Message(
+                    role="assistant",
+                    content=f"Proposing browser.type_text with {sensitive_text}.",
+                    tool_calls=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "browser_type_text",
+                                "arguments": json.dumps(
+                                    {
+                                        "target": "#password",
+                                        "is_sensitive": True,
+                                        "text": sensitive_text,
+                                    },
+                                    sort_keys=True,
+                                ),
+                            },
+                        }
+                    ],
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _propose_sensitive_browser_type)
+
+    daemon_task, client, config = await _start_daemon(tmp_path, trace_enabled=True)
+    try:
+        created = await client.call(
+            "session.create",
+            {
+                "channel": "cli",
+                "user_id": "admin",
+                "workspace_id": "ops",
+                "mode": "admin_cleanroom",
+            },
+        )
+        sid = created["session_id"]
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": f"prepare the browser proposal for {sensitive_text}",
+            },
+        )
+
+        assert result["proposal_only"] is True
+        trace_path = config.data_dir / "traces" / f"{sid}.jsonl"
+        trace_text = trace_path.read_text(encoding="utf-8")
+        assert sensitive_text not in trace_text
+        assert "[sensitive text redacted]" in trace_text
     finally:
         await _shutdown(daemon_task, client)
 
