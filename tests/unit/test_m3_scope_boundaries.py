@@ -23,6 +23,7 @@ from shisad.daemon.handlers._pending_approval import (
     build_policy_context_for_pending_action,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
+    pep_arguments_for_policy_evaluation,
 )
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.daemon.services import _build_tool_registry
@@ -976,6 +977,28 @@ def test_m3_pending_policy_context_rebuild_uses_snapshot_filesystem_roots(
         )
         is False
     )
+
+
+def test_gh34_pep_arguments_canonicalizes_browser_type_text_alias() -> None:
+    arguments = {
+        "target": "#password",
+        "resolved_target": "#resolved-password",
+        "resolved_click_target": "#resolved-click",
+        "source_url": "https://example.test/login",
+        "source_binding": {"selector": "#password"},
+        "click_source_binding": {"selector": "#password"},
+        "is_sensitive": True,
+        "text": "secret",
+        "description": "password field",
+    }
+
+    payload = pep_arguments_for_policy_evaluation("browser-type-text", arguments)
+
+    assert payload == {
+        "target": "#password",
+        "is_sensitive": True,
+        "text": "secret",
+    }
 
 
 def test_m3_task_resource_authorizer_preserves_semantic_ids_and_exact_paths(

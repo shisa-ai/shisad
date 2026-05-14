@@ -190,7 +190,6 @@ _LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_PROMP
 _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
 _ACTION_RESOLVE_COOLDOWN_RETRY_MAX_SECONDS = 3.5
 _SENSITIVE_BROWSER_TEXT_REDACTION = "[sensitive text redacted]"
-_SENSITIVE_BROWSER_TYPE_TEXT_NAMES = frozenset({"browser.type_text", "browser_type_text"})
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
@@ -208,13 +207,17 @@ _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _PAGE_TITLE_METADATA_MAX_CHARS = 1600
 
 
+def _is_sensitive_browser_type_text_tool(tool_name: ToolName | str) -> bool:
+    return canonical_tool_name(str(tool_name), warn_on_alias=False) == "browser.type_text"
+
+
 def _redact_sensitive_browser_event_arguments(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
     payload = dict(arguments)
     if (
-        str(tool_name).strip() in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES
+        _is_sensitive_browser_type_text_tool(tool_name)
         and bool(payload.get("is_sensitive", False))
         and ("text" in payload or "description" in payload)
     ):
@@ -229,7 +232,7 @@ def _sensitive_browser_event_values(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    if str(tool_name).strip() not in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES:
+    if not _is_sensitive_browser_type_text_tool(tool_name):
         return ()
     if not bool(arguments.get("is_sensitive", False)):
         return ()
@@ -254,7 +257,7 @@ def _redact_sensitive_browser_tool_call_arguments(
 ) -> Any:
     if not values:
         return arguments
-    if tool_name not in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES:
+    if not _is_sensitive_browser_type_text_tool(tool_name):
         return _SENSITIVE_BROWSER_TEXT_REDACTION if isinstance(arguments, str) else {}
     if isinstance(arguments, Mapping):
         return _redact_sensitive_browser_event_arguments(tool_name, arguments)
@@ -279,7 +282,7 @@ def _redact_sensitive_browser_public_arguments(
 ) -> dict[str, Any]:
     if not values:
         return dict(arguments)
-    if str(tool_name).strip() in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES:
+    if _is_sensitive_browser_type_text_tool(tool_name):
         return _redact_sensitive_browser_event_arguments(tool_name, arguments)
     return {}
 
@@ -336,7 +339,7 @@ def _redact_sensitive_browser_trace_tool_call(
     if values:
         redacted_arguments = (
             _redact_sensitive_browser_event_arguments(tool_call.tool_name, tool_call.arguments)
-            if tool_call.tool_name in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES
+            if _is_sensitive_browser_type_text_tool(tool_call.tool_name)
             else {}
         )
     return TraceToolCall(

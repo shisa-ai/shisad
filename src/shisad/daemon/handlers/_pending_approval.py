@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from shisad.core.session import Session
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import (
     Capability,
     CredentialRef,
@@ -56,7 +57,7 @@ def pep_arguments_for_policy_evaluation(
 ) -> dict[str, Any]:
     """Normalize runtime-only fields away before PEP schema evaluation."""
     payload = dict(arguments)
-    normalized_tool_name = str(tool_name).strip()
+    normalized_tool_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
     if normalized_tool_name in {"browser.click", "browser.type_text"}:
         payload.pop("resolved_target", None)
         payload.pop("resolved_click_target", None)

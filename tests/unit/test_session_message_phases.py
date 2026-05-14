@@ -903,7 +903,10 @@ class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
 
 
 @pytest.mark.asyncio
-async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier() -> None:
+@pytest.mark.parametrize("browser_tool_name", ["browser.type_text", "browser-type-text"])
+async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier(
+    browser_tool_name: str,
+) -> None:
     sensitive_text = "control plane alpha bravo ledger"
     harness = _SensitiveBrowserControlPlaneHarness()
     harness._trace_recorder = object()
@@ -936,7 +939,7 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
     )
     proposal = ActionProposal(
         action_id="browser-secret",
-        tool_name=ToolName("browser.type_text"),
+        tool_name=ToolName(browser_tool_name),
         arguments={
             "target": "#password",
             "is_sensitive": True,
