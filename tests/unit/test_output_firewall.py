@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from shisad.security.firewall.output import OutputFirewall
 
 
@@ -207,6 +209,23 @@ def test_gh34_entropy_detector_still_redacts_secret_like_path_with_source_suffix
 def test_gh34_entropy_detector_redacts_lowercase_secret_like_source_suffix_path() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/tmp/project/b7d4ms8xz1cv6nh2.py"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "stem",
+    ["abc123def456_ghi789jkl012", "abc123def456-ghi789jkl012"],
+)
+def test_gh34_entropy_detector_redacts_separated_secret_like_source_suffix_path(
+    stem: str,
+) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = f"/tmp/project/{stem}.py"
 
     result = firewall.inspect(f"path {token}")
 

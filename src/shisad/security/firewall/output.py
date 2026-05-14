@@ -425,7 +425,7 @@ class OutputFirewall:
         if "_" in segment or "-" in segment:
             parts = [part for part in re.split(r"[_-]+", segment) if part]
             return len(parts) >= 2 and all(
-                re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", part) is not None
+                re.fullmatch(r"[A-Za-z]+", part) is not None
                 and cls._shannon_entropy(part) < 3.6
                 for part in parts
             )
