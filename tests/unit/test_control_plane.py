@@ -1380,6 +1380,60 @@ def test_m5_t18_plan_lifecycle_expiry_cancel_amendment_semantics() -> None:
     assert first.plan_hash != second.plan_hash
 
 
+class _PromptCaptureProvider:
+    def __init__(self) -> None:
+        self.messages: list[list[Message]] = []
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, object]] | None = None,
+    ) -> ProviderResponse:
+        _ = tools
+        self.messages.append(list(messages))
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content='{"decision":"UNCLEAR","explanation":"needs confirmation"}',
+            ),
+            finish_reason="stop",
+            usage={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_gh33_control_plane_uses_raw_action_and_redacted_monitor_payload(
+    tmp_path: Path,
+) -> None:
+    provider = _PromptCaptureProvider()
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / "cp-gh33-raw-action-redacted-monitor",
+        action_monitor_provider=provider,
+    )
+
+    evaluation = await engine.evaluate_action(
+        tool_name="shell.exec",
+        arguments={"command": ["curl", "https://secret.example/upload"]},
+        monitor_arguments={},
+        origin=_origin("s-gh33-raw-action-redacted-monitor"),
+        risk_tier=RiskTier.HIGH,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        raw_user_text="[sensitive text redacted]",
+    )
+
+    assert evaluation.action.action_kind == ActionKind.EGRESS
+    assert evaluation.action.network_hosts == ["secret.example"]
+    assert provider.messages
+    classifier_prompt = "\n".join(
+        message.content for conversation in provider.messages for message in conversation
+    )
+    assert "The system proposes: shell.exec({})" in classifier_prompt
+    assert "secret.example" not in classifier_prompt
+    assert "curl" not in classifier_prompt
+
+
 @pytest.mark.asyncio
 async def test_m5_t20_action_monitor_voter_rejects_raw_text_payloads() -> None:
     voter = ActionMonitorVoter()

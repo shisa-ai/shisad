@@ -9396,12 +9396,18 @@ class SessionImplMixin(HandlerMixinBase):
                     ]
                 )
             )
-            trace_proposal_arguments = _redact_sensitive_browser_public_arguments(
+            public_proposal_arguments = _redact_sensitive_browser_public_arguments(
                 proposal.tool_name,
                 proposal_arguments,
                 control_plane_sensitive_browser_values,
             )
-            control_plane_arguments = dict(trace_proposal_arguments)
+            trace_proposal_arguments = dict(public_proposal_arguments)
+            control_plane_arguments = dict(proposal_arguments)
+            control_plane_monitor_arguments = dict(public_proposal_arguments)
+            sensitive_public_payload = (
+                bool(control_plane_sensitive_browser_values)
+                and control_plane_monitor_arguments != control_plane_arguments
+            )
             control_plane_user_text = _redact_sensitive_browser_free_text(
                 validated.content,
                 control_plane_sensitive_browser_values,
@@ -9662,6 +9668,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "evaluate_action",
                 tool_name=str(proposal.tool_name),
                 arguments=dict(control_plane_arguments),
+                monitor_arguments=dict(control_plane_monitor_arguments),
                 origin=planner_context.planner_origin,
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
@@ -9984,6 +9991,12 @@ class SessionImplMixin(HandlerMixinBase):
                         workspace_id=validated.workspace_id,
                         tool_name=proposal.tool_name,
                         arguments=proposal_arguments,
+                        public_arguments=(
+                            dict(public_proposal_arguments)
+                            if sensitive_public_payload
+                            else None
+                        ),
+                        sensitive_public_payload=sensitive_public_payload,
                         reason=final_reason or "requires_confirmation",
                         capabilities=planner_context.effective_caps,
                         delivery_target=pending_delivery_target,

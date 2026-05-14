@@ -1176,6 +1176,8 @@ class PendingAction:
     reason: str
     capabilities: set[Capability]
     created_at: datetime
+    public_arguments: dict[str, Any] | None = None
+    sensitive_public_payload: bool = False
     delivery_target: DeliveryTarget | None = None
     task_id: str = ""
     preflight_action: ControlPlaneAction | None = None
@@ -2557,14 +2559,36 @@ class HandlerImplementation(
 
     @staticmethod
     def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
-        sensitive_pending = _has_sensitive_pending_text(pending.tool_name, pending.arguments)
-        arguments = _redact_sensitive_pending_arguments(pending.tool_name, pending.arguments)
+        browser_sensitive_pending = _has_sensitive_pending_text(
+            pending.tool_name,
+            pending.arguments,
+        )
+        sensitive_pending = browser_sensitive_pending or bool(pending.sensitive_public_payload)
+        if pending.public_arguments is not None:
+            public_argument_source = pending.public_arguments
+        elif pending.sensitive_public_payload:
+            public_argument_source = {}
+        else:
+            public_argument_source = pending.arguments
+        arguments = _redact_sensitive_pending_arguments(
+            pending.tool_name,
+            public_argument_source,
+        )
         sensitive_summary = None
-        sensitive_action_summary = ""
-        if sensitive_pending:
-            sensitive_summary, sensitive_action_summary = _redacted_sensitive_confirmation_summary(
+        if browser_sensitive_pending:
+            sensitive_summary = _redacted_sensitive_confirmation_summary(
                 pending.tool_name,
                 pending.arguments,
+            )[0]
+        elif pending.sensitive_public_payload:
+            sensitive_summary = safe_summary(
+                action=str(pending.tool_name),
+                risk_level=(
+                    "high"
+                    if _is_high_risk_confirmation_arguments(pending.tool_name, arguments)
+                    else "medium"
+                ),
+                arguments=arguments,
             )
         safe_preview = (
             render_structured_confirmation(
@@ -2613,6 +2637,8 @@ class HandlerImplementation(
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
+        if pending.sensitive_public_payload:
+            payload["sensitive_public_payload"] = True
         if pending.preflight_action is not None:
             payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
         if pending.merged_policy is not None:
@@ -2628,7 +2654,7 @@ class HandlerImplementation(
                 approval_envelope_payload = pending.approval_envelope.model_dump(mode="json")
                 payload["approval_envelope"] = approval_envelope_payload
         if pending.intent_envelope is not None:
-            if sensitive_action_summary:
+            if sensitive_pending:
                 payload["intent_envelope_redacted"] = True
             else:
                 payload["intent_envelope"] = pending.intent_envelope.model_dump(mode="json")
@@ -2676,6 +2702,8 @@ class HandlerImplementation(
         workspace_id: WorkspaceId,
         tool_name: ToolName,
         arguments: dict[str, Any],
+        public_arguments: dict[str, Any] | None = None,
+        sensitive_public_payload: bool = False,
         reason: str,
         capabilities: set[Capability],
         delivery_target: DeliveryTarget | None = None,
@@ -2707,7 +2735,16 @@ class HandlerImplementation(
         )
         if backend_resolution is None:
             raise ApprovalRoutingError("confirmation_backend_unavailable")
-        confirmation_arguments = _redact_sensitive_pending_arguments(tool_name, arguments)
+        if public_arguments is not None:
+            public_argument_source = public_arguments
+        elif sensitive_public_payload:
+            public_argument_source = {}
+        else:
+            public_argument_source = arguments
+        confirmation_arguments = _redact_sensitive_pending_arguments(
+            tool_name,
+            public_argument_source,
+        )
         summary = safe_summary(
             action=str(tool_name),
             risk_level=(
@@ -2857,6 +2894,8 @@ class HandlerImplementation(
             reason=reason,
             capabilities=set(capabilities),
             created_at=created_at,
+            public_arguments=dict(public_arguments) if public_arguments is not None else None,
+            sensitive_public_payload=bool(sensitive_public_payload),
             delivery_target=delivery_target.model_copy(deep=True)
             if delivery_target is not None
             else None,
@@ -3010,6 +3049,9 @@ class HandlerImplementation(
                     if isinstance(confirmation_evidence_payload, Mapping)
                     else None
                 )
+                raw_arguments = dict(item.get("arguments", {}))
+                sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
+                public_arguments = dict(raw_arguments) if sensitive_public_payload else None
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=str(item.get("decision_nonce", "")) or uuid.uuid4().hex,
@@ -3018,12 +3060,14 @@ class HandlerImplementation(
                     workspace_id=WorkspaceId(str(item.get("workspace_id", ""))),
                     task_id=str(item.get("task_id", "")),
                     tool_name=ToolName(str(item.get("tool_name", ""))),
-                    arguments=dict(item.get("arguments", {})),
+                    arguments=raw_arguments,
                     reason=str(item.get("reason", "")),
                     capabilities={
                         Capability(str(cap)) for cap in item.get("capabilities", []) if str(cap)
                     },
                     created_at=created_at,
+                    public_arguments=public_arguments,
+                    sensitive_public_payload=sensitive_public_payload,
                     delivery_target=delivery_target,
                     preflight_action=preflight_action,
                     execute_after=execute_after,
@@ -3089,6 +3133,16 @@ class HandlerImplementation(
                     pending.tool_name,
                     pending.arguments,
                 )
+                if pending.status == "pending":
+                    pending.status = "failed"
+                    pending.status_reason = "sensitive_confirmation_secret_unavailable"
+                pruned_stale = True
+            elif pending.sensitive_public_payload:
+                if pending.public_arguments is None:
+                    pending.public_arguments = _redact_sensitive_pending_arguments(
+                        pending.tool_name,
+                        pending.arguments,
+                    )
                 if pending.status == "pending":
                     pending.status = "failed"
                     pending.status_reason = "sensitive_confirmation_secret_unavailable"

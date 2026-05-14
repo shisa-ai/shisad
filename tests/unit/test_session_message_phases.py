@@ -707,6 +707,7 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         self.captured_merged_policy: object | None = None
         self.captured_delivery_target: DeliveryTarget | None = None
         self.control_plane_calls: list[dict[str, object]] = []
+        self.pending_action_calls: list[dict[str, object]] = []
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._session_manager = SimpleNamespace(
             get=lambda sid: SimpleNamespace(id=sid),
@@ -799,6 +800,7 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         return SimpleNamespace(snapshot="queue-time")
 
     def _queue_pending_action(self, **kwargs: object) -> object:
+        self.pending_action_calls.append(dict(kwargs))
         self.captured_merged_policy = kwargs.get("merged_policy")
         delivery_target = kwargs.get("delivery_target")
         self.captured_delivery_target = (
@@ -859,6 +861,9 @@ class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
         arguments = kwargs.get("arguments")
         if not isinstance(arguments, dict):
             arguments = {}
+        monitor_arguments = kwargs.get("monitor_arguments")
+        if not isinstance(monitor_arguments, dict):
+            monitor_arguments = dict(arguments)
         tool_name = str(kwargs.get("tool_name", "browser.type_text"))
         action = build_action(
             tool_name=tool_name,
@@ -880,7 +885,7 @@ class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
                     "trusted_input": kwargs.get("trusted_input", True),
                     "operator_owned_cli_input": kwargs.get("operator_owned_cli_input", False),
                     "raw_user_text": kwargs.get("raw_user_text", ""),
-                    "action_arguments": dict(arguments),
+                    "action_arguments": dict(monitor_arguments),
                 },
             )
         )
@@ -973,7 +978,7 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
                         tool_name=proposal.tool_name,
                         risk_score=0.5,
                     ),
-                )
+                ),
             ],
             attempts=1,
             provider_response=None,
@@ -995,10 +1000,17 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
     assert result.pending_confirmation == 2
     assert len(harness.control_plane_calls) == 2
     sibling_control_plane_call = harness.control_plane_calls[0]
-    assert sibling_control_plane_call["arguments"] == {}
+    assert sibling_control_plane_call["arguments"] == {"command": ["echo", sensitive_text]}
+    assert sibling_control_plane_call["monitor_arguments"] == {}
     assert sibling_control_plane_call["raw_user_text"] == "[sensitive text redacted]"
     control_plane_call = harness.control_plane_calls[1]
     assert control_plane_call["arguments"] == {
+        "target": "#password",
+        "is_sensitive": True,
+        "text": sensitive_text,
+        "description": sensitive_text,
+    }
+    assert control_plane_call["monitor_arguments"] == {
         "target": "#password",
         "is_sensitive": True,
         "text": "[sensitive text redacted]",
@@ -1007,11 +1019,32 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
     assert control_plane_call["raw_user_text"] == "[sensitive text redacted]"
     assert harness.intent_provider.messages
     classifier_prompt = "\n".join(
-        message.content for message in harness.intent_provider.messages[0]
+        message.content
+        for conversation in harness.intent_provider.messages
+        for message in conversation
     )
     assert "The user said: [sensitive text redacted]" in classifier_prompt
     assert sensitive_text not in classifier_prompt
     assert "[sensitive text redacted]" in classifier_prompt
+    assert len(harness.pending_action_calls) == 2
+    sibling_pending_call = harness.pending_action_calls[0]
+    assert sibling_pending_call["arguments"] == {"command": ["echo", sensitive_text]}
+    assert sibling_pending_call["public_arguments"] == {}
+    assert sibling_pending_call["sensitive_public_payload"] is True
+    browser_pending_call = harness.pending_action_calls[1]
+    assert browser_pending_call["arguments"] == {
+        "target": "#password",
+        "is_sensitive": True,
+        "text": sensitive_text,
+        "description": sensitive_text,
+    }
+    assert browser_pending_call["public_arguments"] == {
+        "target": "#password",
+        "is_sensitive": True,
+        "text": "[sensitive text redacted]",
+        "description": "[sensitive text redacted]",
+    }
+    assert browser_pending_call["sensitive_public_payload"] is True
     proposed_events = [
         event for event in harness.events if event.__class__.__name__ == "ToolProposed"
     ]

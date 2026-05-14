@@ -278,6 +278,7 @@ class ControlPlaneEngine:
         *,
         tool_name: str,
         arguments: dict[str, Any],
+        monitor_arguments: dict[str, Any] | None = None,
         origin: Origin,
         risk_tier: RiskTier,
         declared_domains: list[str],
@@ -286,12 +287,16 @@ class ControlPlaneEngine:
         operator_owned_cli_input: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
-        normalized_payload = _normalize_voter_payload(sanitize_metadata_payload(arguments))
+        action_arguments = dict(arguments)
+        monitor_payload = (
+            dict(monitor_arguments) if monitor_arguments is not None else dict(arguments)
+        )
+        normalized_payload = _normalize_voter_payload(sanitize_metadata_payload(monitor_payload))
         metadata_arguments = normalized_payload if isinstance(normalized_payload, dict) else {}
         raw_user_text_for_voter = _normalize_voter_text(str(raw_user_text))
         action = build_action(
             tool_name=tool_name,
-            arguments=metadata_arguments,
+            arguments=action_arguments,
             origin=origin,
             risk_tier=risk_tier,
             workspace_roots=self._workspace_roots,
@@ -302,7 +307,7 @@ class ControlPlaneEngine:
             action=action,
         )
 
-        request_size = extract_request_size_bytes(arguments)
+        request_size = extract_request_size_bytes(action_arguments)
         network_metadata = [
             extract_network_metadata(
                 origin=origin,
@@ -330,7 +335,7 @@ class ControlPlaneEngine:
                     "action_arguments": metadata_arguments,
                     "action_argument_digests": _argument_intent_digests(
                         tool_name,
-                        arguments,
+                        monitor_payload,
                     ),
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),

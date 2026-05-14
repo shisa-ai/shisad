@@ -774,6 +774,42 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     assert raw_persisted[0]["arguments"]["text"] == "[sensitive text redacted]"
 
 
+def test_gh33_pending_sensitive_mixed_sibling_uses_public_payload(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("shell.exec")
+    pending.arguments = {"command": ["echo", "mixed-browser-secret"]}
+    pending.public_arguments = {}
+    pending.sensitive_public_payload = True
+    pending.safe_preview = "shell.exec command=mixed-browser-secret"
+
+    payload = HandlerImplementation._pending_to_dict(pending)
+
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "mixed-browser-secret" not in serialized
+    assert payload["arguments"] == {}
+    assert payload["safe_preview"] != pending.safe_preview
+    assert "mixed-browser-secret" not in payload["safe_preview"]
+    assert payload["approval_envelope_hash"] == ""
+    assert payload["approval_envelope_redacted"] is True
+    assert payload["sensitive_public_payload"] is True
+
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert "mixed-browser-secret" not in json.dumps(persisted, sort_keys=True)
+    assert persisted[0]["arguments"] == {}
+    assert persisted[0]["status"] == "failed"
+    assert persisted[0]["status_reason"] == "sensitive_confirmation_secret_unavailable"
+
+
 def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
     pending.tool_name = ToolName("mcp.docs.lookup-doc")

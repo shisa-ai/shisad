@@ -87,6 +87,7 @@ class ControlPlaneGateway(Protocol):
         *,
         tool_name: str,
         arguments: dict[str, Any],
+        monitor_arguments: dict[str, Any] | None = None,
         origin: Origin,
         risk_tier: RiskTier,
         declared_domains: list[str],
@@ -165,6 +166,7 @@ class _BeginPrecontentPlanParams(BaseModel):
 class _EvaluateActionParams(BaseModel):
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    monitor_arguments: dict[str, Any] | None = None
     origin: Origin
     risk_tier: RiskTier
     declared_domains: list[str] = Field(default_factory=list)
@@ -315,6 +317,11 @@ class _ControlPlaneSidecarHandlers:
         evaluation = await self._engine.evaluate_action(
             tool_name=params.tool_name,
             arguments=dict(params.arguments),
+            monitor_arguments=(
+                dict(params.monitor_arguments)
+                if params.monitor_arguments is not None
+                else None
+            ),
             origin=params.origin,
             risk_tier=params.risk_tier,
             declared_domains=list(params.declared_domains),
@@ -455,6 +462,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         *,
         tool_name: str,
         arguments: dict[str, Any],
+        monitor_arguments: dict[str, Any] | None = None,
         origin: Origin,
         risk_tier: RiskTier,
         declared_domains: list[str],
@@ -468,6 +476,9 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             _EvaluateActionParams(
                 tool_name=tool_name,
                 arguments=dict(arguments),
+                monitor_arguments=(
+                    dict(monitor_arguments) if monitor_arguments is not None else None
+                ),
                 origin=origin,
                 risk_tier=risk_tier,
                 declared_domains=list(declared_domains),
