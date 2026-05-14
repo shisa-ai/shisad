@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from shisad.core.planner import ActionProposal, PlannerOutput, PlannerResult
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
@@ -1440,6 +1442,55 @@ def test_result_followup_replays_confirmed_page_title_metadata_block() -> None:
                         "title": "ネット予約 | 会場",
                         "url": "https://example.com/reserve",
                     },
+                },
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+    )
+
+    assert response is not None
+    assert _PAGE_TITLE_METADATA_HEADER in response.text
+    primary_summary = response.text.split(_PAGE_TITLE_METADATA_HEADER, 1)[0]
+    assert "ネット予約" not in primary_summary
+    assert '"title"' not in primary_summary
+    assert "ネット予約" in response.text
+    assert "\\u30cd" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "page_title_metadata"),
+    [
+        (
+            "web-fetch",
+            {
+                "title": "ネット予約 | 会場",
+                "url": "https://example.com/reserve",
+            },
+        ),
+        (
+            "browser-screenshot",
+            {
+                "title": "ネット予約 | 会場",
+                "screenshot_id": "shot-1",
+            },
+        ),
+    ],
+)
+def test_gh34_result_followup_replays_confirmed_alias_page_title_metadata_block(
+    tool_name: str,
+    page_title_metadata: dict[str, str],
+) -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "tool",
+                json.dumps({"ok": True, "status": "ok"}),
+                metadata={
+                    "confirmed_tool_output": True,
+                    "tool_name": tool_name,
+                    "tool_success": True,
+                    "page_title_metadata": dict(page_title_metadata),
                 },
             ),
             _transcript_entry("user", "what did you find?"),

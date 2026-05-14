@@ -3740,7 +3740,10 @@ def _model_facing_page_title_metadata(
 ) -> list[dict[str, Any]]:
     metadata: list[dict[str, Any]] = []
     for index, record in enumerate(serialized_tool_outputs):
-        tool_name = str(record.get("tool_name", "")).strip().lower()
+        tool_name = canonical_tool_name(
+            str(record.get("tool_name", "")).strip(),
+            warn_on_alias=False,
+        )
         if tool_name not in _MODEL_FACING_PAGE_TITLE_TOOL_NAMES:
             continue
         payload = record.get("payload")
@@ -3795,10 +3798,11 @@ def _model_facing_serialized_tool_outputs(
 ) -> list[dict[str, Any]]:
     model_facing_tool_outputs = deepcopy(list(serialized_tool_outputs))
     for record in model_facing_tool_outputs:
-        if (
-            str(record.get("tool_name", "")).strip().lower()
-            not in _MODEL_FACING_PAGE_TITLE_TOOL_NAMES
-        ):
+        tool_name = canonical_tool_name(
+            str(record.get("tool_name", "")).strip(),
+            warn_on_alias=False,
+        )
+        if tool_name not in _MODEL_FACING_PAGE_TITLE_TOOL_NAMES:
             continue
         payload = record.get("payload")
         if isinstance(payload, dict):
