@@ -373,10 +373,15 @@ class OutputFirewall:
                 continue
             if "." in token and "/" in token:
                 continue
+            path_token = token
+            path_start = match.start()
+            if path_start > 0 and text[path_start - 1] == "/" and not token.startswith("/"):
+                path_token = f"/{token}"
+                path_start -= 1
             if cls._looks_like_filesystem_path_token(
                 text,
-                token=token,
-                start=match.start(),
+                token=path_token,
+                start=path_start,
                 end=match.end(),
             ):
                 continue
@@ -480,11 +485,16 @@ class OutputFirewall:
             ) and not cls._looks_like_readable_technical_path_segment(segment):
                 return False
             segment_entropy = cls._shannon_entropy(segment)
-            if len(segment) >= 10 and segment_entropy >= 3.6 and not (
-                source_suffix and index == final_index and cls._looks_like_source_file_stem(segment)
-            ):
+            is_readable_source_stem = (
+                bool(source_suffix)
+                and index == final_index
+                and cls._looks_like_source_file_stem(segment)
+            )
+            if len(segment) >= 10 and segment_entropy >= 3.6 and not is_readable_source_stem:
                 return False
-            if re.fullmatch(r"[A-Za-z_-]+", segment) and segment_entropy < 3.4:
+            if is_readable_source_stem or (
+                re.fullmatch(r"[A-Za-z_-]+", segment) and segment_entropy < 3.4
+            ):
                 has_human_readable_segment = True
         return has_human_readable_segment
 

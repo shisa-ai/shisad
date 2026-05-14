@@ -423,6 +423,22 @@ def test_gh34_entropy_detector_keeps_readable_rooted_technical_segment() -> None
     assert "high_entropy_secret" not in result.secret_findings
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/playwright_runtime_diagnostics.py",
+        "/src/playwright_runtime_diagnostics.py",
+    ],
+)
+def test_gh34_entropy_detector_keeps_rooted_readable_source_paths(path: str) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+
+    result = firewall.inspect(f"path {path}")
+
+    assert path in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
+
+
 def test_gh34_entropy_detector_redacts_secret_like_technical_prefix_final_segment() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/home/ubuntu/project/v4l2a1b2"
