@@ -729,3 +729,119 @@ async def test_u3_routed_openai_provider_distinguishes_route_failure_from_unconf
     )
     assert "shisad doctor check --component provider" in response.message.content
     assert "No language model configured." not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_route_error_5xx_does_not_blame_credentials() -> None:
+    provider = LocalPlannerProvider()
+    exc = RuntimeError(
+        'Provider HTTP error 529 for https://api.anthropic.com/v1/chat/completions: '
+        '{"error":{"type":"overloaded_error"}}'
+    )
+    response = await provider.complete(
+        [Message(role="user", content="hello")],
+        fallback_mode="route_error",
+        planner_route_failure=exc,
+    )
+    text = response.message.content
+    assert "HTTP 529" in text
+    assert "credentials" not in text.lower()
+    assert "transient" in text.lower() or "capacity" in text.lower() or "outage" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_local_planner_route_error_4xx_mentions_credentials() -> None:
+    provider = LocalPlannerProvider()
+    exc = RuntimeError(
+        "Provider HTTP error 401 for https://api.example.com/v1/chat/completions: unauthorized"
+    )
+    response = await provider.complete(
+        [Message(role="user", content="hello")],
+        fallback_mode="route_error",
+        planner_route_failure=exc,
+    )
+    text = response.message.content
+    assert "credentials" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_local_planner_route_error_provider_request_failed_is_network_guidance() -> None:
+    provider = LocalPlannerProvider()
+    exc = RuntimeError("Provider request failed for https://api.example.com/v1/chat/completions: ")
+    response = await provider.complete(
+        [Message(role="user", content="hello")],
+        fallback_mode="route_error",
+        planner_route_failure=exc,
+    )
+    text = response.message.content
+    assert "connection error" in text.lower()
+    assert "credentials" not in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_routed_openai_planner_fallback_surfaces_http_529_in_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "token")
+
+    class _OverloadedOpenAIProvider:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            force_json_response: bool = False,
+            request_parameters: Any | None = None,
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (
+                base_url,
+                model_id,
+                headers,
+                force_json_response,
+                request_parameters,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            raise RuntimeError(
+                "Provider HTTP error 529 for https://planner.example.com/v1/chat/completions: "
+                '{"error":{"type":"overloaded_error","message":"Overloaded"}}'
+            )
+
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            raise RuntimeError("not used")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _OverloadedOpenAIProvider,
+    )
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=LocalPlannerProvider(),
+    )
+
+    response = await provider.complete([Message(role="user", content="hello")])
+    assert "HTTP 529" in response.message.content
+    assert "credentials" not in response.message.content.lower()

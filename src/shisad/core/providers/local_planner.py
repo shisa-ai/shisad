@@ -207,10 +207,57 @@ def _is_structured_task_close_gate_prompt(text: str) -> bool:
     )
 
 
+def _route_error_user_guidance(route_failure: BaseException | None) -> str:
+    """Tailor planner route-fallback guidance to the failure class (issue #38)."""
+    if route_failure is None:
+        return (
+            " Check provider connectivity or credentials, then run "
+            "`shisad doctor check --component provider`."
+        )
+
+    msg = str(route_failure)
+    http_match = re.match(r"Provider HTTP error (\d{3}) ", msg)
+    if http_match:
+        code = int(http_match.group(1))
+        if 500 <= code <= 599:
+            return (
+                f" The configured provider returned HTTP {code} (usually a transient capacity or "
+                "outage issue on the provider side). Retry in a few minutes. Run "
+                "`shisad doctor check --component provider` if it persists."
+            )
+        if 400 <= code <= 499:
+            return (
+                " Check provider connectivity or credentials, then run "
+                "`shisad doctor check --component provider`."
+            )
+        return (
+            f" The planner route returned HTTP {code}. Run "
+            "`shisad doctor check --component provider` for diagnostics."
+        )
+
+    if msg.startswith("Provider request failed for "):
+        return (
+            " Could not reach the provider (connection error). Check your network or run "
+            "`shisad doctor check --component provider`."
+        )
+
+    if isinstance(route_failure, OSError):
+        return (
+            " Could not reach the provider (connection error). Check your network or run "
+            "`shisad doctor check --component provider`."
+        )
+
+    return (
+        " Check provider connectivity or credentials, then run "
+        "`shisad doctor check --component provider`."
+    )
+
+
 def _planner_fallback_message(
     *,
     fallback_mode: str,
     deterministic_tools_available: bool,
+    route_failure: BaseException | None = None,
 ) -> str:
     if fallback_mode == "route_error":
         prefix = _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX
@@ -220,10 +267,7 @@ def _planner_fallback_message(
             if deterministic_tools_available
             else " Conversational planning is unavailable until the planner route recovers."
         )
-        guidance = (
-            " Check provider connectivity or credentials, then run "
-            "`shisad doctor check --component provider`."
-        )
+        guidance = _route_error_user_guidance(route_failure)
         return f"{prefix} {intro}{detail}{guidance}"
 
     prefix = _PLANNER_FALLBACK_CONFIGURATION_PREFIX
@@ -250,6 +294,7 @@ class LocalPlannerProvider:
         tools: list[dict[str, Any]] | None = None,
         *,
         fallback_mode: str = "configuration",
+        planner_route_failure: BaseException | None = None,
     ) -> ProviderResponse:
         _ = tools
         user_content = messages[-1].content if messages else ""
@@ -367,6 +412,7 @@ class LocalPlannerProvider:
         assistant_content = _planner_fallback_message(
             fallback_mode=fallback_mode,
             deterministic_tools_available=bool(tool_calls),
+            route_failure=planner_route_failure if fallback_mode == "route_error" else None,
         )
         return ProviderResponse(
             message=Message(
