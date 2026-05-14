@@ -28,6 +28,7 @@ _TASK_CLOSE_GATE_SECTION_HEADERS = (
 _PLANNER_FALLBACK_CONFIGURATION_PREFIX = "[PLANNER FALLBACK: CONFIGURATION]"
 _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX = "[PLANNER FALLBACK: ROUTE ERROR]"
 _PROVIDER_HTTP_ERROR_RE = re.compile(r"\bProvider HTTP error (?P<status>[1-5][0-9]{2})\b")
+_PROVIDER_RETRYABLE_HTTP_STATUSES = {408, 429}
 
 
 def _extract_marked_untrusted_payload(planner_input: str) -> str:
@@ -244,6 +245,13 @@ def _planner_route_error_guidance(fallback_error: str) -> str:
     match = _PROVIDER_HTTP_ERROR_RE.search(fallback_error)
     if match is not None:
         status = int(match.group("status"))
+        if status in _PROVIDER_RETRYABLE_HTTP_STATUSES:
+            return (
+                f" The configured provider is temporarily unavailable or rate limited "
+                f"(HTTP {status}). This is usually a provider-side capacity or "
+                "rate-limit issue; retry in a few minutes. Run "
+                "`shisad doctor check --component provider` if it persists."
+            )
         if 500 <= status <= 599:
             return (
                 f" The configured provider is currently unavailable (HTTP {status}). "

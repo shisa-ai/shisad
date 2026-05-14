@@ -809,6 +809,79 @@ async def test_gh38_routed_openai_provider_reports_provider_5xx_without_credenti
     assert "shisad doctor check --component provider" in content
 
 
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.asyncio
+async def test_gh38_routed_openai_provider_preserves_auth_guidance_for_auth_4xx(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "token")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _openai_provider_raising(
+            f"Provider HTTP error {status} for https://api.example.com/v1: "
+            '{"error":{"message":"Auth failed"}}'
+        ),
+    )
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=LocalPlannerProvider(),
+    )
+
+    response = await provider.complete([Message(role="user", content="hello")])
+
+    content = response.message.content
+    assert f"HTTP {status}" in content
+    assert "credentials" in content.lower()
+    assert "provider-side capacity" not in content
+    assert "shisad doctor check --component provider" in content
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [(408, "Request timed out"), (429, "Rate limit exceeded")],
+)
+@pytest.mark.asyncio
+async def test_gh38_routed_openai_provider_reports_retryable_4xx_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    message: str,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "token")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _openai_provider_raising(
+            f"Provider HTTP error {status} for https://api.example.com/v1: "
+            f'{{"error":{{"message":"{message}"}}}}'
+        ),
+    )
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=LocalPlannerProvider(),
+    )
+
+    response = await provider.complete([Message(role="user", content="hello")])
+
+    content = response.message.content
+    assert f"HTTP {status}" in content
+    assert "temporarily unavailable" in content.lower()
+    assert "rate limit" in content.lower()
+    assert "credentials" not in content.lower()
+    assert "shisad doctor check --component provider" in content
+
+
 @pytest.mark.asyncio
 async def test_gh38_routed_openai_provider_reports_provider_connection_error(
     monkeypatch: pytest.MonkeyPatch,
