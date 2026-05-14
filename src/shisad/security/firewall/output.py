@@ -136,6 +136,13 @@ class OutputFirewall:
     }
     _SOURCE_FILE_STEM_ENTROPY_MAX: ClassVar[float] = 4.1
     _SOURCE_FILE_STEM_PART_ENTROPY_MAX: ClassVar[float] = 3.6
+    _SOURCE_FILE_STEM_MULTI_DIGIT_PREFIXES: ClassVar[set[str]] = {
+        "sha",
+        "tls",
+        "utf",
+        "v",
+        "x",
+    }
     _TOXIC_PHRASES: ClassVar[dict[str, float]] = {
         "kill yourself": 0.95,
         "end your life": 0.95,
@@ -400,9 +407,12 @@ class OutputFirewall:
         source_suffix = cls._source_path_suffix_after(text, end=end)
         final_index = len(segments) - 1
         has_human_readable_segment = False
+        short_secret_like_segments = 0
         for index, segment in enumerate(segments):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", segment):
                 return False
+            if cls._looks_like_short_secret_path_segment(segment):
+                short_secret_like_segments += 1
             segment_entropy = cls._shannon_entropy(segment)
             if len(segment) >= 10 and segment_entropy >= 3.6 and not (
                 source_suffix and index == final_index and cls._looks_like_source_file_stem(segment)
@@ -410,6 +420,8 @@ class OutputFirewall:
                 return False
             if re.fullmatch(r"[A-Za-z_-]+", segment) and segment_entropy < 3.4:
                 has_human_readable_segment = True
+        if short_secret_like_segments >= 2:
+            return False
         return has_human_readable_segment
 
     @classmethod
@@ -444,7 +456,23 @@ class OutputFirewall:
         digit_count = sum(char.isdigit() for char in part)
         if digit_count <= 1:
             return cls._shannon_entropy(part) < cls._SOURCE_FILE_STEM_PART_ENTROPY_MAX
-        return len(part) <= 3 and part[0].lower() == "v" and part[1:].isdigit()
+        match = re.fullmatch(r"([A-Za-z]+)([0-9]{2,3})", part)
+        if match is None:
+            return False
+        return match.group(1).lower() in cls._SOURCE_FILE_STEM_MULTI_DIGIT_PREFIXES
+
+    @staticmethod
+    def _looks_like_short_secret_path_segment(segment: str) -> bool:
+        if not 8 <= len(segment) <= 16:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9]+", segment) is None:
+            return False
+        return (
+            any(char.islower() for char in segment)
+            and any(char.isupper() for char in segment)
+            and any(char.isdigit() for char in segment)
+            and len(set(segment.lower())) >= 6
+        )
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:

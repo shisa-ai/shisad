@@ -255,6 +255,17 @@ def test_gh34_entropy_detector_redacts_separated_alphabetic_secret_like_source_p
     assert "high_entropy_secret" in result.secret_findings
 
 
+def test_gh34_entropy_detector_redacts_short_secret_chunks_with_readable_prefix() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/tmp/a1B2c3D4/e5F6g7H8/i9J0k1L2"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -263,6 +274,10 @@ def test_gh34_entropy_detector_redacts_separated_alphabetic_secret_like_source_p
         "/home/ubuntu/shisad/tests/behavioral/test_no_model_configured_behavioral.py",
         "/home/ubuntu/shisad/tests/unit/test_provider_routing_s0.py",
         "/home/ubuntu/shisad/tests/unit/test_s8_default_posture.py",
+        "/tmp/project/test_x509_certificate_validation.py",
+        "/tmp/project/test_sha256_digest_validation.py",
+        "/tmp/project/test_tls13_handshake.py",
+        "/tmp/project/test_utf16_decoder.py",
     ],
 )
 def test_gh34_entropy_detector_keeps_digit_bearing_readable_source_paths(
