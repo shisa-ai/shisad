@@ -334,6 +334,19 @@ def test_gh34_entropy_detector_redacts_mid_length_final_segment_with_low_entropy
     assert "high_entropy_secret" in result.secret_findings
 
 
+def test_gh34_entropy_detector_redacts_exact_upper_bound_compact_path_segment() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    secret_segment = "a1B2c3D4e5F6g7H8i9J0k1L"
+    assert len(secret_segment) == 23
+    token = f"/tmp/tmp/tmp/{secret_segment}"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
 def test_gh34_entropy_detector_redacts_mid_length_source_suffix_stem() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/home/ubuntu/project/a1B2c3D4e5F6g7H8i9.py"
