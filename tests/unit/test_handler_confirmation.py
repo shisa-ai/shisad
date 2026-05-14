@@ -948,6 +948,109 @@ def test_gh33_load_pending_actions_fails_blank_task_legacy_sibling_on_raw_value(
     assert "legacy-blank-task-secret" not in persisted_serialized
 
 
+def test_gh33_load_pending_actions_fails_blank_task_legacy_sibling_on_escaped_value(
+    tmp_path,
+) -> None:
+    escaped_secret = 'legacy "quoted"\nsecret'
+    browser_pending = _pending_action(nonce="browser")
+    browser_pending.confirmation_id = "c-browser"
+    browser_pending.decision_nonce = "browser-nonce"
+    browser_pending.tool_name = ToolName("browser.type_text")
+    browser_pending.arguments = {
+        "target": "#token",
+        "text": escaped_secret,
+        "is_sensitive": True,
+    }
+    browser_payload = HandlerImplementation._pending_to_dict(browser_pending)
+    browser_payload["arguments"] = {
+        "target": "#token",
+        "text": escaped_secret,
+        "is_sensitive": True,
+    }
+    browser_payload["status"] = "pending"
+    browser_payload["status_reason"] = ""
+    browser_payload.pop("sensitive_public_payload", None)
+
+    sibling_pending = _pending_action(nonce="sibling")
+    sibling_pending.confirmation_id = "c-shell"
+    sibling_pending.decision_nonce = "sibling-nonce"
+    sibling_pending.tool_name = ToolName("shell.exec")
+    sibling_pending.arguments = {"command": ["echo", escaped_secret]}
+    sibling_payload = HandlerImplementation._pending_to_dict(sibling_pending)
+    sibling_payload["status"] = "pending"
+    sibling_payload["status_reason"] = ""
+    sibling_payload.pop("sensitive_public_payload", None)
+
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(
+        json.dumps([browser_payload, sibling_payload]),
+        encoding="utf-8",
+    )
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded_sibling = harness._pending_actions["c-shell"]
+    assert loaded_sibling.status == "failed"
+    assert loaded_sibling.status_reason == "sensitive_confirmation_secret_unavailable"
+    assert loaded_sibling.arguments == {}
+
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted_by_id = {item["confirmation_id"]: item for item in persisted}
+    assert persisted_by_id["c-shell"]["arguments"] == {}
+
+
+def test_gh33_load_pending_actions_preserves_blank_task_partial_overlap_sibling(
+    tmp_path,
+) -> None:
+    browser_pending = _pending_action(nonce="browser")
+    browser_pending.confirmation_id = "c-browser"
+    browser_pending.decision_nonce = "browser-nonce"
+    browser_pending.tool_name = ToolName("browser.type_text")
+    browser_pending.arguments = {
+        "target": "#token",
+        "text": "id",
+        "is_sensitive": True,
+    }
+    browser_payload = HandlerImplementation._pending_to_dict(browser_pending)
+    browser_payload["arguments"] = {
+        "target": "#token",
+        "text": "id",
+        "is_sensitive": True,
+    }
+    browser_payload["status"] = "pending"
+    browser_payload["status_reason"] = ""
+    browser_payload.pop("sensitive_public_payload", None)
+
+    sibling_pending = _pending_action(nonce="sibling")
+    sibling_pending.confirmation_id = "c-shell"
+    sibling_pending.decision_nonce = "sibling-nonce"
+    sibling_pending.tool_name = ToolName("shell.exec")
+    sibling_pending.arguments = {"command": ["echo", "identity"]}
+    sibling_pending.safe_preview = "shell.exec command=identity"
+    sibling_payload = HandlerImplementation._pending_to_dict(sibling_pending)
+    sibling_payload["status"] = "pending"
+    sibling_payload["status_reason"] = ""
+    sibling_payload.pop("sensitive_public_payload", None)
+
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(
+        json.dumps([browser_payload, sibling_payload]),
+        encoding="utf-8",
+    )
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded_sibling = harness._pending_actions["c-shell"]
+    assert loaded_sibling.status == "pending"
+    assert loaded_sibling.status_reason == ""
+    assert loaded_sibling.arguments == {"command": ["echo", "identity"]}
+    assert loaded_sibling.sensitive_public_payload is False
+
+
 def test_gh33_load_pending_actions_preserves_unrelated_blank_task_sibling(
     tmp_path,
 ) -> None:

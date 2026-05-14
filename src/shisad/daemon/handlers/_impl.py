@@ -218,22 +218,24 @@ def _payload_contains_sensitive_value(
 ) -> bool:
     if not values:
         return False
-    for candidate in (
-        payload.get("arguments"),
-        payload.get("safe_preview"),
-        payload.get("preflight_action"),
-    ):
-        if candidate is None:
-            continue
-        if isinstance(candidate, str):
-            haystack = candidate
-        else:
-            try:
-                haystack = json.dumps(candidate, sort_keys=True)
-            except (TypeError, ValueError):
-                haystack = str(candidate)
-        if any(value in haystack for value in values):
-            return True
+    value_set = frozenset(values)
+    return any(
+        _value_contains_sensitive_leaf(candidate, value_set)
+        for candidate in (
+            payload.get("arguments"),
+            payload.get("safe_preview"),
+            payload.get("preflight_action"),
+        )
+    )
+
+
+def _value_contains_sensitive_leaf(candidate: Any, values: frozenset[str]) -> bool:
+    if isinstance(candidate, str):
+        return candidate in values
+    if isinstance(candidate, Mapping):
+        return any(_value_contains_sensitive_leaf(value, values) for value in candidate.values())
+    if isinstance(candidate, (list, tuple)):
+        return any(_value_contains_sensitive_leaf(value, values) for value in candidate)
     return False
 
 
