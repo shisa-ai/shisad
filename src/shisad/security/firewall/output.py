@@ -134,6 +134,8 @@ class OutputFirewall:
         ".yml",
         ".zsh",
     }
+    _SOURCE_FILE_STEM_ENTROPY_MAX: ClassVar[float] = 4.1
+    _SOURCE_FILE_STEM_PART_ENTROPY_MAX: ClassVar[float] = 3.6
     _TOXIC_PHRASES: ClassVar[dict[str, float]] = {
         "kill yourself": 0.95,
         "end your life": 0.95,
@@ -423,13 +425,26 @@ class OutputFirewall:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", segment):
             return False
         if "_" in segment or "-" in segment:
+            if cls._shannon_entropy(segment) >= cls._SOURCE_FILE_STEM_ENTROPY_MAX:
+                return False
             parts = [part for part in re.split(r"[_-]+", segment) if part]
             return len(parts) >= 2 and all(
-                re.fullmatch(r"[A-Za-z]+", part) is not None
-                and cls._shannon_entropy(part) < 3.6
-                for part in parts
+                cls._looks_like_source_file_stem_part(part) for part in parts
             )
-        return (segment.islower() or segment.isupper()) and cls._shannon_entropy(segment) < 3.6
+        return (
+            segment.islower() or segment.isupper()
+        ) and cls._shannon_entropy(segment) < cls._SOURCE_FILE_STEM_PART_ENTROPY_MAX
+
+    @classmethod
+    def _looks_like_source_file_stem_part(cls, part: str) -> bool:
+        if re.fullmatch(r"[A-Za-z]+", part) is not None:
+            return cls._shannon_entropy(part) < cls._SOURCE_FILE_STEM_PART_ENTROPY_MAX
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", part) is None:
+            return False
+        digit_count = sum(char.isdigit() for char in part)
+        if digit_count <= 1:
+            return cls._shannon_entropy(part) < cls._SOURCE_FILE_STEM_PART_ENTROPY_MAX
+        return len(part) <= 3 and part[0].lower() == "v" and part[1:].isdigit()
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:

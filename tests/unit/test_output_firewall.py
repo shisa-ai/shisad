@@ -219,7 +219,11 @@ def test_gh34_entropy_detector_redacts_lowercase_secret_like_source_suffix_path(
 
 @pytest.mark.parametrize(
     "stem",
-    ["abc123def456_ghi789jkl012", "abc123def456-ghi789jkl012"],
+    [
+        "abc123def456_ghi789jkl012",
+        "abc123def456-ghi789jkl012",
+        "a12_b34_c56_d78_e90_f12",
+    ],
 )
 def test_gh34_entropy_detector_redacts_separated_secret_like_source_suffix_path(
     stem: str,
@@ -232,3 +236,41 @@ def test_gh34_entropy_detector_redacts_separated_secret_like_source_suffix_path(
     assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
     assert token not in result.sanitized_text
     assert "high_entropy_secret" in result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "stem",
+    ["abcdefghijkl_mnopqrstuvwx_yzabcdefghi"],
+)
+def test_gh34_entropy_detector_redacts_separated_alphabetic_secret_like_source_path(
+    stem: str,
+) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = f"/tmp/project/{stem}.py"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/ubuntu/shisad/tests/adversarial/test_local_fido2_approval.py",
+        "/home/ubuntu/shisad/tests/behavioral/test_v04_behavioral_extensions.py",
+        "/home/ubuntu/shisad/tests/behavioral/test_no_model_configured_behavioral.py",
+        "/home/ubuntu/shisad/tests/unit/test_provider_routing_s0.py",
+        "/home/ubuntu/shisad/tests/unit/test_s8_default_posture.py",
+    ],
+)
+def test_gh34_entropy_detector_keeps_digit_bearing_readable_source_paths(
+    path: str,
+) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+
+    result = firewall.inspect(f"path {path}")
+
+    assert path in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
