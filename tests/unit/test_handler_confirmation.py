@@ -732,6 +732,27 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     assert "sha256:test-evidence" not in short_serialized
     assert "base64:test-signature" not in short_serialized
 
+    description_only_pending = _pending_action(nonce="expected")
+    description_only_pending.tool_name = ToolName("browser.type_text")
+    description_only_pending.arguments = {
+        "target": "#name",
+        "is_sensitive": True,
+        "description": "description-only-secret",
+    }
+    description_only_payload = HandlerImplementation._pending_to_dict(
+        description_only_pending
+    )
+    assert "description-only-secret" not in json.dumps(
+        description_only_payload,
+        sort_keys=True,
+    )
+    assert "text" not in description_only_payload["arguments"]
+    assert description_only_payload["arguments"]["description"] == (
+        "[sensitive text redacted]"
+    )
+    assert description_only_payload["approval_envelope_hash"] == ""
+    assert description_only_payload["approval_envelope_redacted"] is True
+
     raw_payload = HandlerImplementation._pending_to_dict(pending)
     raw_payload["confirmation_id"] = "c-raw"
     raw_payload["decision_nonce"] = "raw-nonce"

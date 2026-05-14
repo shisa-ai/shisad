@@ -179,7 +179,7 @@ def _has_sensitive_pending_text(tool_name: ToolName | str, arguments: Mapping[st
     return (
         str(tool_name).strip() == "browser.type_text"
         and bool(arguments.get("is_sensitive", False))
-        and "text" in arguments
+        and ("text" in arguments or "description" in arguments)
     )
 
 
@@ -189,7 +189,8 @@ def _redact_sensitive_pending_arguments(
 ) -> dict[str, Any]:
     payload = dict(arguments)
     if _has_sensitive_pending_text(tool_name, payload):
-        payload["text"] = _SENSITIVE_PENDING_TEXT_REDACTION
+        if "text" in payload:
+            payload["text"] = _SENSITIVE_PENDING_TEXT_REDACTION
         if "description" in payload:
             payload["description"] = _SENSITIVE_PENDING_TEXT_REDACTION
     return payload

@@ -214,9 +214,10 @@ def _redact_sensitive_browser_event_arguments(
     if (
         str(tool_name).strip() == "browser.type_text"
         and bool(payload.get("is_sensitive", False))
-        and "text" in payload
+        and ("text" in payload or "description" in payload)
     ):
-        payload["text"] = _SENSITIVE_BROWSER_TEXT_REDACTION
+        if "text" in payload:
+            payload["text"] = _SENSITIVE_BROWSER_TEXT_REDACTION
         if "description" in payload:
             payload["description"] = _SENSITIVE_BROWSER_TEXT_REDACTION
     return payload

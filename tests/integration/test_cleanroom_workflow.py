@@ -277,7 +277,6 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
             tool_name=ToolName("browser.type_text"),
             arguments={
                 "target": "#name",
-                "text": sensitive_text,
                 "is_sensitive": True,
                 "description": sensitive_text,
             },
@@ -334,7 +333,7 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
         assert result["proposals"]
         proposal = result["proposals"][0]
         assert proposal["tool_name"] == "browser.type_text"
-        assert proposal["arguments"]["text"] == "[sensitive text redacted]"
+        assert "text" not in proposal["arguments"]
         assert proposal["arguments"]["description"] == "[sensitive text redacted]"
         assert sensitive_text not in json.dumps(result, sort_keys=True)
         assert "[sensitive text redacted]" in json.dumps(result, sort_keys=True)
