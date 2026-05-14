@@ -977,15 +977,25 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
         "text": "[sensitive text redacted]",
         "description": "[sensitive text redacted]",
     }
-    assert sensitive_text not in str(control_plane_call.get("raw_user_text", ""))
+    assert control_plane_call["raw_user_text"] == "[sensitive text redacted]"
     assert harness.intent_provider.messages
     classifier_prompt = "\n".join(
         message.content for message in harness.intent_provider.messages[0]
     )
+    assert "The user said: [sensitive text redacted]" in classifier_prompt
     assert sensitive_text not in classifier_prompt
     assert "[sensitive text redacted]" in classifier_prompt
     assert result.trace_tool_calls
     assert result.trace_tool_calls[0].arguments["text"] == "[sensitive text redacted]"
+
+
+def test_gh33_sensitive_browser_free_text_redacts_whole_field_for_common_value() -> None:
+    redacted = impl_session._redact_sensitive_browser_free_text(
+        "type a into an alias field",
+        ("a",),
+    )
+
+    assert redacted == "[sensitive text redacted]"
 
 
 class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):

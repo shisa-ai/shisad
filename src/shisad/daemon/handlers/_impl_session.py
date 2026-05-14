@@ -189,6 +189,7 @@ _LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_NOTIC
 _LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY
 _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
 _SENSITIVE_BROWSER_TEXT_REDACTION = "[sensitive text redacted]"
+_SENSITIVE_BROWSER_TYPE_TEXT_NAMES = frozenset({"browser.type_text", "browser_type_text"})
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
@@ -212,7 +213,7 @@ def _redact_sensitive_browser_event_arguments(
 ) -> dict[str, Any]:
     payload = dict(arguments)
     if (
-        str(tool_name).strip() == "browser.type_text"
+        str(tool_name).strip() in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES
         and bool(payload.get("is_sensitive", False))
         and ("text" in payload or "description" in payload)
     ):
@@ -227,7 +228,7 @@ def _sensitive_browser_event_values(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    if str(tool_name).strip() != "browser.type_text":
+    if str(tool_name).strip() not in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES:
         return ()
     if not bool(arguments.get("is_sensitive", False)):
         return ()
@@ -239,33 +240,63 @@ def _sensitive_browser_event_values(
     return tuple(dict.fromkeys(values))
 
 
-def _redact_sensitive_browser_values(value: Any, values: Sequence[str]) -> Any:
+def _redact_sensitive_browser_free_text(text: str, values: Sequence[str]) -> str:
     if not values:
-        return value
-    if isinstance(value, str):
-        redacted = value
-        for sensitive_value in sorted(values, key=len, reverse=True):
-            if sensitive_value:
-                redacted = redacted.replace(
-                    sensitive_value,
-                    _SENSITIVE_BROWSER_TEXT_REDACTION,
-                )
-        return redacted
-    if isinstance(value, dict):
-        return {
-            key: _redact_sensitive_browser_values(child, values)
-            for key, child in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_sensitive_browser_values(item, values) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_sensitive_browser_values(item, values) for item in value)
-    return value
+        return text
+    return _SENSITIVE_BROWSER_TEXT_REDACTION
 
 
-def _redact_sensitive_browser_text(text: str, values: Sequence[str]) -> str:
-    redacted = _redact_sensitive_browser_values(text, values)
-    return redacted if isinstance(redacted, str) else text
+def _redact_sensitive_browser_tool_call_arguments(
+    tool_name: str,
+    arguments: Any,
+    values: Sequence[str],
+) -> Any:
+    if not values:
+        return arguments
+    if tool_name not in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES:
+        return _SENSITIVE_BROWSER_TEXT_REDACTION if isinstance(arguments, str) else {}
+    if isinstance(arguments, Mapping):
+        return _redact_sensitive_browser_event_arguments(tool_name, arguments)
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        payload = json.loads(arguments)
+    except json.JSONDecodeError:
+        return _SENSITIVE_BROWSER_TEXT_REDACTION
+    if not isinstance(payload, dict):
+        return _SENSITIVE_BROWSER_TEXT_REDACTION
+    return json.dumps(
+        _redact_sensitive_browser_event_arguments(tool_name, payload),
+        sort_keys=True,
+    )
+
+
+def _redact_sensitive_browser_message_tool_calls(
+    tool_calls: Sequence[Mapping[str, Any]],
+    values: Sequence[str],
+) -> list[dict[str, Any]]:
+    if not values:
+        return [dict(tool_call) for tool_call in tool_calls]
+    redacted_tool_calls: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        redacted_tool_call = deepcopy(dict(tool_call))
+        function_payload = redacted_tool_call.get("function")
+        if isinstance(function_payload, dict):
+            tool_name = str(function_payload.get("name", "")).strip()
+            function_payload["arguments"] = _redact_sensitive_browser_tool_call_arguments(
+                tool_name,
+                function_payload.get("arguments", ""),
+                values,
+            )
+        elif "arguments" in redacted_tool_call:
+            tool_name = str(redacted_tool_call.get("name", "")).strip()
+            redacted_tool_call["arguments"] = _redact_sensitive_browser_tool_call_arguments(
+                tool_name,
+                redacted_tool_call.get("arguments"),
+                values,
+            )
+        redacted_tool_calls.append(redacted_tool_call)
+    return redacted_tool_calls
 
 
 def _redact_sensitive_browser_trace_message(
@@ -274,13 +305,10 @@ def _redact_sensitive_browser_trace_message(
 ) -> TraceMessage:
     return TraceMessage(
         role=message.role,
-        content=_redact_sensitive_browser_text(str(message.content), values),
-        tool_calls=cast(
-            list[dict[str, Any]],
-            _redact_sensitive_browser_values(message.tool_calls, values),
-        ),
+        content=_redact_sensitive_browser_free_text(str(message.content), values),
+        tool_calls=_redact_sensitive_browser_message_tool_calls(message.tool_calls, values),
         tool_call_id=(
-            _redact_sensitive_browser_text(message.tool_call_id, values)
+            _redact_sensitive_browser_free_text(message.tool_call_id, values)
             if message.tool_call_id is not None
             else None
         ),
@@ -291,12 +319,16 @@ def _redact_sensitive_browser_trace_tool_call(
     tool_call: TraceToolCall,
     values: Sequence[str],
 ) -> TraceToolCall:
+    redacted_arguments: dict[str, Any] = dict(tool_call.arguments)
+    if values:
+        redacted_arguments = (
+            _redact_sensitive_browser_event_arguments(tool_call.tool_name, tool_call.arguments)
+            if tool_call.tool_name in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES
+            else {}
+        )
     return TraceToolCall(
         tool_name=tool_call.tool_name,
-        arguments=cast(
-            dict[str, Any],
-            _redact_sensitive_browser_values(tool_call.arguments, values),
-        ),
+        arguments=redacted_arguments,
         pep_decision=tool_call.pep_decision,
         monitor_decision=tool_call.monitor_decision,
         control_plane_decision=tool_call.control_plane_decision,
@@ -9356,7 +9388,7 @@ class SessionImplMixin(HandlerMixinBase):
                 proposal_arguments,
             )
             control_plane_arguments = dict(trace_proposal_arguments)
-            control_plane_user_text = _redact_sensitive_browser_text(
+            control_plane_user_text = _redact_sensitive_browser_free_text(
                 validated.content,
                 control_plane_sensitive_browser_values,
             )
@@ -11561,13 +11593,13 @@ class SessionImplMixin(HandlerMixinBase):
                 self._trace_recorder.record(
                     TraceTurn(
                         session_id=str(sid),
-                        user_content=_redact_sensitive_browser_text(
+                        user_content=_redact_sensitive_browser_free_text(
                             validated.content,
                             sensitive_browser_values,
                         ),
                         messages_sent=trace_messages,
                         llm_response=(
-                            _redact_sensitive_browser_text(
+                            _redact_sensitive_browser_free_text(
                                 provider_resp.message.content,
                                 sensitive_browser_values,
                             )
@@ -11583,7 +11615,7 @@ class SessionImplMixin(HandlerMixinBase):
                             )
                             for tool_call in execution.trace_tool_calls
                         ],
-                        assistant_response=_redact_sensitive_browser_text(
+                        assistant_response=_redact_sensitive_browser_free_text(
                             response_text,
                             sensitive_browser_values,
                         ),

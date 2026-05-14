@@ -458,7 +458,14 @@ async def test_gh33_cleanroom_trace_redacts_sensitive_browser_text(
         assert result["proposal_only"] is True
         trace_path = config.data_dir / "traces" / f"{sid}.jsonl"
         trace_text = trace_path.read_text(encoding="utf-8")
+        trace_row = json.loads(trace_text.splitlines()[0])
         assert sensitive_text not in trace_text
+        assert trace_row["user_content"] == "[sensitive text redacted]"
+        assert trace_row["llm_response"] == "[sensitive text redacted]"
+        assert all(
+            message["content"] == "[sensitive text redacted]"
+            for message in trace_row["messages_sent"]
+        )
         assert "[sensitive text redacted]" in trace_text
     finally:
         await _shutdown(daemon_task, client)
