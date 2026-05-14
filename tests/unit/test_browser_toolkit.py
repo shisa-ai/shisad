@@ -23,6 +23,8 @@ from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy, Brows
 from shisad.executors.sandbox import SandboxConfig, SandboxResult
 from shisad.security.firewall.output import OutputFirewall
 
+_UNREACHABLE_LOOPBACK_URL = "http://127.0.0.1:9/"
+
 
 def _make_browser_fixture_handler(
     *,
@@ -2073,7 +2075,7 @@ async def test_gh26_browser_toolkit_unconfigured_command_reports_preflight_stage
     runner = _CapturingSuccessRunner()
     toolkit = _toolkit(tmp_path, runner=runner, command=[])
 
-    result = await toolkit.navigate(session=_session(), url="http://127.0.0.1:9/")
+    result = await toolkit.navigate(session=_session(), url=_UNREACHABLE_LOOPBACK_URL)
 
     assert result == {
         "ok": False,
@@ -2216,8 +2218,8 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2260,8 +2262,8 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2418,8 +2420,8 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_url_varian
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2460,8 +2462,8 @@ async def test_gh26_browser_toolkit_launched_subprocess_enoent_stays_runtime_fai
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2497,8 +2499,8 @@ async def test_gh26_browser_toolkit_subprocess_read_only_cache_classified(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2534,8 +2536,8 @@ async def test_gh26_browser_toolkit_subprocess_missing_dependency_classified(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2571,8 +2573,8 @@ async def test_gh26_browser_toolkit_subprocess_missing_executable_classified(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2581,6 +2583,7 @@ async def test_gh26_browser_toolkit_subprocess_missing_executable_classified(
     assert result["details"]["reason"] == "browser_command_unavailable"
     assert result["details"]["stage"] == "subprocess"
     assert "executable doesn't exist" in str(result["details"]["stderr"]).lower()
+    assert "/opt/ms-playwright/chromium" not in json.dumps(result, sort_keys=True)
 
 
 @pytest.mark.asyncio
