@@ -183,11 +183,58 @@ def _has_sensitive_pending_text(tool_name: ToolName | str, arguments: Mapping[st
     )
 
 
+def _pending_payload_session(item: Mapping[str, Any]) -> str:
+    return str(item.get("session_id", "")).strip()
+
+
 def _pending_payload_group(item: Mapping[str, Any]) -> tuple[str, str] | None:
+    task_id = str(item.get("task_id", "")).strip()
+    if not task_id:
+        return None
     session_id = str(item.get("session_id", "")).strip()
     if not session_id:
         return None
-    return (session_id, str(item.get("task_id", "")).strip())
+    return (session_id, task_id)
+
+
+def _sensitive_pending_text_values(
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if not _has_sensitive_pending_text(tool_name, arguments):
+        return ()
+    return tuple(
+        value
+        for key in ("text", "description")
+        if isinstance((value := arguments.get(key)), str)
+        and value
+        and value != _SENSITIVE_PENDING_TEXT_REDACTION
+    )
+
+
+def _payload_contains_sensitive_value(
+    payload: Mapping[str, Any],
+    values: tuple[str, ...],
+) -> bool:
+    if not values:
+        return False
+    for candidate in (
+        payload.get("arguments"),
+        payload.get("safe_preview"),
+        payload.get("preflight_action"),
+    ):
+        if candidate is None:
+            continue
+        if isinstance(candidate, str):
+            haystack = candidate
+        else:
+            try:
+                haystack = json.dumps(candidate, sort_keys=True)
+            except (TypeError, ValueError):
+                haystack = str(candidate)
+        if any(value in haystack for value in values):
+            return True
+    return False
 
 
 def _redact_sensitive_pending_arguments(
@@ -2995,6 +3042,7 @@ class HandlerImplementation(
         if not isinstance(raw, list):
             return
         sensitive_pending_groups: set[tuple[str, str]] = set()
+        sensitive_values_by_session: dict[str, list[str]] = {}
         for item in raw:
             if not isinstance(item, Mapping):
                 continue
@@ -3009,6 +3057,15 @@ class HandlerImplementation(
                 arguments_payload,
             ):
                 continue
+            session_id = _pending_payload_session(item)
+            if session_id:
+                grouped_values = sensitive_values_by_session.setdefault(session_id, [])
+                for value in _sensitive_pending_text_values(
+                    str(item.get("tool_name", "")),
+                    arguments_payload,
+                ):
+                    if value not in grouped_values:
+                        grouped_values.append(value)
             group = _pending_payload_group(item)
             if group is None:
                 continue
@@ -3082,8 +3139,17 @@ class HandlerImplementation(
                 raw_arguments = dict(item.get("arguments", {}))
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
                 group = _pending_payload_group(item)
+                payload_session_id = _pending_payload_session(item)
+                blank_task_sensitive_payload = (
+                    group is None
+                    and bool(payload_session_id)
+                    and _payload_contains_sensitive_value(
+                        item,
+                        tuple(sensitive_values_by_session.get(payload_session_id, ())),
+                    )
+                )
                 legacy_mixed_sensitive_payload = (
-                    group in sensitive_pending_groups
+                    (group in sensitive_pending_groups or blank_task_sensitive_payload)
                     and not sensitive_public_payload
                     and not _has_sensitive_pending_text(
                         str(item.get("tool_name", "")),
