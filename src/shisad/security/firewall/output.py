@@ -77,6 +77,9 @@ class OutputFirewall:
     )
     _HIGH_ENTROPY_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
     _QUERY_BLOB_RE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/=_%-]{20,}")
+    _PATHISH_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?<![A-Za-z0-9])/?(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]{1,8})?"
+    )
     _PATH_CONTEXT_CHARS: ClassVar[set[str]] = {
         " ",
         "\t",
@@ -171,6 +174,11 @@ class OutputFirewall:
                 sanitized = pattern.sub(f"[REDACTED:{kind}]", sanitized)
         if findings:
             reason_codes.append("secret_redaction")
+
+        sanitized, short_path_findings = self._redact_short_secret_path_tokens(sanitized)
+        if short_path_findings:
+            findings.extend(short_path_findings)
+            reason_codes.append("entropy_secret_redaction")
 
         sanitized, entropy_findings = self._redact_high_entropy_tokens(sanitized)
         if entropy_findings:
@@ -376,6 +384,63 @@ class OutputFirewall:
         return redacted, findings
 
     @classmethod
+    def _redact_short_secret_path_tokens(cls, text: str) -> tuple[str, list[str]]:
+        redacted = text
+        redacted_any = False
+        matches = sorted(
+            cls._PATHISH_TOKEN_RE.finditer(text),
+            key=lambda match: len(match.group(0)),
+            reverse=True,
+        )
+        for match in matches:
+            token = match.group(0)
+            if token.startswith("http"):
+                continue
+            replacement = cls._short_secret_path_replacement(token)
+            if replacement is None:
+                continue
+            redacted = redacted.replace(token, replacement)
+            redacted_any = True
+        return redacted, ["high_entropy_secret"] if redacted_any else []
+
+    @classmethod
+    def _short_secret_path_replacement(cls, token: str) -> str | None:
+        raw_segments = [segment for segment in token.strip("/").split("/") if segment]
+        if len(raw_segments) < 2:
+            return None
+        final_index = len(raw_segments) - 1
+        short_secret_indexes: list[int] = []
+        final_suffix = ""
+        for index, raw_segment in enumerate(raw_segments):
+            segment = raw_segment
+            suffix = ""
+            if index == final_index:
+                suffix_match = re.search(r"(\.[A-Za-z0-9]{1,8})$", raw_segment)
+                if suffix_match is not None:
+                    suffix = suffix_match.group(1)
+                    segment = raw_segment[: -len(suffix)]
+                    final_suffix = suffix
+            if cls._looks_like_readable_technical_path_segment(segment):
+                continue
+            if cls._looks_like_short_secret_path_segment(segment):
+                short_secret_indexes.append(index)
+        if len(short_secret_indexes) >= 2:
+            prefix = "/" if token.startswith("/") else ""
+            redacted_segments = [
+                f"[REDACTED:high_entropy_secret]{final_suffix if index == final_index else ''}"
+                if index in short_secret_indexes
+                else segment
+                for index, segment in enumerate(raw_segments)
+            ]
+            return prefix + "/".join(redacted_segments)
+        if short_secret_indexes == [final_index]:
+            prefix = "/" if token.startswith("/") else ""
+            kept_segments = raw_segments[:-1]
+            redacted_final = f"[REDACTED:high_entropy_secret]{final_suffix}"
+            return prefix + "/".join([*kept_segments, redacted_final])
+        return None
+
+    @classmethod
     def _looks_like_filesystem_path_token(
         cls,
         text: str,
@@ -412,7 +477,9 @@ class OutputFirewall:
         for index, segment in enumerate(segments):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", segment):
                 return False
-            if cls._looks_like_short_secret_path_segment(segment):
+            if cls._looks_like_short_secret_path_segment(
+                segment
+            ) and not cls._looks_like_readable_technical_path_segment(segment):
                 short_secret_like_segments += 1
                 if index == final_index:
                     return False
@@ -463,6 +530,16 @@ class OutputFirewall:
         if match is None:
             return False
         return match.group(1).lower() in cls._SOURCE_FILE_STEM_MULTI_DIGIT_PREFIXES
+
+    @staticmethod
+    def _looks_like_readable_technical_path_segment(segment: str) -> bool:
+        lower = segment.lower()
+        if lower != segment:
+            return False
+        return any(
+            lower.startswith(prefix)
+            for prefix in ("sha256", "tls13", "utf16", "v4l2", "x509")
+        )
 
     @staticmethod
     def _looks_like_short_secret_path_segment(segment: str) -> bool:
