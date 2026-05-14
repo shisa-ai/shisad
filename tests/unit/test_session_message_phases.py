@@ -3298,6 +3298,40 @@ def test_direct_response_blocked_output_policy_includes_reason_hint() -> None:
     assert appended["content"] == response["response"]
 
 
+def test_direct_response_malformed_url_policy_block_is_actionable() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs)
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: _blocked_output_policy_result(
+            text,
+            reason_codes=["malicious_url", "malformed_url"],
+        )
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "find the reservation page"},
+        sanitized_text="find the reservation page",
+    )
+
+    response = SessionImplMixin._direct_response_with_transcript(
+        harness,
+        validated=validated,
+        response="I could not find a specific page. Maybe try http://[2001:db8::1",
+    )
+
+    assert response["response"] == (
+        "Response blocked by output policy because the generated reply contained "
+        "malformed URL text. I cannot safely show that URL text. Provide a trusted "
+        "URL or ask me to search for the page, then retry. (reason: malformed_url; "
+        "see `shisad audit query --type OutputFirewallAlert --session sess-g1 --json` "
+        "for detail.)"
+    )
+    assert "http://[2001:db8::1" not in response["response"]
+    assert appended["content"] == response["response"]
+
+
 def test_lockdown_notice_fragment_blocks_unsanitized_notice_reason() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._lockdown_manager = SimpleNamespace(

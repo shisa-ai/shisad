@@ -3523,6 +3523,14 @@ def _output_policy_blocked_response_text(
         reason_codes[0] if reason_codes else "unknown",
     )
     audit_session = shlex.quote(str(session_id))
+    if "malformed_url" in reason_codes:
+        return (
+            f"{subject} blocked by output policy because the generated reply contained "
+            "malformed URL text. I cannot safely show that URL text. Provide a trusted "
+            "URL or ask me to search for the page, then retry. (reason: malformed_url; "
+            f"see `shisad audit query --type OutputFirewallAlert --session {audit_session} --json` "
+            "for detail.)"
+        )
     return (
         f"{subject} blocked by output policy. (reason: {reason}; see "
         f"`shisad audit query --type OutputFirewallAlert --session {audit_session} --json` "
