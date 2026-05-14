@@ -24,11 +24,15 @@ from shisad.core.approval import (
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
+    IntentAction,
+    IntentEnvelope,
+    IntentPolicyContext,
     SoftwareConfirmationBackend,
     TOTPBackend,
     approval_envelope_hash,
     generate_totp_code,
     hash_recovery_code,
+    intent_envelope_hash,
 )
 from shisad.core.events import TwoFactorEnrolled, TwoFactorRevoked
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
@@ -665,7 +669,31 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     short_pending.tool_name = ToolName("browser.type_text")
     short_pending.arguments = {"target": "#name", "text": "a", "is_sensitive": True}
     short_pending.approval_envelope = short_pending.approval_envelope.model_copy(
-        update={"action_summary": "text=a"}
+        update={"action_summary": "text=a", "intent_envelope_hash": "old-intent-hash"}
+    )
+    short_pending.intent_envelope = IntentEnvelope(
+        intent_id="c-1",
+        agent_id="daemon-1",
+        workspace_id="w-1",
+        session_id="s-1",
+        created_at=datetime.now(UTC),
+        expires_at=None,
+        action=IntentAction(
+            tool="browser.type_text",
+            display_summary="text=a",
+            parameters={"target": "#name", "text": "a", "is_sensitive": True},
+            destinations=[],
+        ),
+        policy_context=IntentPolicyContext(
+            required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            confirmation_reason="test",
+            matched_rule="browser.type_text",
+            action_digest="sha256:test-action-digest",
+        ),
+        nonce="b64:test-intent-nonce",
+    )
+    short_pending.approval_envelope = short_pending.approval_envelope.model_copy(
+        update={"intent_envelope_hash": intent_envelope_hash(short_pending.intent_envelope)}
     )
     short_payload = HandlerImplementation._pending_to_dict(short_pending)
     assert short_payload["arguments"]["text"] == "[sensitive text redacted]"
@@ -675,6 +703,8 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
         "browser.type_text: is_sensitive=true, target=#name, "
         "text=[sensitive text redacted]"
     )
+    assert short_payload["intent_envelope_redacted"] is True
+    assert "intent_envelope" not in short_payload
 
     raw_payload = HandlerImplementation._pending_to_dict(pending)
     raw_payload["confirmation_id"] = "c-raw"

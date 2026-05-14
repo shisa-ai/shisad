@@ -7302,6 +7302,7 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
     assert str(arguments.get("source_binding", "")).strip()
     assert str(arguments.get("click_source_binding", "")).strip()
     assert str(arguments.get("destination", "")).endswith("/browser-submitted")
+    assert "Risk Level: HIGH" in str(actions[0].get("safe_preview", ""))
     leak_check = dict(actions[0].get("leak_check", {}))
     assert leak_check.get("detected") is True
     assert "Cross-thread overlap detected" in actions[0].get("warnings", [])

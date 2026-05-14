@@ -193,13 +193,34 @@ def _redact_sensitive_pending_arguments(
     return payload
 
 
+def _is_high_risk_confirmation_arguments(
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+) -> bool:
+    lowered = str(tool_name).lower()
+    if any(token in lowered for token in _HIGH_RISK_CONFIRM_TOKENS):
+        return True
+    candidate = str(
+        arguments.get("to")
+        or arguments.get("recipient")
+        or arguments.get("destination")
+        or arguments.get("url")
+        or ""
+    ).lower()
+    return bool(
+        candidate and ("http://" in candidate or "https://" in candidate or "@" in candidate)
+    )
+
+
 def _redacted_sensitive_confirmation_summary(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
 ) -> tuple[Any, str]:
     summary = safe_summary(
         action=str(tool_name),
-        risk_level="medium",
+        risk_level=(
+            "high" if _is_high_risk_confirmation_arguments(tool_name, arguments) else "medium"
+        ),
         arguments=_redact_sensitive_pending_arguments(tool_name, arguments),
     )
     action_summary = f"{summary.action}: " + ", ".join(
@@ -2602,37 +2623,17 @@ class HandlerImplementation(
                 approval_envelope_payload["action_summary"] = sensitive_action_summary
             payload["approval_envelope"] = approval_envelope_payload
         if pending.intent_envelope is not None:
-            intent_envelope_payload = pending.intent_envelope.model_dump(mode="json")
             if sensitive_action_summary:
-                action_payload = intent_envelope_payload.get("action")
-                if isinstance(action_payload, dict):
-                    action_payload["display_summary"] = sensitive_action_summary
-                    parameters = action_payload.get("parameters")
-                    if isinstance(parameters, Mapping):
-                        action_payload["parameters"] = _redact_sensitive_pending_arguments(
-                            pending.tool_name,
-                            parameters,
-                        )
-            payload["intent_envelope"] = intent_envelope_payload
+                payload["intent_envelope_redacted"] = True
+            else:
+                payload["intent_envelope"] = pending.intent_envelope.model_dump(mode="json")
         if pending.confirmation_evidence is not None:
             payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(mode="json")
         return payload
 
     @staticmethod
     def _is_high_risk_confirmation(tool_name: ToolName, arguments: dict[str, Any]) -> bool:
-        lowered = str(tool_name).lower()
-        if any(token in lowered for token in _HIGH_RISK_CONFIRM_TOKENS):
-            return True
-        candidate = str(
-            arguments.get("to")
-            or arguments.get("recipient")
-            or arguments.get("destination")
-            or arguments.get("url")
-            or ""
-        ).lower()
-        return bool(
-            candidate and ("http://" in candidate or "https://" in candidate or "@" in candidate)
-        )
+        return _is_high_risk_confirmation_arguments(tool_name, arguments)
 
     # Session-recent window for the cross-thread leak detector source. Limits
     # the detector to the most recent N user entries instead of the full
