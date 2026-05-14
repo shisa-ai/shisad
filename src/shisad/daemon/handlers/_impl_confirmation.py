@@ -196,7 +196,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         tool_output: Any,
         decision_timestamp: str,
     ) -> None:
-        if str(getattr(pending, "tool_name", "")).strip() == "evidence.promote":
+        pending_tool_name = canonical_tool_name(
+            str(getattr(pending, "tool_name", "")).strip(),
+            warn_on_alias=False,
+        )
+        if pending_tool_name == "evidence.promote":
             return
         tool_name = str(getattr(pending, "tool_name", "")).strip()
         raw_content = str(getattr(tool_output, "content", "") or "")
@@ -1690,7 +1694,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 decision_timestamp=decision_timestamp,
             )
         promote_followup_reason = ""
-        if success and tool_output is not None and str(pending.tool_name) == "evidence.promote":
+        pending_tool_name = canonical_tool_name(str(pending.tool_name), warn_on_alias=False)
+        if success and tool_output is not None and pending_tool_name == "evidence.promote":
             try:
                 payload = json.loads(str(getattr(tool_output, "content", "")))
             except json.JSONDecodeError:

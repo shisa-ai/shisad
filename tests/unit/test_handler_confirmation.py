@@ -36,6 +36,7 @@ from shisad.core.approval import (
 )
 from shisad.core.events import TwoFactorEnrolled, TwoFactorRevoked
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
@@ -335,7 +336,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             }
         )
         tool_output = None
-        if str(tool_name) == "evidence.promote":
+        if canonical_tool_name(str(tool_name), warn_on_alias=False) == "evidence.promote":
             tool_output = SimpleNamespace(
                 content=json.dumps(
                     {
@@ -452,6 +453,42 @@ def test_confirmed_browser_tool_output_transcript_strips_page_title(tmp_path) ->
         "title": "Reserve Online | Venue",
     }
     assert entries[0].metadata["tool_name"] == "browser.screenshot"
+
+
+def test_gh34_confirmed_browser_alias_transcript_strips_page_title(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("browser-screenshot")
+    content = json.dumps(
+        {
+            "ok": True,
+            "title": "Reserve Online | Venue",
+            "ocr_text": "Visible page text only.",
+            "screenshot_id": "shot-1",
+        },
+        sort_keys=True,
+    )
+
+    harness._append_confirmed_tool_output_transcript(
+        pending=pending,
+        tool_output=SimpleNamespace(
+            content=content,
+            taint_labels={TaintLabel.UNTRUSTED},
+            success=True,
+        ),
+        decision_timestamp="2026-05-08T17:15:00+00:00",
+    )
+
+    entries = harness._transcript_store.list_entries(SessionId("s-1"))
+    assert len(entries) == 1
+    assert "Visible page text only." in entries[0].content_preview
+    assert "Reserve Online" not in entries[0].content_preview
+    assert '"title"' not in entries[0].content_preview
+    assert entries[0].metadata["page_title_metadata"] == {
+        "screenshot_id": "shot-1",
+        "title": "Reserve Online | Venue",
+    }
+    assert entries[0].metadata["tool_name"] == "browser-screenshot"
 
 
 def test_m5_confirmed_tool_output_rebuild_preserves_shared_channel(
@@ -1971,6 +2008,52 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
         context_delivery_target=delivery_target.model_dump(mode="json"),
     )
     assert result.results_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gh34_confirmation_evidence_promote_alias_uses_canonical_followup(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    ref = harness._evidence_store.store(
+        SessionId("s-1"),
+        "promoted body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="promoted body",
+    )
+    envelope = _software_approval_envelope(tool_name=ToolName("evidence-promote"))
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="expected",
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("evidence-promote"),
+        arguments={"ref_id": ref.ref_id},
+        reason="manual",
+        capabilities={Capability.MEMORY_READ},
+        created_at=datetime.now(UTC),
+        approval_envelope=envelope,
+        approval_envelope_hash=approval_envelope_hash(envelope),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
+    assert endorsed is not None
+    assert endorsed.endorsement_state == ArtifactEndorsementState.USER_ENDORSED
+    transcript_entries = harness._transcript_store.list_entries(SessionId("s-1"))
+    assert len(transcript_entries) == 1
+    assert transcript_entries[0].metadata["promoted_evidence"] is True
+    assert transcript_entries[0].metadata["promoted_ref_id"] == ref.ref_id
+    assert transcript_entries[0].metadata.get("tool_name") is None
 
 
 @pytest.mark.asyncio
