@@ -7262,7 +7262,11 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
     contract_harness: ContractHarness,
 ) -> None:
     sid = await _create_session(contract_harness.client)
-    sensitive_text = "browser-sensitive-token"
+    sensitive_text = "alpha bravo charlie delta ledger report"
+    await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": f"context phrase: {sensitive_text}"},
+    )
     await contract_harness.client.call(
         "session.message",
         {
@@ -7298,9 +7302,27 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
     assert str(arguments.get("source_binding", "")).strip()
     assert str(arguments.get("click_source_binding", "")).strip()
     assert str(arguments.get("destination", "")).endswith("/browser-submitted")
+    leak_check = dict(actions[0].get("leak_check", {}))
+    assert leak_check.get("detected") is True
+    assert "Cross-thread overlap detected" in actions[0].get("warnings", [])
     assert sensitive_text not in json.dumps(pending, sort_keys=True)
     pending_actions_file = contract_harness.config.data_dir / "pending_actions.json"
     assert sensitive_text not in pending_actions_file.read_text(encoding="utf-8")
+    audit_entries = [
+        json.loads(line)
+        for line in (contract_harness.config.data_dir / "audit.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    proposed_browser_writes = [
+        entry
+        for entry in audit_entries
+        if entry.get("event_type") == "ToolProposed"
+        and entry.get("data", {}).get("tool_name") == "browser.type_text"
+    ]
+    assert proposed_browser_writes
+    assert sensitive_text not in json.dumps(proposed_browser_writes, sort_keys=True)
 
     confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
     assert confirmed.get("confirmed") is True

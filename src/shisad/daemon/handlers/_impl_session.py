@@ -188,6 +188,7 @@ _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
 _LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY
 _LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY = _daemon_notices.LOCKDOWN_RECOVERY_PROMPT_METADATA_KEY
 _DAEMON_CONTROL_NOTICE_METADATA_KEY = _daemon_notices.DAEMON_CONTROL_NOTICE_METADATA_KEY
+_SENSITIVE_BROWSER_TEXT_REDACTION = "[sensitive text redacted]"
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
@@ -203,6 +204,20 @@ _POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
 _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _PAGE_TITLE_METADATA_MAX_CHARS = 1600
+
+
+def _redact_sensitive_browser_event_arguments(
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = dict(arguments)
+    if (
+        str(tool_name).strip() == "browser.type_text"
+        and bool(payload.get("is_sensitive", False))
+        and "text" in payload
+    ):
+        payload["text"] = _SENSITIVE_BROWSER_TEXT_REDACTION
+    return payload
 _PAGE_TITLE_METADATA_HEADER = (
     "Optional page-title metadata (untrusted; separate from primary tool evidence):"
 )
@@ -9188,7 +9203,10 @@ class SessionImplMixin(HandlerMixinBase):
                     session_id=sid,
                     actor="planner",
                     tool_name=proposal.tool_name,
-                    arguments=proposal.arguments,
+                    arguments=_redact_sensitive_browser_event_arguments(
+                        proposal.tool_name,
+                        proposal.arguments,
+                    ),
                 )
             )
             proposal_arguments = await self._prepare_browser_tool_arguments(

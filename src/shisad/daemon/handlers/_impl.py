@@ -193,39 +193,19 @@ def _redact_sensitive_pending_arguments(
     return payload
 
 
-def _sensitive_pending_text_unavailable(
+def _redacted_sensitive_confirmation_summary(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
-) -> bool:
-    return (
-        _has_sensitive_pending_text(tool_name, arguments)
-        and str(arguments.get("text", "")) == _SENSITIVE_PENDING_TEXT_REDACTION
+) -> tuple[Any, str]:
+    summary = safe_summary(
+        action=str(tool_name),
+        risk_level="medium",
+        arguments=_redact_sensitive_pending_arguments(tool_name, arguments),
     )
-
-
-def _redact_sensitive_pending_payload(
-    tool_name: ToolName | str,
-    arguments: Mapping[str, Any],
-    value: Any,
-) -> Any:
-    if not _has_sensitive_pending_text(tool_name, arguments):
-        return value
-    sensitive_text = str(arguments.get("text", ""))
-    if not sensitive_text or sensitive_text == _SENSITIVE_PENDING_TEXT_REDACTION:
-        return value
-    if isinstance(value, str):
-        return value.replace(sensitive_text, _SENSITIVE_PENDING_TEXT_REDACTION)
-    if isinstance(value, Mapping):
-        return {
-            key: _redact_sensitive_pending_payload(tool_name, arguments, item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _redact_sensitive_pending_payload(tool_name, arguments, item)
-            for item in value
-        ]
-    return value
+    action_summary = f"{summary.action}: " + ", ".join(
+        f"{key}={value}" for key, value in summary.parameters[:6]
+    )
+    return summary, action_summary.strip()
 
 
 class _EventPublisher:
@@ -2554,10 +2534,20 @@ class HandlerImplementation(
     @staticmethod
     def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
         arguments = _redact_sensitive_pending_arguments(pending.tool_name, pending.arguments)
-        safe_preview = _redact_sensitive_pending_payload(
-            pending.tool_name,
-            pending.arguments,
-            pending.safe_preview,
+        sensitive_summary = None
+        sensitive_action_summary = ""
+        if _has_sensitive_pending_text(pending.tool_name, pending.arguments):
+            sensitive_summary, sensitive_action_summary = _redacted_sensitive_confirmation_summary(
+                pending.tool_name,
+                pending.arguments,
+            )
+        safe_preview = (
+            render_structured_confirmation(
+                sensitive_summary,
+                warnings=sorted(set(pending.warnings)),
+            )
+            if sensitive_summary is not None
+            else pending.safe_preview
         )
         payload: dict[str, Any] = {
             "confirmation_id": pending.confirmation_id,
@@ -2607,17 +2597,23 @@ class HandlerImplementation(
         if pending.pep_elevation is not None:
             payload["pep_elevation"] = pending_pep_elevation_to_payload(pending.pep_elevation)
         if pending.approval_envelope is not None:
-            payload["approval_envelope"] = _redact_sensitive_pending_payload(
-                pending.tool_name,
-                pending.arguments,
-                pending.approval_envelope.model_dump(mode="json"),
-            )
+            approval_envelope_payload = pending.approval_envelope.model_dump(mode="json")
+            if sensitive_action_summary:
+                approval_envelope_payload["action_summary"] = sensitive_action_summary
+            payload["approval_envelope"] = approval_envelope_payload
         if pending.intent_envelope is not None:
-            payload["intent_envelope"] = _redact_sensitive_pending_payload(
-                pending.tool_name,
-                pending.arguments,
-                pending.intent_envelope.model_dump(mode="json"),
-            )
+            intent_envelope_payload = pending.intent_envelope.model_dump(mode="json")
+            if sensitive_action_summary:
+                action_payload = intent_envelope_payload.get("action")
+                if isinstance(action_payload, dict):
+                    action_payload["display_summary"] = sensitive_action_summary
+                    parameters = action_payload.get("parameters")
+                    if isinstance(parameters, Mapping):
+                        action_payload["parameters"] = _redact_sensitive_pending_arguments(
+                            pending.tool_name,
+                            parameters,
+                        )
+            payload["intent_envelope"] = intent_envelope_payload
         if pending.confirmation_evidence is not None:
             payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(mode="json")
         return payload
@@ -2727,21 +2723,17 @@ class HandlerImplementation(
         if extra_warnings:
             warnings.extend(str(item).strip() for item in extra_warnings if str(item).strip())
         leak_result_payload: dict[str, Any] = {}
-        outbound_text = self._extract_outbound_text(confirmation_arguments)
+        outbound_text = self._extract_outbound_text(arguments)
         if outbound_text:
             leak_result = self._leak_detector.evaluate(
                 outbound_text=outbound_text,
                 source_text_by_id=self._session_source_text_by_id(session_id),
                 allowed_source_ids={
-                    str(item)
-                    for item in confirmation_arguments.get("source_ids", [])
-                    if str(item).strip()
+                    str(item) for item in arguments.get("source_ids", []) if str(item).strip()
                 }
-                if isinstance(confirmation_arguments.get("source_ids"), list)
+                if isinstance(arguments.get("source_ids"), list)
                 else set(),
-                explicit_cross_thread_intent=bool(
-                    confirmation_arguments.get("explicit_share_intent")
-                ),
+                explicit_cross_thread_intent=bool(arguments.get("explicit_share_intent")),
             )
             leak_result_payload = {
                 "detected": leak_result.detected,
@@ -3081,12 +3073,14 @@ class HandlerImplementation(
             ):
                 pending.strip_direct_tool_execute_envelope_keys = True
                 migrated_legacy_strip_intent = True
-            if (
-                pending.status == "pending"
-                and _sensitive_pending_text_unavailable(pending.tool_name, pending.arguments)
-            ):
-                pending.status = "failed"
-                pending.status_reason = "sensitive_confirmation_secret_unavailable"
+            if _has_sensitive_pending_text(pending.tool_name, pending.arguments):
+                pending.arguments = _redact_sensitive_pending_arguments(
+                    pending.tool_name,
+                    pending.arguments,
+                )
+                if pending.status == "pending":
+                    pending.status = "failed"
+                    pending.status_reason = "sensitive_confirmation_secret_unavailable"
                 pruned_stale = True
             self._pending_actions[pending.confirmation_id] = pending
             self._pending_by_session.setdefault(

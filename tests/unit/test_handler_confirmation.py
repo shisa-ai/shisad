@@ -661,6 +661,41 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     assert persisted[0]["status"] == "failed"
     assert persisted[0]["status_reason"] == "sensitive_confirmation_secret_unavailable"
 
+    short_pending = _pending_action(nonce="expected")
+    short_pending.tool_name = ToolName("browser.type_text")
+    short_pending.arguments = {"target": "#name", "text": "a", "is_sensitive": True}
+    short_pending.approval_envelope = short_pending.approval_envelope.model_copy(
+        update={"action_summary": "text=a"}
+    )
+    short_payload = HandlerImplementation._pending_to_dict(short_pending)
+    assert short_payload["arguments"]["text"] == "[sensitive text redacted]"
+    assert short_payload["approval_envelope"]["action_digest"] == "sha256:test-action-digest"
+    assert short_payload["approval_envelope"]["schema_version"] == "shisad.approval.v1"
+    assert short_payload["approval_envelope"]["action_summary"] == (
+        "browser.type_text: is_sensitive=true, target=#name, "
+        "text=[sensitive text redacted]"
+    )
+
+    raw_payload = HandlerImplementation._pending_to_dict(pending)
+    raw_payload["confirmation_id"] = "c-raw"
+    raw_payload["decision_nonce"] = "raw-nonce"
+    raw_payload["arguments"]["text"] = "raw-upgrade-token"
+    raw_payload["safe_preview"] = "browser.type_text text=raw-upgrade-token"
+    raw_payload["status"] = "pending"
+    raw_payload["status_reason"] = ""
+    pending_actions_file.write_text(json.dumps([raw_payload]), encoding="utf-8")
+    raw_harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(raw_harness)
+
+    loaded_raw = raw_harness._pending_actions["c-raw"]
+    assert loaded_raw.status == "failed"
+    assert loaded_raw.status_reason == "sensitive_confirmation_secret_unavailable"
+    raw_persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    raw_persisted_serialized = json.dumps(raw_persisted, sort_keys=True)
+    assert "raw-upgrade-token" not in raw_persisted_serialized
+    assert raw_persisted[0]["arguments"]["text"] == "[sensitive text redacted]"
+
 
 def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
