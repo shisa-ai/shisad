@@ -333,6 +333,17 @@ def test_gh34_entropy_detector_keeps_readable_technical_final_segment() -> None:
     assert "high_entropy_secret" not in result.secret_findings
 
 
+def test_gh34_entropy_detector_redacts_secret_like_technical_prefix_final_segment() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/home/ubuntu/project/v4l2a1b2"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
 @pytest.mark.parametrize(
     "path",
     [

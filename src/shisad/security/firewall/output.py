@@ -147,6 +147,9 @@ class OutputFirewall:
         "v",
         "x",
     }
+    _READABLE_TECHNICAL_PATH_SEGMENTS: ClassVar[set[str]] = {
+        "v4l2ctl",
+    }
     _TOXIC_PHRASES: ClassVar[dict[str, float]] = {
         "kill yourself": 0.95,
         "end your life": 0.95,
@@ -536,10 +539,7 @@ class OutputFirewall:
         lower = segment.lower()
         if lower != segment:
             return False
-        return any(
-            lower.startswith(prefix)
-            for prefix in ("sha256", "tls13", "utf16", "v4l2", "x509")
-        )
+        return lower in OutputFirewall._READABLE_TECHNICAL_PATH_SEGMENTS
 
     @staticmethod
     def _looks_like_short_secret_path_segment(segment: str) -> bool:
