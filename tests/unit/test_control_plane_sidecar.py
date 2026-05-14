@@ -8,11 +8,15 @@ import json
 import os
 import signal
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from shisad.core.api.transport import ControlClient, JsonRpcCallError
+from shisad.core.request_context import RequestContext
 from shisad.core.types import Capability
+from shisad.security.control_plane.consensus import ConsensusDecision
+from shisad.security.control_plane.engine import ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
     ControlDecision,
     Origin,
@@ -21,9 +25,13 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
+    ControlPlaneSidecarClient,
     ControlPlaneUnavailableError,
+    _ControlPlaneSidecarHandlers,
+    _EvaluateActionParams,
     start_control_plane_sidecar,
 )
+from shisad.security.control_plane.trace import PlanVerificationResult
 
 
 def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -34,6 +42,113 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "false")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
+
+
+@pytest.mark.asyncio
+async def test_gh33_control_plane_sidecar_client_serializes_monitor_arguments(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    client = ControlPlaneSidecarClient(tmp_path / "control.sock")
+
+    async def _fake_call(
+        method: str,
+        params: dict[str, object],
+        result_model: object,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> object:
+        _ = (result_model, timeout_seconds)
+        captured["method"] = method
+        captured["params"] = params
+        return SimpleNamespace(evaluation="ok")
+
+    monkeypatch.setattr(client, "_call", _fake_call)
+
+    result = await client.evaluate_action(
+        tool_name="shell.exec",
+        arguments={"command": ["curl", "https://secret.example/upload"]},
+        monitor_arguments={},
+        origin=Origin(
+            session_id="sess-gh33-sidecar-client",
+            user_id="alice",
+            workspace_id="ws-gh33",
+            actor="planner",
+        ),
+        risk_tier=RiskTier.HIGH,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        raw_user_text="[sensitive text redacted]",
+    )
+
+    assert result == "ok"
+    assert captured["method"] == "control_plane.evaluate_action"
+    assert captured["params"]["arguments"] == {
+        "command": ["curl", "https://secret.example/upload"]
+    }
+    assert captured["params"]["monitor_arguments"] == {}
+
+
+class _MonitorArgumentCaptureEngine:
+    def __init__(self) -> None:
+        self.evaluate_kwargs: dict[str, object] = {}
+
+    async def evaluate_action(self, **kwargs: object) -> ControlPlaneEvaluation:
+        self.evaluate_kwargs = dict(kwargs)
+        action = build_action(
+            tool_name=str(kwargs["tool_name"]),
+            arguments=dict(kwargs["arguments"]),
+            origin=kwargs["origin"],
+            risk_tier=kwargs["risk_tier"],
+        )
+        return ControlPlaneEvaluation(
+            action=action,
+            trace_result=PlanVerificationResult(
+                allowed=True,
+                reason_code="trace:allowed",
+            ),
+            consensus=ConsensusDecision(
+                decision=ControlDecision.ALLOW,
+                risk_tier=RiskTier.LOW,
+            ),
+            decision=ControlDecision.ALLOW,
+            reason_codes=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_gh33_control_plane_sidecar_handler_forwards_monitor_arguments() -> None:
+    engine = _MonitorArgumentCaptureEngine()
+    handlers = _ControlPlaneSidecarHandlers(engine=engine)  # type: ignore[arg-type]
+    origin = Origin(
+        session_id="sess-gh33-sidecar-handler",
+        user_id="alice",
+        workspace_id="ws-gh33",
+        actor="planner",
+    )
+
+    result = await handlers.handle_evaluate_action(
+        _EvaluateActionParams(
+            tool_name="shell.exec",
+            arguments={"command": ["curl", "https://secret.example/upload"]},
+            monitor_arguments={},
+            origin=origin,
+            risk_tier=RiskTier.HIGH,
+            declared_domains=[],
+            session_tainted=True,
+            trusted_input=True,
+            raw_user_text="[sensitive text redacted]",
+        ),
+        RequestContext(),
+    )
+
+    assert engine.evaluate_kwargs["arguments"] == {
+        "command": ["curl", "https://secret.example/upload"]
+    }
+    assert engine.evaluate_kwargs["monitor_arguments"] == {}
+    assert result["evaluation"]["action"]["network_hosts"] == ["secret.example"]
 
 
 @pytest.mark.asyncio

@@ -2640,7 +2640,10 @@ class HandlerImplementation(
         if pending.sensitive_public_payload:
             payload["sensitive_public_payload"] = True
         if pending.preflight_action is not None:
-            payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
+            if sensitive_pending:
+                payload["preflight_action_redacted"] = True
+            else:
+                payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
         if pending.merged_policy is not None:
             payload["merged_policy"] = pending.merged_policy.model_dump(mode="json")
         if pending.pep_context is not None:

@@ -780,15 +780,32 @@ def test_gh33_pending_sensitive_mixed_sibling_uses_public_payload(tmp_path) -> N
     pending.arguments = {"command": ["echo", "mixed-browser-secret"]}
     pending.public_arguments = {}
     pending.sensitive_public_payload = True
+    pending.preflight_action = ControlPlaneAction(
+        origin=Origin(
+            session_id="s-1",
+            user_id="alice",
+            workspace_id="w-1",
+            actor="planner",
+        ),
+        tool_name="shell.exec",
+        action_kind=ActionKind.EGRESS,
+        risk_tier=RiskTier.HIGH,
+        resource_id="secret.example",
+        resource_ids=["secret.example"],
+        network_hosts=["secret.example"],
+    )
     pending.safe_preview = "shell.exec command=mixed-browser-secret"
 
     payload = HandlerImplementation._pending_to_dict(pending)
 
     serialized = json.dumps(payload, sort_keys=True)
     assert "mixed-browser-secret" not in serialized
+    assert "secret.example" not in serialized
     assert payload["arguments"] == {}
     assert payload["safe_preview"] != pending.safe_preview
     assert "mixed-browser-secret" not in payload["safe_preview"]
+    assert "preflight_action" not in payload
+    assert payload["preflight_action_redacted"] is True
     assert payload["approval_envelope_hash"] == ""
     assert payload["approval_envelope_redacted"] is True
     assert payload["sensitive_public_payload"] is True
@@ -804,8 +821,11 @@ def test_gh33_pending_sensitive_mixed_sibling_uses_public_payload(tmp_path) -> N
     assert loaded.status == "failed"
     assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
-    assert "mixed-browser-secret" not in json.dumps(persisted, sort_keys=True)
+    persisted_serialized = json.dumps(persisted, sort_keys=True)
+    assert "mixed-browser-secret" not in persisted_serialized
+    assert "secret.example" not in persisted_serialized
     assert persisted[0]["arguments"] == {}
+    assert "preflight_action" not in persisted[0]
     assert persisted[0]["status"] == "failed"
     assert persisted[0]["status_reason"] == "sensitive_confirmation_secret_unavailable"
 
