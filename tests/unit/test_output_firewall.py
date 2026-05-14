@@ -403,6 +403,54 @@ def test_gh34_entropy_detector_redacts_single_nonfinal_path_secret_segment() -> 
     assert "high_entropy_secret" in result.secret_findings
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://api.good.com/reset/a1B2c3D4",
+            "https://api.good.com/reset/[REDACTED:high_entropy_secret]",
+        ),
+        (
+            "https://api.good.com/reset/a1B2c3D4/confirm?next=dashboard",
+            "https://api.good.com/reset/[REDACTED:high_entropy_secret]/confirm?next=dashboard",
+        ),
+    ],
+)
+def test_gh34_entropy_detector_redacts_compact_secret_url_path_segment(
+    url: str,
+    expected: str,
+) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+
+    result = firewall.inspect(f"url {url}")
+
+    assert expected in result.sanitized_text
+    assert url not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+    assert result.url_findings[0].allowed is True
+    assert result.blocked is False
+    assert result.require_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.good.com/docs/readme",
+        "https://api.good.com/docs/v4l2ctl",
+    ],
+)
+def test_gh34_entropy_detector_keeps_readable_url_path_segment(url: str) -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+
+    result = firewall.inspect(f"url {url}")
+
+    assert url in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
+    assert result.url_findings[0].allowed is True
+    assert result.blocked is False
+    assert result.require_confirmation is False
+
+
 def test_gh34_entropy_detector_keeps_readable_technical_final_segment() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/home/ubuntu/project/v4l2ctl"

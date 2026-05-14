@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Any, ClassVar
-from urllib.parse import unquote
+from urllib.parse import unquote, urlunparse
 
 from pydantic import BaseModel, Field
 
@@ -396,6 +396,13 @@ class OutputFirewall:
     def _redact_short_secret_path_tokens(cls, text: str) -> tuple[str, list[str]]:
         redacted = text
         redacted_any = False
+        for match in _URL_RE.finditer(text):
+            token = match.group(0)
+            replacement = cls._short_secret_url_replacement(token)
+            if replacement is None:
+                continue
+            redacted = redacted.replace(token, replacement)
+            redacted_any = True
         matches = sorted(
             cls._PATHISH_TOKEN_RE.finditer(text),
             key=lambda match: len(match.group(0)),
@@ -411,6 +418,16 @@ class OutputFirewall:
             redacted = redacted.replace(token, replacement)
             redacted_any = True
         return redacted, ["high_entropy_secret"] if redacted_any else []
+
+    @classmethod
+    def _short_secret_url_replacement(cls, token: str) -> str | None:
+        parsed = safe_urlparse(token)
+        if parsed is None or not parsed.path:
+            return None
+        replacement_path = cls._short_secret_path_replacement(parsed.path)
+        if replacement_path is None or replacement_path == parsed.path:
+            return None
+        return urlunparse(parsed._replace(path=replacement_path))
 
     @classmethod
     def _short_secret_path_replacement(cls, token: str) -> str | None:
