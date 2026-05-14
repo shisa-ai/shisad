@@ -774,6 +774,54 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     assert raw_persisted[0]["arguments"]["text"] == "[sensitive text redacted]"
 
 
+@pytest.mark.parametrize("tool_name", ["browser_type_text", "browser-type-text"])
+def test_gh34_pending_sensitive_browser_text_alias_redacts_persisted_payload(
+    tmp_path,
+    tool_name: str,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName(tool_name)
+    pending.arguments = {
+        "target": "#name",
+        "text": "browser-alias-secret",
+        "is_sensitive": True,
+        "description": "browser-alias-secret",
+    }
+    pending.safe_preview = f"{tool_name} text=browser-alias-secret"
+
+    payload = HandlerImplementation._pending_to_dict(pending)
+
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "browser-alias-secret" not in serialized
+    assert payload["arguments"]["text"] == "[sensitive text redacted]"
+    assert payload["arguments"]["description"] == "[sensitive text redacted]"
+
+    raw_payload = dict(payload)
+    raw_payload["confirmation_id"] = f"c-raw-{tool_name}"
+    raw_payload["decision_nonce"] = f"raw-nonce-{tool_name}"
+    raw_payload["arguments"] = dict(payload["arguments"])
+    raw_payload["arguments"]["text"] = "browser-alias-raw-secret"
+    raw_payload["arguments"]["description"] = "browser-alias-raw-secret"
+    raw_payload["safe_preview"] = f"{tool_name} text=browser-alias-raw-secret"
+    raw_payload["status"] = "pending"
+    raw_payload["status_reason"] = ""
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([raw_payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions[f"c-raw-{tool_name}"]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted_serialized = json.dumps(persisted, sort_keys=True)
+    assert "browser-alias-raw-secret" not in persisted_serialized
+    assert persisted[0]["arguments"]["text"] == "[sensitive text redacted]"
+    assert persisted[0]["arguments"]["description"] == "[sensitive text redacted]"
+
+
 def test_gh33_pending_sensitive_mixed_sibling_uses_public_payload(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
     pending.tool_name = ToolName("shell.exec")

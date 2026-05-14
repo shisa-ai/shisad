@@ -43,3 +43,16 @@ def test_m6_pii_detector_redacts_sensitive_tokens() -> None:
     assert "[REDACTED:credit_card]" in redacted
     kinds = {finding.kind for finding in findings}
     assert {"email", "ssn", "credit_card"}.issubset(kinds)
+
+
+def test_gh34_pii_detector_does_not_prefix_replace_readable_sibling() -> None:
+    detector = PIIDetector()
+    sibling = "alice@example.com_notes"
+
+    redacted, findings = detector.redact(f"Contact alice@example.com but keep {sibling}")
+
+    assert "[REDACTED:email]" in redacted
+    assert sibling in redacted
+    assert "[REDACTED:email]_notes" not in redacted
+    assert redacted.count("[REDACTED:email]") == 1
+    assert {finding.kind for finding in findings} == {"email"}

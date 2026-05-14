@@ -35,11 +35,28 @@ class PIIDetector:
         return findings
 
     def redact(self, text: str) -> tuple[str, list[PIIFinding]]:
-        findings = self.inspect(text)
-        redacted = text
-        for finding in sorted(findings, key=lambda item: len(item.value), reverse=True):
-            redacted = redacted.replace(finding.value, f"[REDACTED:{finding.kind}]")
+        findings: list[PIIFinding] = []
+        replacements: list[tuple[int, int, str]] = []
+        for kind, pattern in self._PATTERNS:
+            for match in pattern.finditer(text):
+                value = match.group(0)
+                findings.append(PIIFinding(kind=kind, value=value))
+                replacements.append((match.start(), match.end(), f"[REDACTED:{kind}]"))
+        redacted = self._replace_spans(text, replacements) if replacements else text
         deduped: dict[tuple[str, str], PIIFinding] = {}
         for finding in findings:
             deduped[(finding.kind, finding.value)] = finding
         return redacted, list(deduped.values())
+
+    @staticmethod
+    def _replace_spans(text: str, replacements: list[tuple[int, int, str]]) -> str:
+        parts: list[str] = []
+        last_end = 0
+        for start, end, replacement in sorted(replacements, key=lambda item: item[0]):
+            if start < last_end:
+                continue
+            parts.append(text[last_end:start])
+            parts.append(replacement)
+            last_end = end
+        parts.append(text[last_end:])
+        return "".join(parts)

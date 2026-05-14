@@ -77,6 +77,7 @@ from shisad.core.events import (
 from shisad.core.session import Session
 from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.types import (
     Capability,
@@ -177,7 +178,7 @@ _SENSITIVE_PENDING_TEXT_REDACTION = "[sensitive text redacted]"
 
 def _has_sensitive_pending_text(tool_name: ToolName | str, arguments: Mapping[str, Any]) -> bool:
     return (
-        str(tool_name).strip() == "browser.type_text"
+        canonical_tool_name(str(tool_name), warn_on_alias=False) == "browser.type_text"
         and bool(arguments.get("is_sensitive", False))
         and ("text" in arguments or "description" in arguments)
     )
