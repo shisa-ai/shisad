@@ -1434,6 +1434,77 @@ async def test_gh25_browser_toolkit_mounts_symlinked_playwright_dependency_and_c
 
 
 @pytest.mark.asyncio
+async def test_gh25_browser_toolkit_mounts_external_wrapper_path_and_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    wrapper_dir = tmp_path / "external-wrapper" / "bin"
+    wrapper_dir.mkdir(parents=True)
+    wrapper = wrapper_dir / "playwright-wrapper"
+    wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(wrapper)])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    mounts = {mount.path: mount.mode for mount in config.filesystem.mounts}
+    assert str(wrapper) in config.read_paths
+    assert str(wrapper_dir) in config.read_paths
+    assert mounts[str(wrapper)] == "ro"
+    assert mounts[str(wrapper_dir)] == "ro"
+
+
+@pytest.mark.asyncio
+async def test_gh25_browser_toolkit_mounts_external_symlink_wrapper_and_realpath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    real_dir = tmp_path / "external-real" / "bin"
+    real_dir.mkdir(parents=True)
+    real_wrapper = real_dir / "playwright-wrapper"
+    real_wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    real_wrapper.chmod(0o755)
+    link_dir = tmp_path / "external-link" / "bin"
+    link_dir.mkdir(parents=True)
+    wrapper_link = link_dir / "playwright-wrapper"
+    wrapper_link.symlink_to(real_wrapper)
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(wrapper_link)])
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert len(runner.configs) == 1
+    config = runner.configs[0]
+    mounts = {mount.path: mount.mode for mount in config.filesystem.mounts}
+    for path in (wrapper_link, link_dir, real_wrapper, real_dir):
+        assert str(path) in config.read_paths
+        assert mounts[str(path)] == "ro"
+
+
+@pytest.mark.asyncio
 async def test_gh25_browser_toolkit_absolutizes_relative_command_and_file_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

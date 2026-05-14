@@ -1098,7 +1098,7 @@ class BrowserToolkit:
         if executable_error or executable_path is None:
             return [], [], executable_error or "browser_command_unavailable"
         roots: list[Path] = []
-        executable_roots, dependency_error = self._dependency_roots_for_path(executable_path)
+        executable_roots, dependency_error = self._runtime_read_paths_for_path(executable_path)
         if dependency_error:
             return [], [], dependency_error
         roots.extend(executable_roots)
@@ -1117,7 +1117,9 @@ class BrowserToolkit:
         if dependency_error:
             return [], [], dependency_error
         if env_target_path is not None:
-            env_target_roots, dependency_error = self._dependency_roots_for_path(env_target_path)
+            env_target_roots, dependency_error = self._runtime_read_paths_for_path(
+                env_target_path
+            )
             if dependency_error:
                 return [], [], dependency_error
             roots.extend(env_target_roots)
@@ -1150,7 +1152,7 @@ class BrowserToolkit:
             ):
                 split_token, split_paths = self._normalize_env_split_argument(token_value)
                 for split_path in split_paths:
-                    split_roots, dependency_error = self._dependency_roots_for_path(split_path)
+                    split_roots, dependency_error = self._runtime_read_paths_for_path(split_path)
                     if dependency_error:
                         return [], [], dependency_error
                     roots.extend(split_roots)
@@ -1178,7 +1180,7 @@ class BrowserToolkit:
                     token_value.split("=", 1)[1]
                 )
                 for split_path in split_paths:
-                    split_roots, dependency_error = self._dependency_roots_for_path(split_path)
+                    split_roots, dependency_error = self._runtime_read_paths_for_path(split_path)
                     if dependency_error:
                         return [], [], dependency_error
                     roots.extend(split_roots)
@@ -1203,7 +1205,7 @@ class BrowserToolkit:
                 previous_token = token_value
                 previous_token_was_env_value = current_token_is_env_value
                 continue
-            token_roots, dependency_error = self._dependency_roots_for_path(token_path)
+            token_roots, dependency_error = self._runtime_read_paths_for_path(token_path)
             if dependency_error:
                 return [], [], dependency_error
             roots.extend(token_roots)
@@ -1213,6 +1215,19 @@ class BrowserToolkit:
             previous_token = token_value
             previous_token_was_env_value = current_token_is_env_value
         return command, self._dedupe_paths(roots), ""
+
+    def _runtime_read_paths_for_path(self, path: Path) -> tuple[list[Path], str]:
+        candidate = path.expanduser()
+        dependency_roots, dependency_error = self._dependency_roots_for_path(candidate)
+        if dependency_error:
+            return [], dependency_error
+        paths = [candidate]
+        if candidate.is_symlink():
+            try:
+                paths.append(candidate.resolve(strict=True))
+            except OSError:
+                return [], "browser_dependency_unavailable"
+        return self._dedupe_paths([*paths, *dependency_roots]), ""
 
     def _resolve_browser_executable(self) -> tuple[Path | None, str]:
         if not self._command:
