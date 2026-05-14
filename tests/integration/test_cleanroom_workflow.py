@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from pathlib import Path
 
@@ -250,6 +251,102 @@ async def test_g1_cleanroom_tainted_payload_early_return_skips_transcript_and_re
         assert entries == []
         assert len(received_events) == 1
         assert responded_events == []
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_text = "cleanroom alpha bravo ledger password"
+
+    async def _propose_sensitive_browser_type(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools, persona_tone_override)
+        proposal = ActionProposal(
+            action_id="browser-secret",
+            tool_name=ToolName("browser.type_text"),
+            arguments={
+                "target": "#name",
+                "text": sensitive_text,
+                "is_sensitive": True,
+                "description": "name field",
+            },
+            reasoning="Draft a browser write proposal.",
+            data_sources=[],
+        )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Prepared sensitive browser proposal.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="test-allow",
+                        tool_name=ToolName("browser.type_text"),
+                        risk_score=0.1,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _propose_sensitive_browser_type)
+
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "session.create",
+            {
+                "channel": "cli",
+                "user_id": "admin",
+                "workspace_id": "ops",
+                "mode": "admin_cleanroom",
+            },
+        )
+        sid = created["session_id"]
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "prepare the browser proposal for review",
+            },
+        )
+
+        assert result["session_mode"] == "admin_cleanroom"
+        assert result["proposal_only"] is True
+        assert result["executed_actions"] == 0
+        assert result["proposals"]
+        proposal = result["proposals"][0]
+        assert proposal["tool_name"] == "browser.type_text"
+        assert proposal["arguments"]["text"] == "[sensitive text redacted]"
+        assert sensitive_text not in json.dumps(result, sort_keys=True)
+        assert "[sensitive text redacted]" in json.dumps(result, sort_keys=True)
+
+        transcript_store = TranscriptStore(config.data_dir / "sessions")
+        transcript_payload = "\n".join(
+            entry.content_preview for entry in transcript_store.list_entries(sid)
+        )
+        assert sensitive_text not in transcript_payload
+        assert "[sensitive text redacted]" in transcript_payload
+
+        audit_text = (config.data_dir / "audit.jsonl").read_text(encoding="utf-8")
+        assert sensitive_text not in audit_text
     finally:
         await _shutdown(daemon_task, client)
 

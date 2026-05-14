@@ -9650,10 +9650,14 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                     rejected += 1
                     rejection_reasons_for_user.append(proposal_reason)
+                cleanroom_proposal_arguments = _redact_sensitive_browser_event_arguments(
+                    proposal.tool_name,
+                    proposal_arguments,
+                )
                 cleanroom_proposals.append(
                     {
                         "tool_name": str(proposal.tool_name),
-                        "arguments": dict(proposal_arguments),
+                        "arguments": dict(cleanroom_proposal_arguments),
                         "decision": final_kind,
                         "reason": proposal_reason,
                     }
@@ -9670,7 +9674,7 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal_arguments),
+                            arguments=dict(cleanroom_proposal_arguments),
                             pep_decision=pep_decision.kind.value,
                             monitor_decision=monitor_decision.kind.value,
                             control_plane_decision=cp_eval.decision.value,
