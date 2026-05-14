@@ -7262,6 +7262,7 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
     contract_harness: ContractHarness,
 ) -> None:
     sid = await _create_session(contract_harness.client)
+    sensitive_text = "browser-sensitive-token"
     await contract_harness.client.call(
         "session.message",
         {
@@ -7273,7 +7274,7 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
         "session.message",
         {
             "session_id": sid,
-            "content": "browser type hello-click into the name field and click send",
+            "content": f"browser type {sensitive_text} into the name field and click send",
         },
     )
     assert proposed.get("lockdown_level") == "normal"
@@ -7290,12 +7291,16 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
     assert actions
     arguments = dict(actions[0].get("arguments", {}))
     assert arguments.get("target") == "#name"
+    assert arguments.get("text") != sensitive_text
     assert arguments.get("click_target") == "#send"
     assert arguments.get("is_sensitive") is True
     assert str(arguments.get("source_url", "")).endswith("/browser-form")
     assert str(arguments.get("source_binding", "")).strip()
     assert str(arguments.get("click_source_binding", "")).strip()
     assert str(arguments.get("destination", "")).endswith("/browser-submitted")
+    assert sensitive_text not in json.dumps(pending, sort_keys=True)
+    pending_actions_file = contract_harness.config.data_dir / "pending_actions.json"
+    assert sensitive_text not in pending_actions_file.read_text(encoding="utf-8")
 
     confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
     assert confirmed.get("confirmed") is True
@@ -7315,7 +7320,7 @@ async def test_contract_browser_type_text_click_target_confirmation_approve_exec
     outputs = _extract_tool_outputs(reread)
     assert "browser.read_page" in outputs
     payload = outputs["browser.read_page"][0]
-    assert "Submitted: hello-click" in str(payload.get("content", ""))
+    assert f"Submitted: {sensitive_text}" in str(payload.get("content", ""))
 
 
 @pytest.mark.asyncio

@@ -629,6 +629,39 @@ def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_pat
     assert persisted["c-2"]["status_reason"] == "approved"
 
 
+def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("browser.type_text")
+    pending.arguments = {
+        "target": "#name",
+        "text": "browser-sensitive-token",
+        "is_sensitive": True,
+        "click_target": "#send",
+    }
+    pending.safe_preview = "browser.type_text text=browser-sensitive-token"
+
+    payload = HandlerImplementation._pending_to_dict(pending)
+
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "browser-sensitive-token" not in serialized
+    assert payload["arguments"]["text"] == "[sensitive text redacted]"
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted_serialized = json.dumps(persisted, sort_keys=True)
+    assert "browser-sensitive-token" not in persisted_serialized
+    assert persisted[0]["status"] == "failed"
+    assert persisted[0]["status_reason"] == "sensitive_confirmation_secret_unavailable"
+
+
 def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
     pending.tool_name = ToolName("mcp.docs.lookup-doc")
