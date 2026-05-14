@@ -841,6 +841,8 @@ class _CapturingIntentProvider:
 class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
     def __init__(self) -> None:
         super().__init__()
+        self.events: list[object] = []
+        self._event_bus = SimpleNamespace(publish=self._record_event)
         self.intent_provider = _CapturingIntentProvider()
         self._registry = SimpleNamespace(
             get_tool=lambda _tool_name: ToolDefinition(
@@ -848,6 +850,9 @@ class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
                 description="type text in the active page",
             )
         )
+
+    async def _record_event(self, event: object) -> None:
+        self.events.append(event)
 
     async def _evaluate_action(self, **kwargs: object) -> object:
         self.control_plane_calls.append(dict(kwargs))
@@ -936,11 +941,30 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
         reasoning="Type the user-provided sensitive text.",
         data_sources=[],
     )
+    sibling_proposal = ActionProposal(
+        action_id="sibling-echo",
+        tool_name=ToolName("shell.exec"),
+        arguments={"command": ["echo", sensitive_text]},
+        reasoning="Sibling proposal that echoes the sensitive value.",
+        data_sources=[],
+    )
     planner_dispatch = SessionMessagePlannerDispatchResult(
         planner_context=planner_context,
         planner_result=PlannerResult(
-            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            output=PlannerOutput(
+                assistant_response="Need confirmation.",
+                actions=[sibling_proposal, proposal],
+            ),
             evaluated=[
+                EvaluatedProposal(
+                    proposal=sibling_proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=sibling_proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                ),
                 EvaluatedProposal(
                     proposal=proposal,
                     decision=PEPDecision(
@@ -968,9 +992,12 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
 
     result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
 
-    assert result.pending_confirmation == 1
-    assert harness.control_plane_calls
-    control_plane_call = harness.control_plane_calls[0]
+    assert result.pending_confirmation == 2
+    assert len(harness.control_plane_calls) == 2
+    sibling_control_plane_call = harness.control_plane_calls[0]
+    assert sibling_control_plane_call["arguments"] == {}
+    assert sibling_control_plane_call["raw_user_text"] == "[sensitive text redacted]"
+    control_plane_call = harness.control_plane_calls[1]
     assert control_plane_call["arguments"] == {
         "target": "#password",
         "is_sensitive": True,
@@ -985,8 +1012,14 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
     assert "The user said: [sensitive text redacted]" in classifier_prompt
     assert sensitive_text not in classifier_prompt
     assert "[sensitive text redacted]" in classifier_prompt
-    assert result.trace_tool_calls
-    assert result.trace_tool_calls[0].arguments["text"] == "[sensitive text redacted]"
+    proposed_events = [
+        event for event in harness.events if event.__class__.__name__ == "ToolProposed"
+    ]
+    assert proposed_events[0].arguments == {}
+    assert proposed_events[1].arguments["text"] == "[sensitive text redacted]"
+    assert len(result.trace_tool_calls) == 2
+    assert result.trace_tool_calls[0].arguments == {}
+    assert result.trace_tool_calls[1].arguments["text"] == "[sensitive text redacted]"
 
 
 def test_gh33_sensitive_browser_free_text_redacts_whole_field_for_common_value() -> None:

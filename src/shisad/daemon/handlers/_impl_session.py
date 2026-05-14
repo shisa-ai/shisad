@@ -271,6 +271,18 @@ def _redact_sensitive_browser_tool_call_arguments(
     )
 
 
+def _redact_sensitive_browser_public_arguments(
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+    values: Sequence[str],
+) -> dict[str, Any]:
+    if not values:
+        return dict(arguments)
+    if str(tool_name).strip() in _SENSITIVE_BROWSER_TYPE_TEXT_NAMES:
+        return _redact_sensitive_browser_event_arguments(tool_name, arguments)
+    return {}
+
+
 def _redact_sensitive_browser_message_tool_calls(
     tool_calls: Sequence[Mapping[str, Any]],
     values: Sequence[str],
@@ -9333,9 +9345,10 @@ class SessionImplMixin(HandlerMixinBase):
                     session_id=sid,
                     actor="planner",
                     tool_name=proposal.tool_name,
-                    arguments=_redact_sensitive_browser_event_arguments(
+                    arguments=_redact_sensitive_browser_public_arguments(
                         proposal.tool_name,
                         proposal.arguments,
+                        turn_sensitive_browser_values,
                     ),
                 )
             )
@@ -9383,9 +9396,10 @@ class SessionImplMixin(HandlerMixinBase):
                     ]
                 )
             )
-            trace_proposal_arguments = _redact_sensitive_browser_event_arguments(
+            trace_proposal_arguments = _redact_sensitive_browser_public_arguments(
                 proposal.tool_name,
                 proposal_arguments,
+                control_plane_sensitive_browser_values,
             )
             control_plane_arguments = dict(trace_proposal_arguments)
             control_plane_user_text = _redact_sensitive_browser_free_text(
@@ -9802,9 +9816,10 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                     rejected += 1
                     rejection_reasons_for_user.append(proposal_reason)
-                cleanroom_proposal_arguments = _redact_sensitive_browser_event_arguments(
+                cleanroom_proposal_arguments = _redact_sensitive_browser_public_arguments(
                     proposal.tool_name,
                     proposal_arguments,
+                    control_plane_sensitive_browser_values,
                 )
                 cleanroom_proposals.append(
                     {

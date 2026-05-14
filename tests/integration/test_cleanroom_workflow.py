@@ -284,10 +284,17 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
             reasoning="Draft a browser write proposal.",
             data_sources=[],
         )
+        sibling_proposal = ActionProposal(
+            action_id="sibling-echo",
+            tool_name=ToolName("note.create"),
+            arguments={"content": sensitive_text},
+            reasoning="Sibling proposal echoing the sensitive browser text.",
+            data_sources=[],
+        )
         return PlannerResult(
             output=PlannerOutput(
                 assistant_response="Prepared sensitive browser proposal.",
-                actions=[proposal],
+                actions=[proposal, sibling_proposal],
             ),
             evaluated=[
                 EvaluatedProposal(
@@ -298,7 +305,16 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
                         tool_name=ToolName("browser.type_text"),
                         risk_score=0.1,
                     ),
-                )
+                ),
+                EvaluatedProposal(
+                    proposal=sibling_proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="test-allow",
+                        tool_name=ToolName("note.create"),
+                        risk_score=0.1,
+                    ),
+                ),
             ],
             attempts=1,
             provider_response=None,
@@ -332,10 +348,14 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
         assert result["proposal_only"] is True
         assert result["executed_actions"] == 0
         assert result["proposals"]
+        assert len(result["proposals"]) == 2
         proposal = result["proposals"][0]
         assert proposal["tool_name"] == "browser.type_text"
         assert "text" not in proposal["arguments"]
         assert proposal["arguments"]["description"] == "[sensitive text redacted]"
+        sibling_proposal = result["proposals"][1]
+        assert sibling_proposal["tool_name"] == "note.create"
+        assert sibling_proposal["arguments"] == {}
         assert sensitive_text not in json.dumps(result, sort_keys=True)
         assert "[sensitive text redacted]" in json.dumps(result, sort_keys=True)
 
