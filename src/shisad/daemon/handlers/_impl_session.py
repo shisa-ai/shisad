@@ -9424,6 +9424,7 @@ class SessionImplMixin(HandlerMixinBase):
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
+            proposal_tool_name = canonical_tool_name(str(proposal.tool_name), warn_on_alias=False)
             await self._event_bus.publish(
                 ToolProposed(
                     session_id=sid,
@@ -9442,7 +9443,7 @@ class SessionImplMixin(HandlerMixinBase):
                 arguments=proposal.arguments,
             )
             navigation_url_selection: BrowserNavigationURLSelection | None = None
-            if str(proposal.tool_name) == "browser.navigate":
+            if proposal_tool_name == "browser.navigate":
                 navigation_url_selection = _select_task_specific_navigation_url(
                     arguments=proposal_arguments,
                     executed_tool_outputs=executed_tool_outputs,
@@ -9899,7 +9900,7 @@ class SessionImplMixin(HandlerMixinBase):
 
             if validated.session_mode == SessionMode.ADMIN_CLEANROOM:
                 proposal_reason = final_reason or "proposal_only_cleanroom"
-                if str(proposal.tool_name) in _CLEANROOM_UNTRUSTED_TOOL_NAMES:
+                if proposal_tool_name in _CLEANROOM_UNTRUSTED_TOOL_NAMES:
                     final_kind = "reject"
                     proposal_reason = "cleanroom_untrusted_context_source"
                     cleanroom_block_reasons.append(

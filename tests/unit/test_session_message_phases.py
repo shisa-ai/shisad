@@ -902,6 +902,85 @@ class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
         )
 
 
+class _BrowserAliasExecutionHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[object] = []
+        self.execution_calls: list[dict[str, object]] = []
+        self._event_bus = SimpleNamespace(publish=self._record_event)
+        self._pep = SimpleNamespace(
+            evaluate=lambda tool_name, _arguments, _context: PEPDecision(
+                kind=PEPDecisionKind.ALLOW,
+                reason="allow",
+                tool_name=tool_name,
+                risk_score=0.0,
+            )
+        )
+        self._registry = SimpleNamespace(
+            get_tool=lambda tool_name: ToolDefinition(
+                name=ToolName(str(tool_name)),
+                description=str(tool_name),
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+
+    async def _record_event(self, event: object) -> None:
+        self.events.append(event)
+
+    async def _evaluate_action(self, **kwargs: object) -> object:
+        self.control_plane_calls.append(dict(kwargs))
+        arguments = kwargs.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        return SimpleNamespace(
+            decision=ControlDecision.ALLOW,
+            reason_codes=[],
+            trace_result=SimpleNamespace(
+                allowed=True,
+                reason_code="trace:allowed",
+                risk_tier=RiskTier.LOW,
+            ),
+            consensus=SimpleNamespace(votes=[]),
+            action=build_action(
+                tool_name=str(kwargs.get("tool_name", "")),
+                arguments=dict(arguments),
+                origin=Origin(
+                    session_id="sess-g1",
+                    user_id="user-g1",
+                    workspace_id="workspace-g1",
+                    actor="planner",
+                    trust_level="trusted",
+                ),
+            ),
+        )
+
+    async def _execute_approved_action(self, **kwargs: object) -> object:
+        self.execution_calls.append(dict(kwargs))
+        tool_name = str(kwargs.get("tool_name", ""))
+        arguments = kwargs.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        if tool_name == "web.search":
+            payload = {
+                "ok": True,
+                "results": [
+                    {"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}
+                ],
+            }
+        else:
+            payload = {"ok": True, "url": arguments.get("url")}
+        return SimpleNamespace(
+            success=True,
+            checkpoint_id=None,
+            tool_output=impl_session.SessionToolOutputRecord(
+                tool_name=tool_name,
+                content=json.dumps(payload, ensure_ascii=True, sort_keys=True),
+                success=True,
+                arguments=dict(arguments),
+            ),
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("browser_tool_name", ["browser.type_text", "browser-type-text"])
 async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier(
@@ -1065,6 +1144,201 @@ def test_gh33_sensitive_browser_free_text_redacts_whole_field_for_common_value()
     )
 
     assert redacted == "[sensitive text redacted]"
+
+
+@pytest.mark.asyncio
+async def test_gh34_browser_navigate_alias_uses_task_specific_url_selection() -> None:
+    harness = _BrowserAliasExecutionHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "Open the specific Tabelog result."}
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.HTTP_REQUEST},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    search_proposal = ActionProposal(
+        action_id="search",
+        tool_name=ToolName("web.search"),
+        arguments={"query": "specific Tabelog result"},
+        reasoning="Find the page.",
+        data_sources=[],
+    )
+    navigate_proposal = ActionProposal(
+        action_id="browser-alias",
+        tool_name=ToolName("browser-navigate"),
+        arguments={"url": "https://tabelog.com/"},
+        reasoning="Open the page.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Opening the page.",
+                actions=[search_proposal, navigate_proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=search_proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=search_proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                ),
+                EvaluatedProposal(
+                    proposal=navigate_proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=navigate_proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                ),
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.executed == 2
+    assert len(harness.execution_calls) == 2
+    navigate_call = harness.execution_calls[1]
+    assert str(navigate_call["tool_name"]) == "browser-navigate"
+    assert navigate_call["arguments"] == {
+        "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+    }
+    selected_events = [
+        event
+        for event in harness.events
+        if event.__class__.__name__ == "BrowserNavigationURLSelected"
+    ]
+    assert len(selected_events) == 1
+    assert selected_events[0].original_url == "https://tabelog.com/"
+    assert selected_events[0].selected_url == "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+
+
+@pytest.mark.asyncio
+async def test_gh34_cleanroom_rejects_browser_type_text_alias() -> None:
+    secret = "cleanroom alias secret"
+    harness = _PendingPolicySnapshotHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": f"type {secret} into the password field"}
+    )
+    validated.session_mode = SessionMode.ADMIN_CLEANROOM
+    validated.session.mode = SessionMode.ADMIN_CLEANROOM
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.HTTP_REQUEST},
+        memory_query="",
+        memory_context="tainted browser content",
+        memory_context_taints={TaintLabel.UNTRUSTED},
+        memory_context_tainted_for_amv=True,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="browser-alias",
+        tool_name=ToolName("browser-type-text"),
+        arguments={
+            "target": "#password",
+            "is_sensitive": True,
+            "text": secret,
+            "description": secret,
+        },
+        reasoning="Type the sensitive value.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Cleanroom proposal.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.rejected == 1
+    assert result.rejection_reasons_for_user == ["cleanroom_untrusted_context_source"]
+    assert result.cleanroom_block_reasons == ["browser-type-text:untrusted_context_source"]
+    assert result.cleanroom_proposals == [
+        {
+            "tool_name": "browser-type-text",
+            "arguments": {
+                "target": "#password",
+                "is_sensitive": True,
+                "text": "[sensitive text redacted]",
+                "description": "[sensitive text redacted]",
+            },
+            "decision": "reject",
+            "reason": "cleanroom_untrusted_context_source",
+        }
+    ]
+    assert secret not in json.dumps(result.cleanroom_proposals, sort_keys=True)
 
 
 class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
