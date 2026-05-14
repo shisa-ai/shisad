@@ -543,7 +543,7 @@ class OutputFirewall:
 
     @staticmethod
     def _looks_like_short_secret_path_segment(segment: str) -> bool:
-        if not 6 <= len(segment) <= 16:
+        if not 6 <= len(segment) <= 23:
             return False
         if re.fullmatch(r"[A-Za-z0-9]+", segment) is None:
             return False
