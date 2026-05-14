@@ -427,7 +427,7 @@ class OutputFirewall:
                 continue
             if cls._looks_like_short_secret_path_segment(segment):
                 short_secret_indexes.append(index)
-        if len(short_secret_indexes) >= 2:
+        if short_secret_indexes:
             prefix = "/" if token.startswith("/") else ""
             redacted_segments = [
                 f"[REDACTED:high_entropy_secret]{final_suffix if index == final_index else ''}"
@@ -436,11 +436,6 @@ class OutputFirewall:
                 for index, segment in enumerate(raw_segments)
             ]
             return prefix + "/".join(redacted_segments)
-        if short_secret_indexes == [final_index]:
-            prefix = "/" if token.startswith("/") else ""
-            kept_segments = raw_segments[:-1]
-            redacted_final = f"[REDACTED:high_entropy_secret]{final_suffix}"
-            return prefix + "/".join([*kept_segments, redacted_final])
         return None
 
     @classmethod
@@ -476,16 +471,13 @@ class OutputFirewall:
         source_suffix = cls._source_path_suffix_after(text, end=end)
         final_index = len(segments) - 1
         has_human_readable_segment = False
-        short_secret_like_segments = 0
         for index, segment in enumerate(segments):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", segment):
                 return False
             if cls._looks_like_short_secret_path_segment(
                 segment
             ) and not cls._looks_like_readable_technical_path_segment(segment):
-                short_secret_like_segments += 1
-                if index == final_index:
-                    return False
+                return False
             segment_entropy = cls._shannon_entropy(segment)
             if len(segment) >= 10 and segment_entropy >= 3.6 and not (
                 source_suffix and index == final_index and cls._looks_like_source_file_stem(segment)
@@ -493,8 +485,6 @@ class OutputFirewall:
                 return False
             if re.fullmatch(r"[A-Za-z_-]+", segment) and segment_entropy < 3.4:
                 has_human_readable_segment = True
-        if short_secret_like_segments >= 2:
-            return False
         return has_human_readable_segment
 
     @classmethod
