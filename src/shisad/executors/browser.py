@@ -1552,7 +1552,37 @@ class BrowserToolkit:
             "browser_command_unavailable",
         }:
             return "browser_command_unavailable"
+        if self._detail_suggests_cache_unwritable(detail):
+            return "browser_cache_not_writable"
+        if self._detail_suggests_dependency_unavailable(detail):
+            return "browser_dependency_unavailable"
+        if self._detail_suggests_command_unavailable(detail):
+            return "browser_command_unavailable"
         return "browser_subprocess_failed"
+
+    @staticmethod
+    def _detail_suggests_command_unavailable(detail: str) -> bool:
+        return "executable doesn't exist" in detail
+
+    @staticmethod
+    def _detail_suggests_dependency_unavailable(detail: str) -> bool:
+        markers = (
+            "error while loading shared libraries",
+            "cannot open shared object file",
+            "dyld: library not loaded",
+            "bad interpreter",
+            "cannot find module",
+        )
+        return any(marker in detail for marker in markers)
+
+    @staticmethod
+    def _detail_suggests_cache_unwritable(detail: str) -> bool:
+        markers = (
+            "read-only file system",
+            "erofs",
+            "cache write failed",
+        )
+        return any(marker in detail for marker in markers)
 
     def _result_error_details(self, result: SandboxResult, reason: str) -> dict[str, Any]:
         details: dict[str, Any] = {

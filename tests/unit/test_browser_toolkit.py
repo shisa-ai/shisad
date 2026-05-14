@@ -23,6 +23,8 @@ from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy, Brows
 from shisad.executors.sandbox import SandboxConfig, SandboxResult
 from shisad.security.firewall.output import OutputFirewall
 
+_UNREACHABLE_LOOPBACK_URL = "http://127.0.0.1:9/"
+
 
 def _make_browser_fixture_handler(
     *,
@@ -2073,7 +2075,7 @@ async def test_gh26_browser_toolkit_unconfigured_command_reports_preflight_stage
     runner = _CapturingSuccessRunner()
     toolkit = _toolkit(tmp_path, runner=runner, command=[])
 
-    result = await toolkit.navigate(session=_session(), url="http://127.0.0.1:9/")
+    result = await toolkit.navigate(session=_session(), url=_UNREACHABLE_LOOPBACK_URL)
 
     assert result == {
         "ok": False,
@@ -2206,7 +2208,7 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
         SandboxResult(
             allowed=True,
             exit_code=17,
-            stdout=f"cache write failed at {leaked_cache}",
+            stdout=f"operation failed at {leaked_cache}",
             stderr=f"failed to read {leaked_path} SHISAD_API_KEY={secret_value}",
             reason="browser_command_failed",
         )
@@ -2216,8 +2218,8 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2229,7 +2231,7 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
         "sandbox_reason": "browser_command_failed",
         "exit_code": 17,
         "stderr": "failed to read [path]",
-        "stdout": "cache write failed at [path]",
+        "stdout": "operation failed at [path]",
     }
     serialized = json.dumps(result, sort_keys=True)
     assert str(leaked_path) not in serialized
@@ -2260,8 +2262,8 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_urls(
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2418,8 +2420,8 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_file_url_varian
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2460,8 +2462,8 @@ async def test_gh26_browser_toolkit_launched_subprocess_enoent_stays_runtime_fai
     result = await toolkit._run_cli(
         session=_session(),
         tool_name="browser.navigate",
-        args=["goto", "http://127.0.0.1:9/"],
-        network_urls=["http://127.0.0.1:9/"],
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
         allow_network=True,
     )
 
@@ -2473,6 +2475,115 @@ async def test_gh26_browser_toolkit_launched_subprocess_enoent_stays_runtime_fai
         "stderr": "ENOENT: no such file or directory, open [path]",
     }
     assert str(leaked_path) not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_subprocess_read_only_cache_classified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    leaked_cache = home / ".cache" / "ms-playwright"
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=1,
+            stderr=f"EROFS: read-only file system, mkdir '{leaked_cache}'",
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
+        allow_network=True,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "browser_cache_not_writable"
+    assert result["details"]["reason"] == "browser_cache_not_writable"
+    assert result["details"]["stage"] == "subprocess"
+    assert "read-only file system" in str(result["details"]["stderr"]).lower()
+    assert str(leaked_cache) not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_subprocess_missing_dependency_classified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=127,
+            stderr=(
+                "error while loading shared libraries: libnss3.so:"
+                " cannot open shared object file"
+            ),
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
+        allow_network=True,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "browser_dependency_unavailable"
+    assert result["details"]["reason"] == "browser_dependency_unavailable"
+    assert result["details"]["stage"] == "subprocess"
+    assert (
+        result["details"]["stderr"]
+        == "error while loading shared libraries: libnss3.so:"
+        " cannot open shared object file"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gh26_browser_toolkit_subprocess_missing_executable_classified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=1,
+            stderr="browserType.launch: Executable doesn't exist at /opt/ms-playwright/chromium",
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
+        allow_network=True,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "browser_command_unavailable"
+    assert result["details"]["reason"] == "browser_command_unavailable"
+    assert result["details"]["stage"] == "subprocess"
+    assert "executable doesn't exist" in str(result["details"]["stderr"]).lower()
+    assert "/opt/ms-playwright/chromium" not in json.dumps(result, sort_keys=True)
 
 
 @pytest.mark.asyncio
