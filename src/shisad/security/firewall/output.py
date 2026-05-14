@@ -455,8 +455,6 @@ class OutputFirewall:
     ) -> bool:
         if "/" not in token:
             return False
-        if token.count("/") < 2 and not token.startswith("/"):
-            return False
         if "+" in token or "=" in token:
             return False
         previous = text[start - 1] if start > 0 else ""

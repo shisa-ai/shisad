@@ -426,6 +426,7 @@ def test_gh34_entropy_detector_keeps_readable_rooted_technical_segment() -> None
 @pytest.mark.parametrize(
     "path",
     [
+        "src/playwright_runtime_diagnostics.py",
         "/playwright_runtime_diagnostics.py",
         "/src/playwright_runtime_diagnostics.py",
     ],
