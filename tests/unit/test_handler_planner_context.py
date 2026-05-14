@@ -258,6 +258,68 @@ def test_gh29_confirmed_navigation_failure_preserves_attempted_url_for_retry_sel
     assert selection is None
 
 
+def test_gh34_navigation_url_selection_reads_alias_web_search_output() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web-search",
+                {
+                    "ok": True,
+                    "results": [{"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}],
+                },
+            )
+        ],
+    )
+
+    assert selection is not None
+    assert selection.selected_url == "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+
+
+def test_gh34_alias_navigation_failure_suppresses_retry_selection() -> None:
+    selection = _select_task_specific_navigation_url(
+        arguments={"url": "https://tabelog.com/"},
+        executed_tool_outputs=[
+            _serialized_tool_output(
+                "web.search",
+                {
+                    "ok": True,
+                    "results": [{"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}],
+                },
+            ),
+            _serialized_tool_output(
+                "browser-navigate",
+                {"ok": False, "error": "browser_navigate_failed"},
+                success=False,
+                arguments={"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
+            ),
+        ],
+    )
+
+    assert selection is None
+
+
+def test_gh34_confirmed_alias_navigation_failure_preserves_attempted_url() -> None:
+    serialized = _serialize_confirmed_tool_output(
+        SimpleNamespace(
+            tool_name="browser-navigate",
+            content=json.dumps(
+                {"ok": False, "error": "browser_navigate_failed"},
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            success=False,
+            taint_labels=set(),
+            arguments={"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"},
+        )
+    )
+
+    assert serialized["tool_name"] == "browser-navigate"
+    assert serialized["arguments"] == {
+        "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+    }
+
+
 def test_gh29_confirmed_tool_output_omits_non_navigation_arguments() -> None:
     serialized = _serialize_confirmed_tool_output(
         SimpleNamespace(

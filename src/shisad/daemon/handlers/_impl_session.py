@@ -5946,7 +5946,10 @@ def _navigation_url_specificity(url: str) -> tuple[int, int, int]:
 
 
 def _candidate_urls_from_tool_output(tool_output: Any) -> list[str]:
-    tool_name = str(getattr(tool_output, "tool_name", "")).strip()
+    tool_name = canonical_tool_name(
+        str(getattr(tool_output, "tool_name", "")).strip(),
+        warn_on_alias=False,
+    )
     payload = _parse_tool_output_payload(str(getattr(tool_output, "content", "")))
     urls: list[str] = []
 
@@ -5975,7 +5978,11 @@ def _candidate_urls_from_tool_output(tool_output: Any) -> list[str]:
 def _failed_browser_navigation_urls(tool_outputs: Sequence[Any]) -> set[str]:
     failed: set[str] = set()
     for tool_output in tool_outputs:
-        if str(getattr(tool_output, "tool_name", "")).strip() != "browser.navigate":
+        tool_name = canonical_tool_name(
+            str(getattr(tool_output, "tool_name", "")).strip(),
+            warn_on_alias=False,
+        )
+        if tool_name != "browser.navigate":
             continue
         payload = _parse_tool_output_payload(str(getattr(tool_output, "content", "")))
         success = bool(getattr(tool_output, "success", False)) and payload.get("ok") is not False
@@ -9425,6 +9432,7 @@ class SessionImplMixin(HandlerMixinBase):
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
             proposal_tool_name = canonical_tool_name(str(proposal.tool_name), warn_on_alias=False)
+            canonical_proposal_tool = ToolName(proposal_tool_name)
             await self._event_bus.publish(
                 ToolProposed(
                     session_id=sid,
@@ -9439,7 +9447,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
             proposal_arguments = await self._prepare_browser_tool_arguments(
                 session=session,
-                tool_name=proposal.tool_name,
+                tool_name=canonical_proposal_tool,
                 arguments=proposal.arguments,
             )
             navigation_url_selection: BrowserNavigationURLSelection | None = None
@@ -9732,7 +9740,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
 
             risk_score = pep_decision.risk_score or 0.0
-            tool_def = self._registry.get_tool(proposal.tool_name)
+            tool_def = self._registry.get_tool(canonical_proposal_tool)
             declared_domains: set[str] = set()
             declared_domains.update(planner_context.policy_egress_host_patterns)
             declared_domains.update(planner_context.user_goal_host_patterns)
@@ -9865,7 +9873,7 @@ class SessionImplMixin(HandlerMixinBase):
             rate_decision = self._rate_limiter.evaluate(
                 session_id=str(sid),
                 user_id=str(validated.user_id),
-                tool_name=str(proposal.tool_name),
+                tool_name=proposal_tool_name,
                 consume=False,
             )
             if rate_decision.block:
@@ -9882,7 +9890,7 @@ class SessionImplMixin(HandlerMixinBase):
                 RiskObservation(
                     session_id=str(sid),
                     user_id=str(validated.user_id),
-                    tool_name=str(proposal.tool_name),
+                    tool_name=proposal_tool_name,
                     outcome=final_kind,
                     risk_score=risk_score,
                     features={
@@ -10158,20 +10166,20 @@ class SessionImplMixin(HandlerMixinBase):
             execution_result = await self._execute_approved_action(
                 sid=sid,
                 user_id=validated.user_id,
-                tool_name=proposal.tool_name,
+                tool_name=canonical_proposal_tool,
                 arguments=proposal_arguments,
                 capabilities=planner_context.effective_caps,
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
                 user_confirmed="user_text:explicit_memory_intent" in proposal.data_sources,
                 memory_ingress_context=(
-                    _explicit_memory_ingress_context()
-                    if (
-                        "user_text:explicit_memory_intent" in proposal.data_sources
-                        and str(proposal.tool_name) in {"note.create", "todo.create"}
-                    )
-                    else None
-                ),
+                        _explicit_memory_ingress_context()
+                        if (
+                            "user_text:explicit_memory_intent" in proposal.data_sources
+                            and proposal_tool_name in {"note.create", "todo.create"}
+                        )
+                        else None
+                    ),
             )
             success = execution_result.success
             checkpoint_id = execution_result.checkpoint_id

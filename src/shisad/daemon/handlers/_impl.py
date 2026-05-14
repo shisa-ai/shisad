@@ -1741,7 +1741,7 @@ class HandlerImplementation(
         tool_name: ToolName,
         arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
-        tool_name_value = str(tool_name)
+        tool_name_value = canonical_tool_name(str(tool_name), warn_on_alias=False)
         if tool_name_value not in {"browser.navigate", "browser.click", "browser.type_text"}:
             return dict(arguments)
         return dict(
@@ -3374,6 +3374,7 @@ class HandlerImplementation(
         if session is None:
             return ApprovedToolExecutionResult(success=False)
 
+        tool_name = ToolName(canonical_tool_name(str(tool_name), warn_on_alias=False))
         origin = self._origin_for(
             session=session,
             actor=approval_actor,

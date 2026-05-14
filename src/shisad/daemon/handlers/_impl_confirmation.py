@@ -39,6 +39,7 @@ from shisad.core.events import (
     TwoFactorRevoked,
 )
 from shisad.core.evidence import ArtifactEndorsementState
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import (
     HandlerMixinBase,
@@ -99,6 +100,7 @@ def _parse_confirmed_tool_output_payload(raw_content: str) -> dict[str, Any]:
 
 def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
     tool_name = str(getattr(record, "tool_name", "")).strip() or "tool"
+    canonical_name = canonical_tool_name(tool_name, warn_on_alias=False)
     taint_values_raw: Any = getattr(record, "taint_labels", set())
     taint_values: list[str] = []
     if isinstance(taint_values_raw, (set, frozenset, list, tuple)):
@@ -113,7 +115,7 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
     content_digest = str(getattr(record, "content_digest", "") or "").strip()
     raw_arguments = getattr(record, "arguments", None)
     arguments: dict[str, Any] = {}
-    if tool_name == "browser.navigate" and isinstance(raw_arguments, Mapping):
+    if canonical_name == "browser.navigate" and isinstance(raw_arguments, Mapping):
         url = str(raw_arguments.get("url", "")).strip()
         if url:
             arguments["url"] = url
@@ -129,7 +131,8 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
 
 
 def _confirmed_tool_output_transcript_content(*, tool_name: str, content: str) -> str:
-    if tool_name.strip().lower() not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
+    canonical_name = canonical_tool_name(tool_name, warn_on_alias=False)
+    if canonical_name not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
         return content
     parsed = _parse_confirmed_tool_output_payload(content)
     if "title" not in parsed:
@@ -140,7 +143,8 @@ def _confirmed_tool_output_transcript_content(*, tool_name: str, content: str) -
 
 
 def _confirmed_tool_output_page_title_metadata(*, tool_name: str, content: str) -> dict[str, Any]:
-    if tool_name.strip().lower() not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
+    canonical_name = canonical_tool_name(tool_name, warn_on_alias=False)
+    if canonical_name not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
         return {}
     parsed = _parse_confirmed_tool_output_payload(content)
     title = str(parsed.get("title", "")).strip()

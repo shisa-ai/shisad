@@ -77,6 +77,27 @@ class _WebToolkitStub:
         return dict(self._payload)
 
 
+class _BrowserToolkitStub:
+    def __init__(self) -> None:
+        self.prepare_calls: list[tuple[Session, str, dict[str, Any]]] = []
+        self.navigate_calls: list[tuple[Session, str]] = []
+
+    async def prepare_action_arguments(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        arguments: Any,
+    ) -> dict[str, Any]:
+        prepared = dict(arguments)
+        self.prepare_calls.append((session, tool_name, prepared))
+        return prepared
+
+    async def navigate(self, *, session: Session, url: str) -> dict[str, Any]:
+        self.navigate_calls.append((session, url))
+        return {"ok": True, "url": url}
+
+
 class _FsGitToolkitStub:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
@@ -164,6 +185,7 @@ class _StructuredBranchHarness:
         self._event_bus = _EventCollector()
         self._control_plane = _ExecutionRecorder()
         self._web_toolkit = _WebToolkitStub(web_payload)
+        self._browser_toolkit = _BrowserToolkitStub()
         self._fs_git_toolkit = _FsGitToolkitStub(git_status_payload)
         self._delivery = _DeliveryStub(sent=delivery_sent, reason=delivery_reason)
         self._transcript_store = _TranscriptStoreStub()
@@ -238,6 +260,60 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
         "reminder.create",
         "reminder.list",
     }.issubset(set(registry))
+
+
+@pytest.mark.asyncio
+async def test_gh34_execute_approved_action_canonicalizes_browser_alias_for_runtime() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={"ok": True, "results": []},
+        git_status_payload={"ok": True},
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("browser-navigate"),
+        arguments={"url": "https://example.com/path"},
+        capabilities={Capability.HTTP_REQUEST},
+        approval_actor="policy_loop",
+    )
+
+    assert result.success is True
+    assert harness._browser_toolkit.navigate_calls == [
+        (harness._session, "https://example.com/path")
+    ]
+    assert result.tool_output is not None
+    assert result.tool_output.tool_name == "browser.navigate"
+    assert result.tool_output.arguments == {"url": "https://example.com/path"}
+    assert json.loads(result.tool_output.content) == {
+        "ok": True,
+        "url": "https://example.com/path",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gh34_prepare_browser_tool_arguments_canonicalizes_alias() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={"ok": True, "results": []},
+        git_status_payload={"ok": True},
+    )
+
+    prepared = await HandlerImplementation._prepare_browser_tool_arguments(
+        harness,  # type: ignore[arg-type]
+        session=harness._session,
+        tool_name=ToolName("browser-type-text"),
+        arguments={"target": "#password", "text": "secret"},
+    )
+
+    assert prepared == {"target": "#password", "text": "secret"}
+    assert harness._browser_toolkit.prepare_calls == [
+        (
+            harness._session,
+            "browser.type_text",
+            {"target": "#password", "text": "secret"},
+        )
+    ]
 
 
 @pytest.mark.asyncio

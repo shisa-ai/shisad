@@ -1234,7 +1234,7 @@ async def test_gh34_browser_navigate_alias_uses_task_specific_url_selection() ->
     assert result.executed == 2
     assert len(harness.execution_calls) == 2
     navigate_call = harness.execution_calls[1]
-    assert str(navigate_call["tool_name"]) == "browser-navigate"
+    assert str(navigate_call["tool_name"]) == "browser.navigate"
     assert navigate_call["arguments"] == {
         "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"
     }
