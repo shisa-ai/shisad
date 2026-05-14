@@ -136,6 +136,96 @@ async def _planner_stub_complete(
     )
 
 
+async def _gh36_planner_stub_complete(
+    self: LocalPlannerProvider,
+    messages: list[Message],
+    tools: list[dict[str, Any]] | None = None,
+) -> ProviderResponse:
+    if (
+        messages
+        and messages[0].role == "system"
+        and _SUMMARY_SYSTEM_MARKER in messages[0].content
+    ):
+        return ProviderResponse(
+            message=Message(role="assistant", content='{"entries": []}'),
+            model="gh36-fetch-followup-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    planner_input = messages[-1].content if messages else ""
+    normalized_input = planner_input.replace("^", "")
+    goal = _extract_user_request(planner_input).lower()
+    if "based on what you fetched" in goal or "what you fetched" in goal:
+        data_evidence = normalized_input.split("=== DATA EVIDENCE", 1)[-1]
+        trigger = ""
+        if "[PENDING CONFIRMATIONS]" in data_evidence:
+            trigger = "stale pending confirmation banner"
+        elif "reservation_evidence_marker" in data_evidence:
+            trigger = "raw reservation_evidence_marker JSON"
+        if trigger:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[
+                        _tool_call(
+                            "report_anomaly",
+                            {
+                                "anomaly_type": "runtime_alert",
+                                "description": f"GH36 regression saw {trigger} in DATA EVIDENCE.",
+                                "recommended_action": "quarantine",
+                                "confidence": 0.95,
+                            },
+                            call_id="gh36-false-anomaly",
+                        )
+                    ],
+                ),
+                model="gh36-fetch-followup-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if "本日夜空席" in normalized_input:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Based on the confirmed fetch, 本日夜空席あり is shown.",
+                ),
+                model="gh36-fetch-followup-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="The confirmed fetch is not available in this context.",
+            ),
+            model="gh36-fetch-followup-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "reservation availability" in goal:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    _tool_call(
+                        "web.fetch",
+                        {"url": _FETCH_URL, "max_bytes": 45000},
+                        call_id="gh36-fetch-large-page",
+                    )
+                ],
+            ),
+            model="gh36-fetch-followup-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    return await _planner_stub_complete(self, messages, tools)
+
+
 def _large_tabelog_html(*, include_markers: bool) -> bytes:
     filler_before = "レストラン紹介 " * 1600
     if include_markers:
@@ -220,8 +310,11 @@ def _fake_open_no_redirect(request, *, timeout: float):  # type: ignore[no-untyp
 async def _run_fetch_extraction_harness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    planner_complete: Any = _planner_stub_complete,
+    default_require_confirmation: bool = False,
 ):
-    monkeypatch.setattr(LocalPlannerProvider, "complete", _planner_stub_complete, raising=True)
+    monkeypatch.setattr(LocalPlannerProvider, "complete", planner_complete, raising=True)
     monkeypatch.setattr(web_module, "_open_no_redirect", _fake_open_no_redirect, raising=True)
     for var in (
         "SHISAD_MODEL_REMOTE_ENABLED",
@@ -236,9 +329,19 @@ async def _run_fetch_extraction_harness(
         "\n".join(
             [
                 'version: "1"',
-                "default_require_confirmation: false",
+                f"default_require_confirmation: {str(default_require_confirmation).lower()}",
                 "safe_output_domains:",
                 '  - "tabelog.com"',
+                *(
+                    [
+                        "tools:",
+                        "  web.fetch:",
+                        "    confirmation:",
+                        "      level: software",
+                    ]
+                    if default_require_confirmation
+                    else []
+                ),
             ]
         )
         + "\n",
@@ -274,6 +377,37 @@ async def _create_session(client: ControlClient) -> str:
         {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
     )
     return str(created["session_id"])
+
+
+async def _confirm_pending_action(client: ControlClient, confirmation_id: str) -> dict[str, Any]:
+    end = asyncio.get_running_loop().time() + 5.0
+    latest: dict[str, Any] = {
+        "confirmed": False,
+        "confirmation_id": confirmation_id,
+        "reason": "unknown",
+    }
+    while asyncio.get_running_loop().time() < end:
+        pending = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id},
+        )
+        actions = pending.get("actions", [])
+        assert actions, f"No pending action found for {confirmation_id}"
+        nonce = str(actions[0].get("decision_nonce", "")).strip()
+        assert nonce, f"Missing decision_nonce for {confirmation_id}"
+        latest = dict(
+            await client.call(
+                "action.confirm",
+                {"confirmation_id": confirmation_id, "decision_nonce": nonce},
+            )
+        )
+        if latest.get("confirmed") is True:
+            return latest
+        if latest.get("reason") != "cooldown_active":
+            return latest
+        retry_after = float(latest.get("retry_after_seconds", 0.1) or 0.1)
+        await asyncio.sleep(max(0.05, retry_after))
+    raise AssertionError(f"Timed out confirming pending action {confirmation_id}: {latest}")
 
 
 @pytest.mark.asyncio
@@ -390,6 +524,47 @@ async def test_gh28_user_requested_page_title_still_uses_fetch_title_metadata(
     outputs = extract_tool_outputs(reply)
     fetch_payload = outputs["web.fetch"][0]
     assert fetch_payload["title"] == _TITLE_ONLY_RESERVATION_MARKER
+
+
+@pytest.mark.asyncio
+async def test_gh36_confirmed_fetch_followup_uses_evidence_without_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _run_fetch_extraction_harness(
+        tmp_path,
+        monkeypatch,
+        planner_complete=_gh36_planner_stub_complete,
+        default_require_confirmation=True,
+    ) as client:
+        sid = await _create_session(client)
+
+        proposed = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": f"Check reservation availability on the Tabelog page {_FETCH_URL}.",
+            },
+        )
+        assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+        pending_ids = proposed.get("pending_confirmation_ids")
+        assert isinstance(pending_ids, list)
+        assert pending_ids
+
+        confirmed = await _confirm_pending_action(client, str(pending_ids[0]))
+        assert confirmed.get("confirmed") is True
+
+        followup = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "So based on what you fetched, does it show availability?",
+            },
+        )
+
+    assert followup.get("lockdown_level") == "normal"
+    assert "lockdown" not in str(followup.get("response", "")).casefold()
+    assert "本日夜空席あり" in str(followup.get("response", ""))
 
 
 @pytest.mark.asyncio

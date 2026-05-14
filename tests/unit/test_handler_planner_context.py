@@ -7,14 +7,15 @@ from types import SimpleNamespace
 
 from shisad.core.planner import ActionProposal, PlannerOutput, PlannerResult
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.transcript import TranscriptEntry
-from shisad.core.types import Capability, ToolName
+from shisad.core.transcript import TranscriptEntry, TranscriptStore
+from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.daemon.handlers._impl_confirmation import _serialize_confirmed_tool_output
 from shisad.daemon.handlers._impl_session import (
     _PAGE_TITLE_METADATA_HEADER,
     SessionToolOutputRecord,
     _action_monitor_explanation_from_votes,
     _blocked_action_feedback,
+    _build_planner_conversation_context,
     _build_planner_tool_context,
     _build_post_tool_synthesis_untrusted_content,
     _coerce_blocked_action_response_text,
@@ -1237,6 +1238,7 @@ def _transcript_entry(
     content: str,
     *,
     metadata: dict[str, object] | None = None,
+    taint_labels: list[TaintLabel] | None = None,
 ) -> TranscriptEntry:
     entry_metadata = dict(metadata or {})
     if metadata is None and role == "assistant" and "[PENDING CONFIRMATIONS]" in content:
@@ -1245,8 +1247,64 @@ def _transcript_entry(
         role=role,
         content_hash="0" * 64,
         content_preview=content,
+        taint_labels=list(taint_labels or []),
         metadata=entry_metadata,
     )
+
+
+def test_gh36_conversation_context_omits_stale_pending_and_summarizes_confirmed_fetch(
+    tmp_path,
+) -> None:
+    fetch_payload = {
+        "ok": True,
+        "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/",
+        "actionable_evidence_snippets": [
+            {
+                "kind": "reservation_evidence_marker",
+                "matched_marker": "本日夜空席あり",
+                "snippet": "予約カレンダー 本日夜空席あり。ネット予約できます。",
+                "taint_labels": ["untrusted"],
+            }
+        ],
+        "content": "generic venue text " * 20,
+    }
+    entries = [
+        _transcript_entry(
+            "assistant",
+            (
+                "[PENDING CONFIRMATIONS] Queued for your approval: "
+                "1. c-1 web.fetch\nIn chat: reply with 'confirm 1' or 'reject 1'."
+            ),
+            metadata={"system_generated_pending_confirmations": True},
+        ),
+        _transcript_entry(
+            "tool",
+            json.dumps(fetch_payload, ensure_ascii=False, sort_keys=True),
+            metadata={
+                "confirmed_tool_output": True,
+                "actor": "human_confirmation",
+                "tool_name": "web.fetch",
+                "tool_success": True,
+            },
+            taint_labels=[TaintLabel.UNTRUSTED],
+        ),
+    ]
+
+    context, taints = _build_planner_conversation_context(
+        transcript_store=TranscriptStore(tmp_path / "transcript"),
+        session_id=SessionId("sess-gh36"),
+        context_window=8,
+        exclude_latest_turn=False,
+        entries=entries,
+        active_pending_confirmation_ids=frozenset(),
+    )
+
+    assert "[PENDING CONFIRMATIONS]" not in context
+    assert "reservation_evidence_marker" not in context
+    assert "Confirmed action result" in context
+    assert "本日夜空席あり" in context
+    assert "ネット予約" in context
+    assert TaintLabel.UNTRUSTED in taints
 
 
 def test_rc_lus_result_followup_reuses_recent_assistant_answer() -> None:

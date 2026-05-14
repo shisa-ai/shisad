@@ -4710,6 +4710,7 @@ def _transcript_entry_content(
     if (
         (
             metadata.get("promoted_evidence") is True
+            or metadata.get("confirmed_tool_output") is True
             or metadata.get("system_generated_pending_confirmations") is True
             or metadata.get("pending_confirmation_bridge") is True
             or metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY) is True
@@ -4735,24 +4736,19 @@ def _summarize_context_entries(
     *,
     entries: list[TranscriptEntry],
     transcript_store: TranscriptStore | None = None,
+    active_pending_confirmation_ids: frozenset[str] | None = None,
 ) -> str:
     if not entries:
         return ""
     snippets: list[str] = []
-    for entry in entries[:_CONTEXT_SUMMARY_SCAN_LIMIT]:
-        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-        raw = _transcript_entry_content(
+    for index, entry in enumerate(entries[:_CONTEXT_SUMMARY_SCAN_LIMIT]):
+        raw = _conversation_context_content_for_entry(
             entry=entry,
-            transcript_store=(
-                transcript_store
-                if bool(metadata.get("system_generated_pending_confirmations"))
-                or bool(metadata.get("pending_confirmation_bridge"))
-                or bool(metadata.get(_LOCKDOWN_RECOVERY_NOTICE_METADATA_KEY))
-                else None
-            ),
+            entries=entries,
+            index=index,
+            transcript_store=transcript_store,
+            active_pending_confirmation_ids=active_pending_confirmation_ids,
         )
-        if bool(metadata.get("pending_confirmation_bridge")):
-            raw = _mixed_pending_confirmation_result_portion(raw) or raw
         if not raw.strip():
             continue
         role = _transcript_entry_context_role(entry, content=raw)
@@ -4769,6 +4765,46 @@ def _summarize_context_entries(
     if omitted > 0:
         summary = f"{summary} | +{omitted} additional earlier turns"
     return summary
+
+
+def _conversation_context_content_for_entry(
+    *,
+    entry: TranscriptEntry,
+    entries: Sequence[TranscriptEntry],
+    index: int,
+    transcript_store: TranscriptStore | None,
+    active_pending_confirmation_ids: frozenset[str] | None = None,
+) -> str:
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    raw_content = _transcript_entry_content(
+        entry=entry,
+        transcript_store=transcript_store,
+    )
+    if bool(metadata.get("pending_confirmation_bridge")):
+        result_content = _mixed_pending_confirmation_result_portion(raw_content)
+        if result_content is not None:
+            return result_content
+    if (
+        _is_server_pending_confirmation_entry(entry)
+        and active_pending_confirmation_ids is not None
+    ):
+        pending_content = _pending_confirmation_followup_text(
+            raw_content,
+            active_pending_confirmation_ids=active_pending_confirmation_ids,
+        )
+        if pending_content is None:
+            return ""
+        raw_content = pending_content
+    if _is_confirmed_tool_output_entry(entry):
+        response = _confirmed_tool_output_response_from_transcript_entry(
+            entry,
+            entries=entries,
+            index=index,
+            transcript_store=transcript_store,
+        )
+        if response is not None:
+            return response.text
+    return raw_content
 
 
 def _transcript_entry_has_firewall_risk_metadata(entry: TranscriptEntry) -> bool:
@@ -4989,6 +5025,7 @@ def _build_planner_conversation_context(
     exclude_latest_turn: bool = True,
     entries: list[TranscriptEntry] | None = None,
     evidence_store: ArtifactLedger | None = None,
+    active_pending_confirmation_ids: frozenset[str] | None = None,
 ) -> tuple[str, set[TaintLabel]]:
     if entries is not None:
         # Caller supplied an explicit history window (for example already excluding
@@ -5023,18 +5060,20 @@ def _build_planner_conversation_context(
         summary = _summarize_context_entries(
             entries=summary_entries,
             transcript_store=transcript_store,
+            active_pending_confirmation_ids=active_pending_confirmation_ids,
         )
         if summary:
             lines.append(f"Summary of earlier turns: {summary}")
 
-    for entry in visible_entries:
-        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-        raw_content = _transcript_entry_content(
+    visible_start_index = len(summary_entries)
+    for offset, entry in enumerate(visible_entries):
+        raw_content = _conversation_context_content_for_entry(
             entry=entry,
             transcript_store=transcript_store,
+            entries=entries,
+            index=visible_start_index + offset,
+            active_pending_confirmation_ids=active_pending_confirmation_ids,
         )
-        if bool(metadata.get("pending_confirmation_bridge")):
-            raw_content = _mixed_pending_confirmation_result_portion(raw_content) or raw_content
         role = _transcript_entry_context_role(entry, content=raw_content)
         compact = _compact_context_text(raw_content, max_chars=_CONTEXT_ENTRY_MAX_CHARS)
         if compact:
@@ -6597,6 +6636,7 @@ def _confirmed_tool_output_response_from_transcript_entry(
     *,
     entries: Sequence[TranscriptEntry] = (),
     index: int = 0,
+    transcript_store: TranscriptStore | None = None,
 ) -> ResultFollowupResponse | None:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     if metadata.get("confirmed_tool_output") is not True:
@@ -6605,9 +6645,19 @@ def _confirmed_tool_output_response_from_transcript_entry(
     if not tool_name:
         return None
     try:
-        payload = json.loads(entry.content_preview)
+        payload = json.loads(
+            _transcript_entry_content(
+                entry=entry,
+                transcript_store=transcript_store,
+            )
+        )
     except json.JSONDecodeError:
-        payload = {"text": entry.content_preview}
+        payload = {
+            "text": _transcript_entry_content(
+                entry=entry,
+                transcript_store=transcript_store,
+            )
+        }
     if not isinstance(payload, Mapping):
         payload = {"value": payload}
     summary_payload = dict(payload)
@@ -6825,6 +6875,7 @@ def _recent_result_followup_response(
                 entry,
                 entries=entries,
                 index=index,
+                transcript_store=transcript_store,
             )
             if response:
                 return response
@@ -8222,6 +8273,13 @@ class SessionImplMixin(HandlerMixinBase):
             session.metadata["episode_snapshot_degraded"] = False
         self._session_manager.persist(sid)
 
+        active_pending_confirmation_ids = _active_pending_confirmation_ids_for_session(
+            getattr(self, "_pending_actions", {}),
+            sid,
+            is_internal_ingress=validated.is_internal_ingress,
+            delivery_target=validated.delivery_target,
+            fallback_target=_stored_delivery_target_from_session(validated.session),
+        )
         conversation_context, transcript_context_taints = _build_planner_conversation_context(
             transcript_store=self._transcript_store,
             session_id=sid,
@@ -8229,6 +8287,7 @@ class SessionImplMixin(HandlerMixinBase):
             exclude_latest_turn=False,
             entries=context_entries,
             evidence_store=getattr(self, "_evidence_store", None),
+            active_pending_confirmation_ids=active_pending_confirmation_ids,
         )
         trusted_same_session_user_context = _build_trusted_same_session_user_context(
             entries=context_entries,
