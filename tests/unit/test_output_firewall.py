@@ -114,6 +114,19 @@ def test_m2_t8_entropy_detector_redacts_unknown_secrets_and_alerts() -> None:
     assert alerts[0]["context"] == {"session_id": "s1"}
 
 
+def test_gh34_entropy_detector_does_not_prefix_replace_low_entropy_token_sibling() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "Ab3D4e5F6g7H8i9J0k1L2m3N"
+    sibling = f"{token}{'a' * 32}"
+
+    result = firewall.inspect(f"tokens {token} {sibling}")
+
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert sibling in result.sanitized_text
+    assert f"[REDACTED:high_entropy_secret]{'a' * 32}" not in result.sanitized_text
+    assert result.sanitized_text.count("[REDACTED:high_entropy_secret]") == 1
+
+
 def test_m2_output_firewall_blocks_url_with_embedded_credentials() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     result = firewall.inspect("fetch https://alice:secret@api.good.com/private")
@@ -401,6 +414,19 @@ def test_gh34_entropy_detector_redacts_single_nonfinal_path_secret_segment() -> 
     assert "/a/[REDACTED:high_entropy_secret]/b" in result.sanitized_text
     assert token not in result.sanitized_text
     assert "high_entropy_secret" in result.secret_findings
+
+
+def test_gh34_entropy_detector_does_not_prefix_replace_readable_path_sibling() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    secret_path = "/tmp/a1B2c3D4"
+    readable_path = "/tmp/a1B2c3D4readme"
+
+    result = firewall.inspect(f"paths {secret_path} {readable_path}")
+
+    assert "/tmp/[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert readable_path in result.sanitized_text
+    assert "[REDACTED:high_entropy_secret]readme" not in result.sanitized_text
+    assert result.sanitized_text.count("[REDACTED:high_entropy_secret]") == 1
 
 
 @pytest.mark.parametrize(

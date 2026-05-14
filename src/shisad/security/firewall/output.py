@@ -362,12 +362,8 @@ class OutputFirewall:
     def _redact_high_entropy_tokens(cls, text: str) -> tuple[str, list[str]]:
         redacted = text
         findings: list[str] = []
-        matches = sorted(
-            cls._HIGH_ENTROPY_TOKEN_RE.finditer(text),
-            key=lambda match: len(match.group(0)),
-            reverse=True,
-        )
-        for match in matches:
+        replacements: list[tuple[int, int, str]] = []
+        for match in cls._HIGH_ENTROPY_TOKEN_RE.finditer(text):
             token = match.group(0)
             if token.startswith("http"):
                 continue
@@ -389,38 +385,24 @@ class OutputFirewall:
             if entropy < 4.0:
                 continue
             findings.append("high_entropy_secret")
-            redacted = redacted.replace(token, "[REDACTED:high_entropy_secret]")
+            replacements.append((match.start(), match.end(), "[REDACTED:high_entropy_secret]"))
+        if replacements:
+            redacted = cls._replace_spans(text, replacements)
         return redacted, findings
 
     @classmethod
     def _redact_short_secret_path_tokens(cls, text: str) -> tuple[str, list[str]]:
         redacted = text
-        redacted_any = False
         url_spans: list[tuple[int, int]] = []
-        url_replacements: list[tuple[int, int, str]] = []
+        replacements: list[tuple[int, int, str]] = []
         for match in _URL_RE.finditer(text):
             token = match.group(0)
             url_spans.append((match.start(), match.end()))
             replacement = cls._short_secret_url_replacement(token)
             if replacement is None:
                 continue
-            url_replacements.append((match.start(), match.end(), replacement))
-        if url_replacements:
-            parts: list[str] = []
-            last_end = 0
-            for start, end, replacement in url_replacements:
-                parts.append(text[last_end:start])
-                parts.append(replacement)
-                last_end = end
-            parts.append(text[last_end:])
-            redacted = "".join(parts)
-            redacted_any = True
-        matches = sorted(
-            cls._PATHISH_TOKEN_RE.finditer(text),
-            key=lambda match: len(match.group(0)),
-            reverse=True,
-        )
-        for match in matches:
+            replacements.append((match.start(), match.end(), replacement))
+        for match in cls._PATHISH_TOKEN_RE.finditer(text):
             token = match.group(0)
             if any(start <= match.start() < end for start, end in url_spans):
                 continue
@@ -429,9 +411,21 @@ class OutputFirewall:
             replacement = cls._short_secret_path_replacement(token)
             if replacement is None:
                 continue
-            redacted = redacted.replace(token, replacement)
-            redacted_any = True
-        return redacted, ["high_entropy_secret"] if redacted_any else []
+            replacements.append((match.start(), match.end(), replacement))
+        if replacements:
+            redacted = cls._replace_spans(text, replacements)
+        return redacted, ["high_entropy_secret"] if replacements else []
+
+    @staticmethod
+    def _replace_spans(text: str, replacements: list[tuple[int, int, str]]) -> str:
+        parts: list[str] = []
+        last_end = 0
+        for start, end, replacement in sorted(replacements, key=lambda item: item[0]):
+            parts.append(text[last_end:start])
+            parts.append(replacement)
+            last_end = end
+        parts.append(text[last_end:])
+        return "".join(parts)
 
     @classmethod
     def _short_secret_url_replacement(cls, token: str) -> str | None:
