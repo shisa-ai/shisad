@@ -78,7 +78,8 @@ class OutputFirewall:
     _HIGH_ENTROPY_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
     _QUERY_BLOB_RE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/=_%-]{20,}")
     _PATHISH_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?<![A-Za-z0-9])/?(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]{1,8})?"
+        r"(?<![A-Za-z0-9])(?:/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+|"
+        r"(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_-]+)(?:\.[A-Za-z0-9]{1,8})?"
     )
     _PATH_CONTEXT_CHARS: ClassVar[set[str]] = {
         " ",
@@ -409,7 +410,7 @@ class OutputFirewall:
     @classmethod
     def _short_secret_path_replacement(cls, token: str) -> str | None:
         raw_segments = [segment for segment in token.strip("/").split("/") if segment]
-        if len(raw_segments) < 2:
+        if not raw_segments:
             return None
         final_index = len(raw_segments) - 1
         short_secret_indexes: list[int] = []
@@ -449,7 +450,7 @@ class OutputFirewall:
     ) -> bool:
         if "/" not in token:
             return False
-        if token.count("/") < 2:
+        if token.count("/") < 2 and not token.startswith("/"):
             return False
         if "+" in token or "=" in token:
             return False
@@ -464,7 +465,7 @@ class OutputFirewall:
         ):
             return False
         segments = [segment for segment in token.strip("/").split("/") if segment]
-        if len(segments) < 2:
+        if len(segments) < 2 and not token.startswith("/"):
             return False
         if any(len(segment) > 64 for segment in segments):
             return False

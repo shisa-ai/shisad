@@ -312,6 +312,28 @@ def test_gh34_entropy_detector_redacts_single_short_secret_like_final_segment() 
     assert "high_entropy_secret" in result.secret_findings
 
 
+def test_gh34_entropy_detector_redacts_rooted_single_secret_like_source_stem() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/a1B2c3D4.py"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "/[REDACTED:high_entropy_secret].py" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+def test_gh34_entropy_detector_redacts_rooted_single_mid_length_secret_segment() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/a1B2c3D4e5F6g7H8i9"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "/[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
 def test_gh34_entropy_detector_redacts_single_short_final_segment_with_low_entropy_prefix() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/tmp/tmp/tmp/a1B2c3D4"
@@ -384,6 +406,16 @@ def test_gh34_entropy_detector_redacts_single_nonfinal_path_secret_segment() -> 
 def test_gh34_entropy_detector_keeps_readable_technical_final_segment() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/home/ubuntu/project/v4l2ctl"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert token in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
+
+
+def test_gh34_entropy_detector_keeps_readable_rooted_technical_segment() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/v4l2ctl"
 
     result = firewall.inspect(f"path {token}")
 
