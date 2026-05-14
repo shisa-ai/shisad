@@ -197,7 +197,19 @@ def test_gh34_entropy_detector_still_redacts_secret_like_path_with_source_suffix
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     token = "/tmp/a8F2kL9pQ4rT1vN3/b7D4mS8xZ1cV6nH2.py"
 
-    result = firewall.inspect(f"debug={token}")
+    result = firewall.inspect(f"path {token}")
 
     assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
+    assert token not in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+
+
+def test_gh34_entropy_detector_redacts_lowercase_secret_like_source_suffix_path() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/tmp/project/b7d4ms8xz1cv6nh2.py"
+
+    result = firewall.inspect(f"path {token}")
+
+    assert "[REDACTED:high_entropy_secret].py" in result.sanitized_text
+    assert token not in result.sanitized_text
     assert "high_entropy_secret" in result.secret_findings

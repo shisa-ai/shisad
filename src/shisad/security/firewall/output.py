@@ -418,16 +418,18 @@ class OutputFirewall:
         suffix = suffix_match.group(0).lower()
         return suffix if suffix in cls._SOURCE_PATH_SUFFIXES else ""
 
-    @staticmethod
-    def _looks_like_source_file_stem(segment: str) -> bool:
+    @classmethod
+    def _looks_like_source_file_stem(cls, segment: str) -> bool:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", segment):
             return False
         if "_" in segment or "-" in segment:
             parts = [part for part in re.split(r"[_-]+", segment) if part]
             return len(parts) >= 2 and all(
-                re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", part) for part in parts
+                re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", part) is not None
+                and cls._shannon_entropy(part) < 3.6
+                for part in parts
             )
-        return segment.islower() or segment.isupper()
+        return (segment.islower() or segment.isupper()) and cls._shannon_entropy(segment) < 3.6
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:
