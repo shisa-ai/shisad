@@ -42,6 +42,15 @@ from shisad.security.taint import sink_decision_for_tool
 
 logger = logging.getLogger(__name__)
 
+_READ_MOSTLY_BROWSER_TOOLS = frozenset(
+    {
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+        "browser.end_session",
+    }
+)
+
 
 def _normalize_mcp_server_ids(values: Iterable[str] | None) -> set[str]:
     return {str(item).strip().lower() for item in values or [] if str(item).strip()}
@@ -286,6 +295,7 @@ class PEP:
 
         egress_requires_confirmation = False
         egress_reason = ""
+        destination_authorized = False
         if destination is not None:
             tool_declared_destination = self._tool_destination_matches(
                 destination=destination,
@@ -365,6 +375,7 @@ class PEP:
                 )
 
             if tool_declared_destination:
+                destination_authorized = True
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -376,6 +387,7 @@ class PEP:
                     )
                 )
             elif allowlisted:
+                destination_authorized = True
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -387,6 +399,7 @@ class PEP:
                     )
                 )
             elif user_requested:
+                destination_authorized = True
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -398,6 +411,7 @@ class PEP:
                     )
                 )
             elif same_session_user_requested:
+                destination_authorized = True
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -506,6 +520,12 @@ class PEP:
             trusted_cli_confirmation_bypass=context.trusted_cli_confirmation_bypass,
             egress_requires_confirmation=egress_requires_confirmation,
             taint_requires_confirmation=taint_decision.require_confirmation,
+            risk_policy_confirmation_bypass=(
+                str(tool_name) in _READ_MOSTLY_BROWSER_TOOLS
+                and destination_authorized
+                and not egress_requires_confirmation
+                and not taint_decision.require_confirmation
+            ),
         )
 
         if needs_confirmation is not None:
@@ -557,6 +577,7 @@ class PEP:
         trusted_cli_confirmation_bypass: bool,
         egress_requires_confirmation: bool,
         taint_requires_confirmation: bool,
+        risk_policy_confirmation_bypass: bool,
     ) -> ConfirmationRequirement | None:
         registration_source = str(getattr(tool, "registration_source", "")).strip().lower()
         mcp_requires_confirmation = self._mcp_server_requires_confirmation(tool)
@@ -588,16 +609,17 @@ class PEP:
         ):
             requirements.append(("explicit_policy", explicit_policy))
 
-        matched_levels = [
-            item
-            for item in self._policy.risk_policy.confirmation_levels
-            if risk_score >= item.threshold
-        ]
-        if matched_levels:
-            highest = max(matched_levels, key=lambda item: item.level.priority)
-            requirements.append(("risk_policy", ConfirmationRequirement(level=highest.level)))
-        elif risk_score >= self._policy.risk_policy.auto_approve_threshold:
-            requirements.append(("risk_policy", legacy_software_confirmation_requirement()))
+        if not risk_policy_confirmation_bypass:
+            matched_levels = [
+                item
+                for item in self._policy.risk_policy.confirmation_levels
+                if risk_score >= item.threshold
+            ]
+            if matched_levels:
+                highest = max(matched_levels, key=lambda item: item.level.priority)
+                requirements.append(("risk_policy", ConfirmationRequirement(level=highest.level)))
+            elif risk_score >= self._policy.risk_policy.auto_approve_threshold:
+                requirements.append(("risk_policy", legacy_software_confirmation_requirement()))
 
         if trusted_cli_clean:
             requirements = [

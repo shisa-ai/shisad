@@ -163,6 +163,12 @@ def _fetch_page(url: str) -> tuple[str, str]:
     parsed = urlparse(url)
     if parsed.scheme in {"", "about"}:
         return "", ""
+    if parsed.hostname == "example.com":
+        return (
+            "<html><head><title>External Example</title></head>"
+            "<body>Example external browser page</body></html>",
+            url,
+        )
     request = urllib.request.Request(url, headers={"User-Agent": "fake-playwright-cli"})
     with urllib.request.urlopen(request, timeout=10.0) as response:
         raw = response.read()

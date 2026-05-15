@@ -388,6 +388,137 @@ class TestPepConfirmationPolicy:
         assert decision.confirmation_requirement is not None
         assert decision.confirmation_requirement["level"] == "bound_approval"
 
+    def test_gh37_allowlisted_read_mostly_browser_navigation_skips_risk_confirmation(
+        self,
+    ) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.navigate"),
+                description="Open a browser page.",
+                parameters=[ToolParameter(name="url", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        pep = PEP(
+            PolicyBundle.model_validate(
+                {
+                    "default_require_confirmation": False,
+                    "egress": [
+                        {
+                            "host": "example.com",
+                            "protocols": ["https"],
+                            "ports": [443],
+                        }
+                    ],
+                    "risk_policy": {
+                        "auto_approve_threshold": 0.95,
+                        "block_threshold": 0.99,
+                        "confirmation_levels": [
+                            {"threshold": 0.05, "level": "software"},
+                        ],
+                    },
+                }
+            ),
+            registry,
+        )
+
+        decision = pep.evaluate(
+            ToolName("browser.navigate"),
+            {"url": "https://example.com/"},
+            PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        )
+
+        assert decision.kind == PEPDecisionKind.ALLOW
+        assert decision.risk_score >= 0.05
+
+    def test_gh37_browser_write_confirmation_survives_authorized_destination(
+        self,
+    ) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.click"),
+                description="Click a browser selector.",
+                parameters=[ToolParameter(name="url", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                require_confirmation=True,
+            )
+        )
+        pep = PEP(
+            PolicyBundle.model_validate(
+                {
+                    "default_require_confirmation": False,
+                    "egress": [
+                        {
+                            "host": "example.com",
+                            "protocols": ["https"],
+                            "ports": [443],
+                        }
+                    ],
+                    "risk_policy": {
+                        "auto_approve_threshold": 0.95,
+                        "block_threshold": 0.99,
+                        "confirmation_levels": [
+                            {"threshold": 0.05, "level": "software"},
+                        ],
+                    },
+                }
+            ),
+            registry,
+        )
+
+        decision = pep.evaluate(
+            ToolName("browser.click"),
+            {"url": "https://example.com/"},
+            PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        )
+
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.confirmation_requirement is not None
+        assert decision.confirmation_requirement["level"] == "software"
+
+    def test_gh37_untrusted_browser_destination_still_requires_confirmation(
+        self,
+    ) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.navigate"),
+                description="Open a browser page.",
+                parameters=[ToolParameter(name="url", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        pep = PEP(
+            PolicyBundle.model_validate(
+                {
+                    "default_require_confirmation": False,
+                    "risk_policy": {
+                        "auto_approve_threshold": 0.95,
+                        "block_threshold": 0.99,
+                        "confirmation_levels": [
+                            {"threshold": 0.05, "level": "software"},
+                        ],
+                    },
+                }
+            ),
+            registry,
+        )
+
+        decision = pep.evaluate(
+            ToolName("browser.navigate"),
+            {"url": "https://evil.example/"},
+            PolicyContext(
+                capabilities={Capability.HTTP_REQUEST},
+                untrusted_host_patterns={"evil.example"},
+            ),
+        )
+
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.confirmation_requirement is not None
+        assert decision.confirmation_requirement["level"] == "software"
+
     def test_explicit_high_tier_fallback_survives_lower_tier_default_confirmation(self) -> None:
         _, registry = _make_pep()
         pep = PEP(

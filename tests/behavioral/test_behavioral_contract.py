@@ -1047,6 +1047,8 @@ async def _contract_harness_context(
     web_search_backend_configured: bool = True,
     policy_egress_allowed: bool = True,
     browser_enabled: bool | None = None,
+    browser_allowed_domains: list[str] | None = None,
+    policy_extra_lines: list[str] | None = None,
 ) -> AsyncIterator[ContractHarness]:
     server: ThreadingHTTPServer | None = None
     thread: threading.Thread | None = None
@@ -1077,6 +1079,7 @@ async def _contract_harness_context(
                 '  - "localhost"',
                 '  - "example.com"',
                 *egress_lines,
+                *(policy_extra_lines or []),
             ]
         )
         + "\n"
@@ -1101,7 +1104,8 @@ async def _contract_harness_context(
                     f"{sys.executable} "
                     f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
                 ),
-                "browser_allowed_domains": ["127.0.0.1", "localhost"],
+                "browser_allowed_domains": browser_allowed_domains
+                or ["127.0.0.1", "localhost"],
                 "browser_require_hardened_isolation": False,
                 "assistant_fs_roots": [workspace_root],
             },
@@ -6842,6 +6846,41 @@ async def test_contract_browser_navigate_executes_and_returns_page(
     payload = outputs["browser.navigate"][0]
     assert payload.get("ok") is True
     assert payload.get("title") == "Browser Home"
+
+
+@pytest.mark.asyncio
+async def test_gh37_allowlisted_external_browser_navigate_skips_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        browser_allowed_domains=["example.com"],
+        policy_extra_lines=[
+            "risk_policy:",
+            "  auto_approve_threshold: 0.95",
+            "  block_threshold: 0.99",
+            "  confirmation_levels:",
+            "    - threshold: 0.05",
+            "      level: software",
+        ],
+    ) as harness:
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "browser navigate https://example.com/browser"},
+        )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.navigate" in outputs
+    payload = outputs["browser.navigate"][0]
+    assert payload.get("ok") is True
+    assert payload.get("title") == "External Example"
 
 
 @pytest.mark.asyncio
