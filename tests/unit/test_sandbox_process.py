@@ -190,6 +190,25 @@ def test_m6_process_build_nsjail_command_respects_mounts_and_network(tmp_path: P
     assert str(cwd) in wrapped
 
 
+def test_m6_process_build_nsjail_command_omits_address_limit_when_zero() -> None:
+    runner = SandboxProcessRunner(
+        connect_path_proxy=NoopConnectPathProxy(net_admin_available=False),
+        bwrap_binary="/usr/bin/bwrap",
+        nsjail_binary="/usr/sbin/nsjail",
+    )
+    config = SandboxConfig(
+        tool_name="browser.navigate",
+        command=[sys.executable, "-c", "print('ok')"],
+        limits=ResourceLimits(memory_mb=0),
+        degraded_mode=DegradedModePolicy.FAIL_OPEN,
+        security_critical=False,
+    )
+
+    wrapped = runner.build_nsjail_command(config=config, command=config.command)
+
+    assert "--rlimit_as" not in wrapped
+
+
 def test_m6_process_preexec_limits_returns_none_without_resource(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -224,6 +243,23 @@ def test_m6_process_preexec_limits_writes_degraded_warning(monkeypatch: pytest.M
     preexec()
     assert calls
     assert b"resource limits degraded" in calls[0][1]
+
+
+def test_m6_process_preexec_limits_skips_zero_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, tuple[int, int]]] = []
+
+    fake_resource = SimpleNamespace(
+        RLIMIT_AS=1,
+        RLIMIT_NPROC=2,
+        setrlimit=lambda resource_id, values: calls.append((resource_id, values)),
+    )
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    preexec = SandboxProcessRunner.preexec_limits(ResourceLimits(memory_mb=0, pids=0))
+    assert preexec is not None
+    preexec()
+
+    assert calls == []
 
 
 def test_m6_process_invoke_returns_blocked_reason_from_on_started(

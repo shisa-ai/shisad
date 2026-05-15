@@ -3075,6 +3075,51 @@ async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis
 
 
 @pytest.mark.asyncio
+async def test_gh24_finalize_response_synthesizes_evidence_read_turn() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner(
+        "Use the online reservation control on Tabelog and stop before entering details."
+    )
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="evidence.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "ref_id": "ev-reservation",
+                        "source": "web.fetch:tabelog.com",
+                        "content": (
+                            "Asian Bistro Dai Nihonbashi ten shows an online reservation "
+                            "control for tomorrow, with personal details required only after "
+                            "selecting the slot."
+                        ),
+                        "taint_labels": ["untrusted"],
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+        sanitized_text="Based on that Tabelog page, what is the best way to make the reservation?",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text == "Use the online reservation control on Tabelog and stop before entering details."
+    assert "Completed action result:" not in text
+    assert "ephemeral_read" not in text
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    assert "Asian Bistro Dai Nihonbashi ten shows an online reservation control" in synthesis_input
+    assert "Tool outputs from the same turn" in synthesis_input
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_preserves_non_web_preliminary_without_synthesis() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("Unexpected synthesis.")

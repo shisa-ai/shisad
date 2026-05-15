@@ -252,6 +252,38 @@ async function snapshot(page) {
         const value = element.getAttribute("contenteditable");
         return value !== null && String(value).toLowerCase() === "false";
       };
+      const isVisibleCandidate = (element) => {
+        const tag = element.tagName.toLowerCase();
+        if (tag === "input" && String(element.getAttribute("type") || "").toLowerCase() === "hidden") {
+          return false;
+        }
+        if (element.disabled || element.getAttribute("aria-disabled") === "true" || element.hidden) {
+          return false;
+        }
+        if (element.getAttribute("aria-hidden") === "true") {
+          return false;
+        }
+        const style =
+          typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+            ? window.getComputedStyle(element)
+            : null;
+        if (
+          style &&
+          (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")
+        ) {
+          return false;
+        }
+        if (typeof element.getClientRects === "function" && element.getClientRects().length === 0) {
+          return false;
+        }
+        if (typeof element.getBoundingClientRect === "function") {
+          const rect = element.getBoundingClientRect();
+          if (rect && rect.width <= 0 && rect.height <= 0) {
+            return false;
+          }
+        }
+        return true;
+      };
       const editableTextFor = (element) => {
         const textFor = (node) => {
           if (!node) {
@@ -299,12 +331,13 @@ async function snapshot(page) {
       ).filter((element) => {
         const tag = element.tagName.toLowerCase();
         return (
-          tag === "a" ||
-          tag === "button" ||
-          tag === "input" ||
-          tag === "textarea" ||
-          tag === "select" ||
-          Boolean(element.isContentEditable)
+          isVisibleCandidate(element) &&
+          (tag === "a" ||
+            tag === "button" ||
+            tag === "input" ||
+            tag === "textarea" ||
+            tag === "select" ||
+            Boolean(element.isContentEditable))
         );
       }).map(
         (element) => {
@@ -326,11 +359,17 @@ async function snapshot(page) {
 }
 
 async function firstLocator(page, target) {
-  const locator = page.locator(target).first();
+  const locator = page.locator(target);
   if (typeof locator.count === "function" && (await locator.count()) < 1) {
     throw new Error(`unknown target: ${target}`);
   }
-  return locator;
+  if (typeof locator.filter === "function") {
+    const visible = locator.filter({ visible: true });
+    if (typeof visible.count === "function" && (await visible.count()) > 0) {
+      return visible.first();
+    }
+  }
+  return locator.first();
 }
 
 function clearFieldState(state) {

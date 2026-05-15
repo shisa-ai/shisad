@@ -20,7 +20,12 @@ import pytest
 
 from shisad.core.session import Session
 from shisad.core.types import SessionId, TaintLabel, UserId, WorkspaceId
-from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy, BrowserToolkit
+from shisad.executors.browser import (
+    BrowserSandbox,
+    BrowserSandboxPolicy,
+    BrowserSnapshotElement,
+    BrowserToolkit,
+)
 from shisad.executors.sandbox import SandboxConfig, SandboxResult
 from shisad.security.firewall.output import OutputFirewall
 
@@ -346,7 +351,7 @@ async def test_gh33_browser_toolkit_doctor_accepts_shisad_playwright_wrapper(
     for config in runner.configs:
         assert config.tool_name == "browser.doctor"
         assert config.network.allow_network is False
-        assert config.limits.memory_mb >= 2048
+        assert config.limits.memory_mb == 0
         assert config.limits.pids >= 4096
 
 
@@ -1152,6 +1157,67 @@ async def test_m6_browser_toolkit_prepare_action_arguments_resolves_target_and_d
     assert prepared["destination"].endswith("/next")
     assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
     assert str(prepared.get("source_binding", "")).strip()
+
+
+def test_gh24_browser_target_resolution_prefers_exact_selector_before_fuzzy_label() -> None:
+    reserve_selector = (
+        "html > body > div:nth-of-type(7) > div:nth-of-type(1) > "
+        "div:nth-of-type(3) > div:nth-of-type(2) > div > div > div > div > "
+        "div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div > "
+        "div:nth-of-type(3) > div:nth-of-type(2) > a"
+    )
+    elements = [
+        BrowserSnapshotElement(
+            ref="e1",
+            kind="link",
+            label="a",
+            selector="#pagetop",
+        ),
+        BrowserSnapshotElement(
+            ref="e176",
+            kind="link",
+            label="Reserve",
+            selector=reserve_selector,
+            href="#",
+        ),
+    ]
+
+    matched = BrowserToolkit._match_snapshot_target(elements, reserve_selector)
+
+    assert matched is not None
+    assert matched.ref == "e176"
+    assert matched.selector == reserve_selector
+
+
+def test_gh24_browser_click_binding_uses_stable_element_identity() -> None:
+    selector = "html > body > div:nth-of-type(7) > a"
+    booking_element = BrowserSnapshotElement(
+        ref="e176",
+        kind="link",
+        label="Reserve",
+        selector=selector,
+        href="/en/booking/form_course/new?member=2&rcd=13225171",
+    )
+    placeholder_element = BrowserSnapshotElement(
+        ref="e311",
+        kind="link",
+        label="Reserve",
+        selector=selector,
+        href="#",
+    )
+
+    booking_hash = BrowserToolkit._binding_hash_for_element(
+        booking_element,
+        current_url="https://tabelog.com/en/tokyo/A1302/A130202/13225171/",
+        submit=False,
+    )
+    placeholder_hash = BrowserToolkit._binding_hash_for_element(
+        placeholder_element,
+        current_url="https://tabelog.com/en/tokyo/A1302/A130202/13225171/",
+        submit=False,
+    )
+
+    assert booking_hash == placeholder_hash
 
 
 @pytest.mark.asyncio

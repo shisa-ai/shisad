@@ -6607,7 +6607,7 @@ def _direct_tool_output_response_without_synthesis(
         for record in records
         if str(record.get("tool_name", "")).strip()
     }
-    if not tool_names or not tool_names <= {"fs.read", "fs.list", "evidence.read"}:
+    if not tool_names or not tool_names <= {"fs.read", "fs.list"}:
         return ""
     return _summarize_tool_outputs_for_user_response(
         records,

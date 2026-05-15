@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from shisad.core.host_matching import host_matches
 from shisad.core.session import Session
 from shisad.core.types import TaintLabel
-from shisad.core.url_parsing import safe_url_hostname
+from shisad.core.url_parsing import safe_url_hostname, safe_urlparse
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -103,7 +103,7 @@ _BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(r"(?<![/\w.-])/(?!/)[^\r\n]+")
 _BROWSER_FAILURE_URL_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 _BROWSER_FAILURE_DRIVE_SCHEME_RE = re.compile(r"^[A-Za-z]://")
 _BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_BROWSER_SANDBOX_MEMORY_MB = 2048
+_BROWSER_SANDBOX_MEMORY_MB = 0
 _BROWSER_SANDBOX_PIDS = 4096
 _TARGET_STOPWORDS = {
     "a",
@@ -478,6 +478,7 @@ class BrowserToolkit:
             current_url=current_url,
             binding_target=concrete_target,
             expected_binding=source_binding.strip(),
+            expected_destination=destination.strip(),
             submit=False,
         )
         if binding_error is not None:
@@ -548,6 +549,7 @@ class BrowserToolkit:
             current_url=current_url,
             binding_target=concrete_target,
             expected_binding=source_binding.strip(),
+            expected_destination=destination.strip() if submit else "",
             submit=submit,
         )
         if binding_error is not None:
@@ -569,6 +571,7 @@ class BrowserToolkit:
                 current_url=current_url,
                 binding_target=concrete_click_target,
                 expected_binding=click_source_binding.strip(),
+                expected_destination=destination.strip(),
                 submit=False,
             )
             if click_binding_error is not None:
@@ -2033,6 +2036,9 @@ class BrowserToolkit:
         elements: list[BrowserSnapshotElement],
         target: str,
     ) -> BrowserSnapshotElement | None:
+        exact = cls._find_exact_snapshot_target(elements, target)
+        if exact is not None:
+            return exact
         normalized_target = cls._normalize_target(target)
         target_tokens = cls._target_tokens(target)
         best_match: tuple[int, int, BrowserSnapshotElement] | None = None
@@ -2119,14 +2125,7 @@ class BrowserToolkit:
             "kind": element.kind.strip(),
             "label": element.label.strip(),
             "selector": element.selector.strip(),
-            "href": element.href.strip(),
-            "form_action": element.form_action.strip(),
             "form_method": element.form_method.strip().lower(),
-            "destination": cls._predict_destination_url(
-                element,
-                current_url=current_url,
-                submit=submit,
-            ),
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
@@ -2141,6 +2140,7 @@ class BrowserToolkit:
         binding_target: str,
         expected_binding: str,
         submit: bool,
+        expected_destination: str = "",
     ) -> dict[str, Any] | None:
         if not expected_binding:
             return None
@@ -2161,7 +2161,43 @@ class BrowserToolkit:
         )
         if live_binding != expected_binding:
             return self._error_payload("browser_confirmation_context_changed")
+        live_destination = self._normalize_confirmation_destination(
+            self._predict_destination_url(matched, current_url=current_url, submit=submit),
+            current_url=current_url,
+        )
+        approved_destination = self._normalize_confirmation_destination(
+            expected_destination,
+            current_url=current_url,
+        )
+        if (
+            live_destination
+            and approved_destination
+            and live_destination != approved_destination
+        ):
+            return self._error_payload("browser_confirmation_context_changed")
         return None
+
+    @staticmethod
+    def _normalize_confirmation_destination(value: str, *, current_url: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return ""
+        resolved = urljoin(current_url, normalized)
+        parsed = safe_urlparse(resolved)
+        if parsed is None:
+            return ""
+        current_parsed = safe_urlparse(current_url)
+        fragment_only = (
+            bool(parsed.fragment)
+            and current_parsed is not None
+            and parsed.scheme == current_parsed.scheme
+            and parsed.netloc == current_parsed.netloc
+            and parsed.path == current_parsed.path
+            and parsed.query == current_parsed.query
+        )
+        if fragment_only:
+            return ""
+        return resolved
 
     @classmethod
     def _normalize_target(cls, value: str) -> str:

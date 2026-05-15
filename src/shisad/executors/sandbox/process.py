@@ -398,11 +398,11 @@ class SandboxProcessRunner:
             "--quiet",
             "--time_limit",
             str(max(1, config.limits.timeout_seconds)),
-            "--rlimit_as",
-            str(max(1, config.limits.memory_mb)),
             "--max_cpus",
             "1",
         ]
+        if config.limits.memory_mb > 0:
+            args.extend(["--rlimit_as", str(config.limits.memory_mb)])
         if config.network.allow_network:
             args.extend(["--disable_clone_newnet"])
         for base in _BWRAP_BASE_RO_DIRS:
@@ -434,16 +434,18 @@ class SandboxProcessRunner:
             return None
 
         def _apply() -> None:
-            memory_bytes = limits.memory_mb * 1024 * 1024
             errors: list[str] = []
-            try:
-                resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-            except (OSError, ValueError) as exc:  # pragma: no cover - platform dependent
-                errors.append(f"RLIMIT_AS={exc.__class__.__name__}")
-            try:
-                resource.setrlimit(resource.RLIMIT_NPROC, (limits.pids, limits.pids))
-            except (OSError, ValueError) as exc:  # pragma: no cover - platform dependent
-                errors.append(f"RLIMIT_NPROC={exc.__class__.__name__}")
+            if limits.memory_mb > 0:
+                memory_bytes = limits.memory_mb * 1024 * 1024
+                try:
+                    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+                except (OSError, ValueError) as exc:  # pragma: no cover - platform dependent
+                    errors.append(f"RLIMIT_AS={exc.__class__.__name__}")
+            if limits.pids > 0:
+                try:
+                    resource.setrlimit(resource.RLIMIT_NPROC, (limits.pids, limits.pids))
+                except (OSError, ValueError) as exc:  # pragma: no cover - platform dependent
+                    errors.append(f"RLIMIT_NPROC={exc.__class__.__name__}")
             if errors:
                 os.write(
                     2,

@@ -184,6 +184,12 @@ const continueLink = new FakeElement("a", { id: "continue", href: "/next" }, "Co
 const searchInput = new FakeElement("input", { id: "search", name: "q" });
 const submitButton = new FakeElement("button", { id: "submit" }, "Submit");
 const loginButton = new FakeElement("button", { id: "login" }, "Log in");
+const hiddenReserve = new FakeElement(
+  "a",
+  { id: "hidden-reserve", href: "#", "data-display": "none" },
+  "Reserve",
+);
+const hiddenInput = new FakeElement("input", { id: "token", type: "hidden" });
 const lockedToken = new FakeElement(
   "span",
   { id: "locked-token", contenteditable: "false" },
@@ -201,6 +207,8 @@ const body = new FakeElement("body", {}, "", [
   submitButton,
   editor,
   loginButton,
+  hiddenReserve,
+  hiddenInput,
   section,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
@@ -212,6 +220,8 @@ const allElements = [
   submitButton,
   editor,
   loginButton,
+  hiddenReserve,
+  hiddenInput,
   lockedToken,
   section,
   nestedButton,
@@ -268,11 +278,20 @@ class Page {
   async evaluate(_fn, mode) {
     if (mode === "snapshot") {
       const previousDocument = globalThis.document;
+      const previousWindow = globalThis.window;
+      globalThis.window = {
+        getComputedStyle: (element) => ({
+          display: element.getAttribute("data-display") || "block",
+          visibility: element.getAttribute("data-visibility") || "visible",
+          opacity: element.getAttribute("data-opacity") || "1",
+        }),
+      };
       globalThis.document = fakeDocument;
       try {
         return _fn(mode);
       } finally {
         globalThis.document = previousDocument;
+        globalThis.window = previousWindow;
       }
     }
     if (mode === "metadata") {
@@ -368,6 +387,9 @@ exports.chromium = {
     assert '[e4] field "Editable" selector="#editor"' in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
     assert "button:nth-of-type(2)" not in snapshot
+    assert "hidden-reserve" not in snapshot
+    assert "Reserve" not in snapshot
+    assert "#token" not in snapshot
     assert "Locked" not in snapshot
     assert "#locked-token" not in snapshot
 
