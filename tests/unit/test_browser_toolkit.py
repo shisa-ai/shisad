@@ -3652,6 +3652,124 @@ async def test_gh24_browser_get_form_allows_action_query_replacement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click_submit", "type_submit", "type_click"])
+async def test_gh24_browser_get_form_rejects_action_query_key_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://origin.test/"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="name",
+        selector="#name",
+        control_type="text",
+        form_action="https://example.com/reserve?course=1",
+        form_method="get",
+    )
+    button = BrowserSnapshotElement(
+        ref="e2" if action == "type_click" else "e1",
+        kind="button",
+        label="Reserve",
+        selector="#reserve",
+        form_action="https://example.com/reserve?course=1",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        if action == "type_click":
+            return [field, button]
+        return [field if action == "type_submit" else button]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/reserve?course=2&name=alice",
+            "title": "Reserve",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    if action == "click_submit":
+        result = await toolkit.click(
+            session=session,
+            target="#reserve",
+            resolved_target="#reserve",
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+    elif action == "type_submit":
+        result = await toolkit.type_text(
+            session=session,
+            target="#name",
+            resolved_target="#name",
+            text="alice",
+            submit=True,
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                field,
+                current_url=source_url,
+                submit=True,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                field,
+                current_url=source_url,
+                submit=True,
+            ),
+        )
+    else:
+        result = await toolkit.type_text(
+            session=session,
+            target="#name",
+            resolved_target="#name",
+            text="alice",
+            click_target="#reserve",
+            resolved_click_target="#reserve",
+            source_url=source_url,
+            click_source_binding=BrowserToolkit._binding_hash_for_element(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": False, "current_url": ""}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["click", "type_submit", "type_click"])
 async def test_gh24_browser_non_form_controls_reject_query_extension(
     tmp_path: Path,

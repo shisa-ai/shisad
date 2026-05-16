@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import ParseResult, urljoin
+from urllib.parse import ParseResult, parse_qsl, urljoin
 
 from pydantic import BaseModel, Field
 
@@ -2416,13 +2416,31 @@ class BrowserToolkit:
             return False
         if not cls._same_destination_base(expected, actual):
             return False
-        # GET form submissions replace the action URL query with serialized fields.
-        query_matches = allow_query_extension or actual.query == expected.query
+        query_matches = actual.query == expected.query
+        if allow_query_extension:
+            query_matches = cls._form_query_matches(expected.query, actual.query)
         if not query_matches:
             return False
         if actual.fragment == expected.fragment:
             return True
         return bool(allow_fragment_extension and not expected.fragment and actual.fragment)
+
+    @staticmethod
+    def _form_query_matches(expected_query: str, actual_query: str) -> bool:
+        if not expected_query:
+            return True
+        if actual_query == expected_query or actual_query.startswith(f"{expected_query}&"):
+            return True
+        expected_values: dict[str, list[str]] = {}
+        for key, value in parse_qsl(expected_query, keep_blank_values=True):
+            expected_values.setdefault(key, []).append(value)
+        actual_values: dict[str, list[str]] = {}
+        for key, value in parse_qsl(actual_query, keep_blank_values=True):
+            actual_values.setdefault(key, []).append(value)
+        return all(
+            key not in actual_values or actual_values[key] == values
+            for key, values in expected_values.items()
+        )
 
     @classmethod
     def _is_same_document_url(cls, value: str, *, current_url: str) -> bool:
