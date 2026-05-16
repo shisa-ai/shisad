@@ -177,7 +177,11 @@ class FakeElement {
     }
     if (text === "empty placeholder") {
       this.textNode.textContent = "";
-      this.replaceChildren([new FakeElement("br")]);
+      this.replaceChildren([
+        new FakeElement("span", { contenteditable: "false" }, "Locked"),
+        new FakeElement("span", { hidden: "" }, "ignore"),
+        new FakeElement("br"),
+      ]);
       this.refreshText();
       return;
     }

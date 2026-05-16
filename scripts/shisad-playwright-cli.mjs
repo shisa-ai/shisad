@@ -712,7 +712,7 @@ async function syncFieldState(page, state) {
             const editableText = stripSyntheticTrailingBreak(
               textForChildren(Array.from(element.childNodes || []), false),
             );
-            if (/^\n*$/u.test(editableText) && !String(element.textContent || "")) {
+            if (/^\n*$/u.test(editableText)) {
               return "";
             }
             return String(editableText);
