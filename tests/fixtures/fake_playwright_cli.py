@@ -103,8 +103,7 @@ class _PageParser(HTMLParser):
         self.title = ""
         self.visible_parts: list[str] = []
         self._tag_stack: list[str] = []
-        self._disabled_fieldset_depth = 0
-        self._disabled_fieldset_stack: list[bool] = []
+        self._fieldset_stack: list[dict[str, bool | int]] = []
         self._current_form: dict[str, str] | None = None
         self._forms: list[dict[str, str]] = []
         self._current_element: dict[str, str] | None = None
@@ -112,13 +111,22 @@ class _PageParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key: (value or "") for key, value in attrs}
-        inherited_native_disabled = self._disabled_fieldset_depth > 0
+        inherited_native_disabled = self._in_disabled_fieldset()
+        parent_tag = self._tag_stack[-1] if self._tag_stack else ""
+        if tag == "legend" and parent_tag == "fieldset" and self._fieldset_stack:
+            fieldset = self._fieldset_stack[-1]
+            if not bool(fieldset.get("first_legend_seen", False)):
+                fieldset["first_legend_seen"] = True
+                fieldset["first_legend_depth"] = len(self._tag_stack) + 1
         self._tag_stack.append(tag)
         if tag == "fieldset":
-            native_disabled = _is_native_disabled_attrs(attr_map) or inherited_native_disabled
-            self._disabled_fieldset_stack.append(native_disabled)
-            if native_disabled:
-                self._disabled_fieldset_depth += 1
+            self._fieldset_stack.append(
+                {
+                    "disabled": _is_native_disabled_attrs(attr_map),
+                    "first_legend_seen": False,
+                    "first_legend_depth": 0,
+                }
+            )
             return
         if tag == "form":
             self._current_form = {
@@ -205,12 +213,8 @@ class _PageParser(HTMLParser):
             )
 
     def handle_endtag(self, tag: str) -> None:
-        if (
-            tag == "fieldset"
-            and self._disabled_fieldset_stack
-            and self._disabled_fieldset_stack.pop()
-        ):
-            self._disabled_fieldset_depth = max(0, self._disabled_fieldset_depth - 1)
+        if tag == "fieldset" and self._fieldset_stack:
+            self._fieldset_stack.pop()
         if tag == "form":
             self._current_form = None
         if self._current_element is not None and tag in {"a", "button"}:
@@ -224,6 +228,16 @@ class _PageParser(HTMLParser):
                 with_context.reverse()
                 index = len(self._tag_stack) - with_context.index(tag) - 1
                 self._tag_stack = self._tag_stack[:index]
+
+    def _in_disabled_fieldset(self) -> bool:
+        for fieldset in self._fieldset_stack:
+            if not bool(fieldset.get("disabled", False)):
+                continue
+            legend_depth = int(fieldset.get("first_legend_depth", 0) or 0)
+            if legend_depth > 0 and len(self._tag_stack) >= legend_depth:
+                continue
+            return True
+        return False
 
     def handle_data(self, data: str) -> None:
         text = " ".join(data.split())

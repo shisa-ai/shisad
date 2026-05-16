@@ -137,6 +137,12 @@ class FakeElement {
       children,
     );
   }
+  contains(node) {
+    if (node === this) {
+      return true;
+    }
+    return this.children.some((child) => child.contains(node));
+  }
   querySelectorAll(selector) {
     const matches = [];
     const visit = (element) => {
@@ -177,8 +183,24 @@ class FakeElement {
   }
   matches(selector) {
     if (selector === ":disabled") {
-      const fieldset = this.closest("fieldset");
-      return this.disabled || Boolean(fieldset && fieldset.disabled);
+      if (this.disabled) {
+        return true;
+      }
+      let current = this.parentElement;
+      while (current) {
+        if (current.tagName.toLowerCase() === "fieldset" && current.disabled) {
+          const firstLegend = current.children.find(
+            (child) => child.tagName.toLowerCase() === "legend",
+          );
+          if (firstLegend && firstLegend.contains(this)) {
+            current = current.parentElement;
+            continue;
+          }
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
     }
     return false;
   }
@@ -332,6 +354,27 @@ const fieldsetBlockerForm = new FakeElement(
 );
 fieldsetBlockerSearch.form = fieldsetBlockerForm;
 fieldsetBlockerOther.form = fieldsetBlockerForm;
+const legendSubmitSearch = new FakeElement("input", { id: "legend-submit-search" });
+const legendSubmitButton = new FakeElement(
+  "button",
+  { id: "legend-submit", type: "submit" },
+  "Legend Submit",
+);
+const firstLegend = new FakeElement("legend", {}, "", [legendSubmitButton]);
+const legendSubmitFieldset = new FakeElement(
+  "fieldset",
+  { disabled: "" },
+  "",
+  [firstLegend],
+);
+const legendSubmitForm = new FakeElement(
+  "form",
+  { id: "legend-submit-form", action: "/legend-submit", method: "get" },
+  "",
+  [legendSubmitSearch, legendSubmitFieldset],
+);
+legendSubmitSearch.form = legendSubmitForm;
+legendSubmitButton.form = legendSubmitForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -350,6 +393,7 @@ const body = new FakeElement("body", {}, "", [
   disabledBlockerForm,
   fieldsetSubmitForm,
   fieldsetBlockerForm,
+  legendSubmitForm,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -390,6 +434,11 @@ const allElements = [
   fieldsetBlockerSearch,
   disabledBlockerFieldset,
   fieldsetBlockerOther,
+  legendSubmitForm,
+  legendSubmitSearch,
+  legendSubmitFieldset,
+  firstLegend,
+  legendSubmitButton,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -606,6 +655,11 @@ exports.chromium = {
         'control_type="text" form_action='
     ) not in snapshot
     assert "#fieldset-blocker-other" not in snapshot
+    assert (
+        'field "legend-submit-search" selector="#legend-submit-search" '
+        'control_type="text" form_action="/legend-submit" form_method="get"'
+    ) in snapshot
+    assert 'selector="#legend-submit"' in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot
