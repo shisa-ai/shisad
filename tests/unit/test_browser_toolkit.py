@@ -1459,6 +1459,129 @@ async def test_gh24_browser_click_confirmation_rejects_unpredicted_js_navigation
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_click_confirmation_allows_same_document_fragment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "http://example.test/"
+    selector = "#jump"
+    element = BrowserSnapshotElement(
+        ref="e1",
+        kind="link",
+        label="Jump",
+        selector=selector,
+        href="#details",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/#details",
+            "title": "Same Page",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    clicked = await toolkit.click(
+        session=session,
+        target=selector,
+        resolved_target=selector,
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert clicked["ok"] is True
+    assert clicked["url"] == "http://example.test/#details"
+    assert clicked["action"] == "click"
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_type_click_confirmation_allows_same_document_fragment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "http://example.test/"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+    )
+    click_element = BrowserSnapshotElement(
+        ref="e2",
+        kind="link",
+        label="Jump",
+        selector="#jump",
+        href="#details",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [field, click_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/#details",
+            "title": "Same Page",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="hello",
+        click_target="#jump",
+        resolved_click_target="#jump",
+        source_url=source_url,
+        click_source_binding=BrowserToolkit._binding_hash_for_element(
+            click_element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert typed["ok"] is True
+    assert typed["url"] == "http://example.test/#details"
+    assert typed["action"] == "type_text"
+    assert typed["click_target"] == "#jump"
+
+
+@pytest.mark.asyncio
 async def test_gh24_browser_type_submit_rejects_post_action_destination_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

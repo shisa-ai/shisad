@@ -2281,12 +2281,17 @@ class BrowserToolkit:
             actual_url,
             current_url=source_url,
         )
-        if not actual_destination:
-            return self._error_payload("browser_confirmation_context_changed")
         approved_destination = self._normalize_confirmation_destination(
             expected_destination,
             current_url=source_url,
         )
+        if not actual_destination:
+            if not approved_destination and self._is_same_document_url(
+                actual_url,
+                current_url=source_url,
+            ):
+                return None
+            return self._error_payload("browser_confirmation_context_changed")
         if approved_destination:
             if self._destinations_match(
                 approved_destination,
@@ -2327,6 +2332,26 @@ class BrowserToolkit:
         if not expected.query:
             return bool(actual.query)
         return actual.query == expected.query or actual.query.startswith(f"{expected.query}&")
+
+    @classmethod
+    def _is_same_document_url(cls, value: str, *, current_url: str) -> bool:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return False
+        if cls._is_fragment_only_reference(normalized):
+            return True
+        resolved = urljoin(current_url, normalized)
+        parsed = safe_urlparse(resolved)
+        current = safe_urlparse(current_url)
+        if parsed is None or current is None:
+            return False
+        return (
+            parsed.scheme == current.scheme
+            and parsed.netloc == current.netloc
+            and parsed.path == current.path
+            and parsed.query == current.query
+            and bool(parsed.fragment)
+        )
 
     @classmethod
     def _normalize_target(cls, value: str) -> str:
