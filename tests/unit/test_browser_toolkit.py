@@ -2011,7 +2011,7 @@ async def test_gh24_browser_type_submit_allows_canonical_form_destination_query(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["click", "type_submit", "type_click"])
+@pytest.mark.parametrize("action", ["click", "click_submit", "type_submit", "type_click"])
 async def test_gh24_browser_confirmations_allow_canonical_root_destination_without_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2029,13 +2029,17 @@ async def test_gh24_browser_confirmations_allow_canonical_root_destination_witho
     )
     approved_element = BrowserSnapshotElement(
         ref="e2" if action == "type_click" else "e1",
-        kind="link" if action == "click" else ("button" if action == "type_click" else "field"),
+        kind=(
+            "link"
+            if action == "click"
+            else ("button" if action in {"click_submit", "type_click"} else "field")
+        ),
         label=(
             "Continue"
             if action == "click"
-            else ("Submit" if action == "type_click" else "search")
+            else ("Submit" if action in {"click_submit", "type_click"} else "search")
         ),
-        selector="#submit" if action in {"click", "type_click"} else "#search",
+        selector="#submit" if action in {"click", "click_submit", "type_click"} else "#search",
         href="HTTPS://EXAMPLE.COM:443" if action == "click" else "",
         form_action="" if action == "click" else "HTTPS://EXAMPLE.COM:443",
         form_method="" if action == "click" else "get",
@@ -2074,7 +2078,7 @@ async def test_gh24_browser_confirmations_allow_canonical_root_destination_witho
     monkeypatch.setattr(toolkit, "_run_cli", run_cli)
     monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
 
-    if action == "click":
+    if action in {"click", "click_submit"}:
         result = await toolkit.click(
             session=session,
             target="#submit",
