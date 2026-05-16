@@ -25,6 +25,20 @@ _PNG_BYTES = (
 )
 _BUTTON_NON_SUBMIT_TYPES = {"button", "reset"}
 _FORM_METHODS = {"get", "post", "dialog"}
+_IMPLICIT_ENTER_SUBMIT_INPUT_TYPES = {
+    "date",
+    "datetime-local",
+    "email",
+    "month",
+    "number",
+    "password",
+    "search",
+    "tel",
+    "text",
+    "time",
+    "url",
+    "week",
+}
 _INPUT_TYPES = {
     "button",
     "checkbox",
@@ -436,7 +450,9 @@ def _handle_fill(
                 raise SystemExit(f"unknown target: {click_target}")
         if target_element.get("kind") == "link" and target_element.get("href"):
             next_url = urljoin(next_url, target_element["href"])
-        elif submit or _is_click_submit_control(target_element):
+        elif (submit and _is_enter_submit_control(target_element)) or _is_click_submit_control(
+            target_element
+        ):
             action = target_element.get("form_action", "") or next_url
             method = _normalize_form_method(target_element.get("form_method", "get"))
             if method == "get" and submission_fields:
@@ -449,6 +465,14 @@ def _handle_fill(
     state["current_url"] = next_url
     _save_state(cwd, session, state)
     return 0
+
+
+def _is_enter_submit_control(element: Mapping[str, object]) -> bool:
+    if not str(element.get("form_method", "")).strip():
+        return False
+    kind = str(element.get("kind", "")).strip().lower()
+    control_type = str(element.get("control_type", "")).strip().lower()
+    return kind == "field" and control_type in _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES
 
 
 def _is_click_submit_control(element: Mapping[str, object]) -> bool:

@@ -1237,6 +1237,49 @@ async def test_gh24_browser_type_submit_normalizes_invalid_button_default_submit
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_submit_does_not_navigate_textarea(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<form id='notes-form' action='/submitted' method='get'>"
+            "<textarea id='notes' name='notes'></textarea>"
+            "</form>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#notes", "text": "hello", "submit": True},
+        )
+
+        assert not str(prepared.get("destination", ""))
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert typed["url"] == f"{browser_server.base_url}/"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_gh33_browser_toolkit_prepare_click_ignores_caller_runtime_fields(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
