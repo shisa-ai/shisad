@@ -81,6 +81,10 @@ def _normalize_form_method(value: str) -> str:
     return normalized if normalized in _FORM_METHODS else "get"
 
 
+def _is_disabled_attrs(attrs: Mapping[str, str]) -> bool:
+    return "disabled" in attrs or attrs.get("aria-disabled", "").strip().lower() == "true"
+
+
 class _PageParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -127,6 +131,7 @@ class _PageParser(HTMLParser):
                 "control_type": control_type,
                 "id": attr_map.get("id", ""),
                 "_form_id": form.get("_key", "") if form else "",
+                "disabled": "1" if _is_disabled_attrs(attr_map) else "",
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
                 "form_action": form_action,
@@ -151,6 +156,7 @@ class _PageParser(HTMLParser):
                     "name": attr_map.get("name", ""),
                     "id": attr_map.get("id", ""),
                     "_form_id": form.get("_key", "") if form else "",
+                    "disabled": "1" if _is_disabled_attrs(attr_map) else "",
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
                     "form_action": form_action,
@@ -197,6 +203,8 @@ class _PageParser(HTMLParser):
         rendered: list[dict[str, str]] = []
         for index, item in enumerate(self._elements, start=1):
             copy = dict(item)
+            if _is_disabled_element(copy):
+                continue
             form = self._form_by_id(copy.get("_form_id", ""))
             if (
                 form
@@ -236,6 +244,8 @@ class _PageParser(HTMLParser):
     ) -> bool:
         if not _is_implicit_enter_submit_field(element):
             return False
+        if form.get("default_submitter_seen") == "1":
+            return False
         form_id = form.get("_key", "")
         blocking_fields = [
             item
@@ -272,14 +282,24 @@ class _PageParser(HTMLParser):
         *,
         is_submitter: bool,
     ) -> None:
-        if not form or not is_submitter or form.get("default_action") is not None:
+        if not form or not is_submitter or form.get("default_submitter_seen") == "1":
+            return
+        form["default_submitter_seen"] = "1"
+        if _is_disabled_attrs(attrs):
+            form["default_submitter_disabled"] = "1"
             return
         action, method = self._form_metadata_for(attrs, form=form, is_submitter=True)
         form["default_action"] = action
         form["default_method"] = method
 
 
+def _is_disabled_element(element: Mapping[str, str]) -> bool:
+    return str(element.get("disabled", "")).strip().lower() in {"1", "true"}
+
+
 def _is_implicit_enter_submit_field(element: Mapping[str, str]) -> bool:
+    if _is_disabled_element(element):
+        return False
     return (
         element.get("kind", "").strip().lower() == "field"
         and element.get("control_type", "").strip().lower()

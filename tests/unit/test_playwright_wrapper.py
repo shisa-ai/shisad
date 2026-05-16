@@ -172,6 +172,9 @@ class FakeElement {
     }
     return Boolean(this.parentElement && this.parentElement.isContentEditable);
   }
+  get disabled() {
+    return this.hasAttribute("disabled");
+  }
   closest(tagName) {
     let current = this.parentElement;
     while (current) {
@@ -245,6 +248,20 @@ const multiFieldForm = new FakeElement(
 );
 multiSearch.form = multiFieldForm;
 multiOther.form = multiFieldForm;
+const disabledSearch = new FakeElement("input", { id: "disabled-search" });
+const disabledSubmit = new FakeElement(
+  "button",
+  { id: "disabled-submit", type: "submit", disabled: "" },
+  "Disabled",
+);
+const disabledSubmitForm = new FakeElement(
+  "form",
+  { id: "disabled-submit-form", action: "/disabled", method: "get" },
+  "",
+  [disabledSearch, disabledSubmit],
+);
+disabledSearch.form = disabledSubmitForm;
+disabledSubmit.form = disabledSubmitForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -258,6 +275,7 @@ const body = new FakeElement("body", {}, "", [
   externalSubmit,
   dialogForm,
   multiFieldForm,
+  disabledSubmitForm,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -281,6 +299,9 @@ const allElements = [
   multiFieldForm,
   multiSearch,
   multiOther,
+  disabledSubmitForm,
+  disabledSearch,
+  disabledSubmit,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -471,6 +492,12 @@ exports.chromium = {
         'field "multi-search" selector="#multi-search" control_type="text" '
         'form_action='
     ) not in snapshot
+    assert 'field "disabled-search" selector="#disabled-search" control_type="text"' in snapshot
+    assert (
+        'field "disabled-search" selector="#disabled-search" control_type="text" '
+        'form_action='
+    ) not in snapshot
+    assert "#disabled-submit" not in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot

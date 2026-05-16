@@ -388,6 +388,8 @@ async function snapshot(page) {
         }
         return false;
       };
+      const isDisabledControl = (element) =>
+        Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true";
       const elementForm = (element) => element.form || element.closest("form");
       const defaultSubmitterFor = (form) => {
         if (!form) {
@@ -435,6 +437,9 @@ async function snapshot(page) {
           return { action: "", method: "" };
         }
         const submitter = isSubmitControl(tag, controlType) ? element : defaultSubmitterFor(form);
+        if (submitter && isDisabledControl(submitter)) {
+          return { action: "", method: "" };
+        }
         if (!submitter && !canImplicitlySubmitFromField(element, tag, controlType, form)) {
           return { action: "", method: "" };
         }
