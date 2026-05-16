@@ -171,6 +171,9 @@ function snapshotLines(elements) {
     if (item.href) {
       attrs.push(`href="${cleanAttribute(item.href)}"`);
     }
+    if (item.control_type) {
+      attrs.push(`control_type="${cleanAttribute(item.control_type)}"`);
+    }
     if (item.form_action) {
       attrs.push(`form_action="${cleanAttribute(item.form_action)}"`);
     }
@@ -343,11 +346,18 @@ async function snapshot(page) {
         (element) => {
           const tag = element.tagName.toLowerCase();
           const form = element.closest("form");
+          const controlType =
+            tag === "button"
+              ? (element.getAttribute("type") || "submit").toLowerCase()
+              : tag === "input"
+                ? (element.getAttribute("type") || "text").toLowerCase()
+                : "";
           return {
             kind: tag === "a" ? "link" : tag === "button" ? "button" : "field",
             label: labelFor(element),
             selector: selectorFor(element),
             href: tag === "a" ? element.getAttribute("href") || "" : "",
+            control_type: controlType,
             form_action: form ? form.getAttribute("action") || "" : "",
             form_method: form ? form.getAttribute("method") || "get" : "",
           };

@@ -1284,6 +1284,132 @@ def test_gh24_browser_same_document_fragment_uses_canonical_url_parts() -> None:
     )
 
 
+def test_gh24_browser_submit_control_type_gates_destination_prediction() -> None:
+    source_url = "https://example.com/page"
+    button_submit = BrowserSnapshotElement(
+        ref="e1",
+        kind="button",
+        label="Submit",
+        selector="#button-submit",
+        control_type="submit",
+        form_action="/submitted",
+        form_method="get",
+    )
+    button_plain = BrowserSnapshotElement(
+        ref="e2",
+        kind="button",
+        label="Plain",
+        selector="#button-plain",
+        control_type="button",
+        form_action="/submitted",
+        form_method="get",
+    )
+    input_submit = BrowserSnapshotElement(
+        ref="e3",
+        kind="field",
+        label="Submit",
+        selector="#input-submit",
+        control_type="submit",
+        form_action="/submitted",
+        form_method="get",
+    )
+    input_image = BrowserSnapshotElement(
+        ref="e4",
+        kind="field",
+        label="Image Submit",
+        selector="#input-image",
+        control_type="image",
+        form_action="/submitted",
+        form_method="get",
+    )
+    input_button = BrowserSnapshotElement(
+        ref="e5",
+        kind="field",
+        label="Input Button",
+        selector="#input-button",
+        control_type="button",
+        form_action="/submitted",
+        form_method="get",
+    )
+    text_field = BrowserSnapshotElement(
+        ref="e6",
+        kind="field",
+        label="search",
+        selector="#search",
+        control_type="text",
+        form_action="/submitted",
+        form_method="get",
+    )
+
+    assert (
+        BrowserToolkit._predict_destination_url(
+            button_submit,
+            current_url=source_url,
+            submit=False,
+        )
+        == "https://example.com/submitted"
+    )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            button_plain,
+            current_url=source_url,
+            submit=False,
+        )
+        == ""
+    )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            input_submit,
+            current_url=source_url,
+            submit=False,
+        )
+        == "https://example.com/submitted"
+    )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            input_image,
+            current_url=source_url,
+            submit=False,
+        )
+        == "https://example.com/submitted"
+    )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            input_button,
+            current_url=source_url,
+            submit=False,
+        )
+        == ""
+    )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            text_field,
+            current_url=source_url,
+            submit=True,
+        )
+        == "https://example.com/submitted"
+    )
+
+
+def test_gh24_browser_snapshot_parser_preserves_control_type() -> None:
+    elements = BrowserToolkit._parse_snapshot_elements(
+        '[e1] field "Submit" selector="#submit" control_type="submit" '
+        'form_action="/submitted" form_method="get"\n'
+    )
+
+    assert elements == [
+        BrowserSnapshotElement(
+            ref="e1",
+            kind="field",
+            label="Submit",
+            selector="#submit",
+            control_type="submit",
+            form_action="/submitted",
+            form_method="get",
+        )
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("approved_href", "live_href"),
@@ -2236,6 +2362,205 @@ async def test_gh24_browser_non_form_controls_reject_query_extension(
             ),
             destination=destination,
         )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": False, "current_url": ""}
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_click_input_submit_allows_form_destination_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://example.com/page"
+    element = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="Submit",
+        selector="#submit",
+        control_type="submit",
+        form_action="/submitted",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/submitted?q=hello",
+            "title": "Submitted",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    result = await toolkit.click(
+        session=session,
+        target="#submit",
+        resolved_target="#submit",
+        destination=BrowserToolkit._predict_destination_url(
+            element,
+            current_url=source_url,
+            submit=False,
+        ),
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert result["ok"] is True
+    assert result["url"] == "https://example.com/submitted?q=hello"
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_type_click_input_submit_allows_form_destination_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://example.com/page"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+        control_type="text",
+        form_action="/submitted",
+        form_method="get",
+    )
+    click_element = BrowserSnapshotElement(
+        ref="e2",
+        kind="field",
+        label="Submit",
+        selector="#submit",
+        control_type="submit",
+        form_action="/submitted",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [field, click_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/submitted?q=hello",
+            "title": "Submitted",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    result = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="hello",
+        click_target="#submit",
+        resolved_click_target="#submit",
+        source_url=source_url,
+        click_source_binding=BrowserToolkit._binding_hash_for_element(
+            click_element,
+            current_url=source_url,
+            submit=False,
+        ),
+        destination=BrowserToolkit._predict_destination_url(
+            click_element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert result["ok"] is True
+    assert result["url"] == "https://example.com/submitted?q=hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control_type", ["button", "reset"])
+async def test_gh24_browser_non_submit_buttons_reject_form_query_extension(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_type: str,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://example.com/page"
+    element = BrowserSnapshotElement(
+        ref="e1",
+        kind="button",
+        label="Plain",
+        selector="#plain",
+        control_type=control_type,
+        form_action="/submitted",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/submitted?q=hello",
+            "title": "Submitted",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    result = await toolkit.click(
+        session=session,
+        target="#plain",
+        resolved_target="#plain",
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
 
     assert result == {
         "ok": False,

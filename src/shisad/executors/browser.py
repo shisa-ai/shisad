@@ -42,6 +42,7 @@ from shisad.security.firewall.output import OutputFirewall
 _SNAPSHOT_ELEMENT_RE = re.compile(
     r'^\[(?P<ref>e\d+)\]\s+(?P<kind>\w+)\s+"(?P<label>[^"]*)"\s+selector="(?P<selector>[^"]*)"'
     r'(?:\s+href="(?P<href>[^"]*)")?'
+    r'(?:\s+control_type="(?P<control_type>[^"]*)")?'
     r'(?:\s+form_action="(?P<form_action>[^"]*)")?'
     r'(?:\s+form_method="(?P<form_method>[^"]*)")?$'
 )
@@ -132,6 +133,7 @@ class BrowserSnapshotElement:
     label: str
     selector: str
     href: str = ""
+    control_type: str = ""
     form_action: str = ""
     form_method: str = ""
 
@@ -2131,6 +2133,7 @@ class BrowserToolkit:
                     label=match.group("label").strip(),
                     selector=match.group("selector").strip(),
                     href=(match.group("href") or "").strip(),
+                    control_type=(match.group("control_type") or "").strip(),
                     form_action=(match.group("form_action") or "").strip(),
                     form_method=(match.group("form_method") or "").strip(),
                 )
@@ -2147,12 +2150,7 @@ class BrowserToolkit:
     ) -> str:
         if element.kind == "link" and element.href:
             return cls._resolve_destination_url(element.href, current_url=current_url)
-        if element.kind == "button":
-            return cls._resolve_destination_url(
-                element.form_action or current_url,
-                current_url=current_url,
-            )
-        if submit and element.kind == "field":
+        if cls._is_form_submit_control(element, submit=submit):
             return cls._resolve_destination_url(
                 element.form_action or current_url,
                 current_url=current_url,
@@ -2178,6 +2176,7 @@ class BrowserToolkit:
             "kind": element.kind.strip(),
             "label": element.label.strip(),
             "selector": element.selector.strip(),
+            "control_type": element.control_type.strip().lower(),
             "form_method": element.form_method.strip().lower(),
         }
         return hashlib.sha256(
@@ -2261,8 +2260,9 @@ class BrowserToolkit:
         normalized = str(value or "").strip()
         return normalized.startswith("#")
 
-    @staticmethod
+    @classmethod
     def _allows_form_query_extension(
+        cls,
         element: BrowserSnapshotElement,
         *,
         submit: bool,
@@ -2270,7 +2270,27 @@ class BrowserToolkit:
         method = element.form_method.strip().lower()
         if method != "get":
             return False
-        return element.kind == "button" or (submit and element.kind == "field")
+        return cls._is_form_submit_control(element, submit=submit)
+
+    @classmethod
+    def _is_form_submit_control(
+        cls,
+        element: BrowserSnapshotElement,
+        *,
+        submit: bool,
+    ) -> bool:
+        if not element.form_method.strip():
+            return False
+        kind = element.kind.strip().lower()
+        control_type = element.control_type.strip().lower()
+        if kind == "button":
+            return control_type in {"", "submit"}
+        if kind == "field":
+            if control_type in {"submit", "image"}:
+                return True
+            if submit:
+                return control_type not in {"button", "reset", "submit", "image"}
+        return False
 
     def _validate_post_action_destination(
         self,

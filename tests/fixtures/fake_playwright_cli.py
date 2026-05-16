@@ -12,6 +12,7 @@ import argparse
 import json
 import sys
 import urllib.request
+from collections.abc import Mapping
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode, urljoin, urlparse
@@ -56,27 +57,32 @@ class _PageParser(HTMLParser):
             }
             return
         if tag == "button":
+            form = self._current_form
             self._current_element = {
                 "kind": "button",
                 "type": attr_map.get("type", "submit"),
+                "control_type": attr_map.get("type", "submit").lower(),
                 "id": attr_map.get("id", ""),
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
-                "form_action": (self._current_form or {}).get("action", ""),
-                "form_method": (self._current_form or {}).get("method", "get"),
+                "form_action": form.get("action", "") if form else "",
+                "form_method": form.get("method", "get") if form else "",
             }
             return
         if tag in {"input", "textarea"}:
+            form = self._current_form
+            control_type = attr_map.get("type", "text").lower() if tag == "input" else ""
             self._elements.append(
                 {
                     "kind": "field",
                     "type": attr_map.get("type", "text"),
+                    "control_type": control_type,
                     "name": attr_map.get("name", ""),
                     "id": attr_map.get("id", ""),
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
-                    "form_action": (self._current_form or {}).get("action", ""),
-                    "form_method": (self._current_form or {}).get("method", "get"),
+                    "form_action": form.get("action", "") if form else "",
+                    "form_method": form.get("method", "get") if form else "",
                 }
             )
 
@@ -259,6 +265,8 @@ def _handle_snapshot(
         attributes = [f'selector="{element.get("selector", "")}"']
         if element.get("href"):
             attributes.append(f'href="{element.get("href", "")}"')
+        if element.get("control_type"):
+            attributes.append(f'control_type="{element.get("control_type", "")}"')
         if element.get("form_action"):
             attributes.append(f'form_action="{element.get("form_action", "")}"')
         if element.get("form_method"):
@@ -312,7 +320,7 @@ def _handle_fill(
                 raise SystemExit(f"unknown target: {click_target}")
         if target_element.get("kind") == "link" and target_element.get("href"):
             next_url = urljoin(next_url, target_element["href"])
-        else:
+        elif submit or _is_click_submit_control(target_element):
             action = target_element.get("form_action", "") or next_url
             method = target_element.get("form_method", "get").lower()
             if method == "get" and submission_fields:
@@ -325,6 +333,18 @@ def _handle_fill(
     state["current_url"] = next_url
     _save_state(cwd, session, state)
     return 0
+
+
+def _is_click_submit_control(element: Mapping[str, object]) -> bool:
+    if not str(element.get("form_method", "")).strip():
+        return False
+    kind = str(element.get("kind", "")).strip().lower()
+    control_type = str(element.get("control_type", "")).strip().lower()
+    if kind == "button":
+        return control_type in {"", "submit"}
+    if kind == "field":
+        return control_type in {"submit", "image"}
+    return False
 
 
 def _handle_click(
@@ -342,7 +362,7 @@ def _handle_click(
     next_url = final_url or str(state.get("current_url", ""))
     if element.get("kind") == "link" and element.get("href"):
         next_url = urljoin(next_url, element["href"])
-    elif element.get("kind") == "button":
+    elif _is_click_submit_control(element):
         action = element.get("form_action", "") or next_url
         method = element.get("form_method", "get").lower()
         fields = dict(state.get("fields", {}))
