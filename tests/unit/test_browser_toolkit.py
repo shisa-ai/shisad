@@ -1877,6 +1877,51 @@ async def test_gh24_browser_type_submit_allows_disabled_fieldset_first_legend_su
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_submit_blocks_fieldset_descendant_after_first_legend(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "submit_html": (
+            "<fieldset disabled>"
+            "<legend>Controls</legend>"
+            "<div><button id='fieldset-late-submit' type='submit'>Go</button></div>"
+            "</fieldset>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "submit": True},
+        )
+
+        assert "destination" not in prepared
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert typed["url"] == f"{browser_server.base_url}/"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_click_resolves_natural_language_target(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,

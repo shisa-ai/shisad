@@ -118,6 +118,7 @@ class _PageParser(HTMLParser):
             if not bool(fieldset.get("first_legend_seen", False)):
                 fieldset["first_legend_seen"] = True
                 fieldset["first_legend_depth"] = len(self._tag_stack) + 1
+                fieldset["first_legend_active"] = True
         self._tag_stack.append(tag)
         if tag == "fieldset":
             self._fieldset_stack.append(
@@ -125,6 +126,7 @@ class _PageParser(HTMLParser):
                     "disabled": _is_native_disabled_attrs(attr_map),
                     "first_legend_seen": False,
                     "first_legend_depth": 0,
+                    "first_legend_active": False,
                 }
             )
             return
@@ -213,6 +215,13 @@ class _PageParser(HTMLParser):
             )
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "legend":
+            for fieldset in reversed(self._fieldset_stack):
+                if bool(fieldset.get("first_legend_active", False)) and int(
+                    fieldset.get("first_legend_depth", 0) or 0
+                ) == len(self._tag_stack):
+                    fieldset["first_legend_active"] = False
+                    break
         if tag == "fieldset" and self._fieldset_stack:
             self._fieldset_stack.pop()
         if tag == "form":
@@ -233,8 +242,7 @@ class _PageParser(HTMLParser):
         for fieldset in self._fieldset_stack:
             if not bool(fieldset.get("disabled", False)):
                 continue
-            legend_depth = int(fieldset.get("first_legend_depth", 0) or 0)
-            if legend_depth > 0 and len(self._tag_stack) >= legend_depth:
+            if bool(fieldset.get("first_legend_active", False)):
                 continue
             return True
         return False
