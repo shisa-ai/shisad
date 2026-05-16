@@ -1268,6 +1268,22 @@ def test_gh24_browser_fragment_destinations_are_not_confirmation_targets() -> No
     )
 
 
+def test_gh24_browser_same_document_fragment_uses_canonical_url_parts() -> None:
+    current_url = "HTTPS://EXAMPLE.COM:443"
+
+    assert (
+        BrowserToolkit._normalize_confirmation_destination(
+            "https://example.com/#reserve",
+            current_url=current_url,
+        )
+        == ""
+    )
+    assert BrowserToolkit._is_same_document_url(
+        "https://example.com/#reserve",
+        current_url=current_url,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("approved_href", "live_href"),
@@ -1992,6 +2008,131 @@ async def test_gh24_browser_type_submit_allows_canonical_form_destination_query(
     assert typed["ok"] is True
     assert typed["url"] == "https://example.com/search?q=hello"
     assert typed["action"] == "type_text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click", "type_submit", "type_click"])
+async def test_gh24_browser_confirmations_allow_canonical_root_destination_without_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://origin.test/"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+    )
+    approved_element = BrowserSnapshotElement(
+        ref="e2" if action == "type_click" else "e1",
+        kind="link" if action == "click" else ("button" if action == "type_click" else "field"),
+        label=(
+            "Continue"
+            if action == "click"
+            else ("Submit" if action == "type_click" else "search")
+        ),
+        selector="#submit" if action in {"click", "type_click"} else "#search",
+        href="HTTPS://EXAMPLE.COM:443" if action == "click" else "",
+        form_action="" if action == "click" else "HTTPS://EXAMPLE.COM:443",
+        form_method="" if action == "click" else "get",
+    )
+    live_element = BrowserSnapshotElement(
+        ref=approved_element.ref,
+        kind=approved_element.kind,
+        label=approved_element.label,
+        selector=approved_element.selector,
+        href="https://example.com/" if action == "click" else "",
+        form_action="" if action == "click" else "https://example.com/",
+        form_method=approved_element.form_method,
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        if action == "type_click":
+            return [field, live_element]
+        return [live_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/",
+            "title": "Root",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    if action == "click":
+        result = await toolkit.click(
+            session=session,
+            target="#submit",
+            resolved_target="#submit",
+            destination=BrowserToolkit._predict_destination_url(
+                approved_element,
+                current_url=source_url,
+                submit=False,
+            ),
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                approved_element,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+    elif action == "type_submit":
+        result = await toolkit.type_text(
+            session=session,
+            target="#search",
+            resolved_target="#search",
+            text="hello",
+            submit=True,
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                approved_element,
+                current_url=source_url,
+                submit=True,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                approved_element,
+                current_url=source_url,
+                submit=True,
+            ),
+        )
+    else:
+        result = await toolkit.type_text(
+            session=session,
+            target="#search",
+            resolved_target="#search",
+            text="hello",
+            click_target="#submit",
+            resolved_click_target="#submit",
+            source_url=source_url,
+            click_source_binding=BrowserToolkit._binding_hash_for_element(
+                approved_element,
+                current_url=source_url,
+                submit=False,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                approved_element,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+
+    assert result["ok"] is True
+    assert result["url"] == "https://example.com/"
 
 
 @pytest.mark.asyncio

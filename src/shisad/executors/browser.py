@@ -2335,7 +2335,7 @@ class BrowserToolkit:
                     f"{expected.query}&"
                 )
             else:
-                query_matches = bool(actual.query)
+                query_matches = True
         else:
             query_matches = actual.query == expected.query
         if not query_matches:
