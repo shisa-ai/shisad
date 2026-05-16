@@ -64,6 +64,22 @@ _INPUT_TYPES = {
     "url",
     "week",
 }
+_HTML_VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 def _normalize_button_type(value: str) -> str:
@@ -119,7 +135,8 @@ class _PageParser(HTMLParser):
                 fieldset["first_legend_seen"] = True
                 fieldset["first_legend_depth"] = len(self._tag_stack) + 1
                 fieldset["first_legend_active"] = True
-        self._tag_stack.append(tag)
+        if tag not in _HTML_VOID_TAGS:
+            self._tag_stack.append(tag)
         if tag == "fieldset":
             self._fieldset_stack.append(
                 {
@@ -268,7 +285,7 @@ class _PageParser(HTMLParser):
     @property
     def elements(self) -> list[dict[str, str]]:
         rendered: list[dict[str, str]] = []
-        for index, item in enumerate(self._elements, start=1):
+        for item in self._elements:
             copy = dict(item)
             if _is_disabled_element(copy):
                 continue
@@ -285,7 +302,7 @@ class _PageParser(HTMLParser):
                     copy["form_action"] = form.get("action", "")
                     copy["form_method"] = form.get("method", "get")
             copy.pop("_form_id", None)
-            copy["ref"] = f"e{index}"
+            copy["ref"] = f"e{len(rendered) + 1}"
             rendered.append(copy)
         return rendered
 
