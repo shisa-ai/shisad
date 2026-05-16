@@ -664,13 +664,15 @@ async function syncFieldState(page, state) {
                 if (!childText) {
                   continue;
                 }
+                const childIsBlock =
+                  child.nodeType === 1 && blockTextTags.has(child.tagName.toLowerCase());
+                if (childIsBlock && text && !text.endsWith("\n")) {
+                  text += "\n";
+                  syntheticTrailingBreak = false;
+                }
                 text += childText;
                 syntheticTrailingBreak = false;
-                if (
-                  child.nodeType === 1 &&
-                  blockTextTags.has(child.tagName.toLowerCase()) &&
-                  !text.endsWith("\n")
-                ) {
+                if (childIsBlock && !text.endsWith("\n")) {
                   text += "\n";
                   syntheticTrailingBreak = true;
                 }
