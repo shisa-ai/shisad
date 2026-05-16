@@ -113,12 +113,47 @@ def _is_action_disabled_attrs(
     )
 
 
+def _style_declarations(value: str) -> dict[str, str]:
+    declarations: dict[str, str] = {}
+    for item in value.split(";"):
+        name, separator, raw = item.partition(":")
+        if not separator:
+            continue
+        declarations[name.strip().lower()] = raw.strip().lower()
+    return declarations
+
+
+def _attrs_hide_descendants(attrs: Mapping[str, str]) -> bool:
+    if "hidden" in attrs:
+        return True
+    style = _style_declarations(attrs.get("style", ""))
+    return style.get("display") == "none" or style.get("visibility") == "hidden"
+
+
+def _attrs_hide_candidate(
+    attrs: Mapping[str, str],
+    *,
+    tag: str,
+    control_type: str = "",
+    inherited_hidden: bool = False,
+) -> bool:
+    if inherited_hidden or _attrs_hide_descendants(attrs):
+        return True
+    if attrs.get("aria-hidden", "").strip().lower() == "true":
+        return True
+    style = _style_declarations(attrs.get("style", ""))
+    if style.get("opacity") == "0":
+        return True
+    return tag == "input" and control_type == "hidden"
+
+
 class _PageParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title = ""
         self.visible_parts: list[str] = []
         self._tag_stack: list[str] = []
+        self._hidden_stack: list[bool] = []
         self._fieldset_stack: list[dict[str, bool | int]] = []
         self._current_form: dict[str, str] | None = None
         self._forms: list[dict[str, str]] = []
@@ -128,6 +163,7 @@ class _PageParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key: (value or "") for key, value in attrs}
         inherited_native_disabled = self._in_disabled_fieldset()
+        inherited_hidden = self._in_hidden_context()
         parent_tag = self._tag_stack[-1] if self._tag_stack else ""
         if tag == "legend" and parent_tag == "fieldset" and self._fieldset_stack:
             fieldset = self._fieldset_stack[-1]
@@ -137,6 +173,7 @@ class _PageParser(HTMLParser):
                 fieldset["first_legend_active"] = True
         if tag not in _HTML_VOID_TAGS:
             self._tag_stack.append(tag)
+            self._hidden_stack.append(inherited_hidden or _attrs_hide_descendants(attr_map))
         if tag == "fieldset":
             self._fieldset_stack.append(
                 {
@@ -162,6 +199,11 @@ class _PageParser(HTMLParser):
                 "href": attr_map.get("href", ""),
                 "id": attr_map.get("id", ""),
                 "selector": _selector_for(tag="a", attrs=attr_map),
+                "hidden": "1" if _attrs_hide_candidate(
+                    attr_map,
+                    tag=tag,
+                    inherited_hidden=inherited_hidden,
+                ) else "",
                 "label": "",
             }
             return
@@ -183,6 +225,12 @@ class _PageParser(HTMLParser):
                 "disabled": "1" if _is_action_disabled_attrs(
                     attr_map,
                     inherited_native_disabled=native_disabled,
+                ) else "",
+                "hidden": "1" if _attrs_hide_candidate(
+                    attr_map,
+                    tag=tag,
+                    control_type=control_type,
+                    inherited_hidden=inherited_hidden,
                 ) else "",
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
@@ -218,6 +266,12 @@ class _PageParser(HTMLParser):
                         attr_map,
                         inherited_native_disabled=native_disabled,
                     ) else "",
+                    "hidden": "1" if _attrs_hide_candidate(
+                        attr_map,
+                        tag=tag,
+                        control_type=control_type,
+                        inherited_hidden=inherited_hidden,
+                    ) else "",
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
                     "form_action": form_action,
@@ -232,11 +286,13 @@ class _PageParser(HTMLParser):
             )
 
     def handle_endtag(self, tag: str) -> None:
+        closing_index = self._open_tag_index(tag)
+        closing_depth = closing_index + 1 if closing_index is not None else len(self._tag_stack)
         if tag == "legend":
             for fieldset in reversed(self._fieldset_stack):
                 if bool(fieldset.get("first_legend_active", False)) and int(
                     fieldset.get("first_legend_depth", 0) or 0
-                ) == len(self._tag_stack):
+                ) == closing_depth:
                     fieldset["first_legend_active"] = False
                     break
         if tag == "fieldset" and self._fieldset_stack:
@@ -246,14 +302,7 @@ class _PageParser(HTMLParser):
         if self._current_element is not None and tag in {"a", "button"}:
             self._elements.append(dict(self._current_element))
             self._current_element = None
-        if self._tag_stack and self._tag_stack[-1] == tag:
-            self._tag_stack.pop()
-        else:
-            with_context = list(self._tag_stack)
-            if tag in with_context:
-                with_context.reverse()
-                index = len(self._tag_stack) - with_context.index(tag) - 1
-                self._tag_stack = self._tag_stack[:index]
+        self._close_tag_stack(tag)
 
     def _in_disabled_fieldset(self) -> bool:
         for fieldset in self._fieldset_stack:
@@ -263,6 +312,22 @@ class _PageParser(HTMLParser):
                 continue
             return True
         return False
+
+    def _in_hidden_context(self) -> bool:
+        return any(self._hidden_stack)
+
+    def _open_tag_index(self, tag: str) -> int | None:
+        for index in range(len(self._tag_stack) - 1, -1, -1):
+            if self._tag_stack[index] == tag:
+                return index
+        return None
+
+    def _close_tag_stack(self, tag: str) -> None:
+        index = self._open_tag_index(tag)
+        if index is None:
+            return
+        self._tag_stack = self._tag_stack[:index]
+        self._hidden_stack = self._hidden_stack[:index]
 
     def handle_data(self, data: str) -> None:
         text = " ".join(data.split())
@@ -287,7 +352,7 @@ class _PageParser(HTMLParser):
         rendered: list[dict[str, str]] = []
         for item in self._elements:
             copy = dict(item)
-            if _is_disabled_element(copy):
+            if _is_disabled_element(copy) or _is_hidden_element(copy):
                 continue
             form = self._form_by_id(copy.get("_form_id", ""))
             if (
@@ -380,6 +445,10 @@ class _PageParser(HTMLParser):
 
 def _is_disabled_element(element: Mapping[str, str]) -> bool:
     return str(element.get("disabled", "")).strip().lower() in {"1", "true"}
+
+
+def _is_hidden_element(element: Mapping[str, str]) -> bool:
+    return str(element.get("hidden", "")).strip().lower() in {"1", "true"}
 
 
 def _is_implicit_enter_submit_field(element: Mapping[str, str]) -> bool:
