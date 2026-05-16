@@ -1526,6 +1526,9 @@ def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
             "<form id='later-form' action='/later' method='get'>"
             "<button id='later-submit' type='submit'>Later</button>"
             "</form>"
+            "<input id='forward-blocked-a' name='a' type='text' form='defaultless-form' />"
+            "<input id='forward-blocked-b' name='b' type='text' form='defaultless-form' />"
+            "<form id='defaultless-form' action='/blocked' method='get'></form>"
             "<form id='owner-form' action='/should-not-submit' method='post'>"
             "<input id='empty-form-search' name='q' type='text' form='' />"
             "<input id='missing-form-search' name='q' type='text' form='missing-form' />"
@@ -1575,6 +1578,10 @@ def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
             'selector="#forward-form-search" control_type="text" '
             'form_action="/later" form_method="get"'
         ) in snapshot
+        assert 'selector="#forward-blocked-a" control_type="text"' in snapshot
+        assert 'selector="#forward-blocked-a" control_type="text" form_action=' not in snapshot
+        assert 'selector="#forward-blocked-b" control_type="text"' in snapshot
+        assert 'selector="#forward-blocked-b" control_type="text" form_action=' not in snapshot
         assert 'selector="#empty-form-search" control_type="text"' in snapshot
         assert 'selector="#empty-form-search" control_type="text" form_action=' not in snapshot
         assert 'selector="#missing-form-search" control_type="text"' in snapshot

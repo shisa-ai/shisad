@@ -517,11 +517,11 @@ class _PageParser(HTMLParser):
             return False
         if form.get("default_submitter_seen") == "1":
             return False
-        form_id = form.get("_key", "")
         blocking_fields = [
             item
             for item in self._elements
-            if item.get("_form_id", "") == form_id and _is_implicit_enter_submit_field(item)
+            if self._resolved_form_for_element(item) is form
+            and _is_implicit_enter_submit_field(item)
         ]
         return len(blocking_fields) <= 1
 
