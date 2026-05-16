@@ -1399,6 +1399,75 @@ async def test_gh24_browser_click_confirmation_rejects_post_action_destination_d
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_click_confirmation_allows_canonical_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://origin.test/"
+    selector = "#continue"
+    approved_element = BrowserSnapshotElement(
+        ref="e1",
+        kind="link",
+        label="Continue",
+        selector=selector,
+        href="HTTPS://EXAMPLE.COM:443/next",
+    )
+    live_element = BrowserSnapshotElement(
+        ref="e1",
+        kind="link",
+        label="Continue",
+        selector=selector,
+        href="https://example.com/next",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [live_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/next",
+            "title": "Next",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    clicked = await toolkit.click(
+        session=session,
+        target=selector,
+        resolved_target=selector,
+        destination=BrowserToolkit._predict_destination_url(
+            approved_element,
+            current_url=source_url,
+            submit=False,
+        ),
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            approved_element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert clicked["ok"] is True
+    assert clicked["url"] == "https://example.com/next"
+    assert clicked["action"] == "click"
+
+
+@pytest.mark.asyncio
 async def test_gh24_browser_click_confirmation_rejects_unpredicted_js_navigation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1715,6 +1784,86 @@ async def test_gh24_browser_type_click_submit_allows_same_document_fragment_quer
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_click_submit_allows_canonical_form_destination_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://origin.test/"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+    )
+    approved_click_element = BrowserSnapshotElement(
+        ref="e2",
+        kind="button",
+        label="Submit",
+        selector="#submit",
+        form_action="HTTPS://EXAMPLE.COM:443/search",
+        form_method="get",
+    )
+    live_click_element = BrowserSnapshotElement(
+        ref="e2",
+        kind="button",
+        label="Submit",
+        selector="#submit",
+        form_action="https://example.com/search",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [field, live_click_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/search?q=hello",
+            "title": "Search",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="hello",
+        click_target="#submit",
+        resolved_click_target="#submit",
+        source_url=source_url,
+        click_source_binding=BrowserToolkit._binding_hash_for_element(
+            approved_click_element,
+            current_url=source_url,
+            submit=False,
+        ),
+        destination=BrowserToolkit._predict_destination_url(
+            approved_click_element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert typed["ok"] is True
+    assert typed["url"] == "https://example.com/search?q=hello"
+    assert typed["action"] == "type_text"
+    assert typed["click_target"] == "#submit"
+
+
+@pytest.mark.asyncio
 async def test_gh24_browser_type_submit_allows_same_document_fragment_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1770,6 +1919,78 @@ async def test_gh24_browser_type_submit_allows_same_document_fragment_query(
 
     assert typed["ok"] is True
     assert typed["url"] == "http://example.test/?q=hello#details"
+    assert typed["action"] == "type_text"
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_type_submit_allows_canonical_form_destination_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://origin.test/"
+    approved_element = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+        form_action="HTTPS://EXAMPLE.COM:443/search",
+        form_method="get",
+    )
+    live_element = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+        form_action="https://example.com/search",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [live_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/search?q=hello",
+            "title": "Search",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="hello",
+        submit=True,
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            approved_element,
+            current_url=source_url,
+            submit=True,
+        ),
+        destination=BrowserToolkit._predict_destination_url(
+            approved_element,
+            current_url=source_url,
+            submit=True,
+        ),
+    )
+
+    assert typed["ok"] is True
+    assert typed["url"] == "https://example.com/search?q=hello"
     assert typed["action"] == "type_text"
 
 

@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urljoin
+from urllib.parse import ParseResult, urljoin
 
 from pydantic import BaseModel, Field
 
@@ -2222,7 +2222,13 @@ class BrowserToolkit:
             expected_destination,
             current_url=current_url,
         )
-        if live_destination != approved_destination:
+        if bool(live_destination) != bool(approved_destination):
+            return self._error_payload("browser_confirmation_context_changed")
+        if live_destination and not self._destinations_match(
+            approved_destination,
+            live_destination,
+            allow_query_extension=False,
+        ):
             return self._error_payload("browser_confirmation_context_changed")
         return BrowserBindingValidation(
             destination_url=approved_destination,
@@ -2244,10 +2250,7 @@ class BrowserToolkit:
         fragment_only = (
             (bool(parsed.fragment) or normalized.endswith("#"))
             and current_parsed is not None
-            and parsed.scheme == current_parsed.scheme
-            and parsed.netloc == current_parsed.netloc
-            and parsed.path == current_parsed.path
-            and parsed.query == current_parsed.query
+            and cls._same_document_parts(parsed, current_parsed)
         )
         if fragment_only:
             return ""
@@ -2304,34 +2307,42 @@ class BrowserToolkit:
             source_url,
             actual_destination,
             allow_query_extension=allow_query_extension,
+            allow_fragment_extension=allow_query_extension,
         ):
             return None
         return self._error_payload("browser_confirmation_context_changed")
 
-    @staticmethod
+    @classmethod
     def _destinations_match(
+        cls,
         expected_url: str,
         actual_url: str,
         *,
         allow_query_extension: bool,
+        allow_fragment_extension: bool = False,
     ) -> bool:
         if actual_url == expected_url:
             return True
-        if not allow_query_extension:
-            return False
         expected = safe_urlparse(expected_url)
         actual = safe_urlparse(actual_url)
         if expected is None or actual is None:
             return False
-        if (
-            expected.scheme != actual.scheme
-            or expected.netloc != actual.netloc
-            or expected.path != actual.path
-        ):
+        if not cls._same_destination_base(expected, actual):
             return False
-        if not expected.query:
-            return bool(actual.query)
-        return actual.query == expected.query or actual.query.startswith(f"{expected.query}&")
+        if allow_query_extension:
+            if expected.query:
+                query_matches = actual.query == expected.query or actual.query.startswith(
+                    f"{expected.query}&"
+                )
+            else:
+                query_matches = bool(actual.query)
+        else:
+            query_matches = actual.query == expected.query
+        if not query_matches:
+            return False
+        if actual.fragment == expected.fragment:
+            return True
+        return bool(allow_fragment_extension and not expected.fragment and actual.fragment)
 
     @classmethod
     def _is_same_document_url(cls, value: str, *, current_url: str) -> bool:
@@ -2346,12 +2357,54 @@ class BrowserToolkit:
         if parsed is None or current is None:
             return False
         return (
-            parsed.scheme == current.scheme
-            and parsed.netloc == current.netloc
-            and parsed.path == current.path
-            and parsed.query == current.query
+            cls._same_document_parts(parsed, current)
             and (bool(parsed.fragment) or normalized.endswith("#"))
         )
+
+    @classmethod
+    def _same_document_parts(cls, first: ParseResult, second: ParseResult) -> bool:
+        return cls._same_destination_base(first, second) and first.query == second.query
+
+    @classmethod
+    def _same_destination_base(cls, first: ParseResult, second: ParseResult) -> bool:
+        first_authority = cls._authority_key(first)
+        second_authority = cls._authority_key(second)
+        if first_authority is None or second_authority is None:
+            return False
+        return (
+            first.scheme.lower() == second.scheme.lower()
+            and first_authority == second_authority
+            and cls._canonical_path(first) == cls._canonical_path(second)
+        )
+
+    @staticmethod
+    def _authority_key(parsed: ParseResult) -> tuple[str, str, str, int | None] | None:
+        try:
+            host = parsed.hostname or ""
+            port = parsed.port
+            username = parsed.username or ""
+            password = parsed.password or ""
+        except ValueError:
+            return None
+        default_port = BrowserToolkit._default_port_for_scheme(parsed.scheme)
+        if port == default_port:
+            port = None
+        return (username, password, host.lower(), port)
+
+    @staticmethod
+    def _default_port_for_scheme(scheme: str) -> int | None:
+        normalized = scheme.lower()
+        if normalized == "http":
+            return 80
+        if normalized == "https":
+            return 443
+        return None
+
+    @staticmethod
+    def _canonical_path(parsed: ParseResult) -> str:
+        if parsed.scheme.lower() in {"http", "https"} and parsed.netloc and not parsed.path:
+            return "/"
+        return parsed.path
 
     @classmethod
     def _normalize_target(cls, value: str) -> str:
