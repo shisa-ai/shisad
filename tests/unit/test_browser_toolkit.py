@@ -1663,6 +1663,87 @@ async def test_gh24_browser_type_submit_does_not_predict_disabled_default_submit
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_submit_predicts_aria_disabled_default_submitter(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "submit_html": (
+            "<button id='aria-submit' type='submit' aria-disabled='true'>Go</button>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "submit": True},
+        )
+
+        assert str(prepared["destination"]).endswith("/submitted")
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert typed["title"] == "Submitted"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_type_submit_counts_disabled_text_field_blocker(
+    tmp_path: Path,
+) -> None:
+    state = {"submit_html": "<input id='other' name='other' type='text' disabled />"}
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "submit": True},
+        )
+
+        assert "destination" not in prepared
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert typed["url"] == f"{browser_server.base_url}/"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_click_resolves_natural_language_target(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,

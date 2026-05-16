@@ -262,6 +262,33 @@ const disabledSubmitForm = new FakeElement(
 );
 disabledSearch.form = disabledSubmitForm;
 disabledSubmit.form = disabledSubmitForm;
+const ariaSearch = new FakeElement("input", { id: "aria-search" });
+const ariaSubmit = new FakeElement(
+  "button",
+  { id: "aria-submit", type: "submit", "aria-disabled": "true" },
+  "ARIA Disabled",
+);
+const ariaSubmitForm = new FakeElement(
+  "form",
+  { id: "aria-submit-form", action: "/aria", method: "get" },
+  "",
+  [ariaSearch, ariaSubmit],
+);
+ariaSearch.form = ariaSubmitForm;
+ariaSubmit.form = ariaSubmitForm;
+const disabledBlockerSearch = new FakeElement("input", { id: "disabled-blocker-search" });
+const disabledBlockerOther = new FakeElement(
+  "input",
+  { id: "disabled-blocker-other", disabled: "" },
+);
+const disabledBlockerForm = new FakeElement(
+  "form",
+  { id: "disabled-blocker-form", action: "/disabled-blocker", method: "get" },
+  "",
+  [disabledBlockerSearch, disabledBlockerOther],
+);
+disabledBlockerSearch.form = disabledBlockerForm;
+disabledBlockerOther.form = disabledBlockerForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -276,6 +303,8 @@ const body = new FakeElement("body", {}, "", [
   dialogForm,
   multiFieldForm,
   disabledSubmitForm,
+  ariaSubmitForm,
+  disabledBlockerForm,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -302,6 +331,12 @@ const allElements = [
   disabledSubmitForm,
   disabledSearch,
   disabledSubmit,
+  ariaSubmitForm,
+  ariaSearch,
+  ariaSubmit,
+  disabledBlockerForm,
+  disabledBlockerSearch,
+  disabledBlockerOther,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -498,6 +533,16 @@ exports.chromium = {
         'form_action='
     ) not in snapshot
     assert "#disabled-submit" not in snapshot
+    assert (
+        'field "aria-search" selector="#aria-search" control_type="text" '
+        'form_action="/aria" form_method="get"'
+    ) in snapshot
+    assert "#aria-submit" not in snapshot
+    assert (
+        'field "disabled-blocker-search" selector="#disabled-blocker-search" '
+        'control_type="text" form_action='
+    ) not in snapshot
+    assert "#disabled-blocker-other" not in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot
