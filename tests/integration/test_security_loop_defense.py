@@ -488,7 +488,9 @@ async def test_m2_t18_output_firewall_alert_is_audited(
             },
         )
         assert malformed_reply["response"] == (
-            "Response blocked by output policy. (reason: malicious_url; "
+            "Response blocked by output policy because the generated reply contained "
+            "malformed URL text. I cannot safely show that URL text. Provide a trusted "
+            "URL or ask me to search for the page, then retry. (reason: malformed_url; "
             f"see `shisad audit query --type OutputFirewallAlert --session {malformed_sid} --json` "
             "for detail.)"
         )
