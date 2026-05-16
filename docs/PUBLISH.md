@@ -16,7 +16,7 @@ Scope:
 
 ## Versioning
 
-Use semver-style bumps:
+Use semver-style bumps for normal releases:
 
 - Patch (`0.5.1`): bug fixes, packaging/docs-only releases, low-risk UX
   improvements.
@@ -25,12 +25,19 @@ Use semver-style bumps:
 - Major (`1.0.0`): intentionally breaking changes to CLI behavior, config
   format, or security model that need explicit upgrade guidance.
 
+Exception: when the human lead intentionally opens a follow-up patch line on
+top of an already published patch release, use a PEP 440-compatible
+four-segment version such as `0.7.3.1`. Treat it as a patch release in scope
+and validation, and call out the choice in the release-close evidence.
+
 ## Version Locations
 
 Version must be updated in both places:
 
-- `pyproject.toml` — `version = "X.Y.Z"`
-- `src/shisad/__init__.py` — `__version__ = "X.Y.Z"`
+- `pyproject.toml` — `version = "X.Y.Z"` or an approved patch-line
+  `version = "X.Y.Z.N"`
+- `src/shisad/__init__.py` — `__version__ = "X.Y.Z"` or an approved
+  patch-line `__version__ = "X.Y.Z.N"`
 
 ## Release Punch List
 

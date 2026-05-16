@@ -7,7 +7,115 @@ cutting a release tag. Pre-publish release content is marked explicitly and is
 left unlinked until the tag exists. There is no standing "Unreleased" section.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
+Normal releases use semver-style versions; exceptional follow-up patch lines
+may use PEP 440-compatible four-segment versions when the release checklist
+records that choice.
+
+## 0.7.3.1 Release Content - 2026-05-16
+
+### Changed
+
+- **The browser tool understands more of how real web pages work.** Form
+  submission now handles explicit submit buttons, fragment-only submits,
+  fieldset-disabled controls, dialog submits, form-associated submitters
+  defined outside the form they target, and Enter-to-submit. Hidden,
+  opacity-hidden, and visibility-overridden fields are filtered out of the
+  browser snapshot the agent sees, so it works from what a person would
+  actually see on the page. Repeated submissions and drifted GET query strings
+  are rejected instead of replaying through.
+
+- **Page titles stay metadata, not content.** Browser screenshots and web
+  fetches no longer surface the page's title as part of the answer body unless
+  you explicitly ask for the title. When screenshot OCR text is available,
+  shisad prefers the visible page content over the title, and confirmed
+  page-title metadata is preserved as a separate block in confirmation
+  summaries.
+
+- **Web search recovers when evidence is weak.** When search results do not
+  actually answer your question, shisad explains what was found, what is
+  missing, and falls back to the search recovery path instead of synthesizing a
+  confident-sounding wrong answer. Reservation markers in fetched pages are
+  extracted from both English and Japanese phrasing, including split or negated
+  forms.
+
+- **Short confirmation cooldowns retry instead of dead-ending.** If you
+  resolve a confirmation while a short cooldown is still active, shisad waits
+  through the cooldown and retries once. Longer cooldowns still surface as
+  `cooldown_active` so you know to wait.
+
+- **Confirmed fetch follow-ups summarize instead of leaking raw evidence.**
+  When you ask a follow-up after confirming a web fetch, the planner now sees a
+  summarized version of the fetched content rather than the raw reservation
+  markers, while still treating fetched page content as untrusted.
+
+- **Blocked malformed URLs explain what to do next.** When the output firewall
+  blocks a malformed URL, the response now tells you to provide a trusted URL
+  or ask shisad to search, instead of returning an opaque blocked message.
+
+- **Planner fallback errors explain which route was used.** When a provider
+  route fails over to a fallback, the resulting message explains which route
+  was used and why, so you can tell whether the answer came from your preferred
+  provider.
+
+### Fixed
+
+- **Browser snapshots preserve editable boundaries.** Empty editable blocks,
+  repeated line breaks, nested editable regions, and rich-text replays keep
+  their visible structure as you walk through forms, instead of collapsing or
+  duplicating boundaries. Noneditable labels and editable placeholder breaks
+  are filtered out of the snapshot so the agent does not mistake them for
+  user-entered text.
+
+- **Browser launchers find their runtime dependencies.** Wrapper scripts,
+  env-style launchers, interpreter code flags, and hermetic runtime paths are
+  mounted into the browser sandbox, so launching the browser from a
+  non-standard install path works without manual configuration.
+
+- **Confirmed navigation prefers task-specific destinations.** Confirmed
+  navigation retries from the URL the task asked for, validates same-origin
+  candidates, and normalizes default ports before comparing destinations, so a
+  generic fallback URL no longer wins over the destination you actually
+  requested.
+
+- **Browser confirmations bind to the canonical destination.** Allowlist
+  confirmation, pending policy aliases, page title replay aliases, and
+  confirmation tool aliases are canonicalized before they enter the session, so
+  confirmation answers stay attached to the destination you approved.
+
+### Security
+
+- **Sensitive browser fields are precleared and kept out of replay.** When
+  the agent fills a sensitive form field, the field is precleared before reuse,
+  snapshot replay skips sensitive values, and stale or help-only browser
+  wrappers are rejected before they can replay sensitive state. Diagnostic
+  output from the browser sandbox is kept separate from the main session so it
+  cannot leak field values back into the transcript.
+
+- **Recovery after lockdown ignores forged prompt text.** Lockdown recovery
+  notices, memory summaries, and resume prompts strip forged or
+  evidence-attributed prompt text before the planner sees them. Imported
+  recovery prompts that lack a verified terminal context are rejected instead
+  of being replayed, so a poisoned archive cannot smuggle a recovery
+  instruction past the lockdown gate.
+
+- **Filesystem paths in output are preserved when readable, redacted when
+  secret-shaped.** The output firewall distinguishes source-shaped filesystem
+  paths, which stay visible so you can act on them, from high-entropy path
+  segments that look like secrets, which are redacted. Browser file URLs,
+  Windows paths, drive-scheme paths, and spaced file URLs are redacted
+  consistently, including their delimiter variants, while readable source paths
+  in tool diagnostics survive unchanged.
+
+- **PII and pending-confirmation redaction are bounded.** URL path redaction,
+  output secret replacement, and PII redaction have explicit bounds, so a
+  pathological input cannot exhaust the redaction pass and let secrets through.
+  Sensitive pending text, approval metadata digests, and cleanroom proposals
+  are redacted before they reach the trace or transcript.
+
+- **Episode and destination attribution stay within bounds.** Historical
+  destination anchors, episode attribution, and carry-forward attribution honor
+  the bounds of the current session, so an older episode cannot smuggle a
+  destination claim into a new task.
 
 ## [0.7.3] - 2026-05-09
 
