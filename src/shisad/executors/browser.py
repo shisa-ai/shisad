@@ -2242,7 +2242,7 @@ class BrowserToolkit:
             return ""
         current_parsed = safe_urlparse(current_url)
         fragment_only = (
-            bool(parsed.fragment)
+            (bool(parsed.fragment) or normalized.endswith("#"))
             and current_parsed is not None
             and parsed.scheme == current_parsed.scheme
             and parsed.netloc == current_parsed.netloc
@@ -2303,7 +2303,7 @@ class BrowserToolkit:
         if self._destinations_match(
             source_url,
             actual_destination,
-            allow_query_extension=False,
+            allow_query_extension=allow_query_extension,
         ):
             return None
         return self._error_payload("browser_confirmation_context_changed")
@@ -2350,7 +2350,7 @@ class BrowserToolkit:
             and parsed.netloc == current.netloc
             and parsed.path == current.path
             and parsed.query == current.query
-            and bool(parsed.fragment)
+            and (bool(parsed.fragment) or normalized.endswith("#"))
         )
 
     @classmethod
