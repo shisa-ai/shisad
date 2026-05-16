@@ -2046,7 +2046,12 @@ async def test_gh24_browser_snapshot_refs_compact_after_hidden_controls(
             "<input id='hidden-token' type='hidden' name='token' />"
             "<a id='hidden-link' href='/hidden' hidden>Hidden</a>"
             "<input id='aria-hidden-field' type='text' aria-hidden='true' />"
-            "<button id='style-hidden-button' style='display: none'>Hidden button</button>"
+            "<button id='style-hidden-button' style='display: none !important'>"
+            "Hidden button</button>"
+            "<div style='visibility: hidden !important'>"
+            "<a id='ancestor-hidden-link' href='/hidden-ancestor'>Hidden ancestor</a>"
+            "</div>"
+            "<input id='opacity-hidden-field' type='text' style='opacity: 0 !important' />"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -2066,6 +2071,35 @@ async def test_gh24_browser_snapshot_refs_compact_after_hidden_controls(
 
         assert prepared["resolved_target"] == "#continue"
         assert str(prepared["destination"]).endswith("/next")
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_snapshot_excludes_hidden_descendant_text(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<button id='mixed-label'>Proceed<span hidden> Delete</span></button>"
+            "<div hidden>Secret content</div>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+
+        result = await toolkit.navigate(
+            session=_session(),
+            url=f"{browser_server.base_url}/",
+        )
+
+        assert result["ok"] is True
+        assert "Secret content" not in result["content"]
+        assert "Delete" not in result["content"]
+        assert 'button "Proceed" selector="#mixed-label"' in result["snapshot"]
+        assert "Proceed Delete" not in result["snapshot"]
     finally:
         browser_server.close()
 

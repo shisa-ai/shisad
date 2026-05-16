@@ -119,7 +119,8 @@ def _style_declarations(value: str) -> dict[str, str]:
         name, separator, raw = item.partition(":")
         if not separator:
             continue
-        declarations[name.strip().lower()] = raw.strip().lower()
+        raw_value = raw.strip().lower()
+        declarations[name.strip().lower()] = raw_value.removesuffix("!important").strip()
     return declarations
 
 
@@ -336,9 +337,10 @@ class _PageParser(HTMLParser):
         current_tag = self._tag_stack[-1] if self._tag_stack else ""
         if current_tag == "title":
             self.title = f"{self.title} {text}".strip()
-        if current_tag not in {"script", "style"}:
+        hidden_context = self._in_hidden_context()
+        if current_tag not in {"script", "style"} and not hidden_context:
             self.visible_parts.append(text)
-        if self._current_element is not None:
+        if self._current_element is not None and not hidden_context:
             self._current_element["label"] = (
                 f"{self._current_element.get('label', '')} {text}".strip()
             )
