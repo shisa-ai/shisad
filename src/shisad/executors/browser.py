@@ -107,6 +107,46 @@ _BROWSER_FAILURE_DRIVE_SCHEME_RE = re.compile(r"^[A-Za-z]://")
 _BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _BROWSER_SANDBOX_MEMORY_MB = 2048
 _BROWSER_SANDBOX_PIDS = 4096
+_BROWSER_BUTTON_NON_SUBMIT_TYPES = {"button", "reset"}
+_BROWSER_FORM_METHODS = {"get", "post", "dialog"}
+_BROWSER_INPUT_TYPES = {
+    "button",
+    "checkbox",
+    "color",
+    "date",
+    "datetime-local",
+    "email",
+    "file",
+    "hidden",
+    "image",
+    "month",
+    "number",
+    "password",
+    "radio",
+    "range",
+    "reset",
+    "search",
+    "submit",
+    "tel",
+    "text",
+    "time",
+    "url",
+    "week",
+}
+_BROWSER_IMPLICIT_ENTER_SUBMIT_INPUT_TYPES = {
+    "date",
+    "datetime-local",
+    "email",
+    "month",
+    "number",
+    "password",
+    "search",
+    "tel",
+    "text",
+    "time",
+    "url",
+    "week",
+}
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -2185,8 +2225,8 @@ class BrowserToolkit:
             "kind": element.kind.strip(),
             "label": element.label.strip(),
             "selector": element.selector.strip(),
-            "control_type": element.control_type.strip().lower(),
-            "form_method": element.form_method.strip().lower(),
+            "control_type": cls._normalized_control_type(element),
+            "form_method": cls._normalized_form_method(element.form_method),
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
@@ -2276,10 +2316,27 @@ class BrowserToolkit:
         *,
         submit: bool,
     ) -> bool:
-        method = element.form_method.strip().lower()
+        method = cls._normalized_form_method(element.form_method)
         if method != "get":
             return False
         return cls._is_form_submit_control(element, submit=submit)
+
+    @classmethod
+    def _normalized_control_type(cls, element: BrowserSnapshotElement) -> str:
+        control_type = element.control_type.strip().lower()
+        kind = element.kind.strip().lower()
+        if kind == "button":
+            return control_type if control_type in _BROWSER_BUTTON_NON_SUBMIT_TYPES else "submit"
+        if kind == "field" and control_type:
+            return control_type if control_type in _BROWSER_INPUT_TYPES else "text"
+        return control_type
+
+    @staticmethod
+    def _normalized_form_method(value: str) -> str:
+        method = value.strip().lower()
+        if not method:
+            return ""
+        return method if method in _BROWSER_FORM_METHODS else "get"
 
     @classmethod
     def _is_form_submit_control(
@@ -2288,17 +2345,17 @@ class BrowserToolkit:
         *,
         submit: bool,
     ) -> bool:
-        if not element.form_method.strip():
+        if not cls._normalized_form_method(element.form_method):
             return False
         kind = element.kind.strip().lower()
-        control_type = element.control_type.strip().lower()
+        control_type = cls._normalized_control_type(element)
         if kind == "button":
-            return control_type in {"", "submit"}
+            return control_type == "submit"
         if kind == "field":
             if control_type in {"submit", "image"}:
                 return True
             if submit:
-                return control_type not in {"button", "reset", "submit", "image"}
+                return control_type in _BROWSER_IMPLICIT_ENTER_SUBMIT_INPUT_TYPES
         return False
 
     def _validate_post_action_destination(

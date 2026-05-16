@@ -213,7 +213,13 @@ const externalForm = new FakeElement(
 );
 const externalSubmit = new FakeElement(
   "button",
-  { id: "external-submit", type: "submit", form: "external-form", formaction: "/override" },
+  {
+    id: "external-submit",
+    type: "menu",
+    form: "external-form",
+    formaction: "/override",
+    formmethod: "",
+  },
   "External Submit",
 );
 externalSearch.form = externalForm;
@@ -248,8 +254,7 @@ const allElements = [
   externalSearch,
   externalSubmit,
 ];
-const submitterSelector =
-  'button:not([type]), button[type="submit" i], input[type="submit" i], input[type="image" i]';
+const submitterSelector = "button, input";
 const fakeDocument = {
   documentElement: html,
   querySelectorAll(selector) {
@@ -258,7 +263,7 @@ const fakeDocument = {
         const tag = element.tagName.toLowerCase();
         const type = String(element.getAttribute("type") || "").toLowerCase();
         return (
-          (tag === "button" && (!type || type === "submit")) ||
+          (tag === "button" && !["button", "reset"].includes(type)) ||
           (tag === "input" && ["submit", "image"].includes(type))
         );
       });

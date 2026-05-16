@@ -1194,6 +1194,49 @@ async def test_gh24_browser_type_submit_uses_form_associated_default_submitter(
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_submit_normalizes_invalid_button_default_submitter(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "submit_html": (
+            "<button id='submit' type='menu' formaction='/override' "
+            "formmethod=''>Go</button>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "submit": True},
+        )
+
+        assert str(prepared["destination"]).endswith("/override")
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert "/override?q=hello" in typed["url"]
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_gh33_browser_toolkit_prepare_click_ignores_caller_runtime_fields(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
@@ -1588,6 +1631,24 @@ def test_gh24_browser_submit_control_type_gates_destination_prediction() -> None
         form_action="/submitted",
         form_method="get",
     )
+    textarea_field = BrowserSnapshotElement(
+        ref="e7",
+        kind="field",
+        label="Notes",
+        selector="#notes",
+        control_type="",
+        form_action="/submitted",
+        form_method="get",
+    )
+    invalid_button = BrowserSnapshotElement(
+        ref="e8",
+        kind="button",
+        label="Invalid Button",
+        selector="#invalid-button",
+        control_type="menu",
+        form_action="/submitted",
+        form_method="wat",
+    )
 
     assert (
         BrowserToolkit._predict_destination_url(
@@ -1637,6 +1698,23 @@ def test_gh24_browser_submit_control_type_gates_destination_prediction() -> None
         )
         == "https://example.com/submitted"
     )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            textarea_field,
+            current_url=source_url,
+            submit=True,
+        )
+        == ""
+    )
+    assert (
+        BrowserToolkit._predict_destination_url(
+            invalid_button,
+            current_url=source_url,
+            submit=False,
+        )
+        == "https://example.com/submitted"
+    )
+    assert BrowserToolkit._allows_form_query_extension(invalid_button, submit=False) is True
 
 
 def test_gh24_browser_snapshot_parser_preserves_control_type() -> None:
@@ -2267,6 +2345,7 @@ async def test_gh24_browser_type_submit_allows_same_document_fragment_query(
         kind="field",
         label="search",
         selector="#search",
+        control_type="text",
         form_action="#details",
         form_method="get",
     )
@@ -2326,6 +2405,7 @@ async def test_gh24_browser_type_submit_allows_canonical_form_destination_query(
         kind="field",
         label="search",
         selector="#search",
+        control_type="text",
         form_action="HTTPS://EXAMPLE.COM:443/search",
         form_method="get",
     )
@@ -2334,6 +2414,7 @@ async def test_gh24_browser_type_submit_allows_canonical_form_destination_query(
         kind="field",
         label="search",
         selector="#search",
+        control_type="text",
         form_action="https://example.com/search",
         form_method="get",
     )
@@ -2415,6 +2496,7 @@ async def test_gh24_browser_confirmations_allow_canonical_root_destination_witho
         ),
         selector="#submit" if action in {"click", "click_submit", "type_click"} else "#search",
         href="HTTPS://EXAMPLE.COM:443" if action == "click" else "",
+        control_type="text" if action == "type_submit" else "",
         form_action="" if action == "click" else "HTTPS://EXAMPLE.COM:443",
         form_method="" if action == "click" else "get",
     )
@@ -2424,6 +2506,7 @@ async def test_gh24_browser_confirmations_allow_canonical_root_destination_witho
         label=approved_element.label,
         selector=approved_element.selector,
         href="https://example.com/" if action == "click" else "",
+        control_type=approved_element.control_type,
         form_action="" if action == "click" else "https://example.com/",
         form_method=approved_element.form_method,
     )
@@ -2833,6 +2916,7 @@ async def test_gh24_browser_type_submit_rejects_post_action_destination_drift(
         kind="field",
         label="search",
         selector=selector,
+        control_type="text",
         form_action="/submitted",
         form_method="get",
     )

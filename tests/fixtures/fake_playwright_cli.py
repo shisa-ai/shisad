@@ -23,6 +23,47 @@ _PNG_BYTES = (
     b"\x00\x00\x00\x0cIDATx\x9cc`\x00\x00\x00\x02\x00\x01\xe2!\xbc3"
     b"\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+_BUTTON_NON_SUBMIT_TYPES = {"button", "reset"}
+_FORM_METHODS = {"get", "post", "dialog"}
+_INPUT_TYPES = {
+    "button",
+    "checkbox",
+    "color",
+    "date",
+    "datetime-local",
+    "email",
+    "file",
+    "hidden",
+    "image",
+    "month",
+    "number",
+    "password",
+    "radio",
+    "range",
+    "reset",
+    "search",
+    "submit",
+    "tel",
+    "text",
+    "time",
+    "url",
+    "week",
+}
+
+
+def _normalize_button_type(value: str) -> str:
+    normalized = value.strip().lower()
+    return normalized if normalized in _BUTTON_NON_SUBMIT_TYPES else "submit"
+
+
+def _normalize_input_type(value: str) -> str:
+    normalized = value.strip().lower()
+    return normalized if normalized in _INPUT_TYPES else "text"
+
+
+def _normalize_form_method(value: str) -> str:
+    normalized = value.strip().lower()
+    return normalized if normalized in _FORM_METHODS else "get"
 
 
 class _PageParser(HTMLParser):
@@ -42,7 +83,7 @@ class _PageParser(HTMLParser):
         if tag == "form":
             self._current_form = {
                 "action": attr_map.get("action", ""),
-                "method": attr_map.get("method", "get").lower(),
+                "method": _normalize_form_method(attr_map.get("method", "")),
                 "id": attr_map.get("id", ""),
                 "_key": attr_map.get("id", "") or f"__form_{len(self._forms) + 1}",
             }
@@ -59,7 +100,7 @@ class _PageParser(HTMLParser):
             return
         if tag == "button":
             form = self._form_for_attrs(attr_map)
-            control_type = attr_map.get("type", "submit").lower()
+            control_type = _normalize_button_type(attr_map.get("type", ""))
             form_action, form_method = self._form_metadata_for(
                 attr_map,
                 form=form,
@@ -80,7 +121,7 @@ class _PageParser(HTMLParser):
             return
         if tag in {"input", "textarea"}:
             form = self._form_for_attrs(attr_map)
-            control_type = attr_map.get("type", "text").lower() if tag == "input" else ""
+            control_type = _normalize_input_type(attr_map.get("type", "")) if tag == "input" else ""
             is_submitter = tag == "input" and control_type in {"submit", "image"}
             form_action, form_method = self._form_metadata_for(
                 attr_map,
@@ -188,7 +229,7 @@ class _PageParser(HTMLParser):
             if is_submitter and "formmethod" in attrs
             else form.get("method", "get")
         )
-        return action, method
+        return action, _normalize_form_method(method)
 
     def _record_default_submitter(
         self,
@@ -397,7 +438,7 @@ def _handle_fill(
             next_url = urljoin(next_url, target_element["href"])
         elif submit or _is_click_submit_control(target_element):
             action = target_element.get("form_action", "") or next_url
-            method = target_element.get("form_method", "get").lower()
+            method = _normalize_form_method(target_element.get("form_method", "get"))
             if method == "get" and submission_fields:
                 encoded = urlencode(submission_fields)
                 separator = "&" if "?" in action else "?"
@@ -416,7 +457,7 @@ def _is_click_submit_control(element: Mapping[str, object]) -> bool:
     kind = str(element.get("kind", "")).strip().lower()
     control_type = str(element.get("control_type", "")).strip().lower()
     if kind == "button":
-        return control_type in {"", "submit"}
+        return _normalize_button_type(control_type) == "submit"
     if kind == "field":
         return control_type in {"submit", "image"}
     return False
@@ -439,7 +480,7 @@ def _handle_click(
         next_url = urljoin(next_url, element["href"])
     elif _is_click_submit_control(element):
         action = element.get("form_action", "") or next_url
-        method = element.get("form_method", "get").lower()
+        method = _normalize_form_method(element.get("form_method", "get"))
         fields = dict(state.get("fields", {}))
         if method == "get" and fields:
             encoded = urlencode(fields)

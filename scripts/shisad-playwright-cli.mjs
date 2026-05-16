@@ -329,12 +329,38 @@ async function snapshot(page) {
         }
         return element.innerText || element.textContent || element.getAttribute("aria-label") || tag;
       };
+      const inputTypes = new Set([
+        "button",
+        "checkbox",
+        "color",
+        "date",
+        "datetime-local",
+        "email",
+        "file",
+        "hidden",
+        "image",
+        "month",
+        "number",
+        "password",
+        "radio",
+        "range",
+        "reset",
+        "search",
+        "submit",
+        "tel",
+        "text",
+        "time",
+        "url",
+        "week",
+      ]);
       const controlTypeFor = (element, tag) => {
         if (tag === "button") {
-          return (element.getAttribute("type") || "submit").toLowerCase();
+          const buttonType = String(element.getAttribute("type") || "").trim().toLowerCase();
+          return buttonType === "button" || buttonType === "reset" ? buttonType : "submit";
         }
         if (tag === "input") {
-          return (element.getAttribute("type") || "text").toLowerCase();
+          const inputType = String(element.getAttribute("type") || "").trim().toLowerCase();
+          return inputTypes.has(inputType) ? inputType : "text";
         }
         return "";
       };
@@ -351,13 +377,20 @@ async function snapshot(page) {
         if (!form) {
           return null;
         }
-        const submitterSelector =
-          'button:not([type]), button[type="submit" i], input[type="submit" i], input[type="image" i]';
         return (
-          Array.from(document.querySelectorAll(submitterSelector)).find(
-            (candidate) => candidate.form === form,
-          ) || null
+          Array.from(document.querySelectorAll("button, input")).find((candidate) => {
+            const tag = candidate.tagName.toLowerCase();
+            return candidate.form === form && isSubmitControl(tag, controlTypeFor(candidate, tag));
+          }) || null
         );
+      };
+      const formMethodFor = (form, submitter) => {
+        const raw =
+          submitter && submitter.hasAttribute("formmethod")
+            ? submitter.getAttribute("formmethod") || ""
+            : form.getAttribute("method") || "";
+        const method = String(raw || "").trim().toLowerCase();
+        return method === "post" || method === "dialog" ? method : "get";
       };
       const formMetadataFor = (element, tag, controlType, form) => {
         if (!form) {
@@ -369,9 +402,7 @@ async function snapshot(page) {
             ? submitter.getAttribute("formaction") || ""
             : form.getAttribute("action") || "";
         const method =
-          submitter && submitter.hasAttribute("formmethod")
-            ? submitter.getAttribute("formmethod") || ""
-            : form.getAttribute("method") || "get";
+          formMethodFor(form, submitter);
         return { action, method };
       };
       return Array.from(
