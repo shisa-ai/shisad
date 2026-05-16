@@ -110,9 +110,7 @@ def test_gh29_navigation_url_selection_treats_default_port_variant_as_failed() -
                 "web.search",
                 {
                     "ok": True,
-                    "results": [
-                        {"url": "https://tabelog.com:443/hokkaido/A0101/A010101/123456/"}
-                    ],
+                    "results": [{"url": "https://tabelog.com:443/hokkaido/A0101/A010101/123456/"}],
                 },
             ),
             _serialized_tool_output(
@@ -317,9 +315,7 @@ def test_gh34_confirmed_alias_navigation_failure_preserves_attempted_url() -> No
     )
 
     assert serialized["tool_name"] == "browser-navigate"
-    assert serialized["arguments"] == {
-        "url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"
-    }
+    assert serialized["arguments"] == {"url": "https://tabelog.com/hokkaido/A0101/A010101/123456/"}
 
 
 def test_gh29_confirmed_tool_output_omits_non_navigation_arguments() -> None:

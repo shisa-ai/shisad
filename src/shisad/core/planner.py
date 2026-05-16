@@ -665,9 +665,10 @@ class Planner:
             canonical_name = self._resolve_runtime_tool_name(name_raw)
             if not canonical_name:
                 continue
-            if self._tool_registry is not None and self._tool_registry.get_tool(
-                ToolName(canonical_name)
-            ) is None:
+            if (
+                self._tool_registry is not None
+                and self._tool_registry.get_tool(ToolName(canonical_name)) is None
+            ):
                 continue
             payload_names.add(canonical_name)
         return payload_names

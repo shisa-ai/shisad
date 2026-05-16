@@ -183,9 +183,7 @@ def test_gh34_entropy_detector_keeps_source_fixture_paths_unredacted() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     path = "/home/ubuntu/shisad/tests/fixtures/fake_playwright_cli.py"
 
-    result = firewall.inspect(
-        f"browser.navigate failed: [Errno 13] Permission denied: '{path}'"
-    )
+    result = firewall.inspect(f"browser.navigate failed: [Errno 13] Permission denied: '{path}'")
 
     assert path in result.sanitized_text
     assert "high_entropy_secret" not in result.secret_findings
@@ -465,9 +463,7 @@ def test_gh34_entropy_detector_does_not_prefix_replace_readable_url_sibling() ->
 
     result = firewall.inspect(f"urls {secret_url} {readable_url}")
 
-    assert "https://api.good.com/reset/[REDACTED:high_entropy_secret]" in (
-        result.sanitized_text
-    )
+    assert "https://api.good.com/reset/[REDACTED:high_entropy_secret]" in (result.sanitized_text)
     assert readable_url in result.sanitized_text
     assert "[REDACTED:high_entropy_secret]readme" not in result.sanitized_text
     assert result.sanitized_text.count("[REDACTED:high_entropy_secret]") == 1

@@ -739,9 +739,7 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     short_pending.approval_envelope = short_pending.approval_envelope.model_copy(
         update={"intent_envelope_hash": intent_envelope_hash(short_pending.intent_envelope)}
     )
-    short_pending.approval_envelope_hash = approval_envelope_hash(
-        short_pending.approval_envelope
-    )
+    short_pending.approval_envelope_hash = approval_envelope_hash(short_pending.approval_envelope)
     short_pending.confirmation_evidence = ConfirmationEvidence(
         level=ConfirmationLevel.SIGNED_AUTHORIZATION,
         method="signed",
@@ -776,17 +774,13 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
         "is_sensitive": True,
         "description": "description-only-secret",
     }
-    description_only_payload = HandlerImplementation._pending_to_dict(
-        description_only_pending
-    )
+    description_only_payload = HandlerImplementation._pending_to_dict(description_only_pending)
     assert "description-only-secret" not in json.dumps(
         description_only_payload,
         sort_keys=True,
     )
     assert "text" not in description_only_payload["arguments"]
-    assert description_only_payload["arguments"]["description"] == (
-        "[sensitive text redacted]"
-    )
+    assert description_only_payload["arguments"]["description"] == ("[sensitive text redacted]")
     assert description_only_payload["approval_envelope_hash"] == ""
     assert description_only_payload["approval_envelope_redacted"] is True
 

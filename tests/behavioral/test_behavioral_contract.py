@@ -568,11 +568,7 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
-    if (
-        "browser type " in goal_lower
-        and "name field" in goal_lower
-        and "click send" in goal_lower
-    ):
+    if "browser type " in goal_lower and "name field" in goal_lower and "click send" in goal_lower:
         match = re.search(
             r"browser type (?P<text>.+?) into the name field and click send$",
             goal,
@@ -1104,8 +1100,7 @@ async def _contract_harness_context(
                     f"{sys.executable} "
                     f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
                 ),
-                "browser_allowed_domains": browser_allowed_domains
-                or ["127.0.0.1", "localhost"],
+                "browser_allowed_domains": browser_allowed_domains or ["127.0.0.1", "localhost"],
                 "browser_require_hardened_isolation": False,
                 "assistant_fs_roots": [workspace_root],
             },

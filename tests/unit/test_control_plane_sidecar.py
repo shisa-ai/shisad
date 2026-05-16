@@ -85,9 +85,7 @@ async def test_gh33_control_plane_sidecar_client_serializes_monitor_arguments(
 
     assert result == "ok"
     assert captured["method"] == "control_plane.evaluate_action"
-    assert captured["params"]["arguments"] == {
-        "command": ["curl", "https://secret.example/upload"]
-    }
+    assert captured["params"]["arguments"] == {"command": ["curl", "https://secret.example/upload"]}
     assert captured["params"]["monitor_arguments"] == {}
 
 

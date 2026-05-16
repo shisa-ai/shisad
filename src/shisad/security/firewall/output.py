@@ -540,9 +540,9 @@ class OutputFirewall:
             return len(parts) >= 2 and all(
                 cls._looks_like_source_file_stem_part(part) for part in parts
             )
-        return (
-            segment.islower() or segment.isupper()
-        ) and cls._shannon_entropy(segment) < cls._SOURCE_FILE_STEM_PART_ENTROPY_MAX
+        return (segment.islower() or segment.isupper()) and cls._shannon_entropy(
+            segment
+        ) < cls._SOURCE_FILE_STEM_PART_ENTROPY_MAX
 
     @classmethod
     def _looks_like_source_file_stem_part(cls, part: str) -> bool:
@@ -581,13 +581,8 @@ class OutputFirewall:
         )
         if max_alpha_run >= 4:
             return False
-        transitions = sum(
-            left.isdigit() != right.isdigit() for left, right in pairwise(segment)
-        )
-        return (
-            transitions >= 3
-            and len(set(segment.lower())) >= 5
-        )
+        transitions = sum(left.isdigit() != right.isdigit() for left, right in pairwise(segment))
+        return transitions >= 3 and len(set(segment.lower())) >= 5
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:

@@ -671,10 +671,7 @@ class BrowserToolkit:
                     actual_url=str(payload.get("url", "")),
                     allow_query_extension=bool(
                         (binding_validation and binding_validation.allows_form_query)
-                        or (
-                            click_binding_validation
-                            and click_binding_validation.allows_form_query
-                        )
+                        or (click_binding_validation and click_binding_validation.allows_form_query)
                         or (submit and not source_binding.strip())
                     ),
                 )
@@ -1175,9 +1172,8 @@ class BrowserToolkit:
             or "did not expose chromium.launchpersistentcontext" in text
         ):
             return "browser_dependency_unavailable"
-        if (
-            _SHISAD_BROWSER_WRAPPER_DOCTOR in text
-            and ("unsupported" in text or "unknown option" in text or "unknown command" in text)
+        if _SHISAD_BROWSER_WRAPPER_DOCTOR in text and (
+            "unsupported" in text or "unknown option" in text or "unknown command" in text
         ):
             return "browser_command_protocol_incompatible"
         return "browser_command_failed"
@@ -1210,9 +1206,7 @@ class BrowserToolkit:
         if dependency_error:
             return [], [], dependency_error
         if env_target_path is not None:
-            env_target_roots, dependency_error = self._runtime_read_paths_for_path(
-                env_target_path
-            )
+            env_target_roots, dependency_error = self._runtime_read_paths_for_path(env_target_path)
             if dependency_error:
                 return [], [], dependency_error
             roots.extend(env_target_roots)
@@ -2452,9 +2446,8 @@ class BrowserToolkit:
         current = safe_urlparse(current_url)
         if parsed is None or current is None:
             return False
-        return (
-            cls._same_document_parts(parsed, current)
-            and (bool(parsed.fragment) or normalized.endswith("#"))
+        return cls._same_document_parts(parsed, current) and (
+            bool(parsed.fragment) or normalized.endswith("#")
         )
 
     @classmethod

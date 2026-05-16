@@ -829,9 +829,7 @@ async def test_gh33_browser_toolkit_sensitive_type_text_fake_cli_no_store(
     )
 
     assert typed["ok"] is True
-    state_path = (
-        toolkit._session_dir(session) / ".fake-playwright" / "shisad-browser-session.json"
-    )
+    state_path = toolkit._session_dir(session) / ".fake-playwright" / "shisad-browser-session.json"
     fake_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "sensitive-secret" not in json.dumps(fake_state, sort_keys=True)
 
@@ -1033,8 +1031,7 @@ async def test_gh24_browser_type_click_uses_button_submitter_form_overrides(
 ) -> None:
     state = {
         "submit_html": (
-            "<button id='submit' type='submit' formaction='/override' "
-            "formmethod='get'>Go</button>"
+            "<button id='submit' type='submit' formaction='/override' formmethod='get'>Go</button>"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -1078,8 +1075,7 @@ async def test_gh24_browser_type_submit_uses_default_submitter_form_overrides(
 ) -> None:
     state = {
         "submit_html": (
-            "<button id='submit' type='submit' formaction='/override' "
-            "formmethod='get'>Go</button>"
+            "<button id='submit' type='submit' formaction='/override' formmethod='get'>Go</button>"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -1199,8 +1195,7 @@ async def test_gh24_browser_type_submit_normalizes_invalid_button_default_submit
 ) -> None:
     state = {
         "submit_html": (
-            "<button id='submit' type='menu' formaction='/override' "
-            "formmethod=''>Go</button>"
+            "<button id='submit' type='menu' formaction='/override' formmethod=''>Go</button>"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -1839,9 +1834,7 @@ async def test_gh24_browser_type_submit_predicts_aria_disabled_default_submitter
     tmp_path: Path,
 ) -> None:
     state = {
-        "submit_html": (
-            "<button id='aria-submit' type='submit' aria-disabled='true'>Go</button>"
-        )
+        "submit_html": ("<button id='aria-submit' type='submit' aria-disabled='true'>Go</button>")
     }
     browser_server = _start_fixture_server(state=state)
     try:
@@ -1921,9 +1914,7 @@ async def test_gh24_browser_type_submit_does_not_predict_fieldset_disabled_submi
 ) -> None:
     state = {
         "submit_html": (
-            "<fieldset disabled>"
-            "<button id='fieldset-submit' type='submit'>Go</button>"
-            "</fieldset>"
+            "<fieldset disabled><button id='fieldset-submit' type='submit'>Go</button></fieldset>"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -1965,9 +1956,7 @@ async def test_gh24_browser_type_submit_counts_fieldset_disabled_text_field_bloc
 ) -> None:
     state = {
         "submit_html": (
-            "<fieldset disabled>"
-            "<input id='fieldset-other' name='other' type='text' />"
-            "</fieldset>"
+            "<fieldset disabled><input id='fieldset-other' name='other' type='text' /></fieldset>"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -6214,8 +6203,7 @@ async def test_gh26_browser_toolkit_subprocess_missing_dependency_classified(
             allowed=True,
             exit_code=127,
             stderr=(
-                "error while loading shared libraries: libnss3.so:"
-                " cannot open shared object file"
+                "error while loading shared libraries: libnss3.so: cannot open shared object file"
             ),
             reason="browser_command_failed",
         )
@@ -6235,8 +6223,7 @@ async def test_gh26_browser_toolkit_subprocess_missing_dependency_classified(
     assert result["details"]["reason"] == "browser_dependency_unavailable"
     assert result["details"]["stage"] == "subprocess"
     assert (
-        result["details"]["stderr"]
-        == "error while loading shared libraries: libnss3.so:"
+        result["details"]["stderr"] == "error while loading shared libraries: libnss3.so:"
         " cannot open shared object file"
     )
 

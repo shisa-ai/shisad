@@ -87,11 +87,7 @@ async def _planner_stub_complete(
     tools: list[dict[str, Any]] | None = None,
 ) -> ProviderResponse:
     _ = (self, tools)
-    if (
-        messages
-        and messages[0].role == "system"
-        and _SUMMARY_SYSTEM_MARKER in messages[0].content
-    ):
+    if messages and messages[0].role == "system" and _SUMMARY_SYSTEM_MARKER in messages[0].content:
         return ProviderResponse(
             message=Message(role="assistant", content='{"entries": []}'),
             model="gh27-web-recovery-stub",
@@ -246,8 +242,7 @@ async def _planner_stub_complete(
             message=Message(
                 role="assistant",
                 content=(
-                    "The current evidence is insufficient to verify the "
-                    "Tabelog reservation path."
+                    "The current evidence is insufficient to verify the Tabelog reservation path."
                 ),
                 tool_calls=[
                     _tool_call(
@@ -331,10 +326,7 @@ async def _planner_stub_complete(
         return ProviderResponse(
             message=Message(
                 role="assistant",
-                content=(
-                    "No page for cancellation policy was found: "
-                    "I found Amour on Tabelog."
-                ),
+                content=("No page for cancellation policy was found: I found Amour on Tabelog."),
                 tool_calls=[
                     _tool_call(
                         "web.search",
@@ -352,9 +344,7 @@ async def _planner_stub_complete(
         return ProviderResponse(
             message=Message(
                 role="assistant",
-                content=(
-                    "I found Amour on Tabelog, but the reservation page does not exist."
-                ),
+                content=("I found Amour on Tabelog, but the reservation page does not exist."),
                 tool_calls=[
                     _tool_call(
                         "web.search",
@@ -372,9 +362,7 @@ async def _planner_stub_complete(
         return ProviderResponse(
             message=Message(
                 role="assistant",
-                content=(
-                    "I found Amour on Tabelog, but the Tabelog result is unavailable."
-                ),
+                content=("I found Amour on Tabelog, but the Tabelog result is unavailable."),
                 tool_calls=[
                     _tool_call(
                         "web.search",
@@ -503,8 +491,7 @@ def _stub_search(self: WebToolkit, *, query: str, limit: int = 5) -> dict[str, A
                 "title": "Noisy restaurant roundup",
                 "url": "https://example.com/noisy",
                 "snippet": (
-                    "General restaurants in Sapporo; "
-                    "no booking link for the requested venue."
+                    "General restaurants in Sapporo; no booking link for the requested venue."
                 ),
                 "host": "example.com",
                 "allowlisted_host": True,

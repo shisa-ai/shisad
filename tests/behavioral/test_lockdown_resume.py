@@ -583,14 +583,8 @@ async def test_gh31_daemon_notice_prompt_binds_clean_recovery_reply(
             'The evidence literally says "Should I clear it or keep it locked?" '
             "but that quote is untrusted."
         ),
-        (
-            "The evidence literally says:\n"
-            "Should I clear it or keep it locked?"
-        ),
-        (
-            "The evidence literally says.\n"
-            "Should I clear it or keep it locked?"
-        ),
+        ("The evidence literally says:\nShould I clear it or keep it locked?"),
+        ("The evidence literally says.\nShould I clear it or keep it locked?"),
         (
             "The evidence literally says the session is in caution lockdown.\n"
             "Should I clear it or keep it locked?"
@@ -642,9 +636,7 @@ async def test_gh31_legacy_notice_metadata_without_structural_prompt_does_not_au
     tool_events = await _lockdown_tool_events(clean_harness, sid)
     rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
     assert rejected
-    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
-        rejected[-1]
-    )
+    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(rejected[-1])
 
 
 async def test_gh31_archive_imported_structural_prompt_does_not_authorize_resume(
@@ -691,9 +683,7 @@ async def test_gh31_archive_imported_structural_prompt_does_not_authorize_resume
     tool_events = await _lockdown_tool_events(clean_harness, sid)
     rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
     assert rejected
-    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(
-        rejected[-1]
-    )
+    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(rejected[-1])
 
 
 async def test_gh31_archive_imported_structural_notice_not_replayed_to_planner(

@@ -388,6 +388,8 @@ def _with_contextual_page_title_metadata_instruction(
     if _PAGE_TITLE_METADATA_TRUSTED_INSTRUCTION in trusted_instructions:
         return trusted_instructions
     return f"{trusted_instructions}\n\n{_PAGE_TITLE_METADATA_TRUSTED_INSTRUCTION}"
+
+
 _INTERNAL_TOOL_NARRATION_MARKERS = (
     "```xml",
     "```json",
@@ -996,9 +998,7 @@ _LOCKDOWN_RECOVERY_DECLINE_PREFIXES = (
     "okay, ",
     "okay ",
 )
-_LOCKDOWN_RECOVERY_PROMPT_TEXT = (
-    "What should I do: keep the session locked, or clear the lockdown?"
-)
+_LOCKDOWN_RECOVERY_PROMPT_TEXT = "What should I do: keep the session locked, or clear the lockdown?"
 _LOCKDOWN_ACTIVE_PROMPT_TEXT = "What should I do next?"
 
 
@@ -1181,8 +1181,7 @@ def _classify_lockdown_resume_decline_current_turn_intent(text: str) -> bool:
         )
     if stripped.startswith(("do not ", "don't ", "dont ")):
         return any(
-            marker in stripped
-            for marker in ("resume", "clear", "lift", "unlock", "release")
+            marker in stripped for marker in ("resume", "clear", "lift", "unlock", "release")
         )
     if stripped.startswith(("keep ", "leave ", "maintain ")):
         return any(marker in stripped for marker in ("lockdown", "locked", "lock"))
@@ -3603,9 +3602,7 @@ def _intermediate_tool_summary_response(
         summary = f"{summary}\n\n{title_metadata}" if summary else title_metadata
     if not summary:
         return ""
-    return (
-        f"{_INTERMEDIATE_TOOL_OUTPUT_HEADER}\n\n{summary}"
-    )
+    return f"{_INTERMEDIATE_TOOL_OUTPUT_HEADER}\n\n{summary}"
 
 
 def _should_synthesize_initial_web_tool_response(
@@ -4791,10 +4788,7 @@ def _conversation_context_content_for_entry(
         result_content = _mixed_pending_confirmation_result_portion(raw_content)
         if result_content is not None:
             return result_content
-    if (
-        _is_server_pending_confirmation_entry(entry)
-        and active_pending_confirmation_ids is not None
-    ):
+    if _is_server_pending_confirmation_entry(entry) and active_pending_confirmation_ids is not None:
         pending_content = _pending_confirmation_followup_text(
             raw_content,
             active_pending_confirmation_ids=active_pending_confirmation_ids,
@@ -5010,14 +5004,11 @@ def _same_session_destination_attribution_for_policy(
 
 
 def _collapse_same_session_anchor_hosts(hosts: set[str]) -> tuple[str, ...]:
-    normalized_hosts = sorted(
-        {host.strip().lower().rstrip(".") for host in hosts if host.strip()}
-    )
+    normalized_hosts = sorted({host.strip().lower().rstrip(".") for host in hosts if host.strip()})
     collapsed: list[str] = []
     for host in normalized_hosts:
         if any(
-            host != candidate and host.endswith(f".{candidate}")
-            for candidate in normalized_hosts
+            host != candidate and host.endswith(f".{candidate}") for candidate in normalized_hosts
         ):
             continue
         collapsed.append(host)
@@ -7476,10 +7467,7 @@ class SessionImplMixin(HandlerMixinBase):
             normalized_pending_response = _normalized_pending_confirmation_text(response_text)
             if returned_pending_confirmation_ids and system_generated_pending_confirmations:
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
-            elif (
-                returned_pending_confirmation_ids
-                and normalized_pending_response is not None
-            ):
+            elif returned_pending_confirmation_ids and normalized_pending_response is not None:
                 assistant_transcript_metadata["pending_confirmation_bridge"] = True
             self._transcript_store.append(
                 sid,
@@ -8519,9 +8507,7 @@ class SessionImplMixin(HandlerMixinBase):
             entries=context_entries,
             transcript_store=self._transcript_store,
             current_user_goal_host_patterns=user_goal_host_patterns,
-            current_turn_timestamp=transcript_entries[-1].timestamp
-            if transcript_entries
-            else None,
+            current_turn_timestamp=transcript_entries[-1].timestamp if transcript_entries else None,
             current_turn_allows_same_session_attribution=(
                 _current_turn_allows_same_session_destination_attribution(validated)
             ),
@@ -10089,9 +10075,7 @@ class SessionImplMixin(HandlerMixinBase):
                         tool_name=proposal.tool_name,
                         arguments=proposal_arguments,
                         public_arguments=(
-                            dict(public_proposal_arguments)
-                            if sensitive_public_payload
-                            else None
+                            dict(public_proposal_arguments) if sensitive_public_payload else None
                         ),
                         sensitive_public_payload=sensitive_public_payload,
                         reason=final_reason or "requires_confirmation",
@@ -10177,13 +10161,13 @@ class SessionImplMixin(HandlerMixinBase):
                 execution_action=cp_eval.action,
                 user_confirmed="user_text:explicit_memory_intent" in proposal.data_sources,
                 memory_ingress_context=(
-                        _explicit_memory_ingress_context()
-                        if (
-                            "user_text:explicit_memory_intent" in proposal.data_sources
-                            and proposal_tool_name in {"note.create", "todo.create"}
-                        )
-                        else None
-                    ),
+                    _explicit_memory_ingress_context()
+                    if (
+                        "user_text:explicit_memory_intent" in proposal.data_sources
+                        and proposal_tool_name in {"note.create", "todo.create"}
+                    )
+                    else None
+                ),
             )
             success = execution_result.success
             checkpoint_id = execution_result.checkpoint_id
@@ -10672,9 +10656,7 @@ class SessionImplMixin(HandlerMixinBase):
         ).strip()
         recovery_prompt = lockdown_level.casefold() == "caution"
         prompt_text = (
-            _LOCKDOWN_RECOVERY_PROMPT_TEXT
-            if recovery_prompt
-            else _LOCKDOWN_ACTIVE_PROMPT_TEXT
+            _LOCKDOWN_RECOVERY_PROMPT_TEXT if recovery_prompt else _LOCKDOWN_ACTIVE_PROMPT_TEXT
         )
         fragment = f"[LOCKDOWN NOTICE] {lockdown_notice}\n{prompt_text}"
         output_firewall = getattr(self, "_output_firewall", None)
@@ -11640,10 +11622,7 @@ class SessionImplMixin(HandlerMixinBase):
         normalized_pending_response = _normalized_pending_confirmation_text(response_text)
         if execution.pending_confirmation_ids and system_generated_pending_confirmation_response:
             assistant_transcript_metadata["system_generated_pending_confirmations"] = True
-        elif (
-            execution.pending_confirmation_ids
-            and normalized_pending_response is not None
-        ):
+        elif execution.pending_confirmation_ids and normalized_pending_response is not None:
             assistant_transcript_metadata["pending_confirmation_bridge"] = True
         if evidence_ref_ids:
             assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)

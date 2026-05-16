@@ -318,9 +318,7 @@ class _ControlPlaneSidecarHandlers:
             tool_name=params.tool_name,
             arguments=dict(params.arguments),
             monitor_arguments=(
-                dict(params.monitor_arguments)
-                if params.monitor_arguments is not None
-                else None
+                dict(params.monitor_arguments) if params.monitor_arguments is not None else None
             ),
             origin=params.origin,
             risk_tier=params.risk_tier,

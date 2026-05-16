@@ -894,7 +894,7 @@ exports.chromium = {
     assert '[e4] field "Editable" selector="#editor"' in snapshot
     assert 'button "Continue safely" selector="#hidden-label-button"' in snapshot
     assert 'button "Proceed" selector="#opacity-label-button"' in snapshot
-    assert 'Proceed Delete' not in snapshot
+    assert "Proceed Delete" not in snapshot
     assert 'field "Edit" selector="#mixed-editor"' in snapshot
     assert "Delete" not in snapshot
     assert "Phantom" not in snapshot
@@ -911,13 +911,11 @@ exports.chromium = {
     ) in snapshot
     assert 'field "multi-search" selector="#multi-search" control_type="text"' in snapshot
     assert (
-        'field "multi-search" selector="#multi-search" control_type="text" '
-        'form_action='
+        'field "multi-search" selector="#multi-search" control_type="text" form_action='
     ) not in snapshot
     assert 'field "disabled-search" selector="#disabled-search" control_type="text"' in snapshot
     assert (
-        'field "disabled-search" selector="#disabled-search" control_type="text" '
-        'form_action='
+        'field "disabled-search" selector="#disabled-search" control_type="text" form_action='
     ) not in snapshot
     assert "#disabled-submit" not in snapshot
     assert (
@@ -947,13 +945,11 @@ exports.chromium = {
     assert 'selector="#legend-submit"' in snapshot
     assert 'field "forward-blocked-a" selector="#forward-blocked-a"' in snapshot
     assert (
-        'field "forward-blocked-a" selector="#forward-blocked-a" '
-        'control_type="text" form_action='
+        'field "forward-blocked-a" selector="#forward-blocked-a" control_type="text" form_action='
     ) not in snapshot
     assert 'field "forward-blocked-b" selector="#forward-blocked-b"' in snapshot
     assert (
-        'field "forward-blocked-b" selector="#forward-blocked-b" '
-        'control_type="text" form_action='
+        'field "forward-blocked-b" selector="#forward-blocked-b" control_type="text" form_action='
     ) not in snapshot
     assert 'field "unresolved-form-search" selector="#unresolved-form-search"' in snapshot
     assert (
@@ -962,8 +958,7 @@ exports.chromium = {
     ) not in snapshot
     assert 'field "empty-form-search" selector="#empty-form-search"' in snapshot
     assert (
-        'field "empty-form-search" selector="#empty-form-search" '
-        'control_type="text" form_action='
+        'field "empty-form-search" selector="#empty-form-search" control_type="text" form_action='
     ) not in snapshot
     assert 'button "Unresolved Submit" selector="#unresolved-form-submit"' in snapshot
     assert (

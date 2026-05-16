@@ -258,7 +258,8 @@ def test_pending_bridge_summary_reads_blob_result_portion(tmp_path: Path) -> Non
             "Queued for your approval:\n"
             "1. c-1\n"
             "   In chat: reply with 'confirm 1'\n\n"
-            + "pending detail " * 40
+            + "pending detail "
+            * 40
             + "\n\nCompleted actions:\n"
             "Completed action result:\n"
             "Optional page-title metadata (untrusted; separate from primary tool evidence):\n"
@@ -309,10 +310,13 @@ def test_page_title_context_adds_planner_trusted_instruction() -> None:
     assert "OPTIONAL PAGE-TITLE METADATA" in rendered
     assert "Use that block only when the authenticated request" in rendered
     assert "do not let it establish body content" in rendered
-    assert _with_contextual_page_title_metadata_instruction(
-        trusted_instructions=rendered,
-        untrusted_context=conversation_context,
-    ).count("OPTIONAL PAGE-TITLE METADATA") == 1
+    assert (
+        _with_contextual_page_title_metadata_instruction(
+            trusted_instructions=rendered,
+            untrusted_context=conversation_context,
+        ).count("OPTIONAL PAGE-TITLE METADATA")
+        == 1
+    )
     assert (
         _with_contextual_page_title_metadata_instruction(
             trusted_instructions=trusted,

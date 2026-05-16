@@ -134,10 +134,7 @@ def _attrs_hide_descendants(attrs: Mapping[str, str]) -> bool:
     if "hidden" in attrs:
         return True
     style = _style_declarations(attrs.get("style", ""))
-    return (
-        style.get("display") == "none"
-        or style.get("opacity") == "0"
-    )
+    return style.get("display") == "none" or style.get("opacity") == "0"
 
 
 def _attrs_visibility_state(attrs: Mapping[str, str]) -> str:
@@ -183,9 +180,8 @@ class _PageParser(HTMLParser):
         inherited_hidden = self._in_hidden_context()
         inherited_visibility_hidden = self._in_visibility_hidden_context()
         visibility_state = _attrs_visibility_state(attr_map)
-        visibility_hidden = (
-            visibility_state == "hidden"
-            or (inherited_visibility_hidden and visibility_state != "visible")
+        visibility_hidden = visibility_state == "hidden" or (
+            inherited_visibility_hidden and visibility_state != "visible"
         )
         parent_tag = self._tag_stack[-1] if self._tag_stack else ""
         if tag == "legend" and parent_tag == "fieldset" and self._fieldset_stack:
@@ -223,11 +219,14 @@ class _PageParser(HTMLParser):
                 "href": attr_map.get("href", ""),
                 "id": attr_map.get("id", ""),
                 "selector": _selector_for(tag="a", attrs=attr_map),
-                "hidden": "1" if _attrs_hide_candidate(
+                "hidden": "1"
+                if _attrs_hide_candidate(
                     attr_map,
                     tag=tag,
                     inherited_hidden=inherited_hidden,
-                ) or visibility_hidden else "",
+                )
+                or visibility_hidden
+                else "",
                 "label": "",
             }
             return
@@ -247,16 +246,21 @@ class _PageParser(HTMLParser):
                 "id": attr_map.get("id", ""),
                 "_form_id": form.get("_key", "") if form else "",
                 "_native_disabled": "1" if native_disabled else "",
-                "disabled": "1" if _is_action_disabled_attrs(
+                "disabled": "1"
+                if _is_action_disabled_attrs(
                     attr_map,
                     inherited_native_disabled=native_disabled,
-                ) else "",
-                "hidden": "1" if _attrs_hide_candidate(
+                )
+                else "",
+                "hidden": "1"
+                if _attrs_hide_candidate(
                     attr_map,
                     tag=tag,
                     control_type=control_type,
                     inherited_hidden=inherited_hidden,
-                ) or visibility_hidden else "",
+                )
+                or visibility_hidden
+                else "",
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
                 "form_action": form_action,
@@ -295,16 +299,21 @@ class _PageParser(HTMLParser):
                     "_form_id": form.get("_key", "") if form else "",
                     "_form_attr": attr_map.get("form", "") if "form" in attr_map else "",
                     "_native_disabled": "1" if native_disabled else "",
-                    "disabled": "1" if _is_action_disabled_attrs(
+                    "disabled": "1"
+                    if _is_action_disabled_attrs(
                         attr_map,
                         inherited_native_disabled=native_disabled,
-                    ) else "",
-                    "hidden": "1" if _attrs_hide_candidate(
+                    )
+                    else "",
+                    "hidden": "1"
+                    if _attrs_hide_candidate(
                         attr_map,
                         tag=tag,
                         control_type=control_type,
                         inherited_hidden=inherited_hidden,
-                    ) or visibility_hidden else "",
+                    )
+                    or visibility_hidden
+                    else "",
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
                     "form_action": form_action,
@@ -329,9 +338,10 @@ class _PageParser(HTMLParser):
         closing_depth = closing_index + 1 if closing_index is not None else len(self._tag_stack)
         if tag == "legend":
             for fieldset in reversed(self._fieldset_stack):
-                if bool(fieldset.get("first_legend_active", False)) and int(
-                    fieldset.get("first_legend_depth", 0) or 0
-                ) == closing_depth:
+                if (
+                    bool(fieldset.get("first_legend_active", False))
+                    and int(fieldset.get("first_legend_depth", 0) or 0) == closing_depth
+                ):
                     fieldset["first_legend_active"] = False
                     break
         if tag == "fieldset" and self._fieldset_stack:
@@ -381,11 +391,7 @@ class _PageParser(HTMLParser):
             self.title = f"{self.title} {text}".strip()
         hidden_context = self._in_hidden_context()
         visibility_hidden = self._in_visibility_hidden_context()
-        if (
-            current_tag not in {"script", "style"}
-            and not hidden_context
-            and not visibility_hidden
-        ):
+        if current_tag not in {"script", "style"} and not hidden_context and not visibility_hidden:
             self.visible_parts.append(text)
         if (
             self._current_element is not None
@@ -576,8 +582,7 @@ def _is_hidden_element(element: Mapping[str, str]) -> bool:
 def _is_implicit_enter_submit_field(element: Mapping[str, str]) -> bool:
     return (
         element.get("kind", "").strip().lower() == "field"
-        and element.get("control_type", "").strip().lower()
-        in _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES
+        and element.get("control_type", "").strip().lower() in _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES
     )
 
 
@@ -785,9 +790,8 @@ def _handle_fill(
                 raise SystemExit(f"unknown target: {click_target}")
         if click_target and target_element.get("kind") == "link" and target_element.get("href"):
             next_url = urljoin(next_url, target_element["href"])
-        elif (
-            (submit and _is_enter_submit_control(target_element))
-            or (bool(click_target) and _is_click_submit_control(target_element))
+        elif (submit and _is_enter_submit_control(target_element)) or (
+            bool(click_target) and _is_click_submit_control(target_element)
         ):
             action = target_element.get("form_action", "") or next_url
             method = _normalize_form_method(target_element.get("form_method", "get"))

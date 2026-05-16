@@ -62,19 +62,14 @@ def _looks_like_legacy_lockdown_recovery_notice(suffix: str) -> bool:
     normalized = _normalized_notice_suffix(suffix)
     if not normalized or "to recover:" not in normalized:
         return False
-    return _has_legacy_recovery_guidance(normalized) and _has_legacy_recovery_terminal(
-        normalized
-    )
+    return _has_legacy_recovery_guidance(normalized) and _has_legacy_recovery_terminal(normalized)
 
 
 def _has_legacy_recovery_guidance(normalized: str) -> bool:
     return (
         "shisad lockdown resume" in normalized
         or "ask the agent to resume" in normalized
-        or (
-            "ask the agent what to do" in normalized
-            and "to resume the lockdown" in normalized
-        )
+        or ("ask the agent what to do" in normalized and "to resume the lockdown" in normalized)
     )
 
 
@@ -104,14 +99,11 @@ def _looks_like_structural_lockdown_notice(suffix: str) -> bool:
     if not normalized:
         return False
     return (
-        (
-            normalized.endswith(_STRUCTURAL_RECOVERY_PROMPT_TEXT)
-            and "keep the session locked" in normalized
-            and "clear the lockdown" in normalized
-        )
-        or (
-            normalized.endswith(_STRUCTURAL_ACTIVE_PROMPT_TEXT)
-            and "session is in " in normalized
-            and "lockdown" in normalized
-        )
+        normalized.endswith(_STRUCTURAL_RECOVERY_PROMPT_TEXT)
+        and "keep the session locked" in normalized
+        and "clear the lockdown" in normalized
+    ) or (
+        normalized.endswith(_STRUCTURAL_ACTIVE_PROMPT_TEXT)
+        and "session is in " in normalized
+        and "lockdown" in normalized
     )

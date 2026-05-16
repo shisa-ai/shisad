@@ -41,6 +41,7 @@ def _web_fetch_registry() -> ToolRegistry:
     )
     return registry
 
+
 # ---------------------------------------------------------------------------
 # CC.7 Test 1: Session with HTTP_REQUEST → web.search does not trigger lockdown
 # ---------------------------------------------------------------------------

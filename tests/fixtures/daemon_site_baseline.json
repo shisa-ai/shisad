@@ -16,6 +16,8 @@
       "tests/behavioral/test_evidence_behavioral.py": 1,
       "tests/behavioral/test_no_model_configured_behavioral.py": 1,
       "tests/behavioral/test_v04_behavioral_extensions.py": 1,
+      "tests/behavioral/test_web_fetch_extraction.py": 1,
+      "tests/behavioral/test_web_search_recovery.py": 1,
       "tests/helpers/daemon.py": 1,
       "tests/integration/test_admin_selfmod.py": 1,
       "tests/integration/test_channel_pump.py": 6,
@@ -43,6 +45,6 @@
   "tests_root": "tests",
   "totals": {
     "DaemonServices.build": 45,
-    "run_daemon": 98
+    "run_daemon": 100
   }
 }

@@ -56,11 +56,7 @@ async def _planner_stub_complete(
     tools: list[dict[str, Any]] | None = None,
 ) -> ProviderResponse:
     _ = (self, tools)
-    if (
-        messages
-        and messages[0].role == "system"
-        and _SUMMARY_SYSTEM_MARKER in messages[0].content
-    ):
+    if messages and messages[0].role == "system" and _SUMMARY_SYSTEM_MARKER in messages[0].content:
         return ProviderResponse(
             message=Message(role="assistant", content='{"entries": []}'),
             model="gh28-fetch-extraction-stub",
@@ -73,17 +69,13 @@ async def _planner_stub_complete(
     goal = _extract_user_request(planner_input).lower()
     explicit_page_title_request = "page title" in goal or "title of this page" in goal
     if "POST-TOOL SYNTHESIS PASS" in normalized_input:
-        if (
-            "actionable_evidence_snippets" in normalized_input
-            and all(marker in normalized_input for marker in _RESERVATION_MARKERS)
+        if "actionable_evidence_snippets" in normalized_input and all(
+            marker in normalized_input for marker in _RESERVATION_MARKERS
         ):
             response = "Fetched evidence says 本日夜空席あり and ネット予約 are shown."
-        elif (
-            "actionable_evidence_snippets" in normalized_input
-            and (
-                _ENGLISH_RESERVATION_MARKER in normalized_input
-                or _ENGLISH_RESERVATION_MARKER.casefold() in normalized_input.casefold()
-            )
+        elif "actionable_evidence_snippets" in normalized_input and (
+            _ENGLISH_RESERVATION_MARKER in normalized_input
+            or _ENGLISH_RESERVATION_MARKER.casefold() in normalized_input.casefold()
         ):
             response = "Fetched evidence says Reserve Online is shown."
         elif _TITLE_ONLY_RESERVATION_MARKER in normalized_input and explicit_page_title_request:
@@ -141,11 +133,7 @@ async def _gh36_planner_stub_complete(
     messages: list[Message],
     tools: list[dict[str, Any]] | None = None,
 ) -> ProviderResponse:
-    if (
-        messages
-        and messages[0].role == "system"
-        and _SUMMARY_SYSTEM_MARKER in messages[0].content
-    ):
+    if messages and messages[0].role == "system" and _SUMMARY_SYSTEM_MARKER in messages[0].content:
         return ProviderResponse(
             message=Message(role="assistant", content='{"entries": []}'),
             model="gh36-fetch-followup-stub",
