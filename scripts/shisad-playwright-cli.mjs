@@ -185,51 +185,6 @@ function snapshotLines(elements) {
   return `${lines.join("\n")}\n`;
 }
 
-function controlTypeFor(element, tag) {
-  if (tag === "button") {
-    return (element.getAttribute("type") || "submit").toLowerCase();
-  }
-  if (tag === "input") {
-    return (element.getAttribute("type") || "text").toLowerCase();
-  }
-  return "";
-}
-
-function isSubmitControl(tag, controlType) {
-  if (tag === "button") {
-    return controlType === "submit";
-  }
-  if (tag === "input") {
-    return controlType === "submit" || controlType === "image";
-  }
-  return false;
-}
-
-function defaultSubmitterFor(form) {
-  if (!form) {
-    return null;
-  }
-  return form.querySelector(
-    'button:not([type]), button[type="submit" i], input[type="submit" i], input[type="image" i]',
-  );
-}
-
-function formMetadataFor(element, tag, controlType, form) {
-  if (!form) {
-    return { action: "", method: "" };
-  }
-  const submitter = isSubmitControl(tag, controlType) ? element : defaultSubmitterFor(form);
-  const action =
-    submitter && submitter.hasAttribute("formaction")
-      ? submitter.getAttribute("formaction") || ""
-      : form.getAttribute("action") || "";
-  const method =
-    submitter && submitter.hasAttribute("formmethod")
-      ? submitter.getAttribute("formmethod") || ""
-      : form.getAttribute("method") || "get";
-  return { action, method };
-}
-
 async function metadata(page) {
   return await page.evaluate(
     (mode) => {
@@ -373,6 +328,51 @@ async function snapshot(page) {
           );
         }
         return element.innerText || element.textContent || element.getAttribute("aria-label") || tag;
+      };
+      const controlTypeFor = (element, tag) => {
+        if (tag === "button") {
+          return (element.getAttribute("type") || "submit").toLowerCase();
+        }
+        if (tag === "input") {
+          return (element.getAttribute("type") || "text").toLowerCase();
+        }
+        return "";
+      };
+      const isSubmitControl = (tag, controlType) => {
+        if (tag === "button") {
+          return controlType === "submit";
+        }
+        if (tag === "input") {
+          return controlType === "submit" || controlType === "image";
+        }
+        return false;
+      };
+      const defaultSubmitterFor = (form) => {
+        if (!form) {
+          return null;
+        }
+        const submitterSelector =
+          'button:not([type]), button[type="submit" i], input[type="submit" i], input[type="image" i]';
+        return (
+          Array.from(document.querySelectorAll(submitterSelector)).find(
+            (candidate) => candidate.form === form,
+          ) || null
+        );
+      };
+      const formMetadataFor = (element, tag, controlType, form) => {
+        if (!form) {
+          return { action: "", method: "" };
+        }
+        const submitter = isSubmitControl(tag, controlType) ? element : defaultSubmitterFor(form);
+        const action =
+          submitter && submitter.hasAttribute("formaction")
+            ? submitter.getAttribute("formaction") || ""
+            : form.getAttribute("action") || "";
+        const method =
+          submitter && submitter.hasAttribute("formmethod")
+            ? submitter.getAttribute("formmethod") || ""
+            : form.getAttribute("method") || "get";
+        return { action, method };
       };
       return Array.from(
         document.querySelectorAll("a, button, input, textarea, select, [contenteditable]"),

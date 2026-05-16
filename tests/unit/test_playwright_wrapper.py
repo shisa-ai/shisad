@@ -242,6 +242,11 @@ const fakeDocument = {
   },
 };
 
+function runInPageContext(fn, ...args) {
+  const isolated = Function(`return (${fn.toString()});`)();
+  return isolated(...args);
+}
+
 class Page {
   constructor() {
     this._url = "about:blank";
@@ -288,7 +293,7 @@ class Page {
       };
       globalThis.document = fakeDocument;
       try {
-        return _fn(mode);
+        return runInPageContext(_fn, mode);
       } finally {
         globalThis.document = previousDocument;
         globalThis.window = previousWindow;
@@ -303,7 +308,7 @@ class Page {
         body: { innerText: this.visibleText() },
       };
       try {
-        return _fn(mode);
+        return runInPageContext(_fn, mode);
       } finally {
         globalThis.document = previousDocument;
         globalThis.window = previousWindow;
