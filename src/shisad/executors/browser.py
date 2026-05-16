@@ -627,12 +627,12 @@ class BrowserToolkit:
                     expected_destination=destination_url,
                     actual_url=str(payload.get("url", "")),
                     allow_query_extension=bool(
-                        submit
-                        or (binding_validation and binding_validation.allows_form_query)
+                        (binding_validation and binding_validation.allows_form_query)
                         or (
                             click_binding_validation
                             and click_binding_validation.allows_form_query
                         )
+                        or (submit and not source_binding.strip())
                     ),
                 )
                 if post_action_error is not None:
@@ -2267,7 +2267,7 @@ class BrowserToolkit:
         *,
         submit: bool,
     ) -> bool:
-        method = (element.form_method or "get").strip().lower()
+        method = element.form_method.strip().lower()
         if method != "get":
             return False
         return element.kind == "button" or (submit and element.kind == "field")

@@ -2140,6 +2140,112 @@ async def test_gh24_browser_confirmations_allow_canonical_root_destination_witho
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click", "type_submit", "type_click"])
+async def test_gh24_browser_non_form_controls_reject_query_extension(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://example.com/page"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+    )
+    control = BrowserSnapshotElement(
+        ref="e2" if action == "type_click" else "e1",
+        kind="button" if action in {"click", "type_click"} else "field",
+        label="Submit" if action in {"click", "type_click"} else "search",
+        selector="#submit" if action in {"click", "type_click"} else "#search",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        if action == "type_click":
+            return [field, control]
+        return [control]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/page?unexpected=1",
+            "title": "Unexpected",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    destination = BrowserToolkit._predict_destination_url(
+        control,
+        current_url=source_url,
+        submit=action == "type_submit",
+    )
+    if action == "click":
+        result = await toolkit.click(
+            session=session,
+            target="#submit",
+            resolved_target="#submit",
+            destination=destination,
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                control,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+    elif action == "type_submit":
+        result = await toolkit.type_text(
+            session=session,
+            target="#search",
+            resolved_target="#search",
+            text="hello",
+            submit=True,
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                control,
+                current_url=source_url,
+                submit=True,
+            ),
+            destination=destination,
+        )
+    else:
+        result = await toolkit.type_text(
+            session=session,
+            target="#search",
+            resolved_target="#search",
+            text="hello",
+            click_target="#submit",
+            resolved_click_target="#submit",
+            source_url=source_url,
+            click_source_binding=BrowserToolkit._binding_hash_for_element(
+                control,
+                current_url=source_url,
+                submit=False,
+            ),
+            destination=destination,
+        )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": False, "current_url": ""}
+
+
+@pytest.mark.asyncio
 async def test_gh24_browser_type_submit_rejects_post_action_destination_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
