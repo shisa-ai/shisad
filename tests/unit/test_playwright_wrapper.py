@@ -212,6 +212,27 @@ class FakeElement {
       this.refreshText();
       return;
     }
+    if (text === "hello nested-display-block world") {
+      this.textNode.textContent = "hello";
+      this.replaceChildren([
+        new FakeElement("span", {}, "", [
+          new FakeElement("span", { "data-display": "block" }, "world"),
+        ]),
+      ]);
+      this.refreshText();
+      return;
+    }
+    if (text === "nested-display-block world after") {
+      this.textNode.textContent = "";
+      this.replaceChildren([
+        new FakeElement("span", {}, "", [
+          new FakeElement("span", { "data-display": "block" }, "world"),
+        ]),
+        new FakeElement("span", {}, "after"),
+      ]);
+      this.refreshText();
+      return;
+    }
     if (text === "hello empty-block world") {
       this.textNode.textContent = "hello";
       this.replaceChildren([new FakeElement("div"), new FakeElement("span", {}, "world")]);
@@ -990,6 +1011,14 @@ exports.chromium = {
     assert "alphabeta" in hidden_break_text["visible_text"]
     assert "alpha\nbeta" not in hidden_break_text["visible_text"]
 
+    assert run_wrapper("fill", "#editor", "\n").returncode == 0
+    single_blank_line_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert single_blank_line_state["fields"]["#editor"] == "\n"
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    single_blank_line_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "editor:\n" in single_blank_line_text["visible_text"]
+
     assert run_wrapper("fill", "#editor", "\n\n").returncode == 0
     blank_line_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert blank_line_state["fields"]["#editor"] == "\n\n"
@@ -1019,6 +1048,20 @@ exports.chromium = {
     display_block_child_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert "hello\nworld" in display_block_child_text["visible_text"]
     assert "helloworld" not in display_block_child_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "hello nested-display-block world").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    nested_display_block_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "hello\nworld" in nested_display_block_text["visible_text"]
+    assert "helloworld" not in nested_display_block_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "nested-display-block world after").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    nested_display_block_after_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "world\nafter" in nested_display_block_after_text["visible_text"]
+    assert "worldafter" not in nested_display_block_after_text["visible_text"]
 
     assert run_wrapper("fill", "#editor", "hello empty-block world").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))

@@ -683,19 +683,21 @@ async function syncFieldState(page, state) {
                 (state.style && blockDisplayValues.has(state.style.display)));
             const stripSyntheticTrailingBreak = (result) =>
               result.syntheticTrailingBreak ? result.text.slice(0, -1) : result.text;
-            const textForChildren = (children, textHidden) => {
+            function textForChildren(children, textHidden) {
               let text = "";
               let pendingLeadingBreaks = 0;
+              let syntheticLeadingBreaks = 0;
               let syntheticTrailingBreak = false;
               for (const child of children) {
                 const childState = child.nodeType === 1 ? elementTextState(child, textHidden) : null;
                 const childIsVisibleBlock = Boolean(
-                    childState &&
+                  childState &&
                     !childState.suppressed &&
                     !childState.nextTextHidden &&
                     isBlockBoundaryState(childState),
                 );
-                const childText = textFor(child, textHidden);
+                const childResult = textResultFor(child, textHidden);
+                const childText = childResult.text;
                 if (!childText) {
                   if (childIsVisibleBlock) {
                     if (text) {
@@ -712,44 +714,101 @@ async function syncFieldState(page, state) {
                   pendingLeadingBreaks = 0;
                   syntheticTrailingBreak = false;
                 }
+                if (childResult.syntheticLeadingBreaks > 0) {
+                  if (text && !text.endsWith("\n")) {
+                    text += "\n".repeat(childResult.syntheticLeadingBreaks);
+                    syntheticTrailingBreak = false;
+                  } else if (!text) {
+                    syntheticLeadingBreaks = Math.max(
+                      syntheticLeadingBreaks,
+                      childResult.syntheticLeadingBreaks,
+                    );
+                  }
+                }
                 if (childIsVisibleBlock && text && !text.endsWith("\n")) {
                   text += "\n";
                   syntheticTrailingBreak = false;
+                } else if (childIsVisibleBlock && !text) {
+                  syntheticLeadingBreaks = Math.max(syntheticLeadingBreaks, 1);
                 }
                 text += childText;
-                syntheticTrailingBreak = false;
+                syntheticTrailingBreak = childResult.syntheticTrailingBreak;
                 if (childIsVisibleBlock && !text.endsWith("\n")) {
                   text += "\n";
                   syntheticTrailingBreak = true;
                 }
               }
-              return { text, syntheticTrailingBreak };
-            };
-            const textFor = (node, textHidden = false) => {
+              return { text, syntheticLeadingBreaks, syntheticTrailingBreak };
+            }
+            function textResultFor(node, textHidden = false) {
               if (!node) {
-                return "";
+                return { text: "", syntheticLeadingBreaks: 0, syntheticTrailingBreak: false };
               }
               if (node.nodeType === 3) {
-                return textHidden ? "" : node.textContent || "";
+                return {
+                  text: textHidden ? "" : node.textContent || "",
+                  syntheticLeadingBreaks: 0,
+                  syntheticTrailingBreak: false,
+                };
               }
               if (node.nodeType !== 1) {
-                return "";
+                return { text: "", syntheticLeadingBreaks: 0, syntheticTrailingBreak: false };
               }
-              const { tag, suppressed, nextTextHidden } = elementTextState(node, textHidden);
+              const state = elementTextState(node, textHidden);
+              const { tag, suppressed, nextTextHidden } = state;
               if (suppressed) {
-                return "";
+                return { text: "", syntheticLeadingBreaks: 0, syntheticTrailingBreak: false };
               }
               if (tag === "br") {
-                return nextTextHidden ? "" : "\n";
+                return {
+                  text: nextTextHidden ? "" : "\n",
+                  syntheticLeadingBreaks: 0,
+                  syntheticTrailingBreak: false,
+                };
               }
-              return stripSyntheticTrailingBreak(
-                textForChildren(Array.from(node.childNodes || []), nextTextHidden),
+              const result = textForChildren(Array.from(node.childNodes || []), nextTextHidden);
+              if (isBlockBoundaryState(state)) {
+                return {
+                  text: stripSyntheticTrailingBreak(result),
+                  syntheticLeadingBreaks: 0,
+                  syntheticTrailingBreak: false,
+                };
+              }
+              return result;
+            }
+            function isPlaceholderBreakNode(node, textHidden = false) {
+              if (!node) {
+                return true;
+              }
+              if (node.nodeType === 3) {
+                return !String(node.textContent || "");
+              }
+              if (node.nodeType !== 1) {
+                return true;
+              }
+              const state = elementTextState(node, textHidden);
+              if (state.suppressed || state.nextTextHidden) {
+                return true;
+              }
+              if (state.tag === "br") {
+                return true;
+              }
+              if (!isBlockBoundaryState(state)) {
+                return false;
+              }
+              return Array.from(node.childNodes || []).every((child) =>
+                isPlaceholderBreakNode(child, state.nextTextHidden),
               );
-            };
+            }
+            function isPlaceholderEditableHost(host) {
+              return Array.from(host.childNodes || []).every((child) =>
+                isPlaceholderBreakNode(child, false),
+              );
+            }
             const editableText = stripSyntheticTrailingBreak(
               textForChildren(Array.from(element.childNodes || []), false),
             );
-            if (editableText === "\n") {
+            if (editableText === "\n" && isPlaceholderEditableHost(element)) {
               return "";
             }
             return String(editableText);
