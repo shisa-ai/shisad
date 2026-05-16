@@ -592,6 +592,25 @@ const legendSubmitForm = new FakeElement(
 );
 legendSubmitSearch.form = legendSubmitForm;
 legendSubmitButton.form = legendSubmitForm;
+const unresolvedFormSearch = new FakeElement("input", {
+  id: "unresolved-form-search",
+  form: "missing-form",
+});
+const emptyFormSearch = new FakeElement("input", {
+  id: "empty-form-search",
+  form: "",
+});
+const unresolvedFormSubmit = new FakeElement(
+  "button",
+  { id: "unresolved-form-submit", type: "submit", form: "missing-form" },
+  "Unresolved Submit",
+);
+const unresolvedFormOwner = new FakeElement(
+  "form",
+  { id: "unresolved-form-owner", action: "/should-not-submit", method: "post" },
+  "",
+  [unresolvedFormSearch, emptyFormSearch, unresolvedFormSubmit],
+);
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -614,6 +633,7 @@ const body = new FakeElement("body", {}, "", [
   fieldsetSubmitForm,
   fieldsetBlockerForm,
   legendSubmitForm,
+  unresolvedFormOwner,
   opacityContainer,
   visibilityContainer,
 ]);
@@ -667,6 +687,10 @@ const allElements = [
   legendSubmitFieldset,
   firstLegend,
   legendSubmitButton,
+  unresolvedFormOwner,
+  unresolvedFormSearch,
+  emptyFormSearch,
+  unresolvedFormSubmit,
   opacityContainer,
   opacityChildButton,
   visibilityContainer,
@@ -900,6 +924,21 @@ exports.chromium = {
         'control_type="text" form_action="/legend-submit" form_method="get"'
     ) in snapshot
     assert 'selector="#legend-submit"' in snapshot
+    assert 'field "unresolved-form-search" selector="#unresolved-form-search"' in snapshot
+    assert (
+        'field "unresolved-form-search" selector="#unresolved-form-search" '
+        'control_type="text" form_action='
+    ) not in snapshot
+    assert 'field "empty-form-search" selector="#empty-form-search"' in snapshot
+    assert (
+        'field "empty-form-search" selector="#empty-form-search" '
+        'control_type="text" form_action='
+    ) not in snapshot
+    assert 'button "Unresolved Submit" selector="#unresolved-form-submit"' in snapshot
+    assert (
+        'button "Unresolved Submit" selector="#unresolved-form-submit" '
+        'control_type="submit" form_action='
+    ) not in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot

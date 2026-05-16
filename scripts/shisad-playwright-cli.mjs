@@ -456,7 +456,17 @@ async function snapshot(page) {
       const isNativeDisabledControl = (element) =>
         Boolean(element.disabled) ||
         (typeof element.matches === "function" && element.matches(":disabled"));
-      const elementForm = (element) => element.form || element.closest("form");
+      const formAssociatedTags = new Set(["button", "input", "select", "textarea"]);
+      const elementForm = (element) => {
+        if (!element) {
+          return null;
+        }
+        const tag = element.tagName.toLowerCase();
+        if (formAssociatedTags.has(tag) && element.hasAttribute("form")) {
+          return element.form || null;
+        }
+        return element.form || element.closest("form");
+      };
       const defaultSubmitterFor = (form) => {
         if (!form) {
           return null;
@@ -533,7 +543,7 @@ async function snapshot(page) {
       }).map(
         (element) => {
           const tag = element.tagName.toLowerCase();
-          const form = element.form || element.closest("form");
+          const form = elementForm(element);
           const controlType = controlTypeFor(element, tag);
           const formMetadata = formMetadataFor(element, tag, controlType, form);
           return {
