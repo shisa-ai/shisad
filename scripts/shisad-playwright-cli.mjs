@@ -255,6 +255,36 @@ async function snapshot(page) {
         const value = element.getAttribute("contenteditable");
         return value !== null && String(value).toLowerCase() === "false";
       };
+      const computedStyleFor = (element) =>
+        typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+          ? window.getComputedStyle(element)
+          : null;
+      const hidesTextContent = (item) => {
+        if (!item || item.nodeType !== 1) {
+          return false;
+        }
+        const tag = item.tagName.toLowerCase();
+        if (tag === "script" || tag === "style" || item.hidden) {
+          return true;
+        }
+        const style = computedStyleFor(item);
+        return Boolean(
+          style &&
+            (style.display === "none" ||
+              style.visibility === "hidden" ||
+              style.opacity === "0"),
+        );
+      };
+      const hasHiddenStyleAncestor = (element) => {
+        let current = element.parentElement;
+        while (current && current.nodeType === 1) {
+          if (hidesTextContent(current)) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      };
       const isVisibleCandidate = (element) => {
         const tag = element.tagName.toLowerCase();
         if (tag === "input" && String(element.getAttribute("type") || "").toLowerCase() === "hidden") {
@@ -270,14 +300,14 @@ async function snapshot(page) {
         if (element.getAttribute("aria-hidden") === "true") {
           return false;
         }
-        const style =
-          typeof window !== "undefined" && typeof window.getComputedStyle === "function"
-            ? window.getComputedStyle(element)
-            : null;
+        const style = computedStyleFor(element);
         if (
           style &&
           (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")
         ) {
+          return false;
+        }
+        if (hasHiddenStyleAncestor(element)) {
           return false;
         }
         if (typeof element.getClientRects === "function" && element.getClientRects().length === 0) {
@@ -291,26 +321,22 @@ async function snapshot(page) {
         }
         return true;
       };
-      const editableTextFor = (element) => {
-        const hidesTextContent = (item) => {
-          if (!item || item.nodeType !== 1) {
-            return false;
+      const visibleTextFor = (element) => {
+        const textFor = (node) => {
+          if (!node) {
+            return "";
           }
-          const tag = item.tagName.toLowerCase();
-          if (tag === "script" || tag === "style" || item.hidden) {
-            return true;
+          if (node.nodeType === 3) {
+            return node.textContent || "";
           }
-          const style =
-            typeof window !== "undefined" && typeof window.getComputedStyle === "function"
-              ? window.getComputedStyle(item)
-              : null;
-          return Boolean(
-            style &&
-              (style.display === "none" ||
-                style.visibility === "hidden" ||
-                style.opacity === "0"),
-          );
+          if (node.nodeType !== 1 || hidesTextContent(node)) {
+            return "";
+          }
+          return Array.from(node.childNodes || []).map((child) => textFor(child)).join(" ");
         };
+        return textFor(element).replace(/\s+/g, " ").trim();
+      };
+      const editableTextFor = (element) => {
         const textFor = (node) => {
           if (!node) {
             return "";
@@ -352,7 +378,7 @@ async function snapshot(page) {
         }
         return (
           element.getAttribute("aria-label") ||
-          element.innerText ||
+          visibleTextFor(element) ||
           element.getAttribute("name") ||
           element.getAttribute("id") ||
           tag

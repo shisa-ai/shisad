@@ -255,6 +255,13 @@ const hiddenLabelButton = new FakeElement(
   "",
   [hiddenLabelText],
 );
+const opacityLabelText = new FakeElement("span", { "data-opacity": "0" }, "Delete");
+const opacityLabelButton = new FakeElement(
+  "button",
+  { id: "opacity-label-button" },
+  "Proceed",
+  [opacityLabelText],
+);
 const hiddenEditableText = new FakeElement("span", { hidden: "" }, "Delete");
 const mixedEditor = new FakeElement(
   "div",
@@ -262,6 +269,10 @@ const mixedEditor = new FakeElement(
   "Edit ",
   [hiddenEditableText],
 );
+const opacityChildButton = new FakeElement("button", { id: "opacity-child-button" }, "Hidden");
+const opacityContainer = new FakeElement("div", { "data-opacity": "0" }, "", [
+  opacityChildButton,
+]);
 const lockedToken = new FakeElement(
   "span",
   { id: "locked-token", contenteditable: "false" },
@@ -416,6 +427,7 @@ const body = new FakeElement("body", {}, "", [
   submitButton,
   editor,
   hiddenLabelButton,
+  opacityLabelButton,
   mixedEditor,
   loginButton,
   hiddenReserve,
@@ -431,6 +443,7 @@ const body = new FakeElement("body", {}, "", [
   fieldsetSubmitForm,
   fieldsetBlockerForm,
   legendSubmitForm,
+  opacityContainer,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -442,6 +455,8 @@ const allElements = [
   editor,
   hiddenLabelButton,
   hiddenLabelText,
+  opacityLabelButton,
+  opacityLabelText,
   mixedEditor,
   hiddenEditableText,
   loginButton,
@@ -480,6 +495,8 @@ const allElements = [
   legendSubmitFieldset,
   firstLegend,
   legendSubmitButton,
+  opacityContainer,
+  opacityChildButton,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -657,9 +674,12 @@ exports.chromium = {
     assert '[e3] button "Submit" selector="#submit"' in snapshot
     assert '[e4] field "Editable" selector="#editor"' in snapshot
     assert 'button "Continue safely" selector="#hidden-label-button"' in snapshot
+    assert 'button "Proceed" selector="#opacity-label-button"' in snapshot
+    assert 'Proceed Delete' not in snapshot
     assert 'field "Edit" selector="#mixed-editor"' in snapshot
     assert "Delete" not in snapshot
     assert "Phantom" not in snapshot
+    assert "#opacity-child-button" not in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
     assert (
         'field "external-search" selector="#external-search" control_type="text" '
