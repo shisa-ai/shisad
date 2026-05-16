@@ -1513,6 +1513,64 @@ def test_gh24_fake_playwright_cli_submit_rejects_non_text_targets(
     assert fake_state["current_url"] == current_url
 
 
+def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<form id='owner-form' action='/should-not-submit' method='post'>"
+            "<input id='empty-form-search' name='q' type='text' form='' />"
+            "<input id='missing-form-search' name='q' type='text' form='missing-form' />"
+            "<button id='empty-form-submit' type='submit' form=''>Submit</button>"
+            "</form>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        fixture_cli = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+        state_dir = tmp_path / ".fake-playwright"
+        state_dir.mkdir()
+        state_path = state_dir / "shisad-browser-session.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "opened": True,
+                    "current_url": f"{browser_server.base_url}/",
+                    "fields": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        snapshot_path = tmp_path / "snapshot.txt"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(fixture_cli),
+                "-s=shisad-browser-session",
+                "snapshot",
+                "--filename",
+                str(snapshot_path),
+            ],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        snapshot = snapshot_path.read_text(encoding="utf-8")
+        assert 'selector="#empty-form-search" control_type="text"' in snapshot
+        assert 'selector="#empty-form-search" control_type="text" form_action=' not in snapshot
+        assert 'selector="#missing-form-search" control_type="text"' in snapshot
+        assert 'selector="#missing-form-search" control_type="text" form_action=' not in snapshot
+        assert 'selector="#empty-form-submit" control_type="submit"' in snapshot
+        assert 'selector="#empty-form-submit" control_type="submit" form_action=' not in snapshot
+    finally:
+        browser_server.close()
+
+
 @pytest.mark.asyncio
 async def test_m6_browser_toolkit_type_submit_submits_form_directly(
     tmp_path: Path,

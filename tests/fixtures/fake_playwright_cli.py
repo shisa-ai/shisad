@@ -411,9 +411,8 @@ class _PageParser(HTMLParser):
         return rendered
 
     def _form_for_attrs(self, attrs: dict[str, str]) -> dict[str, str] | None:
-        form_id = attrs.get("form", "")
-        if form_id:
-            return self._form_by_id(form_id)
+        if "form" in attrs:
+            return self._form_by_id(attrs.get("form", ""))
         return self._current_form
 
     def _form_by_id(self, form_id: str) -> dict[str, str] | None:
