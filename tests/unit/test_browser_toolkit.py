@@ -2052,6 +2052,8 @@ async def test_gh24_browser_snapshot_refs_compact_after_hidden_controls(
             "<a id='ancestor-hidden-link' href='/hidden-ancestor'>Hidden ancestor</a>"
             "</div>"
             "<input id='opacity-hidden-field' type='text' style='opacity: 0 !important' />"
+            "<a id='cascade-hidden-link' href='/cascade' "
+            "style='display: none !important; display: block'>Cascade hidden</a>"
         )
     }
     browser_server = _start_fixture_server(state=state)
@@ -2100,6 +2102,33 @@ async def test_gh24_browser_snapshot_excludes_hidden_descendant_text(
         assert "Delete" not in result["content"]
         assert 'button "Proceed" selector="#mixed-label"' in result["snapshot"]
         assert "Proceed Delete" not in result["snapshot"]
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_snapshot_excludes_script_style_label_text(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<button id='script-label'>Go<script>trap()</script>"
+            "<style>.trap { color: red; }</style></button>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+
+        result = await toolkit.navigate(
+            session=_session(),
+            url=f"{browser_server.base_url}/",
+        )
+
+        assert result["ok"] is True
+        assert 'button "Go" selector="#script-label"' in result["snapshot"]
+        assert "trap" not in result["snapshot"]
     finally:
         browser_server.close()
 

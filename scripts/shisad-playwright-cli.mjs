@@ -292,6 +292,22 @@ async function snapshot(page) {
         return true;
       };
       const editableTextFor = (element) => {
+        const hidesTextContent = (item) => {
+          if (!item || item.nodeType !== 1) {
+            return false;
+          }
+          const tag = item.tagName.toLowerCase();
+          if (tag === "script" || tag === "style" || item.hidden) {
+            return true;
+          }
+          const style =
+            typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+              ? window.getComputedStyle(item)
+              : null;
+          return Boolean(
+            style && (style.display === "none" || style.visibility === "hidden"),
+          );
+        };
         const textFor = (node) => {
           if (!node) {
             return "";
@@ -299,7 +315,7 @@ async function snapshot(page) {
           if (node.nodeType === 3) {
             return node.textContent || "";
           }
-          if (node.nodeType !== 1 || hasContenteditableFalse(node)) {
+          if (node.nodeType !== 1 || hasContenteditableFalse(node) || hidesTextContent(node)) {
             return "";
           }
           return Array.from(node.childNodes || []).map((child) => textFor(child)).join(" ");
@@ -331,7 +347,13 @@ async function snapshot(page) {
             tag
           );
         }
-        return element.innerText || element.textContent || element.getAttribute("aria-label") || tag;
+        return (
+          element.getAttribute("aria-label") ||
+          element.innerText ||
+          element.getAttribute("name") ||
+          element.getAttribute("id") ||
+          tag
+        );
       };
       const inputTypes = new Set([
         "button",

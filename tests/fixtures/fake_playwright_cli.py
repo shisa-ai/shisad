@@ -114,14 +114,20 @@ def _is_action_disabled_attrs(
 
 
 def _style_declarations(value: str) -> dict[str, str]:
-    declarations: dict[str, str] = {}
-    for item in value.split(";"):
+    declarations: dict[str, tuple[int, int, str]] = {}
+    for index, item in enumerate(value.split(";")):
         name, separator, raw = item.partition(":")
         if not separator:
             continue
         raw_value = raw.strip().lower()
-        declarations[name.strip().lower()] = raw_value.removesuffix("!important").strip()
-    return declarations
+        important = raw_value.endswith("!important")
+        normalized = raw_value.removesuffix("!important").strip()
+        priority = 1 if important else 0
+        key = name.strip().lower()
+        current = declarations.get(key)
+        if current is None or (priority, index) >= (current[0], current[1]):
+            declarations[key] = (priority, index, normalized)
+    return {name: item[2] for name, item in declarations.items()}
 
 
 def _attrs_hide_descendants(attrs: Mapping[str, str]) -> bool:
@@ -340,7 +346,11 @@ class _PageParser(HTMLParser):
         hidden_context = self._in_hidden_context()
         if current_tag not in {"script", "style"} and not hidden_context:
             self.visible_parts.append(text)
-        if self._current_element is not None and not hidden_context:
+        if (
+            self._current_element is not None
+            and current_tag not in {"script", "style"}
+            and not hidden_context
+        ):
             self._current_element["label"] = (
                 f"{self._current_element.get('label', '')} {text}".strip()
             )

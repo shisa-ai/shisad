@@ -120,8 +120,21 @@ class FakeElement {
     this.refreshText();
   }
   refreshText() {
+    const visibleChildText = this.children
+      .filter((child) => {
+        const tag = child.tagName.toLowerCase();
+        return (
+          tag !== "script" &&
+          tag !== "style" &&
+          !child.hasAttribute("hidden") &&
+          child.getAttribute("data-display") !== "none" &&
+          child.getAttribute("data-visibility") !== "hidden"
+        );
+      })
+      .map((child) => child.innerText || "")
+      .join("");
     const childText = this.children.map((child) => child.textContent || "").join("");
-    this.innerText = `${this.textNode.textContent}${childText}`;
+    this.innerText = `${this.textNode.textContent}${visibleChildText}`;
     this.textContent = `${this.textNode.textContent}${childText}`;
   }
   setEditableText(text) {
@@ -181,6 +194,9 @@ class FakeElement {
   get disabled() {
     return this.hasAttribute("disabled");
   }
+  get hidden() {
+    return this.hasAttribute("hidden");
+  }
   matches(selector) {
     if (selector === ":disabled") {
       if (this.disabled) {
@@ -228,6 +244,20 @@ const hiddenReserve = new FakeElement(
   "Reserve",
 );
 const hiddenInput = new FakeElement("input", { id: "token", type: "hidden" });
+const hiddenLabelText = new FakeElement("span", { hidden: "" }, "Delete");
+const hiddenLabelButton = new FakeElement(
+  "button",
+  { id: "hidden-label-button", "aria-label": "Continue safely" },
+  "",
+  [hiddenLabelText],
+);
+const hiddenEditableText = new FakeElement("span", { hidden: "" }, "Delete");
+const mixedEditor = new FakeElement(
+  "div",
+  { id: "mixed-editor", contenteditable: "true" },
+  "Edit ",
+  [hiddenEditableText],
+);
 const lockedToken = new FakeElement(
   "span",
   { id: "locked-token", contenteditable: "false" },
@@ -380,6 +410,8 @@ const body = new FakeElement("body", {}, "", [
   searchInput,
   submitButton,
   editor,
+  hiddenLabelButton,
+  mixedEditor,
   loginButton,
   hiddenReserve,
   hiddenInput,
@@ -403,6 +435,10 @@ const allElements = [
   searchInput,
   submitButton,
   editor,
+  hiddenLabelButton,
+  hiddenLabelText,
+  mixedEditor,
+  hiddenEditableText,
   loginButton,
   hiddenReserve,
   hiddenInput,
@@ -615,6 +651,9 @@ exports.chromium = {
     assert '[e1] link "Continue" selector="#continue" href="/next"' in snapshot
     assert '[e3] button "Submit" selector="#submit"' in snapshot
     assert '[e4] field "Editable" selector="#editor"' in snapshot
+    assert 'button "Continue safely" selector="#hidden-label-button"' in snapshot
+    assert 'field "Edit" selector="#mixed-editor"' in snapshot
+    assert "Delete" not in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
     assert (
         'field "external-search" selector="#external-search" control_type="text" '
