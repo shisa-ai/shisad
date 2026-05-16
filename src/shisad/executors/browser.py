@@ -49,6 +49,7 @@ _SNAPSHOT_ELEMENT_RE = re.compile(
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
 _PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+_SHISAD_BROWSER_WRAPPER_VERSION = "shisad-browser-wrapper 2"
 _SHISAD_BROWSER_WRAPPER_SENTINEL = "--shisad-browser-wrapper-version"
 _SHISAD_BROWSER_WRAPPER_DOCTOR = "--shisad-browser-wrapper-doctor"
 _PATHLIKE_COMMAND_ARG_SUFFIXES = {
@@ -996,17 +997,25 @@ class BrowserToolkit:
         )
         sentinel_output = self._probe_text(sentinel)
         if sentinel["exit_code"] == 0 and "shisad-browser-wrapper" in sentinel_output:
+            version_supported = _SHISAD_BROWSER_WRAPPER_VERSION in sentinel_output
             readiness = await self._run_browser_command_probe(
                 command,
                 [_SHISAD_BROWSER_WRAPPER_DOCTOR],
             )
             readiness_output = self._probe_text(readiness)
-            if readiness["exit_code"] == 0 and "doctor ok" in readiness_output:
+            if (
+                version_supported
+                and readiness["exit_code"] == 0
+                and "doctor ok" in readiness_output
+            ):
                 return {"supported": True, "probe": "sentinel,readiness", "reason": ""}
+            reason = self._readiness_probe_reason(readiness)
+            if readiness["exit_code"] == 0 and "doctor ok" in readiness_output:
+                reason = "browser_command_protocol_incompatible"
             return {
                 "supported": False,
                 "probe": "sentinel,readiness",
-                "reason": self._readiness_probe_reason(readiness),
+                "reason": reason,
                 "stderr": self._sanitize_browser_failure_text(readiness["stderr"]),
                 "stdout": self._sanitize_browser_failure_text(readiness["stdout"]),
                 "degraded_controls": sorted(readiness.get("degraded_controls", [])),

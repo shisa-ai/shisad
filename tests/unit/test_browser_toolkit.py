@@ -58,6 +58,12 @@ def _make_browser_fixture_handler(
             current_link_href = str((state or {}).get("link_href", link_href))
             current_form_action = str((state or {}).get("form_action", form_action))
             current_prefix_html = str((state or {}).get("prefix_html", ""))
+            current_submit_html = str(
+                (state or {}).get(
+                    "submit_html",
+                    "<button id='submit' type='submit'>Submit</button>",
+                )
+            )
             if self.path.startswith("/submitted"):
                 body = (
                     "<html><head><title>Submitted</title></head><body>"
@@ -80,7 +86,7 @@ def _make_browser_fixture_handler(
                     f"<a id='continue' href='{current_link_href}'>Continue</a>"
                     f"<form action='{current_form_action}' method='get'>"
                     "<input id='search' name='q' type='text' />"
-                    "<button id='submit' type='submit'>Submit</button>"
+                    f"{current_submit_html}"
                     "</form>"
                     "</body></html>"
                 )
@@ -401,6 +407,41 @@ async def test_gh33_browser_toolkit_doctor_rejects_old_wrapper_without_readiness
                 "        file=sys.stderr,",
                 "    )",
                 "    raise SystemExit(1)",
+                "raise SystemExit(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    status = await toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_command_protocol_incompatible" in status["problems"]
+    assert status["protocol"]["supported"] is False
+    assert status["protocol"]["probe"] == "sentinel,readiness"
+    assert status["protocol"]["reason"] == "browser_command_protocol_incompatible"
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_toolkit_doctor_rejects_v1_wrapper_with_readiness_probe(
+    tmp_path: Path,
+) -> None:
+    command = tmp_path / "old-ready-shisad-wrapper"
+    command.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "if '--shisad-browser-wrapper-version' in sys.argv:",
+                "    print('shisad-browser-wrapper 1')",
+                "    raise SystemExit(0)",
+                "if '--shisad-browser-wrapper-doctor' in sys.argv:",
+                "    print('shisad-browser-wrapper doctor ok')",
+                "    raise SystemExit(0)",
                 "raise SystemExit(1)",
             ]
         )
@@ -941,6 +982,92 @@ async def test_gh33_browser_toolkit_sensitive_type_click_rejects_stale_click_bin
         new_configs = runner.configs[config_count:]
         assert new_configs
         assert not any("fill" in config.command for config in new_configs)
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_click_uses_input_submitter_form_overrides(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "submit_html": (
+            "<input id='submit' name='submitter' type='submit' "
+            "formaction='/override' formmethod='get' value='Go' />"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.click",
+            arguments={"target": "#submit"},
+        )
+
+        assert str(prepared["destination"]).endswith("/override")
+
+        clicked = await toolkit.click(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert clicked["ok"] is True
+        assert "/override" in clicked["url"]
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_type_click_uses_button_submitter_form_overrides(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "submit_html": (
+            "<button id='submit' type='submit' formaction='/override' "
+            "formmethod='get'>Go</button>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "click_target": "#submit"},
+        )
+
+        assert str(prepared["destination"]).endswith("/override")
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            click_target=str(prepared["click_target"]),
+            resolved_click_target=str(prepared.get("resolved_click_target", "")),
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+            click_source_binding=str(prepared["click_source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert "/override?q=hello" in typed["url"]
     finally:
         browser_server.close()
 

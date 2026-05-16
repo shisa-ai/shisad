@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const VERSION = "shisad-browser-wrapper 1";
+const VERSION = "shisad-browser-wrapper 2";
 const DOCTOR_OK = "shisad-browser-wrapper doctor ok";
 const STATE_DIR = ".shisad-playwright";
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -352,14 +352,18 @@ async function snapshot(page) {
               : tag === "input"
                 ? (element.getAttribute("type") || "text").toLowerCase()
                 : "";
+          const submitterAction =
+            tag === "button" || tag === "input" ? element.getAttribute("formaction") : "";
+          const submitterMethod =
+            tag === "button" || tag === "input" ? element.getAttribute("formmethod") : "";
           return {
             kind: tag === "a" ? "link" : tag === "button" ? "button" : "field",
             label: labelFor(element),
             selector: selectorFor(element),
             href: tag === "a" ? element.getAttribute("href") || "" : "",
             control_type: controlType,
-            form_action: form ? form.getAttribute("action") || "" : "",
-            form_method: form ? form.getAttribute("method") || "get" : "",
+            form_action: form ? submitterAction || form.getAttribute("action") || "" : "",
+            form_method: form ? submitterMethod || form.getAttribute("method") || "get" : "",
           };
         },
       );

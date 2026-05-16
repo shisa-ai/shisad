@@ -58,6 +58,8 @@ class _PageParser(HTMLParser):
             return
         if tag == "button":
             form = self._current_form
+            submitter_action = attr_map.get("formaction", "")
+            submitter_method = attr_map.get("formmethod", "")
             self._current_element = {
                 "kind": "button",
                 "type": attr_map.get("type", "submit"),
@@ -65,13 +67,15 @@ class _PageParser(HTMLParser):
                 "id": attr_map.get("id", ""),
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
-                "form_action": form.get("action", "") if form else "",
-                "form_method": form.get("method", "get") if form else "",
+                "form_action": submitter_action or (form.get("action", "") if form else ""),
+                "form_method": submitter_method or (form.get("method", "get") if form else ""),
             }
             return
         if tag in {"input", "textarea"}:
             form = self._current_form
             control_type = attr_map.get("type", "text").lower() if tag == "input" else ""
+            submitter_action = attr_map.get("formaction", "") if tag == "input" else ""
+            submitter_method = attr_map.get("formmethod", "") if tag == "input" else ""
             self._elements.append(
                 {
                     "kind": "field",
@@ -81,8 +85,8 @@ class _PageParser(HTMLParser):
                     "id": attr_map.get("id", ""),
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
-                    "form_action": form.get("action", "") if form else "",
-                    "form_method": form.get("method", "get") if form else "",
+                    "form_action": submitter_action or (form.get("action", "") if form else ""),
+                    "form_method": submitter_method or (form.get("method", "get") if form else ""),
                 }
             )
 
