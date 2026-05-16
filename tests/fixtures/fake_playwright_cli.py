@@ -39,6 +39,7 @@ _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES = {
     "url",
     "week",
 }
+_FILLABLE_FIELD_CONTROL_TYPES = _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES | {""}
 _INPUT_TYPES = {
     "button",
     "checkbox",
@@ -432,6 +433,8 @@ def _handle_fill(
     element = _resolve_target(parser, target)
     if element is None:
         raise SystemExit(f"unknown target: {target}")
+    if not _is_fillable_target(element):
+        raise SystemExit(f"target is not fillable: {target}")
     fields = dict(state.get("fields", {}) if store_field else original_fields)
     field_name = element.get("name") or element.get("id") or element.get("selector") or target
     submission_fields = {**fields, field_name: text}
@@ -469,15 +472,23 @@ def _handle_fill(
 
 
 def _is_enter_submit_control(element: Mapping[str, object]) -> bool:
-    if not str(element.get("form_method", "")).strip():
+    form_method = str(element.get("form_method", "")).strip()
+    if not form_method or _normalize_form_method(form_method) == "dialog":
         return False
     kind = str(element.get("kind", "")).strip().lower()
     control_type = str(element.get("control_type", "")).strip().lower()
     return kind == "field" and control_type in _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES
 
 
+def _is_fillable_target(element: Mapping[str, object]) -> bool:
+    kind = str(element.get("kind", "")).strip().lower()
+    control_type = str(element.get("control_type", "")).strip().lower()
+    return kind == "field" and control_type in _FILLABLE_FIELD_CONTROL_TYPES
+
+
 def _is_click_submit_control(element: Mapping[str, object]) -> bool:
-    if not str(element.get("form_method", "")).strip():
+    form_method = str(element.get("form_method", "")).strip()
+    if not form_method or _normalize_form_method(form_method) == "dialog":
         return False
     kind = str(element.get("kind", "")).strip().lower()
     control_type = str(element.get("control_type", "")).strip().lower()

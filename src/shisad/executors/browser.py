@@ -2345,7 +2345,8 @@ class BrowserToolkit:
         *,
         submit: bool,
     ) -> bool:
-        if not cls._normalized_form_method(element.form_method):
+        method = cls._normalized_form_method(element.form_method)
+        if not method or method == "dialog":
             return False
         kind = element.kind.strip().lower()
         control_type = cls._normalized_control_type(element)

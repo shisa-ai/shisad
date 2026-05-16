@@ -1280,6 +1280,49 @@ async def test_gh24_browser_type_submit_does_not_navigate_textarea(
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_submit_does_not_navigate_dialog_form(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<form id='dialog-form' action='/submitted' method='dialog'>"
+            "<input id='dialog-search' name='q' type='text' />"
+            "</form>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#dialog-search", "text": "hello", "submit": True},
+        )
+
+        assert not str(prepared.get("destination", ""))
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert typed["url"] == f"{browser_server.base_url}/"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_gh33_browser_toolkit_prepare_click_ignores_caller_runtime_fields(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
@@ -1432,7 +1475,7 @@ def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
 
 
 @pytest.mark.parametrize("target", ["#continue", "#submit"])
-def test_gh24_fake_playwright_cli_submit_does_not_click_non_text_targets(
+def test_gh24_fake_playwright_cli_submit_rejects_non_text_targets(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
     target: str,
@@ -1464,7 +1507,8 @@ def test_gh24_fake_playwright_cli_submit_does_not_click_non_text_targets(
         timeout=10,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode != 0
+    assert "not fillable" in completed.stderr
     fake_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert fake_state["current_url"] == current_url
 
@@ -1730,6 +1774,15 @@ def test_gh24_browser_submit_control_type_gates_destination_prediction() -> None
         form_action="/submitted",
         form_method="wat",
     )
+    dialog_button = BrowserSnapshotElement(
+        ref="e9",
+        kind="button",
+        label="Dialog Button",
+        selector="#dialog-button",
+        control_type="submit",
+        form_action="/submitted",
+        form_method="dialog",
+    )
 
     assert (
         BrowserToolkit._predict_destination_url(
@@ -1796,6 +1849,15 @@ def test_gh24_browser_submit_control_type_gates_destination_prediction() -> None
         == "https://example.com/submitted"
     )
     assert BrowserToolkit._allows_form_query_extension(invalid_button, submit=False) is True
+    assert (
+        BrowserToolkit._predict_destination_url(
+            dialog_button,
+            current_url=source_url,
+            submit=False,
+        )
+        == ""
+    )
+    assert BrowserToolkit._allows_form_query_extension(dialog_button, submit=False) is False
 
 
 def test_gh24_browser_snapshot_parser_preserves_control_type() -> None:

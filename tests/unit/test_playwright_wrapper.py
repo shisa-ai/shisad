@@ -44,6 +44,9 @@ class Locator {
     if (this.selector === "#missing") {
       throw new Error("missing target");
     }
+    if (!["#search", "#editor"].includes(this.selector)) {
+      throw new Error("target is not fillable");
+    }
     this.page.fields[this.selector] = text;
     if (text === "old-sensitive") {
       this.page._url = new URL(
@@ -224,6 +227,14 @@ const externalSubmit = new FakeElement(
 );
 externalSearch.form = externalForm;
 externalSubmit.form = externalForm;
+const dialogSearch = new FakeElement("input", { id: "dialog-search" });
+const dialogForm = new FakeElement(
+  "form",
+  { id: "dialog-form", action: "/dialog", method: "dialog" },
+  "",
+  [dialogSearch],
+);
+dialogSearch.form = dialogForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -235,6 +246,7 @@ const body = new FakeElement("body", {}, "", [
   section,
   externalForm,
   externalSubmit,
+  dialogForm,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -253,6 +265,8 @@ const allElements = [
   externalForm,
   externalSearch,
   externalSubmit,
+  dialogForm,
+  dialogSearch,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -434,6 +448,10 @@ exports.chromium = {
         'field "external-search" selector="#external-search" control_type="text" '
         'form_action="/override" form_method="get"'
     ) in snapshot
+    assert (
+        'field "dialog-search" selector="#dialog-search" control_type="text" '
+        'form_action="/dialog" form_method="dialog"'
+    ) in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot
@@ -442,6 +460,7 @@ exports.chromium = {
     assert "#locked-token" not in snapshot
 
     assert run_wrapper("fill", "#search", "--help").returncode == 0
+    assert run_wrapper("fill", "#continue", "not-fillable", "--submit").returncode != 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
     assert result.returncode == 0, result.stderr
     flag_text = json.loads(metadata_path.read_text(encoding="utf-8"))
