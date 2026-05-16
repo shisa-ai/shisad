@@ -175,6 +175,12 @@ class FakeElement {
       this.refreshText();
       return;
     }
+    if (text === "empty placeholder") {
+      this.textNode.textContent = "";
+      this.replaceChildren([new FakeElement("br")]);
+      this.refreshText();
+      return;
+    }
     if (text.includes("\n")) {
       const parts = text.split("\n");
       const generatedChildren = [];
@@ -916,6 +922,14 @@ exports.chromium = {
     hidden_break_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert "alphabeta" in hidden_break_text["visible_text"]
     assert "alpha\nbeta" not in hidden_break_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "empty placeholder").returncode == 0
+    placeholder_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert placeholder_state["fields"]["#editor"] == ""
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    placeholder_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "editor:\n" not in placeholder_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0

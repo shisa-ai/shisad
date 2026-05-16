@@ -709,11 +709,13 @@ async function syncFieldState(page, state) {
                 textForChildren(Array.from(node.childNodes || []), nextTextHidden),
               );
             };
-            return String(
-              stripSyntheticTrailingBreak(
-                textForChildren(Array.from(element.childNodes || []), false),
-              ),
+            const editableText = stripSyntheticTrailingBreak(
+              textForChildren(Array.from(element.childNodes || []), false),
             );
+            if (/^\n*$/u.test(editableText) && !String(element.textContent || "")) {
+              return "";
+            }
+            return String(editableText);
           }
           return "";
         });
