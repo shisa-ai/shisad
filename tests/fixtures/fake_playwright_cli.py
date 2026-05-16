@@ -448,10 +448,11 @@ def _handle_fill(
             target_element = _resolve_target(parser, click_target) or {}
             if not target_element:
                 raise SystemExit(f"unknown target: {click_target}")
-        if target_element.get("kind") == "link" and target_element.get("href"):
+        if click_target and target_element.get("kind") == "link" and target_element.get("href"):
             next_url = urljoin(next_url, target_element["href"])
-        elif (submit and _is_enter_submit_control(target_element)) or _is_click_submit_control(
-            target_element
+        elif (
+            (submit and _is_enter_submit_control(target_element))
+            or (bool(click_target) and _is_click_submit_control(target_element))
         ):
             action = target_element.get("form_action", "") or next_url
             method = _normalize_form_method(target_element.get("form_method", "get"))

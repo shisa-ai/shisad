@@ -1431,6 +1431,44 @@ def test_gh33_fake_playwright_cli_no_store_failure_preclears_state(
     assert "replacement-secret" not in json.dumps(fake_state, sort_keys=True)
 
 
+@pytest.mark.parametrize("target", ["#continue", "#submit"])
+def test_gh24_fake_playwright_cli_submit_does_not_click_non_text_targets(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+    target: str,
+) -> None:
+    fixture_cli = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+    state_dir = tmp_path / ".fake-playwright"
+    state_dir.mkdir()
+    state_path = state_dir / "shisad-browser-session.json"
+    current_url = f"{browser_fixture_server.base_url}/"
+    state_path.write_text(
+        json.dumps({"opened": True, "current_url": current_url, "fields": {}}),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(fixture_cli),
+            "-s=shisad-browser-session",
+            "fill",
+            target,
+            "replacement",
+            "--submit",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    fake_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert fake_state["current_url"] == current_url
+
+
 @pytest.mark.asyncio
 async def test_m6_browser_toolkit_type_submit_submits_form_directly(
     tmp_path: Path,
