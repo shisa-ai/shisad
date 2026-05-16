@@ -2078,6 +2078,39 @@ async def test_gh24_browser_snapshot_refs_compact_after_hidden_controls(
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_snapshot_keeps_visibility_visible_descendant(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<div style='visibility: hidden'>"
+            "<a id='visibility-visible-link' href='/visible' "
+            "style='visibility: visible'>Visible override</a>"
+            "</div>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.click",
+            arguments={"target": "e1"},
+        )
+
+        assert prepared["resolved_target"] == "#visibility-visible-link"
+        assert str(prepared["destination"]).endswith("/visible")
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_gh24_browser_snapshot_excludes_hidden_descendant_text(
     tmp_path: Path,
 ) -> None:

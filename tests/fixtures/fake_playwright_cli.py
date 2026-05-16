@@ -136,9 +136,14 @@ def _attrs_hide_descendants(attrs: Mapping[str, str]) -> bool:
     style = _style_declarations(attrs.get("style", ""))
     return (
         style.get("display") == "none"
-        or style.get("visibility") == "hidden"
         or style.get("opacity") == "0"
     )
+
+
+def _attrs_visibility_state(attrs: Mapping[str, str]) -> str:
+    style = _style_declarations(attrs.get("style", ""))
+    value = style.get("visibility", "")
+    return value if value in {"hidden", "visible"} else ""
 
 
 def _attrs_hide_candidate(
@@ -165,6 +170,7 @@ class _PageParser(HTMLParser):
         self.visible_parts: list[str] = []
         self._tag_stack: list[str] = []
         self._hidden_stack: list[bool] = []
+        self._visibility_hidden_stack: list[bool] = []
         self._fieldset_stack: list[dict[str, bool | int]] = []
         self._current_form: dict[str, str] | None = None
         self._forms: list[dict[str, str]] = []
@@ -175,6 +181,12 @@ class _PageParser(HTMLParser):
         attr_map = {key: (value or "") for key, value in attrs}
         inherited_native_disabled = self._in_disabled_fieldset()
         inherited_hidden = self._in_hidden_context()
+        inherited_visibility_hidden = self._in_visibility_hidden_context()
+        visibility_state = _attrs_visibility_state(attr_map)
+        visibility_hidden = (
+            visibility_state == "hidden"
+            or (inherited_visibility_hidden and visibility_state != "visible")
+        )
         parent_tag = self._tag_stack[-1] if self._tag_stack else ""
         if tag == "legend" and parent_tag == "fieldset" and self._fieldset_stack:
             fieldset = self._fieldset_stack[-1]
@@ -185,6 +197,7 @@ class _PageParser(HTMLParser):
         if tag not in _HTML_VOID_TAGS:
             self._tag_stack.append(tag)
             self._hidden_stack.append(inherited_hidden or _attrs_hide_descendants(attr_map))
+            self._visibility_hidden_stack.append(visibility_hidden)
         if tag == "fieldset":
             self._fieldset_stack.append(
                 {
@@ -214,7 +227,7 @@ class _PageParser(HTMLParser):
                     attr_map,
                     tag=tag,
                     inherited_hidden=inherited_hidden,
-                ) else "",
+                ) or visibility_hidden else "",
                 "label": "",
             }
             return
@@ -242,7 +255,7 @@ class _PageParser(HTMLParser):
                     tag=tag,
                     control_type=control_type,
                     inherited_hidden=inherited_hidden,
-                ) else "",
+                ) or visibility_hidden else "",
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
                 "form_action": form_action,
@@ -282,7 +295,7 @@ class _PageParser(HTMLParser):
                         tag=tag,
                         control_type=control_type,
                         inherited_hidden=inherited_hidden,
-                    ) else "",
+                    ) or visibility_hidden else "",
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
                     "form_action": form_action,
@@ -327,6 +340,9 @@ class _PageParser(HTMLParser):
     def _in_hidden_context(self) -> bool:
         return any(self._hidden_stack)
 
+    def _in_visibility_hidden_context(self) -> bool:
+        return any(self._visibility_hidden_stack)
+
     def _open_tag_index(self, tag: str) -> int | None:
         for index in range(len(self._tag_stack) - 1, -1, -1):
             if self._tag_stack[index] == tag:
@@ -339,6 +355,7 @@ class _PageParser(HTMLParser):
             return
         self._tag_stack = self._tag_stack[:index]
         self._hidden_stack = self._hidden_stack[:index]
+        self._visibility_hidden_stack = self._visibility_hidden_stack[:index]
 
     def handle_data(self, data: str) -> None:
         text = " ".join(data.split())
@@ -348,12 +365,18 @@ class _PageParser(HTMLParser):
         if current_tag == "title":
             self.title = f"{self.title} {text}".strip()
         hidden_context = self._in_hidden_context()
-        if current_tag not in {"script", "style"} and not hidden_context:
+        visibility_hidden = self._in_visibility_hidden_context()
+        if (
+            current_tag not in {"script", "style"}
+            and not hidden_context
+            and not visibility_hidden
+        ):
             self.visible_parts.append(text)
         if (
             self._current_element is not None
             and current_tag not in {"script", "style"}
             and not hidden_context
+            and not visibility_hidden
         ):
             self._current_element["label"] = (
                 f"{self._current_element.get('label', '')} {text}".strip()

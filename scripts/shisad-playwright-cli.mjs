@@ -259,7 +259,7 @@ async function snapshot(page) {
         typeof window !== "undefined" && typeof window.getComputedStyle === "function"
           ? window.getComputedStyle(element)
           : null;
-      const hidesTextContent = (item) => {
+      const hidesSubtreeContent = (item) => {
         if (!item || item.nodeType !== 1) {
           return false;
         }
@@ -270,15 +270,13 @@ async function snapshot(page) {
         const style = computedStyleFor(item);
         return Boolean(
           style &&
-            (style.display === "none" ||
-              style.visibility === "hidden" ||
-              style.opacity === "0"),
+            (style.display === "none" || style.opacity === "0"),
         );
       };
       const hasHiddenStyleAncestor = (element) => {
         let current = element.parentElement;
         while (current && current.nodeType === 1) {
-          if (hidesTextContent(current)) {
+          if (hidesSubtreeContent(current)) {
             return true;
           }
           current = current.parentElement;
@@ -322,32 +320,44 @@ async function snapshot(page) {
         return true;
       };
       const visibleTextFor = (element) => {
-        const textFor = (node) => {
+        const textFor = (node, textHidden = false) => {
           if (!node) {
             return "";
           }
           if (node.nodeType === 3) {
-            return node.textContent || "";
+            return textHidden ? "" : node.textContent || "";
           }
-          if (node.nodeType !== 1 || hidesTextContent(node)) {
+          if (node.nodeType !== 1 || hidesSubtreeContent(node)) {
             return "";
           }
-          return Array.from(node.childNodes || []).map((child) => textFor(child)).join(" ");
+          const style = computedStyleFor(node);
+          const nextTextHidden = style
+            ? style.visibility === "hidden"
+            : textHidden;
+          return Array.from(node.childNodes || [])
+            .map((child) => textFor(child, nextTextHidden))
+            .join(" ");
         };
         return textFor(element).replace(/\s+/g, " ").trim();
       };
       const editableTextFor = (element) => {
-        const textFor = (node) => {
+        const textFor = (node, textHidden = false) => {
           if (!node) {
             return "";
           }
           if (node.nodeType === 3) {
-            return node.textContent || "";
+            return textHidden ? "" : node.textContent || "";
           }
-          if (node.nodeType !== 1 || hasContenteditableFalse(node) || hidesTextContent(node)) {
+          if (node.nodeType !== 1 || hasContenteditableFalse(node) || hidesSubtreeContent(node)) {
             return "";
           }
-          return Array.from(node.childNodes || []).map((child) => textFor(child)).join(" ");
+          const style = computedStyleFor(node);
+          const nextTextHidden = style
+            ? style.visibility === "hidden"
+            : textHidden;
+          return Array.from(node.childNodes || [])
+            .map((child) => textFor(child, nextTextHidden))
+            .join(" ");
         };
         return Array.from(element.childNodes || [])
           .map((child) => textFor(child))
@@ -611,28 +621,44 @@ async function syncFieldState(page, state) {
             return String(element.value || "");
           }
           if (element && element.isContentEditable) {
-            const clone = element.cloneNode(true);
-            for (const candidate of Array.from(clone.querySelectorAll("*"))) {
-              const attrValue = candidate.getAttribute("contenteditable");
-              const tag = candidate.tagName.toLowerCase();
-              const style =
-                typeof window !== "undefined" && typeof window.getComputedStyle === "function"
-                  ? window.getComputedStyle(candidate)
-                  : null;
+            const computedStyleFor = (item) =>
+              typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+                ? window.getComputedStyle(item)
+                : null;
+            const textFor = (node, textHidden = false) => {
+              if (!node) {
+                return "";
+              }
+              if (node.nodeType === 3) {
+                return textHidden ? "" : node.textContent || "";
+              }
+              if (node.nodeType !== 1) {
+                return "";
+              }
+              const attrValue = node.getAttribute("contenteditable");
+              const tag = node.tagName.toLowerCase();
+              const style = computedStyleFor(node);
               if (
                 (attrValue !== null && String(attrValue).toLowerCase() === "false") ||
                 tag === "script" ||
                 tag === "style" ||
-                candidate.hidden ||
-                (style &&
-                  (style.display === "none" ||
-                    style.visibility === "hidden" ||
-                    style.opacity === "0"))
+                node.hidden ||
+                (style && (style.display === "none" || style.opacity === "0"))
               ) {
-                candidate.remove();
+                return "";
               }
-            }
-            return String(clone.innerText || "");
+              const nextTextHidden = style
+                ? style.visibility === "hidden"
+                : textHidden;
+              return Array.from(node.childNodes || [])
+                .map((child) => textFor(child, nextTextHidden))
+                .join("");
+            };
+            return String(
+              Array.from(element.childNodes || [])
+                .map((child) => textFor(child))
+                .join(""),
+            );
           }
           return "";
         });

@@ -66,7 +66,19 @@ class Locator {
   }
   async evaluate(callback) {
     if (this.selector === "#editor") {
-      return callback(editor);
+      const previousWindow = globalThis.window;
+      globalThis.window = {
+        getComputedStyle: (element) => ({
+          display: element.getAttribute("data-display") || "block",
+          visibility: element.getAttribute("data-visibility") || "visible",
+          opacity: element.getAttribute("data-opacity") || "1",
+        }),
+      };
+      try {
+        return callback(editor);
+      } finally {
+        globalThis.window = previousWindow;
+      }
     }
     return this.page.fields[this.selector] || "";
   }
@@ -273,6 +285,17 @@ const opacityChildButton = new FakeElement("button", { id: "opacity-child-button
 const opacityContainer = new FakeElement("div", { "data-opacity": "0" }, "", [
   opacityChildButton,
 ]);
+const visibilityChildButton = new FakeElement(
+  "button",
+  { id: "visibility-child-button", "data-visibility": "visible" },
+  "Visible child",
+);
+const visibilityContainer = new FakeElement(
+  "div",
+  { "data-visibility": "hidden" },
+  "",
+  [visibilityChildButton],
+);
 const lockedToken = new FakeElement(
   "span",
   { id: "locked-token", contenteditable: "false" },
@@ -444,6 +467,7 @@ const body = new FakeElement("body", {}, "", [
   fieldsetBlockerForm,
   legendSubmitForm,
   opacityContainer,
+  visibilityContainer,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -497,6 +521,8 @@ const allElements = [
   legendSubmitButton,
   opacityContainer,
   opacityChildButton,
+  visibilityContainer,
+  visibilityChildButton,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -680,6 +706,7 @@ exports.chromium = {
     assert "Delete" not in snapshot
     assert "Phantom" not in snapshot
     assert "#opacity-child-button" not in snapshot
+    assert 'button "Visible child" selector="#visibility-child-button"' in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
     assert (
         'field "external-search" selector="#external-search" control_type="text" '
