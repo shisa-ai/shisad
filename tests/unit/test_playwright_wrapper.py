@@ -155,7 +155,26 @@ class FakeElement {
     this.innerText = `${this.textNode.textContent}${visibleChildText}`;
     this.textContent = `${this.textNode.textContent}${childText}`;
   }
+  replaceChildren(children) {
+    for (const child of this.children) {
+      child.parentElement = null;
+    }
+    this.children = children;
+    this.childNodes = [this.textNode, ...this.children];
+    for (const child of this.children) {
+      child.parentElement = this;
+    }
+  }
   setEditableText(text) {
+    if (text === "alpha hidden-break beta") {
+      this.textNode.textContent = "alpha";
+      this.replaceChildren([
+        new FakeElement("br", { hidden: "" }),
+        new FakeElement("span", {}, "beta"),
+      ]);
+      this.refreshText();
+      return;
+    }
     if (text.includes("\n")) {
       const parts = text.split("\n");
       const generatedChildren = [];
@@ -164,18 +183,12 @@ class FakeElement {
         generatedChildren.push(new FakeElement("br"));
         generatedChildren.push(new FakeElement("span", {}, part));
       }
-      for (const child of this.children) {
-        child.parentElement = null;
-      }
-      this.children = generatedChildren;
-      this.childNodes = [this.textNode, ...this.children];
-      for (const child of this.children) {
-        child.parentElement = this;
-      }
+      this.replaceChildren(generatedChildren);
       this.refreshText();
       return;
     }
     this.textNode.textContent = text;
+    this.replaceChildren([]);
     this.refreshText();
   }
   cloneNode(deep) {
@@ -882,6 +895,27 @@ exports.chromium = {
     assert "line one\nline two" in multiline_text["visible_text"]
     assert "line one line two" not in multiline_text["visible_text"]
     assert "Locked" not in multiline_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "single line").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    single_line_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "single line" in single_line_text["visible_text"]
+    assert "line one" not in single_line_text["visible_text"]
+    assert "line two" not in single_line_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "trail\n\n").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    trailing_break_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "trail\n\n" in trailing_break_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "alpha hidden-break beta").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    hidden_break_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "alphabeta" in hidden_break_text["visible_text"]
+    assert "alpha\nbeta" not in hidden_break_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0

@@ -654,6 +654,29 @@ async function syncFieldState(page, state) {
               typeof window !== "undefined" && typeof window.getComputedStyle === "function"
                 ? window.getComputedStyle(item)
                 : null;
+            const stripSyntheticTrailingBreak = (result) =>
+              result.syntheticTrailingBreak ? result.text.slice(0, -1) : result.text;
+            const textForChildren = (children, textHidden) => {
+              let text = "";
+              let syntheticTrailingBreak = false;
+              for (const child of children) {
+                const childText = textFor(child, textHidden);
+                if (!childText) {
+                  continue;
+                }
+                text += childText;
+                syntheticTrailingBreak = false;
+                if (
+                  child.nodeType === 1 &&
+                  blockTextTags.has(child.tagName.toLowerCase()) &&
+                  !text.endsWith("\n")
+                ) {
+                  text += "\n";
+                  syntheticTrailingBreak = true;
+                }
+              }
+              return { text, syntheticTrailingBreak };
+            };
             const textFor = (node, textHidden = false) => {
               if (!node) {
                 return "";
@@ -666,9 +689,6 @@ async function syncFieldState(page, state) {
               }
               const attrValue = node.getAttribute("contenteditable");
               const tag = node.tagName.toLowerCase();
-              if (tag === "br") {
-                return textHidden ? "" : "\n";
-              }
               const style = computedStyleFor(node);
               if (
                 (attrValue !== null && String(attrValue).toLowerCase() === "false") ||
@@ -682,19 +702,18 @@ async function syncFieldState(page, state) {
               const nextTextHidden = style
                 ? style.visibility === "hidden"
                 : textHidden;
-              const childText = Array.from(node.childNodes || [])
-                .map((child) => textFor(child, nextTextHidden))
-                .join("");
-              if (blockTextTags.has(tag) && childText && !childText.endsWith("\n")) {
-                return `${childText}\n`;
+              if (tag === "br") {
+                return nextTextHidden ? "" : "\n";
               }
-              return childText;
+              return stripSyntheticTrailingBreak(
+                textForChildren(Array.from(node.childNodes || []), nextTextHidden),
+              );
             };
             return String(
-              Array.from(element.childNodes || [])
-                .map((child) => textFor(child))
-                .join(""),
-            ).replace(/\n+$/u, "");
+              stripSyntheticTrailingBreak(
+                textForChildren(Array.from(element.childNodes || []), false),
+              ),
+            );
           }
           return "";
         });
