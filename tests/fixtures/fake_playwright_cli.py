@@ -44,8 +44,9 @@ class _PageParser(HTMLParser):
                 "action": attr_map.get("action", ""),
                 "method": attr_map.get("method", "get").lower(),
                 "id": attr_map.get("id", ""),
+                "_key": attr_map.get("id", "") or f"__form_{len(self._forms) + 1}",
             }
-            self._forms.append(dict(self._current_form))
+            self._forms.append(self._current_form)
             return
         if tag == "a":
             self._current_element = {
@@ -57,25 +58,35 @@ class _PageParser(HTMLParser):
             }
             return
         if tag == "button":
-            form = self._current_form
-            submitter_action = attr_map.get("formaction", "")
-            submitter_method = attr_map.get("formmethod", "")
+            form = self._form_for_attrs(attr_map)
+            control_type = attr_map.get("type", "submit").lower()
+            form_action, form_method = self._form_metadata_for(
+                attr_map,
+                form=form,
+                is_submitter=control_type == "submit",
+            )
             self._current_element = {
                 "kind": "button",
                 "type": attr_map.get("type", "submit"),
-                "control_type": attr_map.get("type", "submit").lower(),
+                "control_type": control_type,
                 "id": attr_map.get("id", ""),
+                "_form_id": form.get("_key", "") if form else "",
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
-                "form_action": submitter_action or (form.get("action", "") if form else ""),
-                "form_method": submitter_method or (form.get("method", "get") if form else ""),
+                "form_action": form_action,
+                "form_method": form_method,
             }
+            self._record_default_submitter(form, attr_map, is_submitter=control_type == "submit")
             return
         if tag in {"input", "textarea"}:
-            form = self._current_form
+            form = self._form_for_attrs(attr_map)
             control_type = attr_map.get("type", "text").lower() if tag == "input" else ""
-            submitter_action = attr_map.get("formaction", "") if tag == "input" else ""
-            submitter_method = attr_map.get("formmethod", "") if tag == "input" else ""
+            is_submitter = tag == "input" and control_type in {"submit", "image"}
+            form_action, form_method = self._form_metadata_for(
+                attr_map,
+                form=form,
+                is_submitter=is_submitter,
+            )
             self._elements.append(
                 {
                     "kind": "field",
@@ -83,12 +94,14 @@ class _PageParser(HTMLParser):
                     "control_type": control_type,
                     "name": attr_map.get("name", ""),
                     "id": attr_map.get("id", ""),
+                    "_form_id": form.get("_key", "") if form else "",
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
-                    "form_action": submitter_action or (form.get("action", "") if form else ""),
-                    "form_method": submitter_method or (form.get("method", "get") if form else ""),
+                    "form_action": form_action,
+                    "form_method": form_method,
                 }
             )
+            self._record_default_submitter(form, attr_map, is_submitter=is_submitter)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "form":
@@ -128,9 +141,67 @@ class _PageParser(HTMLParser):
         rendered: list[dict[str, str]] = []
         for index, item in enumerate(self._elements, start=1):
             copy = dict(item)
+            form = self._form_by_id(copy.get("_form_id", ""))
+            if (
+                form
+                and copy.get("kind") == "field"
+                and copy.get("control_type", "") not in {"submit", "image"}
+                and form.get("default_action") is not None
+            ):
+                copy["form_action"] = form.get("default_action", "")
+                copy["form_method"] = form.get("default_method", "get")
+            copy.pop("_form_id", None)
             copy["ref"] = f"e{index}"
             rendered.append(copy)
         return rendered
+
+    def _form_for_attrs(self, attrs: dict[str, str]) -> dict[str, str] | None:
+        form_id = attrs.get("form", "")
+        if form_id:
+            return self._form_by_id(form_id)
+        return self._current_form
+
+    def _form_by_id(self, form_id: str) -> dict[str, str] | None:
+        if not form_id:
+            return None
+        for form in self._forms:
+            if form.get("id") == form_id or form.get("_key") == form_id:
+                return form
+        return None
+
+    @staticmethod
+    def _form_metadata_for(
+        attrs: dict[str, str],
+        *,
+        form: dict[str, str] | None,
+        is_submitter: bool,
+    ) -> tuple[str, str]:
+        if not form:
+            return "", ""
+        action = (
+            attrs.get("formaction", "")
+            if is_submitter and "formaction" in attrs
+            else form.get("action", "")
+        )
+        method = (
+            attrs.get("formmethod", "")
+            if is_submitter and "formmethod" in attrs
+            else form.get("method", "get")
+        )
+        return action, method
+
+    def _record_default_submitter(
+        self,
+        form: dict[str, str] | None,
+        attrs: dict[str, str],
+        *,
+        is_submitter: bool,
+    ) -> None:
+        if not form or not is_submitter or form.get("default_action") is not None:
+            return
+        action, method = self._form_metadata_for(attrs, form=form, is_submitter=True)
+        form["default_action"] = action
+        form["default_method"] = method
 
 
 def _selector_for(*, tag: str, attrs: dict[str, str]) -> str:

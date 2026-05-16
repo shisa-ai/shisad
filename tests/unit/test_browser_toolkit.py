@@ -1073,6 +1073,81 @@ async def test_gh24_browser_type_click_uses_button_submitter_form_overrides(
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_submit_uses_default_submitter_form_overrides(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "submit_html": (
+            "<button id='submit' type='submit' formaction='/override' "
+            "formmethod='get'>Go</button>"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "submit": True},
+        )
+
+        assert str(prepared["destination"]).endswith("/override")
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared.get("resolved_target", "")),
+            text="hello",
+            submit=True,
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert typed["ok"] is True
+        assert "/override?q=hello" in typed["url"]
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_click_uses_form_associated_submitter_metadata(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "prefix_html": (
+            "<form id='external-form' action='/external' method='get'>"
+            "<input id='external-search' name='q' type='text' value='hello' />"
+            "</form>"
+            "<input id='external-submit' type='submit' form='external-form' "
+            "formaction='/override' formmethod='get' value='Go' />"
+        )
+    }
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.click",
+            arguments={"target": "#external-submit"},
+        )
+
+        assert str(prepared["destination"]).endswith("/override")
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_gh33_browser_toolkit_prepare_click_ignores_caller_runtime_fields(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,

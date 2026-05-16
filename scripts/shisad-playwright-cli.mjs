@@ -185,6 +185,51 @@ function snapshotLines(elements) {
   return `${lines.join("\n")}\n`;
 }
 
+function controlTypeFor(element, tag) {
+  if (tag === "button") {
+    return (element.getAttribute("type") || "submit").toLowerCase();
+  }
+  if (tag === "input") {
+    return (element.getAttribute("type") || "text").toLowerCase();
+  }
+  return "";
+}
+
+function isSubmitControl(tag, controlType) {
+  if (tag === "button") {
+    return controlType === "submit";
+  }
+  if (tag === "input") {
+    return controlType === "submit" || controlType === "image";
+  }
+  return false;
+}
+
+function defaultSubmitterFor(form) {
+  if (!form) {
+    return null;
+  }
+  return form.querySelector(
+    'button:not([type]), button[type="submit" i], input[type="submit" i], input[type="image" i]',
+  );
+}
+
+function formMetadataFor(element, tag, controlType, form) {
+  if (!form) {
+    return { action: "", method: "" };
+  }
+  const submitter = isSubmitControl(tag, controlType) ? element : defaultSubmitterFor(form);
+  const action =
+    submitter && submitter.hasAttribute("formaction")
+      ? submitter.getAttribute("formaction") || ""
+      : form.getAttribute("action") || "";
+  const method =
+    submitter && submitter.hasAttribute("formmethod")
+      ? submitter.getAttribute("formmethod") || ""
+      : form.getAttribute("method") || "get";
+  return { action, method };
+}
+
 async function metadata(page) {
   return await page.evaluate(
     (mode) => {
@@ -345,25 +390,17 @@ async function snapshot(page) {
       }).map(
         (element) => {
           const tag = element.tagName.toLowerCase();
-          const form = element.closest("form");
-          const controlType =
-            tag === "button"
-              ? (element.getAttribute("type") || "submit").toLowerCase()
-              : tag === "input"
-                ? (element.getAttribute("type") || "text").toLowerCase()
-                : "";
-          const submitterAction =
-            tag === "button" || tag === "input" ? element.getAttribute("formaction") : "";
-          const submitterMethod =
-            tag === "button" || tag === "input" ? element.getAttribute("formmethod") : "";
+          const form = element.form || element.closest("form");
+          const controlType = controlTypeFor(element, tag);
+          const formMetadata = formMetadataFor(element, tag, controlType, form);
           return {
             kind: tag === "a" ? "link" : tag === "button" ? "button" : "field",
             label: labelFor(element),
             selector: selectorFor(element),
             href: tag === "a" ? element.getAttribute("href") || "" : "",
             control_type: controlType,
-            form_action: form ? submitterAction || form.getAttribute("action") || "" : "",
-            form_method: form ? submitterMethod || form.getAttribute("method") || "get" : "",
+            form_action: formMetadata.action,
+            form_method: formMetadata.method,
           };
         },
       );
