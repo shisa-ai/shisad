@@ -699,11 +699,12 @@ async function syncFieldState(page, state) {
                 const childResult = textResultFor(child, textHidden);
                 const childText = childResult.text;
                 if (!childText) {
-                  if (childIsVisibleBlock) {
+                  const leadingBreaks = childIsVisibleBlock ? 1 : childResult.syntheticLeadingBreaks;
+                  if (leadingBreaks > 0) {
                     if (text) {
-                      text += "\n";
+                      text += "\n".repeat(leadingBreaks);
                     } else {
-                      pendingLeadingBreaks += 1;
+                      pendingLeadingBreaks += leadingBreaks;
                     }
                     syntheticTrailingBreak = false;
                   }
@@ -738,7 +739,11 @@ async function syncFieldState(page, state) {
                   syntheticTrailingBreak = true;
                 }
               }
-              return { text, syntheticLeadingBreaks, syntheticTrailingBreak };
+              return {
+                text,
+                syntheticLeadingBreaks: Math.max(syntheticLeadingBreaks, pendingLeadingBreaks),
+                syntheticTrailingBreak,
+              };
             }
             function textResultFor(node, textHidden = false) {
               if (!node) {
