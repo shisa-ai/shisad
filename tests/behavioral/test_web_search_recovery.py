@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -28,6 +29,8 @@ _TRUSTED_CONTEXT_RECOVERY_MARKER = (
     "Trusted runtime and session context may resolve current-turn referents"
 )
 _AMOUR_URL = "https://tabelog.com/hokkaido/A0101/A010101/123456/"
+_AMOUR_HOST = urlsplit(_AMOUR_URL).hostname or ""
+_AMOUR_SITE_QUERY = f"site:{_AMOUR_HOST}"
 _USER_GOAL_RE = re.compile(
     (
         r"=== (?:USER GOAL|USER REQUEST) ===\n"
@@ -421,7 +424,7 @@ async def _planner_stub_complete(
             and has_trusted_context_recovery
             and "TRUSTED SAME-SESSION USER CONTEXT" in trusted_preamble
             and "Amour" in trusted_preamble
-            and "tabelog.com" in trusted_preamble
+            and _AMOUR_HOST in trusted_preamble
         ):
             return ProviderResponse(
                 message=Message(
@@ -482,7 +485,7 @@ async def _planner_stub_complete(
 
 def _stub_search(self: WebToolkit, *, query: str, limit: int = 5) -> dict[str, Any]:
     _ = (self, limit)
-    exact_amour = '"amour"' in query.casefold() and "site:tabelog.com" in query.casefold()
+    exact_amour = '"amour"' in query.casefold() and _AMOUR_SITE_QUERY in query.casefold()
     results = (
         [
             {
