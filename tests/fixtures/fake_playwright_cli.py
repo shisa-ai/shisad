@@ -341,7 +341,7 @@ class _PageParser(HTMLParser):
         return any(self._hidden_stack)
 
     def _in_visibility_hidden_context(self) -> bool:
-        return any(self._visibility_hidden_stack)
+        return self._visibility_hidden_stack[-1] if self._visibility_hidden_stack else False
 
     def _open_tag_index(self, tag: str) -> int | None:
         for index in range(len(self._tag_stack) - 1, -1, -1):

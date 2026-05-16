@@ -132,6 +132,11 @@ class FakeElement {
     this.refreshText();
   }
   refreshText() {
+    if (this.tagName.toLowerCase() === "br") {
+      this.innerText = "\n";
+      this.textContent = "";
+      return;
+    }
     const visibleChildText = this.children
       .filter((child) => {
         const tag = child.tagName.toLowerCase();
@@ -151,6 +156,25 @@ class FakeElement {
     this.textContent = `${this.textNode.textContent}${childText}`;
   }
   setEditableText(text) {
+    if (text.includes("\n")) {
+      const parts = text.split("\n");
+      const generatedChildren = [];
+      this.textNode.textContent = parts.shift() || "";
+      for (const part of parts) {
+        generatedChildren.push(new FakeElement("br"));
+        generatedChildren.push(new FakeElement("span", {}, part));
+      }
+      for (const child of this.children) {
+        child.parentElement = null;
+      }
+      this.children = generatedChildren;
+      this.childNodes = [this.textNode, ...this.children];
+      for (const child of this.children) {
+        child.parentElement = this;
+      }
+      this.refreshText();
+      return;
+    }
     this.textNode.textContent = text;
     this.refreshText();
   }

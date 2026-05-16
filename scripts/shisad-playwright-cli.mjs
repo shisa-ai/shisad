@@ -621,6 +621,35 @@ async function syncFieldState(page, state) {
             return String(element.value || "");
           }
           if (element && element.isContentEditable) {
+            const blockTextTags = new Set([
+              "address",
+              "article",
+              "aside",
+              "blockquote",
+              "div",
+              "dl",
+              "fieldset",
+              "figcaption",
+              "figure",
+              "footer",
+              "form",
+              "h1",
+              "h2",
+              "h3",
+              "h4",
+              "h5",
+              "h6",
+              "header",
+              "li",
+              "main",
+              "nav",
+              "ol",
+              "p",
+              "pre",
+              "section",
+              "table",
+              "ul",
+            ]);
             const computedStyleFor = (item) =>
               typeof window !== "undefined" && typeof window.getComputedStyle === "function"
                 ? window.getComputedStyle(item)
@@ -637,6 +666,9 @@ async function syncFieldState(page, state) {
               }
               const attrValue = node.getAttribute("contenteditable");
               const tag = node.tagName.toLowerCase();
+              if (tag === "br") {
+                return textHidden ? "" : "\n";
+              }
               const style = computedStyleFor(node);
               if (
                 (attrValue !== null && String(attrValue).toLowerCase() === "false") ||
@@ -650,15 +682,19 @@ async function syncFieldState(page, state) {
               const nextTextHidden = style
                 ? style.visibility === "hidden"
                 : textHidden;
-              return Array.from(node.childNodes || [])
+              const childText = Array.from(node.childNodes || [])
                 .map((child) => textFor(child, nextTextHidden))
                 .join("");
+              if (blockTextTags.has(tag) && childText && !childText.endsWith("\n")) {
+                return `${childText}\n`;
+              }
+              return childText;
             };
             return String(
               Array.from(element.childNodes || [])
                 .map((child) => textFor(child))
                 .join(""),
-            );
+            ).replace(/\n+$/u, "");
           }
           return "";
         });

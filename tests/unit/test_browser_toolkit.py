@@ -2097,6 +2097,8 @@ async def test_gh24_browser_snapshot_keeps_visibility_visible_descendant(
 
         opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
         assert opened["ok"] is True
+        assert "Visible override" in opened["content"]
+        assert 'link "Visible override" selector="#visibility-visible-link"' in opened["snapshot"]
 
         prepared = await toolkit.prepare_action_arguments(
             session=session,
