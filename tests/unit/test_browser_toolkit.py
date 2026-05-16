@@ -1648,6 +1648,73 @@ async def test_gh24_browser_click_submit_allows_same_document_fragment_query(
 
 
 @pytest.mark.asyncio
+async def test_gh24_browser_type_click_submit_allows_same_document_fragment_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "http://example.test/"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="search",
+        selector="#search",
+    )
+    click_element = BrowserSnapshotElement(
+        ref="e2",
+        kind="button",
+        label="Submit",
+        selector="#submit",
+        form_action="#details",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [field, click_element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/?q=hello#details",
+            "title": "Same Page",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        resolved_target="#search",
+        text="hello",
+        click_target="#submit",
+        resolved_click_target="#submit",
+        source_url=source_url,
+        click_source_binding=BrowserToolkit._binding_hash_for_element(
+            click_element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert typed["ok"] is True
+    assert typed["url"] == "http://example.test/?q=hello#details"
+    assert typed["action"] == "type_text"
+    assert typed["click_target"] == "#submit"
+
+
+@pytest.mark.asyncio
 async def test_gh24_browser_type_submit_allows_same_document_fragment_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
