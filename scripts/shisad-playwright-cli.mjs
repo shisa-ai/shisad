@@ -673,6 +673,7 @@ async function syncFieldState(page, state) {
               result.syntheticTrailingBreak ? result.text.slice(0, -1) : result.text;
             const textForChildren = (children, textHidden) => {
               let text = "";
+              let pendingLeadingBreaks = 0;
               let syntheticTrailingBreak = false;
               for (const child of children) {
                 const childState = child.nodeType === 1 ? elementTextState(child, textHidden) : null;
@@ -684,11 +685,20 @@ async function syncFieldState(page, state) {
                 );
                 const childText = textFor(child, textHidden);
                 if (!childText) {
-                  if (childIsVisibleBlock && text && !text.endsWith("\n")) {
-                    text += "\n";
+                  if (childIsVisibleBlock) {
+                    if (text) {
+                      text += "\n";
+                    } else {
+                      pendingLeadingBreaks += 1;
+                    }
                     syntheticTrailingBreak = false;
                   }
                   continue;
+                }
+                if (pendingLeadingBreaks > 0) {
+                  text += "\n".repeat(pendingLeadingBreaks);
+                  pendingLeadingBreaks = 0;
+                  syntheticTrailingBreak = false;
                 }
                 if (childIsVisibleBlock && text && !text.endsWith("\n")) {
                   text += "\n";

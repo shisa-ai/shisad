@@ -197,6 +197,26 @@ class FakeElement {
       this.refreshText();
       return;
     }
+    if (text === "hello double-empty-block world") {
+      this.textNode.textContent = "hello";
+      this.replaceChildren([
+        new FakeElement("div"),
+        new FakeElement("div"),
+        new FakeElement("span", {}, "world"),
+      ]);
+      this.refreshText();
+      return;
+    }
+    if (text === "hello break-empty-block world") {
+      this.textNode.textContent = "hello";
+      this.replaceChildren([
+        new FakeElement("br"),
+        new FakeElement("div"),
+        new FakeElement("span", {}, "world"),
+      ]);
+      this.refreshText();
+      return;
+    }
     if (text.includes("\n")) {
       const parts = text.split("\n");
       const generatedChildren = [];
@@ -960,6 +980,20 @@ exports.chromium = {
     empty_block_child_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert "hello\nworld" in empty_block_child_text["visible_text"]
     assert "helloworld" not in empty_block_child_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "hello double-empty-block world").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    double_empty_block_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "hello\n\nworld" in double_empty_block_text["visible_text"]
+    assert "hello\nworld" not in double_empty_block_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "hello break-empty-block world").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    break_empty_block_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "hello\n\nworld" in break_empty_block_text["visible_text"]
+    assert "hello\nworld" not in break_empty_block_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0
