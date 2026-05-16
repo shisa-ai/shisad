@@ -2083,7 +2083,8 @@ async def test_gh24_browser_snapshot_excludes_hidden_descendant_text(
 ) -> None:
     state = {
         "prefix_html": (
-            "<button id='mixed-label'>Proceed<span hidden> Delete</span></button>"
+            "<button id='mixed-label'>Proceed<span hidden> Delete</span>"
+            "<span style='opacity: 0 !important'> Ghost</span></button>"
             "<div hidden>Secret content</div>"
         )
     }
@@ -2100,8 +2101,10 @@ async def test_gh24_browser_snapshot_excludes_hidden_descendant_text(
         assert result["ok"] is True
         assert "Secret content" not in result["content"]
         assert "Delete" not in result["content"]
+        assert "Ghost" not in result["content"]
         assert 'button "Proceed" selector="#mixed-label"' in result["snapshot"]
         assert "Proceed Delete" not in result["snapshot"]
+        assert "Proceed Ghost" not in result["snapshot"]
     finally:
         browser_server.close()
 

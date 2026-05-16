@@ -305,7 +305,10 @@ async function snapshot(page) {
               ? window.getComputedStyle(item)
               : null;
           return Boolean(
-            style && (style.display === "none" || style.visibility === "hidden"),
+            style &&
+              (style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.opacity === "0"),
           );
         };
         const textFor = (node) => {
@@ -583,13 +586,27 @@ async function syncFieldState(page, state) {
           }
           if (element && element.isContentEditable) {
             const clone = element.cloneNode(true);
-            for (const candidate of Array.from(clone.querySelectorAll("[contenteditable]"))) {
+            for (const candidate of Array.from(clone.querySelectorAll("*"))) {
               const attrValue = candidate.getAttribute("contenteditable");
-              if (attrValue !== null && String(attrValue).toLowerCase() === "false") {
+              const tag = candidate.tagName.toLowerCase();
+              const style =
+                typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+                  ? window.getComputedStyle(candidate)
+                  : null;
+              if (
+                (attrValue !== null && String(attrValue).toLowerCase() === "false") ||
+                tag === "script" ||
+                tag === "style" ||
+                candidate.hidden ||
+                (style &&
+                  (style.display === "none" ||
+                    style.visibility === "hidden" ||
+                    style.opacity === "0"))
+              ) {
                 candidate.remove();
               }
             }
-            return String(clone.innerText || clone.textContent || "");
+            return String(clone.innerText || "");
           }
           return "";
         });

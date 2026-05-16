@@ -128,7 +128,8 @@ class FakeElement {
           tag !== "style" &&
           !child.hasAttribute("hidden") &&
           child.getAttribute("data-display") !== "none" &&
-          child.getAttribute("data-visibility") !== "hidden"
+          child.getAttribute("data-visibility") !== "hidden" &&
+          child.getAttribute("data-opacity") !== "0"
         );
       })
       .map((child) => child.innerText || "")
@@ -160,7 +161,10 @@ class FakeElement {
     const matches = [];
     const visit = (element) => {
       for (const child of element.children) {
-        if (selector === "[contenteditable]" && child.getAttribute("contenteditable") !== null) {
+        if (
+          selector === "*" ||
+          (selector === "[contenteditable]" && child.getAttribute("contenteditable") !== null)
+        ) {
           matches.push(child);
         }
         visit(child);
@@ -263,11 +267,12 @@ const lockedToken = new FakeElement(
   { id: "locked-token", contenteditable: "false" },
   "Locked",
 );
+const opacityEditorText = new FakeElement("span", { "data-opacity": "0" }, "Phantom");
 const editor = new FakeElement(
   "div",
   { id: "editor", contenteditable: "true" },
   "Editable ",
-  [lockedToken],
+  [lockedToken, opacityEditorText],
 );
 const externalSearch = new FakeElement("input", { id: "external-search" });
 const externalForm = new FakeElement(
@@ -654,6 +659,7 @@ exports.chromium = {
     assert 'button "Continue safely" selector="#hidden-label-button"' in snapshot
     assert 'field "Edit" selector="#mixed-editor"' in snapshot
     assert "Delete" not in snapshot
+    assert "Phantom" not in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
     assert (
         'field "external-search" selector="#external-search" control_type="text" '
@@ -707,6 +713,9 @@ exports.chromium = {
     assert "#locked-token" not in snapshot
 
     assert run_wrapper("fill", "#search", "--help").returncode == 0
+    assert run_wrapper("fill", "#editor", "").returncode == 0
+    editor_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "Phantom" not in json.dumps(editor_state, sort_keys=True)
     assert run_wrapper("fill", "#continue", "not-fillable", "--submit").returncode != 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
     assert result.returncode == 0, result.stderr

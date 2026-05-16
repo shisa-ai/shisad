@@ -134,7 +134,11 @@ def _attrs_hide_descendants(attrs: Mapping[str, str]) -> bool:
     if "hidden" in attrs:
         return True
     style = _style_declarations(attrs.get("style", ""))
-    return style.get("display") == "none" or style.get("visibility") == "hidden"
+    return (
+        style.get("display") == "none"
+        or style.get("visibility") == "hidden"
+        or style.get("opacity") == "0"
+    )
 
 
 def _attrs_hide_candidate(
