@@ -2416,15 +2416,8 @@ class BrowserToolkit:
             return False
         if not cls._same_destination_base(expected, actual):
             return False
-        if allow_query_extension:
-            if expected.query:
-                query_matches = actual.query == expected.query or actual.query.startswith(
-                    f"{expected.query}&"
-                )
-            else:
-                query_matches = True
-        else:
-            query_matches = actual.query == expected.query
+        # GET form submissions replace the action URL query with serialized fields.
+        query_matches = allow_query_extension or actual.query == expected.query
         if not query_matches:
             return False
         if actual.fragment == expected.fragment:

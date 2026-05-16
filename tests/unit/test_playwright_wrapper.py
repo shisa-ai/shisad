@@ -592,6 +592,21 @@ const legendSubmitForm = new FakeElement(
 );
 legendSubmitSearch.form = legendSubmitForm;
 legendSubmitButton.form = legendSubmitForm;
+const forwardBlockedA = new FakeElement("input", {
+  id: "forward-blocked-a",
+  form: "defaultless-form",
+});
+const forwardBlockedB = new FakeElement("input", {
+  id: "forward-blocked-b",
+  form: "defaultless-form",
+});
+const defaultlessForm = new FakeElement("form", {
+  id: "defaultless-form",
+  action: "/blocked",
+  method: "get",
+});
+forwardBlockedA.form = defaultlessForm;
+forwardBlockedB.form = defaultlessForm;
 const unresolvedFormSearch = new FakeElement("input", {
   id: "unresolved-form-search",
   form: "missing-form",
@@ -633,6 +648,9 @@ const body = new FakeElement("body", {}, "", [
   fieldsetSubmitForm,
   fieldsetBlockerForm,
   legendSubmitForm,
+  forwardBlockedA,
+  forwardBlockedB,
+  defaultlessForm,
   unresolvedFormOwner,
   opacityContainer,
   visibilityContainer,
@@ -687,6 +705,9 @@ const allElements = [
   legendSubmitFieldset,
   firstLegend,
   legendSubmitButton,
+  defaultlessForm,
+  forwardBlockedA,
+  forwardBlockedB,
   unresolvedFormOwner,
   unresolvedFormSearch,
   emptyFormSearch,
@@ -924,6 +945,16 @@ exports.chromium = {
         'control_type="text" form_action="/legend-submit" form_method="get"'
     ) in snapshot
     assert 'selector="#legend-submit"' in snapshot
+    assert 'field "forward-blocked-a" selector="#forward-blocked-a"' in snapshot
+    assert (
+        'field "forward-blocked-a" selector="#forward-blocked-a" '
+        'control_type="text" form_action='
+    ) not in snapshot
+    assert 'field "forward-blocked-b" selector="#forward-blocked-b"' in snapshot
+    assert (
+        'field "forward-blocked-b" selector="#forward-blocked-b" '
+        'control_type="text" form_action='
+    ) not in snapshot
     assert 'field "unresolved-form-search" selector="#unresolved-form-search"' in snapshot
     assert (
         'field "unresolved-form-search" selector="#unresolved-form-search" '

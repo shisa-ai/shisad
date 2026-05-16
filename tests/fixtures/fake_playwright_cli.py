@@ -213,7 +213,7 @@ class _PageParser(HTMLParser):
                 "action": attr_map.get("action", ""),
                 "method": _normalize_form_method(attr_map.get("method", "")),
                 "id": attr_map.get("id", ""),
-                "_key": attr_map.get("id", "") or f"__form_{len(self._forms) + 1}",
+                "_key": f"__form_{len(self._forms) + 1}",
             }
             self._forms.append(self._current_form)
             return
@@ -653,6 +653,17 @@ def _resolve_target(parser: _PageParser, target: str) -> dict[str, str] | None:
     return None
 
 
+def _get_form_submission_url(
+    *,
+    current_url: str,
+    action: str,
+    fields: Mapping[str, str],
+) -> str:
+    destination = urljoin(current_url, action)
+    encoded = urlencode(fields)
+    return urlparse(destination)._replace(query=encoded).geturl()
+
+
 def _write_text_output(path: str | None, text: str) -> None:
     if path:
         Path(path).write_text(text, encoding="utf-8")
@@ -780,11 +791,12 @@ def _handle_fill(
         ):
             action = target_element.get("form_action", "") or next_url
             method = _normalize_form_method(target_element.get("form_method", "get"))
-            if method == "get" and submission_fields:
-                encoded = urlencode(submission_fields)
-                separator = "&" if "?" in action else "?"
-                next_url = urljoin(next_url, action)
-                next_url = f"{next_url}{separator}{encoded}"
+            if method == "get":
+                next_url = _get_form_submission_url(
+                    current_url=next_url,
+                    action=action,
+                    fields=submission_fields,
+                )
             else:
                 next_url = urljoin(next_url, action)
     state["current_url"] = next_url
@@ -839,11 +851,12 @@ def _handle_click(
         action = element.get("form_action", "") or next_url
         method = _normalize_form_method(element.get("form_method", "get"))
         fields = dict(state.get("fields", {}))
-        if method == "get" and fields:
-            encoded = urlencode(fields)
-            separator = "&" if "?" in action else "?"
-            next_url = urljoin(next_url, action)
-            next_url = f"{next_url}{separator}{encoded}"
+        if method == "get":
+            next_url = _get_form_submission_url(
+                current_url=next_url,
+                action=action,
+                fields=fields,
+            )
         else:
             next_url = urljoin(next_url, action)
     state["current_url"] = next_url

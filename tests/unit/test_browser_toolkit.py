@@ -1529,6 +1529,12 @@ def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
             "<input id='forward-blocked-a' name='a' type='text' form='defaultless-form' />"
             "<input id='forward-blocked-b' name='b' type='text' form='defaultless-form' />"
             "<form id='defaultless-form' action='/blocked' method='get'></form>"
+            "<form id='duplicate-form' action='/first' method='get'>"
+            "<input id='duplicate-first-field' name='first' type='text' />"
+            "</form>"
+            "<form id='duplicate-form' action='/second' method='get'>"
+            "<input id='duplicate-second-field' name='second' type='text' />"
+            "</form>"
             "<form id='owner-form' action='/should-not-submit' method='post'>"
             "<input id='empty-form-search' name='q' type='text' form='' />"
             "<input id='missing-form-search' name='q' type='text' form='missing-form' />"
@@ -1582,12 +1588,99 @@ def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
         assert 'selector="#forward-blocked-a" control_type="text" form_action=' not in snapshot
         assert 'selector="#forward-blocked-b" control_type="text"' in snapshot
         assert 'selector="#forward-blocked-b" control_type="text" form_action=' not in snapshot
+        assert (
+            'selector="#duplicate-first-field" control_type="text" '
+            'form_action="/first" form_method="get"'
+        ) in snapshot
+        assert (
+            'selector="#duplicate-second-field" control_type="text" '
+            'form_action="/second" form_method="get"'
+        ) in snapshot
         assert 'selector="#empty-form-search" control_type="text"' in snapshot
         assert 'selector="#empty-form-search" control_type="text" form_action=' not in snapshot
         assert 'selector="#missing-form-search" control_type="text"' in snapshot
         assert 'selector="#missing-form-search" control_type="text" form_action=' not in snapshot
         assert 'selector="#empty-form-submit" control_type="submit"' in snapshot
         assert 'selector="#empty-form-submit" control_type="submit" form_action=' not in snapshot
+    finally:
+        browser_server.close()
+
+
+def test_gh24_fake_playwright_cli_get_submission_replaces_action_query(
+    tmp_path: Path,
+) -> None:
+    browser_server = _start_fixture_server(form_action="/submitted?course=1")
+    try:
+        fixture_cli = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+        state_dir = tmp_path / ".fake-playwright"
+        state_dir.mkdir()
+        state_path = state_dir / "shisad-browser-session.json"
+        current_url = f"{browser_server.base_url}/"
+        state_path.write_text(
+            json.dumps({"opened": True, "current_url": current_url, "fields": {}}),
+            encoding="utf-8",
+        )
+
+        fill_submit = subprocess.run(
+            [
+                sys.executable,
+                str(fixture_cli),
+                "-s=shisad-browser-session",
+                "fill",
+                "#search",
+                "alpha",
+                "--submit",
+            ],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+
+        assert fill_submit.returncode == 0, fill_submit.stderr
+        fake_state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert fake_state["current_url"] == f"{browser_server.base_url}/submitted?q=alpha"
+
+        state_path.write_text(
+            json.dumps({"opened": True, "current_url": current_url, "fields": {}}),
+            encoding="utf-8",
+        )
+        store_field = subprocess.run(
+            [
+                sys.executable,
+                str(fixture_cli),
+                "-s=shisad-browser-session",
+                "fill",
+                "#search",
+                "beta",
+            ],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        assert store_field.returncode == 0, store_field.stderr
+
+        click_submit = subprocess.run(
+            [
+                sys.executable,
+                str(fixture_cli),
+                "-s=shisad-browser-session",
+                "click",
+                "#submit",
+            ],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+
+        assert click_submit.returncode == 0, click_submit.stderr
+        fake_state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert fake_state["current_url"] == f"{browser_server.base_url}/submitted?q=beta"
     finally:
         browser_server.close()
 
@@ -3442,6 +3535,120 @@ async def test_gh24_browser_confirmations_allow_canonical_root_destination_witho
 
     assert result["ok"] is True
     assert result["url"] == "https://example.com/"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click_submit", "type_submit", "type_click"])
+async def test_gh24_browser_get_form_allows_action_query_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://origin.test/"
+    field = BrowserSnapshotElement(
+        ref="e1",
+        kind="field",
+        label="name",
+        selector="#name",
+        control_type="text",
+        form_action="https://example.com/reserve?course=1",
+        form_method="get",
+    )
+    button = BrowserSnapshotElement(
+        ref="e2" if action == "type_click" else "e1",
+        kind="button",
+        label="Reserve",
+        selector="#reserve",
+        form_action="https://example.com/reserve?course=1",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        if action == "type_click":
+            return [field, button]
+        return [field if action == "type_submit" else button]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "https://example.com/reserve?name=alice",
+            "title": "Reserve",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    if action == "click_submit":
+        result = await toolkit.click(
+            session=session,
+            target="#reserve",
+            resolved_target="#reserve",
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+    elif action == "type_submit":
+        result = await toolkit.type_text(
+            session=session,
+            target="#name",
+            resolved_target="#name",
+            text="alice",
+            submit=True,
+            source_url=source_url,
+            source_binding=BrowserToolkit._binding_hash_for_element(
+                field,
+                current_url=source_url,
+                submit=True,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                field,
+                current_url=source_url,
+                submit=True,
+            ),
+        )
+    else:
+        result = await toolkit.type_text(
+            session=session,
+            target="#name",
+            resolved_target="#name",
+            text="alice",
+            click_target="#reserve",
+            resolved_click_target="#reserve",
+            source_url=source_url,
+            click_source_binding=BrowserToolkit._binding_hash_for_element(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+            destination=BrowserToolkit._predict_destination_url(
+                button,
+                current_url=source_url,
+                submit=False,
+            ),
+        )
+
+    assert result["ok"] is True
+    assert result["url"] == "https://example.com/reserve?name=alice"
 
 
 @pytest.mark.asyncio
