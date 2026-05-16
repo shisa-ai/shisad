@@ -353,6 +353,21 @@ async function snapshot(page) {
         "url",
         "week",
       ]);
+      const implicitEnterSubmitInputTypes = new Set([
+        "date",
+        "datetime-local",
+        "email",
+        "month",
+        "number",
+        "password",
+        "search",
+        "tel",
+        "text",
+        "time",
+        "url",
+        "week",
+      ]);
+      const implicitSubmitBlockingFieldCount = new WeakMap();
       const controlTypeFor = (element, tag) => {
         if (tag === "button") {
           const buttonType = String(element.getAttribute("type") || "").trim().toLowerCase();
@@ -373,6 +388,7 @@ async function snapshot(page) {
         }
         return false;
       };
+      const elementForm = (element) => element.form || element.closest("form");
       const defaultSubmitterFor = (form) => {
         if (!form) {
           return null;
@@ -380,10 +396,32 @@ async function snapshot(page) {
         return (
           Array.from(document.querySelectorAll("button, input")).find((candidate) => {
             const tag = candidate.tagName.toLowerCase();
-            return candidate.form === form && isSubmitControl(tag, controlTypeFor(candidate, tag));
+            return elementForm(candidate) === form && isSubmitControl(tag, controlTypeFor(candidate, tag));
           }) || null
         );
       };
+      const isImplicitEnterSubmitField = (tag, controlType) =>
+        tag === "input" && implicitEnterSubmitInputTypes.has(controlType);
+      const implicitSubmitBlockingFieldCountFor = (form) => {
+        if (!form) {
+          return 0;
+        }
+        if (!implicitSubmitBlockingFieldCount.has(form)) {
+          const count = Array.from(document.querySelectorAll("input")).filter((candidate) => {
+            const tag = candidate.tagName.toLowerCase();
+            return (
+              elementForm(candidate) === form &&
+              isImplicitEnterSubmitField(tag, controlTypeFor(candidate, tag))
+            );
+          }).length;
+          implicitSubmitBlockingFieldCount.set(form, count);
+        }
+        return implicitSubmitBlockingFieldCount.get(form) || 0;
+      };
+      const canImplicitlySubmitFromField = (element, tag, controlType, form) =>
+        elementForm(element) === form &&
+        isImplicitEnterSubmitField(tag, controlType) &&
+        implicitSubmitBlockingFieldCountFor(form) <= 1;
       const formMethodFor = (form, submitter) => {
         const raw =
           submitter && submitter.hasAttribute("formmethod")
@@ -397,6 +435,9 @@ async function snapshot(page) {
           return { action: "", method: "" };
         }
         const submitter = isSubmitControl(tag, controlType) ? element : defaultSubmitterFor(form);
+        if (!submitter && !canImplicitlySubmitFromField(element, tag, controlType, form)) {
+          return { action: "", method: "" };
+        }
         const action =
           submitter && submitter.hasAttribute("formaction")
             ? submitter.getAttribute("formaction") || ""

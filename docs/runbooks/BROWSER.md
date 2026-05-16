@@ -60,7 +60,7 @@ The shipped wrapper implements:
 | `open [url]` | Create or mark a browser session as open. |
 | `goto <url>` | Navigate the current session to a URL. |
 | `eval <function> [element] --filename <path>` | Write JSON metadata with `url`, `title`, and `visible_text`. |
-| `snapshot [element] --filename <path>` | Write a text snapshot with element refs, labels, selectors, hrefs, and form metadata. |
+| `snapshot [element] --filename <path>` | Write a text snapshot with element refs, labels, selectors, hrefs, control types, and submit-capable form metadata. |
 | `fill <selector> <text> [--submit] [--click <selector>] [--no-store]` | Fill a selector, optionally submit with Enter or click a selector in the same action, and optionally skip replay-state persistence. |
 | `click <selector>` | Click a selector. |
 | `screenshot [target] --filename <path>` | Write a PNG screenshot. |
@@ -82,7 +82,7 @@ Snapshot lines use the form:
 
 ```text
 [e1] link "Continue" selector="#continue" href="/next"
-[e2] field "q" selector="#search" form_action="/submitted" form_method="get"
+[e2] field "q" selector="#search" control_type="text" form_action="/submitted" form_method="get"
 ```
 
 The daemon treats browser page text, snapshots, and screenshots as untrusted

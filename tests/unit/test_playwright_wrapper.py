@@ -235,6 +235,16 @@ const dialogForm = new FakeElement(
   [dialogSearch],
 );
 dialogSearch.form = dialogForm;
+const multiSearch = new FakeElement("input", { id: "multi-search" });
+const multiOther = new FakeElement("input", { id: "multi-other" });
+const multiFieldForm = new FakeElement(
+  "form",
+  { id: "multi-field-form", action: "/multi", method: "get" },
+  "",
+  [multiSearch, multiOther],
+);
+multiSearch.form = multiFieldForm;
+multiOther.form = multiFieldForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -247,6 +257,7 @@ const body = new FakeElement("body", {}, "", [
   externalForm,
   externalSubmit,
   dialogForm,
+  multiFieldForm,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -267,6 +278,9 @@ const allElements = [
   externalSubmit,
   dialogForm,
   dialogSearch,
+  multiFieldForm,
+  multiSearch,
+  multiOther,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -452,6 +466,11 @@ exports.chromium = {
         'field "dialog-search" selector="#dialog-search" control_type="text" '
         'form_action="/dialog" form_method="dialog"'
     ) in snapshot
+    assert 'field "multi-search" selector="#multi-search" control_type="text"' in snapshot
+    assert (
+        'field "multi-search" selector="#multi-search" control_type="text" '
+        'form_action='
+    ) not in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot

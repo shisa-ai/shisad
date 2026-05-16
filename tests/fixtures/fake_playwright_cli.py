@@ -202,10 +202,13 @@ class _PageParser(HTMLParser):
                 form
                 and copy.get("kind") == "field"
                 and copy.get("control_type", "") not in {"submit", "image"}
-                and form.get("default_action") is not None
             ):
-                copy["form_action"] = form.get("default_action", "")
-                copy["form_method"] = form.get("default_method", "get")
+                if form.get("default_action") is not None:
+                    copy["form_action"] = form.get("default_action", "")
+                    copy["form_method"] = form.get("default_method", "get")
+                elif self._can_implicitly_submit_from_field(copy, form=form):
+                    copy["form_action"] = form.get("action", "")
+                    copy["form_method"] = form.get("method", "get")
             copy.pop("_form_id", None)
             copy["ref"] = f"e{index}"
             rendered.append(copy)
@@ -225,6 +228,22 @@ class _PageParser(HTMLParser):
                 return form
         return None
 
+    def _can_implicitly_submit_from_field(
+        self,
+        element: Mapping[str, str],
+        *,
+        form: dict[str, str],
+    ) -> bool:
+        if not _is_implicit_enter_submit_field(element):
+            return False
+        form_id = form.get("_key", "")
+        blocking_fields = [
+            item
+            for item in self._elements
+            if item.get("_form_id", "") == form_id and _is_implicit_enter_submit_field(item)
+        ]
+        return len(blocking_fields) <= 1
+
     @staticmethod
     def _form_metadata_for(
         attrs: dict[str, str],
@@ -232,7 +251,7 @@ class _PageParser(HTMLParser):
         form: dict[str, str] | None,
         is_submitter: bool,
     ) -> tuple[str, str]:
-        if not form:
+        if not form or not is_submitter:
             return "", ""
         action = (
             attrs.get("formaction", "")
@@ -258,6 +277,14 @@ class _PageParser(HTMLParser):
         action, method = self._form_metadata_for(attrs, form=form, is_submitter=True)
         form["default_action"] = action
         form["default_method"] = method
+
+
+def _is_implicit_enter_submit_field(element: Mapping[str, str]) -> bool:
+    return (
+        element.get("kind", "").strip().lower() == "field"
+        and element.get("control_type", "").strip().lower()
+        in _IMPLICIT_ENTER_SUBMIT_INPUT_TYPES
+    )
 
 
 def _selector_for(*, tag: str, attrs: dict[str, str]) -> str:
