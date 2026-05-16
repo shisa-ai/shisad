@@ -27,6 +27,19 @@ def test_gh33_playwright_wrapper_supports_shisad_protocol_with_fake_playwright(
         r"""
 const fs = require("fs");
 
+function defaultDisplayFor(element) {
+  const blockTags = new Set([
+    "body",
+    "div",
+    "fieldset",
+    "form",
+    "html",
+    "legend",
+    "section",
+  ]);
+  return blockTags.has(element.tagName.toLowerCase()) ? "block" : "inline";
+}
+
 function submittedUrl(page) {
   const value = encodeURIComponent(page.fields["#search"] || "");
   return new URL(`/submitted?q=${value}`, page._url || "http://example.test/").toString();
@@ -69,7 +82,7 @@ class Locator {
       const previousWindow = globalThis.window;
       globalThis.window = {
         getComputedStyle: (element) => ({
-          display: element.getAttribute("data-display") || "block",
+          display: element.getAttribute("data-display") || defaultDisplayFor(element),
           visibility: element.getAttribute("data-visibility") || "visible",
           opacity: element.getAttribute("data-opacity") || "1",
         }),
@@ -191,9 +204,27 @@ class FakeElement {
       this.refreshText();
       return;
     }
+    if (text === "hello display-block world") {
+      this.textNode.textContent = "hello";
+      this.replaceChildren([
+        new FakeElement("span", { "data-display": "block" }, "world"),
+      ]);
+      this.refreshText();
+      return;
+    }
     if (text === "hello empty-block world") {
       this.textNode.textContent = "hello";
       this.replaceChildren([new FakeElement("div"), new FakeElement("span", {}, "world")]);
+      this.refreshText();
+      return;
+    }
+    if (text === "leading empty-block world") {
+      this.textNode.textContent = "";
+      this.replaceChildren([
+        new FakeElement("div"),
+        new FakeElement("div"),
+        new FakeElement("span", {}, "world"),
+      ]);
       this.refreshText();
       return;
     }
@@ -674,7 +705,7 @@ class Page {
       const previousWindow = globalThis.window;
       globalThis.window = {
         getComputedStyle: (element) => ({
-          display: element.getAttribute("data-display") || "block",
+          display: element.getAttribute("data-display") || defaultDisplayFor(element),
           visibility: element.getAttribute("data-visibility") || "visible",
           opacity: element.getAttribute("data-opacity") || "1",
         }),
@@ -959,6 +990,14 @@ exports.chromium = {
     assert "alphabeta" in hidden_break_text["visible_text"]
     assert "alpha\nbeta" not in hidden_break_text["visible_text"]
 
+    assert run_wrapper("fill", "#editor", "\n\n").returncode == 0
+    blank_line_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert blank_line_state["fields"]["#editor"] == "\n\n"
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    blank_line_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "editor:\n\n" in blank_line_text["visible_text"]
+
     assert run_wrapper("fill", "#editor", "empty placeholder").returncode == 0
     placeholder_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert placeholder_state["fields"]["#editor"] == ""
@@ -974,12 +1013,26 @@ exports.chromium = {
     assert "hello\nworld" in block_child_text["visible_text"]
     assert "helloworld" not in block_child_text["visible_text"]
 
+    assert run_wrapper("fill", "#editor", "hello display-block world").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    display_block_child_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "hello\nworld" in display_block_child_text["visible_text"]
+    assert "helloworld" not in display_block_child_text["visible_text"]
+
     assert run_wrapper("fill", "#editor", "hello empty-block world").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
     assert result.returncode == 0, result.stderr
     empty_block_child_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert "hello\nworld" in empty_block_child_text["visible_text"]
     assert "helloworld" not in empty_block_child_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "leading empty-block world").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    leading_empty_block_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "\n\nworld" in leading_empty_block_text["visible_text"]
+    assert "editor:world" not in leading_empty_block_text["visible_text"]
 
     assert run_wrapper("fill", "#editor", "hello double-empty-block world").returncode == 0
     result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))

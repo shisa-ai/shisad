@@ -650,6 +650,14 @@ async function syncFieldState(page, state) {
               "table",
               "ul",
             ]);
+            const blockDisplayValues = new Set([
+              "block",
+              "flex",
+              "flow-root",
+              "grid",
+              "list-item",
+              "table",
+            ]);
             const computedStyleFor = (item) =>
               typeof window !== "undefined" && typeof window.getComputedStyle === "function"
                 ? window.getComputedStyle(item)
@@ -667,8 +675,12 @@ async function syncFieldState(page, state) {
               const nextTextHidden = style
                 ? style.visibility === "hidden"
                 : textHidden;
-              return { tag, suppressed, nextTextHidden };
+              return { tag, style, suppressed, nextTextHidden };
             };
+            const isBlockBoundaryState = (state) =>
+              state.tag !== "br" &&
+              (blockTextTags.has(state.tag) ||
+                (state.style && blockDisplayValues.has(state.style.display)));
             const stripSyntheticTrailingBreak = (result) =>
               result.syntheticTrailingBreak ? result.text.slice(0, -1) : result.text;
             const textForChildren = (children, textHidden) => {
@@ -678,10 +690,10 @@ async function syncFieldState(page, state) {
               for (const child of children) {
                 const childState = child.nodeType === 1 ? elementTextState(child, textHidden) : null;
                 const childIsVisibleBlock = Boolean(
-                  childState &&
+                    childState &&
                     !childState.suppressed &&
                     !childState.nextTextHidden &&
-                    blockTextTags.has(childState.tag),
+                    isBlockBoundaryState(childState),
                 );
                 const childText = textFor(child, textHidden);
                 if (!childText) {
@@ -737,7 +749,7 @@ async function syncFieldState(page, state) {
             const editableText = stripSyntheticTrailingBreak(
               textForChildren(Array.from(element.childNodes || []), false),
             );
-            if (/^\n*$/u.test(editableText)) {
+            if (editableText === "\n") {
               return "";
             }
             return String(editableText);
