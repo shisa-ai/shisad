@@ -3653,10 +3653,15 @@ async def test_gh24_browser_get_form_allows_action_query_replacement(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["click_submit", "type_submit", "type_click"])
+@pytest.mark.parametrize(
+    "actual_query",
+    ["course=2&name=alice", "course=1&course=2&name=alice"],
+)
 async def test_gh24_browser_get_form_rejects_action_query_key_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     action: str,
+    actual_query: str,
 ) -> None:
     runner = _CapturingSuccessRunner()
     toolkit = _toolkit(tmp_path, runner=runner)
@@ -3692,7 +3697,7 @@ async def test_gh24_browser_get_form_rejects_action_query_key_drift(
     async def capture_page_state(**_: Any) -> dict[str, Any]:
         return {
             "ok": True,
-            "url": "https://example.com/reserve?course=2&name=alice",
+            "url": f"https://example.com/reserve?{actual_query}",
             "title": "Reserve",
             "content": "",
             "snapshot": "",

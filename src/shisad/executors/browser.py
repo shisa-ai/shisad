@@ -2429,8 +2429,6 @@ class BrowserToolkit:
     def _form_query_matches(expected_query: str, actual_query: str) -> bool:
         if not expected_query:
             return True
-        if actual_query == expected_query or actual_query.startswith(f"{expected_query}&"):
-            return True
         expected_values: dict[str, list[str]] = {}
         for key, value in parse_qsl(expected_query, keep_blank_values=True):
             expected_values.setdefault(key, []).append(value)
