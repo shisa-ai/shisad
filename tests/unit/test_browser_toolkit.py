@@ -1518,6 +1518,14 @@ def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
 ) -> None:
     state = {
         "prefix_html": (
+            "<form action='/idless' method='post'>"
+            "<button id='idless-submit' type='submit'>Idless</button>"
+            "</form>"
+            "<input id='private-key-search' name='private' type='text' form='__form_1' />"
+            "<input id='forward-form-search' name='forward' type='text' form='later-form' />"
+            "<form id='later-form' action='/later' method='get'>"
+            "<button id='later-submit' type='submit'>Later</button>"
+            "</form>"
             "<form id='owner-form' action='/should-not-submit' method='post'>"
             "<input id='empty-form-search' name='q' type='text' form='' />"
             "<input id='missing-form-search' name='q' type='text' form='missing-form' />"
@@ -1561,6 +1569,12 @@ def test_gh24_fake_playwright_cli_empty_form_attribute_is_ownerless(
 
         assert completed.returncode == 0, completed.stderr
         snapshot = snapshot_path.read_text(encoding="utf-8")
+        assert 'selector="#private-key-search" control_type="text"' in snapshot
+        assert 'selector="#private-key-search" control_type="text" form_action=' not in snapshot
+        assert (
+            'selector="#forward-form-search" control_type="text" '
+            'form_action="/later" form_method="get"'
+        ) in snapshot
         assert 'selector="#empty-form-search" control_type="text"' in snapshot
         assert 'selector="#empty-form-search" control_type="text" form_action=' not in snapshot
         assert 'selector="#missing-form-search" control_type="text"' in snapshot

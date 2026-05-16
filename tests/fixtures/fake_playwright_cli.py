@@ -246,6 +246,7 @@ class _PageParser(HTMLParser):
                 "control_type": control_type,
                 "id": attr_map.get("id", ""),
                 "_form_id": form.get("_key", "") if form else "",
+                "_native_disabled": "1" if native_disabled else "",
                 "disabled": "1" if _is_action_disabled_attrs(
                     attr_map,
                     inherited_native_disabled=native_disabled,
@@ -261,6 +262,12 @@ class _PageParser(HTMLParser):
                 "form_action": form_action,
                 "form_method": form_method,
             }
+            if "form" in attr_map:
+                self._current_element["_form_attr"] = attr_map.get("form", "")
+            if "formaction" in attr_map:
+                self._current_element["_formaction"] = attr_map.get("formaction", "")
+            if "formmethod" in attr_map:
+                self._current_element["_formmethod"] = attr_map.get("formmethod", "")
             self._record_default_submitter(
                 form,
                 attr_map,
@@ -286,6 +293,8 @@ class _PageParser(HTMLParser):
                     "name": attr_map.get("name", ""),
                     "id": attr_map.get("id", ""),
                     "_form_id": form.get("_key", "") if form else "",
+                    "_form_attr": attr_map.get("form", "") if "form" in attr_map else "",
+                    "_native_disabled": "1" if native_disabled else "",
                     "disabled": "1" if _is_action_disabled_attrs(
                         attr_map,
                         inherited_native_disabled=native_disabled,
@@ -302,6 +311,12 @@ class _PageParser(HTMLParser):
                     "form_method": form_method,
                 }
             )
+            if "form" not in attr_map:
+                self._elements[-1].pop("_form_attr", None)
+            if "formaction" in attr_map:
+                self._elements[-1]["_formaction"] = attr_map.get("formaction", "")
+            if "formmethod" in attr_map:
+                self._elements[-1]["_formmethod"] = attr_map.get("formmethod", "")
             self._record_default_submitter(
                 form,
                 attr_map,
@@ -388,12 +403,24 @@ class _PageParser(HTMLParser):
 
     @property
     def elements(self) -> list[dict[str, str]]:
+        self._refresh_default_submitters()
         rendered: list[dict[str, str]] = []
         for item in self._elements:
             copy = dict(item)
             if _is_disabled_element(copy) or _is_hidden_element(copy):
                 continue
-            form = self._form_by_id(copy.get("_form_id", ""))
+            form = self._resolved_form_for_element(copy)
+            if form:
+                copy["_form_id"] = form.get("_key", "")
+            if form and self._is_submitter_element(copy):
+                attrs = self._attrs_for_element(copy)
+                form_action, form_method = self._form_metadata_for(
+                    attrs,
+                    form=form,
+                    is_submitter=True,
+                )
+                copy["form_action"] = form_action
+                copy["form_method"] = form_method
             if (
                 form
                 and copy.get("kind") == "field"
@@ -406,6 +433,10 @@ class _PageParser(HTMLParser):
                     copy["form_action"] = form.get("action", "")
                     copy["form_method"] = form.get("method", "get")
             copy.pop("_form_id", None)
+            copy.pop("_form_attr", None)
+            copy.pop("_formaction", None)
+            copy.pop("_formmethod", None)
+            copy.pop("_native_disabled", None)
             copy["ref"] = f"e{len(rendered) + 1}"
             rendered.append(copy)
         return rendered
@@ -419,9 +450,62 @@ class _PageParser(HTMLParser):
         if not form_id:
             return None
         for form in self._forms:
-            if form.get("id") == form_id or form.get("_key") == form_id:
+            if form.get("id") == form_id:
                 return form
         return None
+
+    def _form_by_key(self, form_key: str) -> dict[str, str] | None:
+        if not form_key:
+            return None
+        for form in self._forms:
+            if form.get("_key") == form_key:
+                return form
+        return None
+
+    def _resolved_form_for_element(self, element: Mapping[str, str]) -> dict[str, str] | None:
+        if "_form_attr" in element:
+            return self._form_by_id(element.get("_form_attr", ""))
+        return self._form_by_key(element.get("_form_id", ""))
+
+    @staticmethod
+    def _attrs_for_element(element: Mapping[str, str]) -> dict[str, str]:
+        attrs: dict[str, str] = {}
+        if "_formaction" in element:
+            attrs["formaction"] = element.get("_formaction", "")
+        if "_formmethod" in element:
+            attrs["formmethod"] = element.get("_formmethod", "")
+        return attrs
+
+    @staticmethod
+    def _is_submitter_element(element: Mapping[str, str]) -> bool:
+        control_type = element.get("control_type", "")
+        if element.get("kind") == "button":
+            return control_type == "submit"
+        return element.get("kind") == "field" and control_type in {"submit", "image"}
+
+    def _refresh_default_submitters(self) -> None:
+        for form in self._forms:
+            form.pop("default_submitter_seen", None)
+            form.pop("default_submitter_disabled", None)
+            form.pop("default_action", None)
+            form.pop("default_method", None)
+        for item in self._elements:
+            form = self._resolved_form_for_element(item)
+            if not form or not self._is_submitter_element(item):
+                continue
+            if form.get("default_submitter_seen") == "1":
+                continue
+            form["default_submitter_seen"] = "1"
+            if item.get("_native_disabled") == "1":
+                form["default_submitter_disabled"] = "1"
+                continue
+            action, method = self._form_metadata_for(
+                self._attrs_for_element(item),
+                form=form,
+                is_submitter=True,
+            )
+            form["default_action"] = action
+            form["default_method"] = method
 
     def _can_implicitly_submit_from_field(
         self,
