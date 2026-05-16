@@ -159,6 +159,9 @@ class FakeElement {
   getAttribute(name) {
     return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
   }
+  hasAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name);
+  }
   get isContentEditable() {
     const ownValue = this.getAttribute("contenteditable");
     if (ownValue !== null) {
@@ -201,6 +204,20 @@ const editor = new FakeElement(
   "Editable ",
   [lockedToken],
 );
+const externalSearch = new FakeElement("input", { id: "external-search" });
+const externalForm = new FakeElement(
+  "form",
+  { id: "external-form", action: "/external", method: "get" },
+  "",
+  [externalSearch],
+);
+const externalSubmit = new FakeElement(
+  "button",
+  { id: "external-submit", type: "submit", form: "external-form", formaction: "/override" },
+  "External Submit",
+);
+externalSearch.form = externalForm;
+externalSubmit.form = externalForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -210,6 +227,8 @@ const body = new FakeElement("body", {}, "", [
   hiddenReserve,
   hiddenInput,
   section,
+  externalForm,
+  externalSubmit,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -225,10 +244,25 @@ const allElements = [
   lockedToken,
   section,
   nestedButton,
+  externalForm,
+  externalSearch,
+  externalSubmit,
 ];
+const submitterSelector =
+  'button:not([type]), button[type="submit" i], input[type="submit" i], input[type="image" i]';
 const fakeDocument = {
   documentElement: html,
   querySelectorAll(selector) {
+    if (selector === submitterSelector) {
+      return allElements.filter((element) => {
+        const tag = element.tagName.toLowerCase();
+        const type = String(element.getAttribute("type") || "").toLowerCase();
+        return (
+          (tag === "button" && (!type || type === "submit")) ||
+          (tag === "input" && ["submit", "image"].includes(type))
+        );
+      });
+    }
     if (selector.includes(",")) {
       return allElements.filter((element) => {
         const tag = element.tagName.toLowerCase();
@@ -391,6 +425,10 @@ exports.chromium = {
     assert '[e3] button "Submit" selector="#submit"' in snapshot
     assert '[e4] field "Editable" selector="#editor"' in snapshot
     assert 'button "Nested" selector="html > body > section > button"' in snapshot
+    assert (
+        'field "external-search" selector="#external-search" control_type="text" '
+        'form_action="/override" form_method="get"'
+    ) in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot
