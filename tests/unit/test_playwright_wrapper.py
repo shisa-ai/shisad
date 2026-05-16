@@ -191,6 +191,12 @@ class FakeElement {
       this.refreshText();
       return;
     }
+    if (text === "hello empty-block world") {
+      this.textNode.textContent = "hello";
+      this.replaceChildren([new FakeElement("div"), new FakeElement("span", {}, "world")]);
+      this.refreshText();
+      return;
+    }
     if (text.includes("\n")) {
       const parts = text.split("\n");
       const generatedChildren = [];
@@ -947,6 +953,13 @@ exports.chromium = {
     block_child_text = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert "hello\nworld" in block_child_text["visible_text"]
     assert "helloworld" not in block_child_text["visible_text"]
+
+    assert run_wrapper("fill", "#editor", "hello empty-block world").returncode == 0
+    result = run_wrapper("eval", "() => JSON.stringify({})", "--filename", str(metadata_path))
+    assert result.returncode == 0, result.stderr
+    empty_block_child_text = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert "hello\nworld" in empty_block_child_text["visible_text"]
+    assert "helloworld" not in empty_block_child_text["visible_text"]
 
     assert run_wrapper("fill", "#search", "same-url-secret").returncode == 0
     assert run_wrapper("click", "#same-url").returncode == 0

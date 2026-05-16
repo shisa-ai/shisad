@@ -654,25 +654,49 @@ async function syncFieldState(page, state) {
               typeof window !== "undefined" && typeof window.getComputedStyle === "function"
                 ? window.getComputedStyle(item)
                 : null;
+            const elementTextState = (node, textHidden) => {
+              const attrValue = node.getAttribute("contenteditable");
+              const tag = node.tagName.toLowerCase();
+              const style = computedStyleFor(node);
+              const suppressed =
+                (attrValue !== null && String(attrValue).toLowerCase() === "false") ||
+                tag === "script" ||
+                tag === "style" ||
+                node.hidden ||
+                (style && (style.display === "none" || style.opacity === "0"));
+              const nextTextHidden = style
+                ? style.visibility === "hidden"
+                : textHidden;
+              return { tag, suppressed, nextTextHidden };
+            };
             const stripSyntheticTrailingBreak = (result) =>
               result.syntheticTrailingBreak ? result.text.slice(0, -1) : result.text;
             const textForChildren = (children, textHidden) => {
               let text = "";
               let syntheticTrailingBreak = false;
               for (const child of children) {
+                const childState = child.nodeType === 1 ? elementTextState(child, textHidden) : null;
+                const childIsVisibleBlock = Boolean(
+                  childState &&
+                    !childState.suppressed &&
+                    !childState.nextTextHidden &&
+                    blockTextTags.has(childState.tag),
+                );
                 const childText = textFor(child, textHidden);
                 if (!childText) {
+                  if (childIsVisibleBlock && text && !text.endsWith("\n")) {
+                    text += "\n";
+                    syntheticTrailingBreak = false;
+                  }
                   continue;
                 }
-                const childIsBlock =
-                  child.nodeType === 1 && blockTextTags.has(child.tagName.toLowerCase());
-                if (childIsBlock && text && !text.endsWith("\n")) {
+                if (childIsVisibleBlock && text && !text.endsWith("\n")) {
                   text += "\n";
                   syntheticTrailingBreak = false;
                 }
                 text += childText;
                 syntheticTrailingBreak = false;
-                if (childIsBlock && !text.endsWith("\n")) {
+                if (childIsVisibleBlock && !text.endsWith("\n")) {
                   text += "\n";
                   syntheticTrailingBreak = true;
                 }
@@ -689,21 +713,10 @@ async function syncFieldState(page, state) {
               if (node.nodeType !== 1) {
                 return "";
               }
-              const attrValue = node.getAttribute("contenteditable");
-              const tag = node.tagName.toLowerCase();
-              const style = computedStyleFor(node);
-              if (
-                (attrValue !== null && String(attrValue).toLowerCase() === "false") ||
-                tag === "script" ||
-                tag === "style" ||
-                node.hidden ||
-                (style && (style.display === "none" || style.opacity === "0"))
-              ) {
+              const { tag, suppressed, nextTextHidden } = elementTextState(node, textHidden);
+              if (suppressed) {
                 return "";
               }
-              const nextTextHidden = style
-                ? style.visibility === "hidden"
-                : textHidden;
               if (tag === "br") {
                 return nextTextHidden ? "" : "\n";
               }
