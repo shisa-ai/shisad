@@ -260,7 +260,11 @@ async function snapshot(page) {
         if (tag === "input" && String(element.getAttribute("type") || "").toLowerCase() === "hidden") {
           return false;
         }
-        if (element.disabled || element.getAttribute("aria-disabled") === "true" || element.hidden) {
+        if (
+          isNativeDisabledControl(element) ||
+          element.getAttribute("aria-disabled") === "true" ||
+          element.hidden
+        ) {
           return false;
         }
         if (element.getAttribute("aria-hidden") === "true") {
@@ -388,7 +392,9 @@ async function snapshot(page) {
         }
         return false;
       };
-      const isNativeDisabledControl = (element) => Boolean(element.disabled);
+      const isNativeDisabledControl = (element) =>
+        Boolean(element.disabled) ||
+        (typeof element.matches === "function" && element.matches(":disabled"));
       const elementForm = (element) => element.form || element.closest("form");
       const defaultSubmitterFor = (form) => {
         if (!form) {

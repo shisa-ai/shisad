@@ -175,6 +175,13 @@ class FakeElement {
   get disabled() {
     return this.hasAttribute("disabled");
   }
+  matches(selector) {
+    if (selector === ":disabled") {
+      const fieldset = this.closest("fieldset");
+      return this.disabled || Boolean(fieldset && fieldset.disabled);
+    }
+    return false;
+  }
   closest(tagName) {
     let current = this.parentElement;
     while (current) {
@@ -289,6 +296,42 @@ const disabledBlockerForm = new FakeElement(
 );
 disabledBlockerSearch.form = disabledBlockerForm;
 disabledBlockerOther.form = disabledBlockerForm;
+const fieldsetSubmitSearch = new FakeElement("input", { id: "fieldset-submit-search" });
+const fieldsetSubmitButton = new FakeElement(
+  "button",
+  { id: "fieldset-submit", type: "submit" },
+  "Fieldset Submit",
+);
+const disabledSubmitFieldset = new FakeElement(
+  "fieldset",
+  { disabled: "" },
+  "",
+  [fieldsetSubmitButton],
+);
+const fieldsetSubmitForm = new FakeElement(
+  "form",
+  { id: "fieldset-submit-form", action: "/fieldset-submit", method: "get" },
+  "",
+  [fieldsetSubmitSearch, disabledSubmitFieldset],
+);
+fieldsetSubmitSearch.form = fieldsetSubmitForm;
+fieldsetSubmitButton.form = fieldsetSubmitForm;
+const fieldsetBlockerSearch = new FakeElement("input", { id: "fieldset-blocker-search" });
+const fieldsetBlockerOther = new FakeElement("input", { id: "fieldset-blocker-other" });
+const disabledBlockerFieldset = new FakeElement(
+  "fieldset",
+  { disabled: "" },
+  "",
+  [fieldsetBlockerOther],
+);
+const fieldsetBlockerForm = new FakeElement(
+  "form",
+  { id: "fieldset-blocker-form", action: "/fieldset-blocker", method: "get" },
+  "",
+  [fieldsetBlockerSearch, disabledBlockerFieldset],
+);
+fieldsetBlockerSearch.form = fieldsetBlockerForm;
+fieldsetBlockerOther.form = fieldsetBlockerForm;
 const body = new FakeElement("body", {}, "", [
   continueLink,
   searchInput,
@@ -305,6 +348,8 @@ const body = new FakeElement("body", {}, "", [
   disabledSubmitForm,
   ariaSubmitForm,
   disabledBlockerForm,
+  fieldsetSubmitForm,
+  fieldsetBlockerForm,
 ]);
 const html = new FakeElement("html", {}, "", [body]);
 const allElements = [
@@ -337,6 +382,14 @@ const allElements = [
   disabledBlockerForm,
   disabledBlockerSearch,
   disabledBlockerOther,
+  fieldsetSubmitForm,
+  fieldsetSubmitSearch,
+  disabledSubmitFieldset,
+  fieldsetSubmitButton,
+  fieldsetBlockerForm,
+  fieldsetBlockerSearch,
+  disabledBlockerFieldset,
+  fieldsetBlockerOther,
 ];
 const submitterSelector = "button, input";
 const fakeDocument = {
@@ -543,6 +596,16 @@ exports.chromium = {
         'control_type="text" form_action='
     ) not in snapshot
     assert "#disabled-blocker-other" not in snapshot
+    assert (
+        'field "fieldset-submit-search" selector="#fieldset-submit-search" '
+        'control_type="text" form_action='
+    ) not in snapshot
+    assert 'selector="#fieldset-submit"' not in snapshot
+    assert (
+        'field "fieldset-blocker-search" selector="#fieldset-blocker-search" '
+        'control_type="text" form_action='
+    ) not in snapshot
+    assert "#fieldset-blocker-other" not in snapshot
     assert "button:nth-of-type(2)" not in snapshot
     assert "hidden-reserve" not in snapshot
     assert "Reserve" not in snapshot

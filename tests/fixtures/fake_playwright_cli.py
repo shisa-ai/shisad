@@ -85,9 +85,14 @@ def _is_native_disabled_attrs(attrs: Mapping[str, str]) -> bool:
     return "disabled" in attrs
 
 
-def _is_action_disabled_attrs(attrs: Mapping[str, str]) -> bool:
+def _is_action_disabled_attrs(
+    attrs: Mapping[str, str],
+    *,
+    inherited_native_disabled: bool = False,
+) -> bool:
     return (
-        _is_native_disabled_attrs(attrs)
+        inherited_native_disabled
+        or _is_native_disabled_attrs(attrs)
         or attrs.get("aria-disabled", "").strip().lower() == "true"
     )
 
@@ -98,6 +103,8 @@ class _PageParser(HTMLParser):
         self.title = ""
         self.visible_parts: list[str] = []
         self._tag_stack: list[str] = []
+        self._disabled_fieldset_depth = 0
+        self._disabled_fieldset_stack: list[bool] = []
         self._current_form: dict[str, str] | None = None
         self._forms: list[dict[str, str]] = []
         self._current_element: dict[str, str] | None = None
@@ -105,7 +112,14 @@ class _PageParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key: (value or "") for key, value in attrs}
+        inherited_native_disabled = self._disabled_fieldset_depth > 0
         self._tag_stack.append(tag)
+        if tag == "fieldset":
+            native_disabled = _is_native_disabled_attrs(attr_map) or inherited_native_disabled
+            self._disabled_fieldset_stack.append(native_disabled)
+            if native_disabled:
+                self._disabled_fieldset_depth += 1
+            return
         if tag == "form":
             self._current_form = {
                 "action": attr_map.get("action", ""),
@@ -126,6 +140,7 @@ class _PageParser(HTMLParser):
             return
         if tag == "button":
             form = self._form_for_attrs(attr_map)
+            native_disabled = _is_native_disabled_attrs(attr_map) or inherited_native_disabled
             control_type = _normalize_button_type(attr_map.get("type", ""))
             form_action, form_method = self._form_metadata_for(
                 attr_map,
@@ -138,16 +153,25 @@ class _PageParser(HTMLParser):
                 "control_type": control_type,
                 "id": attr_map.get("id", ""),
                 "_form_id": form.get("_key", "") if form else "",
-                "disabled": "1" if _is_action_disabled_attrs(attr_map) else "",
+                "disabled": "1" if _is_action_disabled_attrs(
+                    attr_map,
+                    inherited_native_disabled=native_disabled,
+                ) else "",
                 "selector": _selector_for(tag="button", attrs=attr_map),
                 "label": "",
                 "form_action": form_action,
                 "form_method": form_method,
             }
-            self._record_default_submitter(form, attr_map, is_submitter=control_type == "submit")
+            self._record_default_submitter(
+                form,
+                attr_map,
+                is_submitter=control_type == "submit",
+                native_disabled=native_disabled,
+            )
             return
         if tag in {"input", "textarea"}:
             form = self._form_for_attrs(attr_map)
+            native_disabled = _is_native_disabled_attrs(attr_map) or inherited_native_disabled
             control_type = _normalize_input_type(attr_map.get("type", "")) if tag == "input" else ""
             is_submitter = tag == "input" and control_type in {"submit", "image"}
             form_action, form_method = self._form_metadata_for(
@@ -163,16 +187,30 @@ class _PageParser(HTMLParser):
                     "name": attr_map.get("name", ""),
                     "id": attr_map.get("id", ""),
                     "_form_id": form.get("_key", "") if form else "",
-                    "disabled": "1" if _is_action_disabled_attrs(attr_map) else "",
+                    "disabled": "1" if _is_action_disabled_attrs(
+                        attr_map,
+                        inherited_native_disabled=native_disabled,
+                    ) else "",
                     "selector": _selector_for(tag=tag, attrs=attr_map),
                     "label": attr_map.get("name", "") or attr_map.get("id", "") or tag,
                     "form_action": form_action,
                     "form_method": form_method,
                 }
             )
-            self._record_default_submitter(form, attr_map, is_submitter=is_submitter)
+            self._record_default_submitter(
+                form,
+                attr_map,
+                is_submitter=is_submitter,
+                native_disabled=native_disabled,
+            )
 
     def handle_endtag(self, tag: str) -> None:
+        if (
+            tag == "fieldset"
+            and self._disabled_fieldset_stack
+            and self._disabled_fieldset_stack.pop()
+        ):
+            self._disabled_fieldset_depth = max(0, self._disabled_fieldset_depth - 1)
         if tag == "form":
             self._current_form = None
         if self._current_element is not None and tag in {"a", "button"}:
@@ -288,11 +326,12 @@ class _PageParser(HTMLParser):
         attrs: dict[str, str],
         *,
         is_submitter: bool,
+        native_disabled: bool = False,
     ) -> None:
         if not form or not is_submitter or form.get("default_submitter_seen") == "1":
             return
         form["default_submitter_seen"] = "1"
-        if _is_native_disabled_attrs(attrs):
+        if native_disabled or _is_native_disabled_attrs(attrs):
             form["default_submitter_disabled"] = "1"
             return
         action, method = self._form_metadata_for(attrs, form=form, is_submitter=True)
