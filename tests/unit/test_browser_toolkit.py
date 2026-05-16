@@ -351,7 +351,8 @@ async def test_gh33_browser_toolkit_doctor_accepts_shisad_playwright_wrapper(
     for config in runner.configs:
         assert config.tool_name == "browser.doctor"
         assert config.network.allow_network is False
-        assert config.limits.memory_mb == 0
+        assert config.limits.memory_mb > 0
+        assert config.limits.address_space_mb == 0
         assert config.limits.pids >= 4096
 
 
@@ -668,6 +669,28 @@ async def test_m6_browser_toolkit_navigate_returns_page_and_snapshot(
     assert result["taint_labels"] == [TaintLabel.UNTRUSTED.value]
     assert runner.configs
     assert any(item.tool_name == "browser.navigate" for item in runner.configs)
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_runtime_keeps_memory_budget_without_address_rlimit(
+    tmp_path: Path,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["open"],
+        network_urls=[],
+        allow_network=False,
+    )
+
+    assert result is None
+    assert runner.configs
+    limits = runner.configs[-1].limits
+    assert limits.memory_mb > 0
+    assert limits.address_space_mb == 0
 
 
 @pytest.mark.asyncio
@@ -1218,6 +1241,285 @@ def test_gh24_browser_click_binding_uses_stable_element_identity() -> None:
     )
 
     assert booking_hash == placeholder_hash
+
+
+def test_gh24_browser_fragment_destinations_are_not_confirmation_targets() -> None:
+    current_url = "https://tabelog.com/en/tokyo/A1302/A130202/13225171/"
+    placeholder_element = BrowserSnapshotElement(
+        ref="e176",
+        kind="link",
+        label="Reserve",
+        selector="#reserve",
+        href="#",
+    )
+
+    assert (
+        BrowserToolkit._predict_destination_url(
+            placeholder_element,
+            current_url=current_url,
+            submit=False,
+        )
+        == ""
+    )
+    assert BrowserToolkit._normalize_confirmation_destination("#", current_url=current_url) == ""
+    assert (
+        BrowserToolkit._normalize_confirmation_destination("#reserve", current_url=current_url)
+        == ""
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approved_href", "live_href"),
+    [
+        ("#", "/en/booking/form_course/new?member=2&rcd=13225171"),
+        ("/en/booking/form_course/new?member=2&rcd=13225171", "#"),
+    ],
+)
+async def test_gh24_browser_click_confirmation_rejects_empty_nonempty_destination_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approved_href: str,
+    live_href: str,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "https://tabelog.com/en/tokyo/A1302/A130202/13225171/"
+    selector = "#reserve"
+    approved_element = BrowserSnapshotElement(
+        ref="e176",
+        kind="link",
+        label="Reserve",
+        selector=selector,
+        href=approved_href,
+    )
+    live_element = BrowserSnapshotElement(
+        ref="e176",
+        kind="link",
+        label="Reserve",
+        selector=selector,
+        href=live_href,
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [live_element]
+
+    async def fail_if_clicked(**_: Any) -> dict[str, Any] | None:
+        raise AssertionError("click should not execute after destination drift")
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", fail_if_clicked)
+
+    blocked = await toolkit.click(
+        session=session,
+        target=selector,
+        resolved_target=selector,
+        destination=BrowserToolkit._predict_destination_url(
+            approved_element,
+            current_url=source_url,
+            submit=False,
+        ),
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            approved_element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert blocked == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": True, "current_url": source_url}
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_click_confirmation_rejects_post_action_destination_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "http://example.test/"
+    selector = "#continue"
+    element = BrowserSnapshotElement(
+        ref="e1",
+        kind="link",
+        label="Continue",
+        selector=selector,
+        href="/next",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/elsewhere",
+            "title": "Elsewhere",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    blocked = await toolkit.click(
+        session=session,
+        target=selector,
+        resolved_target=selector,
+        destination="http://example.test/next",
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert blocked == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": False, "current_url": ""}
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_click_confirmation_rejects_unpredicted_js_navigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "http://example.test/"
+    selector = "#continue"
+    element = BrowserSnapshotElement(
+        ref="e1",
+        kind="link",
+        label="Continue",
+        selector=selector,
+        href="#",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/scripted",
+            "title": "Scripted",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    blocked = await toolkit.click(
+        session=session,
+        target=selector,
+        resolved_target=selector,
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            element,
+            current_url=source_url,
+            submit=False,
+        ),
+    )
+
+    assert blocked == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": False, "current_url": ""}
+
+
+@pytest.mark.asyncio
+async def test_gh24_browser_type_submit_rejects_post_action_destination_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _CapturingSuccessRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+    source_url = "http://example.test/"
+    selector = "#search"
+    element = BrowserSnapshotElement(
+        ref="e2",
+        kind="field",
+        label="search",
+        selector=selector,
+        form_action="/submitted",
+        form_method="get",
+    )
+    toolkit._save_state(session, {"opened": True, "current_url": source_url})
+
+    async def load_snapshot(**_: Any) -> list[BrowserSnapshotElement]:
+        return [element]
+
+    async def run_cli(**_: Any) -> dict[str, Any] | None:
+        return None
+
+    async def capture_page_state(**_: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "url": "http://example.test/elsewhere",
+            "title": "Elsewhere",
+            "content": "",
+            "snapshot": "",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    monkeypatch.setattr(toolkit, "_load_interaction_snapshot", load_snapshot)
+    monkeypatch.setattr(toolkit, "_run_cli", run_cli)
+    monkeypatch.setattr(toolkit, "_capture_page_state", capture_page_state)
+
+    blocked = await toolkit.type_text(
+        session=session,
+        target=selector,
+        resolved_target=selector,
+        text="hello",
+        submit=True,
+        destination="http://example.test/submitted",
+        source_url=source_url,
+        source_binding=BrowserToolkit._binding_hash_for_element(
+            element,
+            current_url=source_url,
+            submit=True,
+        ),
+    )
+
+    assert blocked == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert toolkit.current_state(session=session) == {"opened": False, "current_url": ""}
 
 
 @pytest.mark.asyncio

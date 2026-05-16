@@ -33,6 +33,7 @@ class ResourceLimits(BaseModel):
 
     cpu_shares: int = 256
     memory_mb: int = 512
+    address_space_mb: int | None = None
     timeout_seconds: int = 60
     output_bytes: int = 1_000_000
     pids: int = 100

@@ -190,7 +190,7 @@ def test_m6_process_build_nsjail_command_respects_mounts_and_network(tmp_path: P
     assert str(cwd) in wrapped
 
 
-def test_m6_process_build_nsjail_command_omits_address_limit_when_zero() -> None:
+def test_m6_process_build_nsjail_command_omits_disabled_address_limit() -> None:
     runner = SandboxProcessRunner(
         connect_path_proxy=NoopConnectPathProxy(net_admin_available=False),
         bwrap_binary="/usr/bin/bwrap",
@@ -199,7 +199,7 @@ def test_m6_process_build_nsjail_command_omits_address_limit_when_zero() -> None
     config = SandboxConfig(
         tool_name="browser.navigate",
         command=[sys.executable, "-c", "print('ok')"],
-        limits=ResourceLimits(memory_mb=0),
+        limits=ResourceLimits(memory_mb=2048, address_space_mb=0),
         degraded_mode=DegradedModePolicy.FAIL_OPEN,
         security_critical=False,
     )
@@ -255,11 +255,57 @@ def test_m6_process_preexec_limits_skips_zero_limits(monkeypatch: pytest.MonkeyP
     )
     monkeypatch.setitem(sys.modules, "resource", fake_resource)
 
-    preexec = SandboxProcessRunner.preexec_limits(ResourceLimits(memory_mb=0, pids=0))
+    preexec = SandboxProcessRunner.preexec_limits(
+        ResourceLimits(memory_mb=2048, address_space_mb=0, pids=0)
+    )
     assert preexec is not None
     preexec()
 
     assert calls == []
+
+
+def test_m6_process_invoke_blocks_when_memory_monitor_limit_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakePopen:
+        def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            _ = args, kwargs
+            self.pid = 321
+            self.returncode = None
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            _ = timeout
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="x", timeout=1)
+            return ("out", "err")
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(SandboxProcessRunner, "_process_tree_rss_bytes", lambda _pid: 2_000_000)
+    monkeypatch.setattr(
+        SandboxProcessRunner,
+        "_kill_process_tree",
+        lambda process: process.kill(),
+    )
+
+    stdout, stderr, exit_code, timed_out, blocked_reason = SandboxProcessRunner.invoke(
+        ["echo", "ok"],
+        env={},
+        cwd=None,
+        timeout_seconds=1,
+        preexec=None,
+        memory_mb=1,
+    )
+
+    assert timed_out is False
+    assert stdout == "out"
+    assert "resource limit exceeded: memory_mb=1" in stderr
+    assert exit_code is None
+    assert blocked_reason == "resource_limit_exceeded"
 
 
 def test_m6_process_invoke_returns_blocked_reason_from_on_started(
@@ -299,25 +345,29 @@ def test_m6_process_invoke_timeout_sets_timed_out(monkeypatch: pytest.MonkeyPatc
     class _FakePopen:
         def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             _ = args, kwargs
-            self.pid = 1
+            self.pid = 321
             self.returncode = 124
-            self._first = True
+            self.killed = False
 
         def kill(self) -> None:
-            return
+            self.killed = True
 
         def communicate(self, timeout: int | None = None) -> tuple[str, str]:
-            if self._first:
-                self._first = False
+            if not self.killed:
                 raise subprocess.TimeoutExpired(cmd="x", timeout=timeout or 1)
             return ("timeout-out", "timeout-err")
 
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(
+        SandboxProcessRunner,
+        "_kill_process_tree",
+        lambda process: process.kill(),
+    )
     stdout, stderr, exit_code, timed_out, blocked_reason = SandboxProcessRunner.invoke(
         ["echo", "ok"],
         env={},
         cwd=None,
-        timeout_seconds=1,
+        timeout_seconds=0,
         preexec=None,
     )
     assert timed_out is True

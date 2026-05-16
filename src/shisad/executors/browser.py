@@ -103,7 +103,7 @@ _BROWSER_FAILURE_ABSOLUTE_PATH_RE = re.compile(r"(?<![/\w.-])/(?!/)[^\r\n]+")
 _BROWSER_FAILURE_URL_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 _BROWSER_FAILURE_DRIVE_SCHEME_RE = re.compile(r"^[A-Za-z]://")
 _BROWSER_FAILURE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_BROWSER_SANDBOX_MEMORY_MB = 0
+_BROWSER_SANDBOX_MEMORY_MB = 2048
 _BROWSER_SANDBOX_PIDS = 4096
 _TARGET_STOPWORDS = {
     "a",
@@ -142,6 +142,12 @@ class BrowserTargetResolution:
     resolved_target: str
     destination_url: str = ""
     binding_hash: str = ""
+
+
+@dataclass(slots=True)
+class BrowserBindingValidation:
+    destination_url: str = ""
+    allows_form_query: bool = False
 
 
 @dataclass(slots=True)
@@ -472,7 +478,7 @@ class BrowserToolkit:
             target=requested_target,
             current_url=current_url,
         )
-        binding_error = await self._validate_prepared_binding(
+        binding_validation = await self._validate_prepared_binding(
             session=session,
             tool_name="browser.click",
             current_url=current_url,
@@ -481,8 +487,8 @@ class BrowserToolkit:
             expected_destination=destination.strip(),
             submit=False,
         )
-        if binding_error is not None:
-            return binding_error
+        if isinstance(binding_validation, dict):
+            return binding_validation
         destination_url = destination.strip()
         network_urls = self._merge_network_urls(current_url, prepared_source_url, destination_url)
         result = await self._run_cli(
@@ -501,6 +507,18 @@ class BrowserToolkit:
             additional_network_urls=network_urls,
         )
         if payload.get("ok") is True:
+            if source_binding.strip() or destination_url:
+                post_action_error = self._validate_post_action_destination(
+                    source_url=current_url,
+                    expected_destination=destination_url,
+                    actual_url=str(payload.get("url", "")),
+                    allow_query_extension=bool(
+                        binding_validation and binding_validation.allows_form_query
+                    ),
+                )
+                if post_action_error is not None:
+                    self._invalidate_session_state(session)
+                    return post_action_error
             payload["action"] = "click"
             payload["target"] = concrete_target
             payload["requested_target"] = requested_target
@@ -543,7 +561,7 @@ class BrowserToolkit:
             target=requested_target,
             current_url=current_url,
         )
-        binding_error = await self._validate_prepared_binding(
+        binding_validation = await self._validate_prepared_binding(
             session=session,
             tool_name="browser.type_text",
             current_url=current_url,
@@ -552,10 +570,11 @@ class BrowserToolkit:
             expected_destination=destination.strip() if submit else "",
             submit=submit,
         )
-        if binding_error is not None:
-            return binding_error
+        if isinstance(binding_validation, dict):
+            return binding_validation
         requested_click_target = click_target.strip()
         concrete_click_target = ""
+        click_binding_validation: BrowserBindingValidation | None = None
         if requested_click_target:
             if submit:
                 return self._error_payload("browser_type_text_submit_or_click")
@@ -565,7 +584,7 @@ class BrowserToolkit:
                 target=requested_click_target,
                 current_url=current_url,
             )
-            click_binding_error = await self._validate_prepared_binding(
+            click_binding_result = await self._validate_prepared_binding(
                 session=session,
                 tool_name="browser.click",
                 current_url=current_url,
@@ -574,8 +593,9 @@ class BrowserToolkit:
                 expected_destination=destination.strip(),
                 submit=False,
             )
-            if click_binding_error is not None:
-                return click_binding_error
+            if isinstance(click_binding_result, dict):
+                return click_binding_result
+            click_binding_validation = click_binding_result
         args = ["fill", concrete_target, text]
         if submit:
             args.append("--submit")
@@ -601,6 +621,23 @@ class BrowserToolkit:
             additional_network_urls=network_urls,
         )
         if payload.get("ok") is True:
+            if source_binding.strip() or click_source_binding.strip() or destination_url:
+                post_action_error = self._validate_post_action_destination(
+                    source_url=current_url,
+                    expected_destination=destination_url,
+                    actual_url=str(payload.get("url", "")),
+                    allow_query_extension=bool(
+                        submit
+                        or (binding_validation and binding_validation.allows_form_query)
+                        or (
+                            click_binding_validation
+                            and click_binding_validation.allows_form_query
+                        )
+                    ),
+                )
+                if post_action_error is not None:
+                    self._invalidate_session_state(session)
+                    return post_action_error
             payload["action"] = "type_text"
             payload["target"] = concrete_target
             payload["requested_target"] = requested_target
@@ -898,6 +935,7 @@ class BrowserToolkit:
             environment=self._browser_environment_policy(),
             limits=ResourceLimits(
                 memory_mb=_BROWSER_SANDBOX_MEMORY_MB,
+                address_space_mb=0,
                 timeout_seconds=max(1, math.ceil(self._timeout_seconds)),
                 output_bytes=max(self._max_read_bytes * 2, 32_768),
                 pids=_BROWSER_SANDBOX_PIDS,
@@ -1043,6 +1081,7 @@ class BrowserToolkit:
             environment=self._browser_environment_policy(),
             limits=ResourceLimits(
                 memory_mb=_BROWSER_SANDBOX_MEMORY_MB,
+                address_space_mb=0,
                 timeout_seconds=5,
                 output_bytes=16_384,
                 pids=_BROWSER_SANDBOX_PIDS,
@@ -2098,20 +2137,34 @@ class BrowserToolkit:
             )
         return elements
 
-    @staticmethod
+    @classmethod
     def _predict_destination_url(
+        cls,
         element: BrowserSnapshotElement,
         *,
         current_url: str,
         submit: bool,
     ) -> str:
         if element.kind == "link" and element.href:
-            return urljoin(current_url, element.href)
+            return cls._resolve_destination_url(element.href, current_url=current_url)
         if element.kind == "button":
-            return urljoin(current_url, element.form_action or current_url)
+            return cls._resolve_destination_url(
+                element.form_action or current_url,
+                current_url=current_url,
+            )
         if submit and element.kind == "field":
-            return urljoin(current_url, element.form_action or current_url)
+            return cls._resolve_destination_url(
+                element.form_action or current_url,
+                current_url=current_url,
+            )
         return ""
+
+    @classmethod
+    def _resolve_destination_url(cls, value: str, *, current_url: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized or cls._is_fragment_only_reference(normalized):
+            return ""
+        return urljoin(current_url, normalized)
 
     @classmethod
     def _binding_hash_for_element(
@@ -2141,7 +2194,7 @@ class BrowserToolkit:
         expected_binding: str,
         submit: bool,
         expected_destination: str = "",
-    ) -> dict[str, Any] | None:
+    ) -> BrowserBindingValidation | dict[str, Any] | None:
         if not expected_binding:
             return None
         elements = await self._load_interaction_snapshot(
@@ -2169,18 +2222,19 @@ class BrowserToolkit:
             expected_destination,
             current_url=current_url,
         )
-        if (
-            live_destination
-            and approved_destination
-            and live_destination != approved_destination
-        ):
+        if live_destination != approved_destination:
             return self._error_payload("browser_confirmation_context_changed")
-        return None
+        return BrowserBindingValidation(
+            destination_url=approved_destination,
+            allows_form_query=self._allows_form_query_extension(matched, submit=submit),
+        )
 
-    @staticmethod
-    def _normalize_confirmation_destination(value: str, *, current_url: str) -> str:
+    @classmethod
+    def _normalize_confirmation_destination(cls, value: str, *, current_url: str) -> str:
         normalized = str(value or "").strip()
         if not normalized:
+            return ""
+        if cls._is_fragment_only_reference(normalized):
             return ""
         resolved = urljoin(current_url, normalized)
         parsed = safe_urlparse(resolved)
@@ -2198,6 +2252,81 @@ class BrowserToolkit:
         if fragment_only:
             return ""
         return resolved
+
+    @staticmethod
+    def _is_fragment_only_reference(value: str) -> bool:
+        normalized = str(value or "").strip()
+        return normalized.startswith("#")
+
+    @staticmethod
+    def _allows_form_query_extension(
+        element: BrowserSnapshotElement,
+        *,
+        submit: bool,
+    ) -> bool:
+        method = (element.form_method or "get").strip().lower()
+        if method != "get":
+            return False
+        return element.kind == "button" or (submit and element.kind == "field")
+
+    def _validate_post_action_destination(
+        self,
+        *,
+        source_url: str,
+        expected_destination: str,
+        actual_url: str,
+        allow_query_extension: bool,
+    ) -> dict[str, Any] | None:
+        actual_destination = self._normalize_confirmation_destination(
+            actual_url,
+            current_url=source_url,
+        )
+        if not actual_destination:
+            return self._error_payload("browser_confirmation_context_changed")
+        approved_destination = self._normalize_confirmation_destination(
+            expected_destination,
+            current_url=source_url,
+        )
+        if approved_destination:
+            if self._destinations_match(
+                approved_destination,
+                actual_destination,
+                allow_query_extension=allow_query_extension,
+            ):
+                return None
+            return self._error_payload("browser_confirmation_context_changed")
+        if self._destinations_match(
+            source_url,
+            actual_destination,
+            allow_query_extension=False,
+        ):
+            return None
+        return self._error_payload("browser_confirmation_context_changed")
+
+    @staticmethod
+    def _destinations_match(
+        expected_url: str,
+        actual_url: str,
+        *,
+        allow_query_extension: bool,
+    ) -> bool:
+        if actual_url == expected_url:
+            return True
+        if not allow_query_extension:
+            return False
+        expected = safe_urlparse(expected_url)
+        actual = safe_urlparse(actual_url)
+        if expected is None or actual is None:
+            return False
+        if (
+            expected.scheme != actual.scheme
+            or expected.netloc != actual.netloc
+            or expected.path != actual.path
+        ):
+            return False
+        if not expected.query:
+            return bool(actual.query)
+        return actual.query == expected.query or actual.query.startswith(f"{expected.query}&")
 
     @classmethod
     def _normalize_target(cls, value: str) -> str:
@@ -2250,6 +2379,10 @@ class BrowserToolkit:
         path = self._state_path(session)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    def _invalidate_session_state(self, session: Session) -> None:
+        with contextlib.suppress(OSError):
+            self._save_state(session, {"opened": False, "current_url": ""})
 
     def _current_url(self, session: Session) -> str:
         return str(self._load_state(session).get("current_url", "")).strip()

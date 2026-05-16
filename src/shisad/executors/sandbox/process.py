@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -235,6 +237,7 @@ class SandboxProcessRunner:
             timeout_seconds=config.limits.timeout_seconds,
             preexec=preexec,
             on_started=on_started,
+            memory_mb=self._memory_monitor_limit_mb(config.limits),
         )
         if invoke_blocked_reason:
             blocked_reason = invoke_blocked_reason
@@ -262,6 +265,7 @@ class SandboxProcessRunner:
                 timeout_seconds=config.limits.timeout_seconds,
                 preexec=preexec,
                 on_started=on_started,
+                memory_mb=self._memory_monitor_limit_mb(config.limits),
             )
             if invoke_blocked_reason:
                 blocked_reason = invoke_blocked_reason
@@ -401,8 +405,9 @@ class SandboxProcessRunner:
             "--max_cpus",
             "1",
         ]
-        if config.limits.memory_mb > 0:
-            args.extend(["--rlimit_as", str(config.limits.memory_mb)])
+        address_space_mb = self.address_space_limit_mb(config.limits)
+        if address_space_mb > 0:
+            args.extend(["--rlimit_as", str(address_space_mb)])
         if config.network.allow_network:
             args.extend(["--disable_clone_newnet"])
         for base in _BWRAP_BASE_RO_DIRS:
@@ -427,6 +432,18 @@ class SandboxProcessRunner:
         return args
 
     @staticmethod
+    def address_space_limit_mb(limits: ResourceLimits) -> int:
+        if limits.address_space_mb is not None:
+            return max(0, int(limits.address_space_mb))
+        return max(0, int(limits.memory_mb))
+
+    @staticmethod
+    def _memory_monitor_limit_mb(limits: ResourceLimits) -> int:
+        if SandboxProcessRunner.address_space_limit_mb(limits) > 0:
+            return 0
+        return max(0, int(limits.memory_mb))
+
+    @staticmethod
     def preexec_limits(limits: ResourceLimits) -> Any:
         try:
             import resource  # pylint: disable=import-outside-toplevel
@@ -435,8 +452,9 @@ class SandboxProcessRunner:
 
         def _apply() -> None:
             errors: list[str] = []
-            if limits.memory_mb > 0:
-                memory_bytes = limits.memory_mb * 1024 * 1024
+            address_space_mb = SandboxProcessRunner.address_space_limit_mb(limits)
+            if address_space_mb > 0:
+                memory_bytes = address_space_mb * 1024 * 1024
                 try:
                     resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
                 except (OSError, ValueError) as exc:  # pragma: no cover - platform dependent
@@ -465,6 +483,7 @@ class SandboxProcessRunner:
         timeout_seconds: int,
         preexec: Any,
         on_started: Callable[[int], str | None] | None = None,
+        memory_mb: int = 0,
     ) -> tuple[str, str, int | None, bool, str | None]:
         timed_out = False
         stdout = ""
@@ -485,31 +504,148 @@ class SandboxProcessRunner:
             if on_started is not None and completed.pid > 0:
                 blocked_reason = on_started(completed.pid)
                 if blocked_reason:
-                    completed.terminate()
+                    SandboxProcessRunner._terminate_process_tree(completed)
                     try:
                         stdout, stderr = completed.communicate(timeout=1)
                     except subprocess.TimeoutExpired:
-                        completed.kill()
+                        SandboxProcessRunner._kill_process_tree(completed)
                         stdout, stderr = completed.communicate()
                     exit_code = completed.returncode
                     return stdout, stderr, exit_code, timed_out, blocked_reason
 
-            try:
-                stdout, stderr = completed.communicate(timeout=timeout_seconds)
-                exit_code = completed.returncode
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                completed.kill()
-                timeout_out, timeout_err = completed.communicate()
-                stdout = timeout_out or ""
-                stderr = timeout_err or ""
-                exit_code = None
+            stdout, stderr, exit_code, timed_out, blocked_reason = (
+                SandboxProcessRunner._communicate_with_limits(
+                    completed,
+                    timeout_seconds=timeout_seconds,
+                    memory_mb=memory_mb,
+                )
+            )
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             stdout = SandboxProcessRunner.to_text(exc.stdout)
             stderr = SandboxProcessRunner.to_text(exc.stderr)
             exit_code = None
         return stdout, stderr, exit_code, timed_out, blocked_reason
+
+    @staticmethod
+    def _communicate_with_limits(
+        process: Any,
+        *,
+        timeout_seconds: int,
+        memory_mb: int,
+    ) -> tuple[str, str, int | None, bool, str | None]:
+        deadline = time.monotonic() + max(0, int(timeout_seconds))
+        memory_limit_bytes = max(0, int(memory_mb or 0)) * 1024 * 1024
+        while True:
+            if memory_limit_bytes > 0:
+                rss_bytes = SandboxProcessRunner._process_tree_rss_bytes(process.pid)
+                if rss_bytes > memory_limit_bytes:
+                    SandboxProcessRunner._kill_process_tree(process)
+                    try:
+                        stdout, stderr = process.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        SandboxProcessRunner._kill_process_tree(process)
+                        stdout, stderr = process.communicate()
+                    stderr = SandboxProcessRunner._append_stderr_line(
+                        stderr,
+                        f"[shisad sandbox] resource limit exceeded: memory_mb={memory_mb}",
+                    )
+                    return stdout or "", stderr, None, False, "resource_limit_exceeded"
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                SandboxProcessRunner._kill_process_tree(process)
+                stdout, stderr = process.communicate()
+                return stdout or "", stderr or "", None, True, None
+            try:
+                poll_timeout = min(0.2, max(0.01, remaining))
+                stdout, stderr = process.communicate(timeout=poll_timeout)
+                return stdout or "", stderr or "", process.returncode, False, None
+            except subprocess.TimeoutExpired:
+                continue
+
+    @staticmethod
+    def _append_stderr_line(stderr: str | bytes | None, line: str) -> str:
+        text = SandboxProcessRunner.to_text(stderr)
+        separator = "" if not text or text.endswith("\n") else "\n"
+        return f"{text}{separator}{line}\n"
+
+    @staticmethod
+    def _terminate_process_tree(process: Any) -> None:
+        SandboxProcessRunner._signal_process_tree(process, signal.SIGTERM)
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
+
+    @staticmethod
+    def _kill_process_tree(process: Any) -> None:
+        SandboxProcessRunner._signal_process_tree(process, signal.SIGKILL)
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+
+    @staticmethod
+    def _signal_process_tree(process: Any, signum: int) -> None:
+        root_pid = int(getattr(process, "pid", 0) or 0)
+        for pid in reversed(SandboxProcessRunner._process_tree_pids(root_pid)):
+            try:
+                os.kill(pid, signum)
+            except (OSError, ProcessLookupError, PermissionError):
+                continue
+
+    @staticmethod
+    def _process_tree_pids(root_pid: int) -> list[int]:
+        if root_pid <= 0:
+            return []
+        seen: set[int] = set()
+        pending = [root_pid]
+        ordered: list[int] = []
+        while pending:
+            pid = pending.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            ordered.append(pid)
+            pending.extend(SandboxProcessRunner._child_pids(pid))
+        return ordered
+
+    @staticmethod
+    def _child_pids(pid: int) -> list[int]:
+        try:
+            raw = (Path("/proc") / str(pid) / "task" / str(pid) / "children").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            return []
+        children: list[int] = []
+        for token in raw.split():
+            try:
+                children.append(int(token))
+            except ValueError:
+                continue
+        return children
+
+    @staticmethod
+    def _process_tree_rss_bytes(root_pid: int) -> int:
+        return sum(
+            SandboxProcessRunner._process_rss_bytes(pid)
+            for pid in SandboxProcessRunner._process_tree_pids(root_pid)
+        )
+
+    @staticmethod
+    def _process_rss_bytes(pid: int) -> int:
+        try:
+            parts = (Path("/proc") / str(pid) / "statm").read_text(encoding="utf-8").split()
+            resident_pages = int(parts[1])
+        except (OSError, IndexError, ValueError):
+            return 0
+        try:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError):
+            page_size = 4096
+        return resident_pages * page_size
 
     @staticmethod
     def isolation_runtime_failed(*, exit_code: int | None, stderr: str) -> bool:
