@@ -756,9 +756,8 @@ def test_c2_memory_context_same_scope_recall_uses_derived_framing(
 ) -> None:
     """Same-(user, workspace) recall that carries no injection taint moves
     out of the "untrusted data" framing into the new derived-trust
-    section. This is the structural fix for the LUS-9 Phase C anomaly
-    re-fire loop: the planner no longer sees routine recall from its own
-    prior session memory as injection-shaped data.
+    section. The planner no longer sees routine recall from its own prior
+    session memory as injection-shaped data.
     """
     ingestion = IngestionPipeline(tmp_path / "memory")
     ingestion.ingest(
@@ -791,8 +790,7 @@ def test_c2_memory_context_same_scope_recall_uses_derived_framing(
 
 def test_c2_memory_context_cross_scope_leak_blocked(tmp_path: Path) -> None:
     """A session under (ops, default) must not see recall written by
-    (lus9-eval-fresh, local). Directly guards against the LUS-9 Phase C
-    cross-scope leakage.
+    another user/workspace tuple. Directly guards against cross-scope leakage.
     """
     ingestion = IngestionPipeline(tmp_path / "memory")
     ingestion.ingest(

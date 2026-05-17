@@ -42,7 +42,7 @@ async def test_c2_cross_scope_memory_recall_does_not_leak(
     cross_session_harness: ContractHarness,
 ) -> None:
     """A session under (alice, ws1) must not recall memory written by a
-    session under (bob, ws2). This is the LUS-9 Phase C regression.
+    session under (bob, ws2).
     """
     alice_sid = await _create_session_for(
         cross_session_harness, user_id="alice", workspace_id="ws1"

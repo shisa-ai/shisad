@@ -193,9 +193,8 @@ def test_m1_t18_firewall_detects_and_redacts_ingress_credentials() -> None:
 def test_firewall_labels_anthropic_key_distinctly_from_openai() -> None:
     """Anthropic keys (sk-ant-...) must not be misclassified as openai_key.
 
-    Regression for v0.7.1 C2 finding #7: LUS-9 observed an Anthropic key
-    redacted with label `openai_key`. The redaction fires correctly but the
-    label should identify the provider family.
+    The redaction fires correctly, but the label should identify the provider
+    family.
     """
     firewall = ContentFirewall()
     result = firewall.inspect("ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012")

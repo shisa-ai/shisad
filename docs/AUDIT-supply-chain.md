@@ -368,7 +368,8 @@ Goals:
 
 ## Dependency Change-Control Plan
 
-Going forward, dependency upgrades/additions should use this review lane by default.
+Going forward, dependency upgrades/additions should use this change-control
+process by default.
 
 ### Review gate for upgrades
 

@@ -145,7 +145,7 @@ def test_m1_transcript_store_backfills_legacy_entry_ids_deterministically(
 def test_leak_source_scoping_limits_to_recent_user_entries(tmp_path: Path) -> None:
     """`_session_source_text_by_id` must scope to the most recent N user
     entries so the cross-thread leak detector does not widen its source
-    window as session history grows (v0.7.1 C2 finding #3).
+    window as session history grows.
     """
     from shisad.daemon.handlers._impl import HandlerImplementation
 
