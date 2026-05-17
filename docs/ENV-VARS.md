@@ -526,8 +526,8 @@ For local dev work, the runner harness (`runner/harness.sh`) sets sane defaults
 automatically. If configuring manually, the core subset is:
 
 ```bash
-export SHISAD_DATA_DIR="$PWD/.local/shisad"
-export SHISAD_SOCKET_PATH="/tmp/shisad.sock"
+export SHISAD_DATA_DIR="$PWD/.local/shisad-dev"
+export SHISAD_SOCKET_PATH="/tmp/shisad-dev.sock"
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_CODING_REPO_ROOT="$PWD"
 export SHISAD_CODING_AGENT_DEFAULT_PREFERENCE='["codex","claude"]'
