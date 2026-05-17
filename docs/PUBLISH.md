@@ -54,8 +54,10 @@ Version must be updated in both places:
       `## X.Y.Z Release Content - YYYY-MM-DD` (content-prep date) without a
       compare link; the explicit tag/publish action converts that heading to
       `## [X.Y.Z] - YYYY-MM-DD` (actual tag date — may be later than the
-      content-prep date if release-close took multiple days) and adds the
-      bottom `[X.Y.Z]` comparison link in the commit that will be tagged.
+      content-prep date if release-close took multiple days), adds the
+      bottom `[X.Y.Z]` comparison link in the commit that will be tagged, and
+      includes standard public issue / pull-request references for every
+      entry that maps to a public GitHub issue or PR.
 - [ ] Review `README.md` thoroughly for release parity. The `README.md`
       tends to drift during long release lanes because contributors update
       other docs first. Verify:
@@ -357,14 +359,33 @@ follow-on patch release.
    expansions only — do not invent an expansion that reads plausibly but
    is not the commonly-used form.
 
-9. **Use a quick jargon smell test before you ship it.** Read each bullet and
+9. **Link public issue and PR provenance in a standard suffix.** When a
+   changelog entry maps to a public GitHub issue or pull request, end the
+   bullet with a parenthesized Markdown link suffix after the user-facing
+   sentence. Use full GitHub URLs so the links work in GitHub Releases,
+   PyPI-rendered project pages, and plain Markdown readers.
+   - Issue only: `([#37](https://github.com/shisa-ai/shisad/issues/37))`
+   - Pull request only:
+     `([PR #32](https://github.com/shisa-ai/shisad/pull/32))`
+   - Issue fixed by a PR:
+     `([#26](https://github.com/shisa-ai/shisad/issues/26), [PR #32](https://github.com/shisa-ai/shisad/pull/32))`
+   - If one bullet covers several public issues, prefer splitting the bullet.
+     If the bundle is intentionally one user-facing change, list the parent
+     issue first, then the most relevant child issues. Do not turn a
+     changelog bullet into an exhaustive issue index.
+   - Do not link private issues, private planning IDs, internal review IDs, or
+     public issues that are only process context rather than source
+     provenance for the shipped change.
+   - If no public issue or PR exists, omit the suffix.
+
+10. **Use a quick jargon smell test before you ship it.** Read each bullet and
    ask:
    - Would an end-user understand this without knowing our internal system names?
    - Does the first sentence say what changed for them, not what we built?
    - Could they explain it back after one read?
    If not, rewrite it.
 
-10. **Prefer everyday product language over internal threat language.** Write
+11. **Prefer everyday product language over internal threat language.** Write
     what the end-user can notice or act on. For example:
     - Better: "The daemon now warns when suspicious denied actions repeat."
     - Worse: "The daemon records structured deny metadata for taint bypass attempts and unattributed egress probes."
