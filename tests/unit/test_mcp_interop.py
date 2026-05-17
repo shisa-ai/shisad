@@ -1573,7 +1573,7 @@ async def test_i1_tool_execute_surfaces_mcp_startup_registration_errors(
 
 
 # ---------------------------------------------------------------------------
-# MCP-H1..H5: review/test-analysis-v0.6.5.md coverage for MCP security gates.
+# MCP-H1..H5: coverage for MCP security gates.
 # ---------------------------------------------------------------------------
 
 

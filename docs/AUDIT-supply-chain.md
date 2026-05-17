@@ -488,9 +488,9 @@ Security checks recorded for the proposed adapter set:
 
 ## Follow-up Codex ACP Refresh (2026-04-28)
 
-The Codex ACP adapter was refreshed again after GPT-5.5 reviewer lanes failed
-ACP negotiation through `@zed-industries/codex-acp@0.11.1` while direct
-`codex exec -m gpt-5.5` completed the same review target.
+The Codex ACP adapter was refreshed again after ACP negotiation failed through
+`@zed-industries/codex-acp@0.11.1` while direct Codex CLI execution completed
+successfully.
 
 1. Refreshed Codex ACP adapter within its active namespace:
    - from `@zed-industries/codex-acp@0.11.1`
@@ -501,7 +501,7 @@ ACP negotiation through `@zed-industries/codex-acp@0.11.1` while direct
    - published: `2026-04-24T13:47:02.567Z`
    - rationale: the active Codex ACP namespace published a bridge compatible
      with the current Codex CLI (`codex-cli 0.125.0`), and a default-registry
-     GPT-5.5 ACP smoke completed through the normal adapter path.
+     ACP smoke completed through the normal adapter path.
 
 Security checks recorded for the refreshed adapter set:
 

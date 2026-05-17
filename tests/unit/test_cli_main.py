@@ -5121,8 +5121,7 @@ def test_audit_query_reads_override_data_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """--data-dir must let operators read a daemon's audit log without
-    having to also set SHISAD_DATA_DIR on the CLI side (finding #5 from
-    `review/LUS-9.md`).
+    having to also set SHISAD_DATA_DIR on the CLI side.
     """
     default_dir = tmp_path / "default"
     override_dir = tmp_path / "daemon-dir"
@@ -5153,7 +5152,7 @@ def test_audit_query_missing_log_reports_effective_path(
 ) -> None:
     """Empty-log diagnostic must name the directory it actually checked, so
     an operator on a non-default data dir does not silently read the wrong
-    audit log (finding #5 from `review/LUS-9.md`).
+    audit log.
     """
     default_dir = tmp_path / "default"
     override_dir = tmp_path / "other"

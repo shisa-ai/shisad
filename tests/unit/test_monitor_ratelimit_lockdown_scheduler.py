@@ -476,7 +476,7 @@ def test_c2_lockdown_notice_names_session_id_and_both_recovery_paths() -> None:
     CLI command (with session id) so single-surface operators can recover
     from a `caution` lockdown without dropping out of band.
 
-    Regression for `review/LUS-9.md` Phase C finding #9.
+    Regression coverage for the single-surface operator recovery path.
     """
     manager = LockdownManager()
     sid = SessionId("s-lockdown-notice")

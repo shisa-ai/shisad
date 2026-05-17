@@ -2734,7 +2734,7 @@ class HandlerImplementation(
     # Session-recent window for the cross-thread leak detector source. Limits
     # the detector to the most recent N user entries instead of the full
     # session transcript to avoid false positives as the session history
-    # grows (see `review/LUS-9.md` finding #3).
+    # grows.
     _LEAK_SOURCE_RECENT_USER_ENTRIES: int = 20
 
     def _session_source_text_by_id(self, session_id: SessionId) -> dict[str, str]:

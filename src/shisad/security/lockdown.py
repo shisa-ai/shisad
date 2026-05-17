@@ -137,8 +137,7 @@ class LockdownManager:
         # Operator-facing recovery guidance. Name both the in-chat path (the
         # trusted operator can ask the agent to resume the lockdown once the
         # cause is understood) and the out-of-band CLI path with the session
-        # id so single-surface operators always have a copy-pasteable
-        # command. See `review/LUS-9.md` Phase C for the dead-end this fixes.
+        # id so single-surface operators always have a copy-pasteable command.
         recovery_cli = f"shisad lockdown resume {session_id} --reason <note>"
         return (
             f"Session is in {state.level.value} due to {state.trigger}: {state.reason}. "
