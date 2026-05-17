@@ -31,7 +31,7 @@ Both incidents followed the same shape: a localized lexical guard, several round
 
 **Fix.** Daemon no longer pre-parses user intent. Authenticated command-chat messages route to the COMMAND agent with pending-action state as trusted context. The agent interprets; PEP enforces the structured action the agent proposes. The public behavioral contract is that queued confirmations remain available without preventing ordinary command-chat turns from changing topic.
 
-### 2. v0.7.3.1 GH27 RR5–RR14 — Post-tool stale-claim classifier
+### 2. v0.7.3.1 Post-tool stale-claim classifier
 
 **Shape.** To catch a planner emitting a premature "reservation page does not exist" claim in its pre-tool prose alongside the web recovery tool calls that would resolve it, the daemon grew a classifier: `_is_web_pre_tool_absence_claim`, `_is_web_pre_tool_target_absence_claim`, `_has_web_pre_tool_positive_claim`, plus a boolean combinator. Intent: detect stale absence claims, replace via post-tool synthesis; keep mixed valid answers on the append path.
 

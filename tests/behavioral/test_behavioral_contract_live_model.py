@@ -369,7 +369,7 @@ def _assert_no_legacy_or_shell_file_lookup(reply: dict[str, object]) -> None:
 async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
     live_harness: LiveHarness,
 ) -> None:
-    """LUS-8: typo'd file read followed by similar-file recovery must not lockdown."""
+    """Typo'd file read followed by similar-file recovery must not lockdown."""
     (live_harness.workspace_root / "todo.log").write_text(
         "OPEN: verify live similar-file recovery\n",
         encoding="utf-8",
