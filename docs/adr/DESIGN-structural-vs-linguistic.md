@@ -35,7 +35,7 @@ Both incidents followed the same shape: a localized lexical guard, several round
 
 **Shape.** To catch a planner emitting a premature "reservation page does not exist" claim in its pre-tool prose alongside the web recovery tool calls that would resolve it, the daemon grew a classifier: `_is_web_pre_tool_absence_claim`, `_is_web_pre_tool_target_absence_claim`, `_has_web_pre_tool_positive_claim`, plus a boolean combinator. Intent: detect stale absence claims, replace via post-tool synthesis; keep mixed valid answers on the append path.
 
-**Failure mode.** Ten consecutive `needs_changes` review rounds, each patching a new phrase or boundary — broad matcher rows, topic conflation (cancellation-policy absence vs reservation absence), negative `found` forms, clause-local vs global negation, clause boundaries on `,`, `:`, newlines, and the token `found`, helper-row parity drift. Every round was a valid finding against the classifier's implicit contract. The contract itself was the problem: natural language has unbounded clause-boundary and negation-shape variation.
+**Failure mode.** Ten consecutive remediation rounds, each patching a new phrase or boundary — broad matcher rows, topic conflation (cancellation-policy absence vs reservation absence), negative `found` forms, clause-local vs global negation, clause boundaries on `,`, `:`, newlines, and the token `found`, helper-row parity drift. Each round exposed a valid edge case in the classifier's implicit contract. The contract itself was the problem: natural language has unbounded clause-boundary and negation-shape variation.
 
 **Root cause.** The daemon was making a linguistic judgment ("is this planner sentence a stale absence claim, a positive answer, a mixed caveat, or about a different topic?") with regex. That judgment is the synthesizer LLM's job.
 
@@ -47,10 +47,10 @@ Both incidents followed the same shape: a localized lexical guard, several round
 
 - The daemon was deciding something whose real input was free-form natural-language prose.
 - Each localized fix looked correct; each new finding looked like a legitimate edge case.
-- The finding stream was fuzzing the parser's implicit spec, because that spec was English.
+- The edge-case stream was fuzzing the parser's implicit spec, because that spec was English.
 - Resolution required relocating the judgment to an LLM and enforcing structural consequences around it.
 
-Cost: in GH27, ten `needs_changes` rounds against the classifier versus a small structural refactor that made the entire finding class inapplicable.
+Cost: in GH27, ten remediation rounds against the classifier versus a small structural refactor that made the entire edge-case class inapplicable.
 
 ---
 
