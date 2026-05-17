@@ -66,10 +66,11 @@ records that choice.
   are filtered out of the snapshot so the agent does not mistake them for
   user-entered text.
 
-- **Browser launchers find their runtime dependencies.** Wrapper scripts,
-  env-style launchers, interpreter code flags, and hermetic runtime paths are
-  mounted into the browser sandbox, so launching the browser from a
-  non-standard install path works without manual configuration.
+- **Browser launchers find their runtime dependencies.** When a compatible
+  browser wrapper path is configured, wrapper scripts, env-style launchers,
+  interpreter code flags, and hermetic runtime paths are mounted into the
+  browser sandbox, so launching the browser from a non-standard install path
+  works without manual configuration.
 
 - **Confirmed navigation prefers task-specific destinations.** Confirmed
   navigation retries from the URL the task asked for, validates same-origin

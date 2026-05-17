@@ -2542,7 +2542,7 @@ def _planner_tool_allowlist_with_lockdown_resume(
     Mirror of `_planner_tool_allowlist_with_action_resolve`: hide the tool
     unless the runtime state actually supports it, so restrictive
     policy/channel allowlists do not accidentally expose the tool on
-    untrusted surfaces. See `planning/PLAN-lockdown-no-deadend.md §4.1`.
+    untrusted surfaces.
     """
     lockdown_resume_registered = any(
         tool.name == _LOCKDOWN_RESUME_TOOL_NAME for tool in registry_tools
@@ -5206,8 +5206,7 @@ def _build_planner_memory_context(
     memory. Same-scope recall with elevated provenance and no verification
     gap is routed into a derived-trust framing (`MEMORY CONTEXT
     (same-scope recall)`) rather than the untrusted-data framing so the
-    anomaly detector does not re-fire on it (v0.7.1 C2; see
-    `planning/PLAN-lockdown-no-deadend.md §4.4`). Records carrying an
+    anomaly detector does not re-fire on it (v0.7.1 C2). Records carrying an
     injection taint label, non-elevated trust, or a verification gap stay in
     the untrusted-data framing regardless of scope. Callers that pass no
     complete owner tuple (e.g. maintenance flows) keep the pre-rework
@@ -9231,8 +9230,8 @@ class SessionImplMixin(HandlerMixinBase):
         to `LockdownManager.resume` (which itself publishes the
         `LockdownChanged` event via the state-change hook), and lets the
         outer dispatch loop emit `ToolExecuted (planner_lockdown_resume)`.
-        See `planning/PLAN-lockdown-no-deadend.md §3` for the audit
-        signature rationale.
+        This preserves the human-confirmation actor chain while making the
+        planner-originated resume action explicit in the audit stream.
         """
         sid = validated.sid
         if not _is_trusted_command_chat_session(
@@ -9631,9 +9630,7 @@ class SessionImplMixin(HandlerMixinBase):
                 # than the normal monitor/control-plane path. Anomaly
                 # monitoring's re-fire loop does NOT block this tool
                 # because hiding lockdown.resume from the trusted operator
-                # is exactly the dead-end C2 exists to fix (see
-                # `review/LUS-9.md` Phase C and
-                # `planning/PLAN-lockdown-no-deadend.md §4.3` Option A).
+                # is exactly the dead-end C2 exists to fix.
                 # Every other tool remains monitored as usual.
                 if pep_decision.kind.value != "allow":
                     final_reason = (

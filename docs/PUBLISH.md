@@ -126,6 +126,9 @@ Version must be updated in both places:
       `uvx --from twine twine check dist/*`
 - [ ] Smoke-test the built wheel:
       `uv run --isolated --with dist/shisad-X.Y.Z-py3-none-any.whl shisad --help`
+- [ ] If release notes or docs claim package-installed runtime assets outside
+      `src/shisad`, verify those assets from the built wheel. Otherwise
+      truth-scope the docs to source checkouts or operator-supplied paths.
 - [ ] Stage only release files explicitly and review them:
       `git add ...`, `git diff --staged --name-only`, `git diff --staged`
 - [ ] Commit release metadata:

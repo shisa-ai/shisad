@@ -1,7 +1,6 @@
 """C2 memory (user, workspace) scoping: schema + recall filtering.
 
-See planning/PLAN-lockdown-no-deadend.md §4.4 and
-planning/v0.7/IMPLEMENTATION-v0.7.1.md memory-scoping punchlist.
+Pins owner-tag storage plus default recall filtering for legacy NULL-owner rows.
 """
 
 from __future__ import annotations

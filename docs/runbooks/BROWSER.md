@@ -1,6 +1,6 @@
 # Browser Automation Runbook
 
-This runbook covers the shipped shisad browser wrapper and the host
+This runbook covers the source-checkout shisad browser wrapper and the host
 prerequisites for `browser.navigate`, `browser.read_page`,
 `browser.screenshot`, `browser.click`, `browser.type_text`, and
 `browser.end_session`.
@@ -22,13 +22,18 @@ sudo npx playwright install-deps chromium
 `npx playwright install-deps chromium` installs the native shared libraries
 Chromium needs at runtime. Both are required on a minimal Ubuntu host.
 
-Configure shisad to use the shipped protocol wrapper:
+Configure shisad to use the protocol wrapper from a source checkout:
 
 ```bash
 export SHISAD_BROWSER_ENABLED=1
 export SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs
 export SHISAD_BROWSER_ALLOWED_DOMAINS=example.com
 ```
+
+The current PyPI wheel does not install `scripts/shisad-playwright-cli.mjs`.
+Browser automation from a package install therefore requires either a source
+checkout path for `SHISAD_BROWSER_COMMAND` or an operator-supplied compatible
+wrapper that implements the protocol below.
 
 `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept CSV
 or JSON-array syntax in environment variables.
@@ -53,7 +58,7 @@ a subcommand:
 <command> -s=shisad-<session-id> <subcommand> [args]
 ```
 
-The shipped wrapper implements:
+The source-checkout wrapper implements:
 
 | Subcommand | Contract |
 |---|---|
@@ -93,8 +98,9 @@ actions still go through the daemon's confirmation and policy flow.
 
 - `browser_command_protocol_incompatible`: `SHISAD_BROWSER_COMMAND` points at
   upstream Playwright (`playwright` / `npx playwright`) or another command that
-  does not accept the shisad `-s=...` protocol. Point it at
-  `scripts/shisad-playwright-cli.mjs`.
+  does not accept the shisad `-s=...` protocol. From a source checkout, point
+  it at `scripts/shisad-playwright-cli.mjs`; from a package install, point it
+  at an operator-supplied compatible wrapper.
 - `browser_dependency_unavailable`: the wrapper is present but cannot load its
   Node/Playwright dependency. Run `npm install @playwright/test` from the
   checkout containing `scripts/shisad-playwright-cli.mjs`.

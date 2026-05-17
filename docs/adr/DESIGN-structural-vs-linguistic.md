@@ -29,7 +29,7 @@ Both incidents followed the same shape: a localized lexical guard, several round
 
 **Root cause.** The daemon was classifying user intent from free-form English. The COMMAND agent was already the authoritative interpreter for the user's full language (`"read README"`, `"actually cancel that and search instead"`, `"remember my editor is helix"`). The pre-parser was a second, weaker interpreter competing with it.
 
-**Fix.** Daemon no longer pre-parses user intent. Authenticated command-chat messages route to the COMMAND agent with pending-action state as trusted context. The agent interprets; PEP enforces the structured action the agent proposes. See `planning/PLAN-command-no-regex.md` in the shisa-dev repo.
+**Fix.** Daemon no longer pre-parses user intent. Authenticated command-chat messages route to the COMMAND agent with pending-action state as trusted context. The agent interprets; PEP enforces the structured action the agent proposes. The public behavioral contract is that queued confirmations remain available without preventing ordinary command-chat turns from changing topic.
 
 ### 2. v0.7.3.1 GH27 RR5–RR14 — Post-tool stale-claim classifier
 
@@ -39,7 +39,7 @@ Both incidents followed the same shape: a localized lexical guard, several round
 
 **Root cause.** The daemon was making a linguistic judgment ("is this planner sentence a stale absence claim, a positive answer, a mixed caveat, or about a different topic?") with regex. That judgment is the synthesizer LLM's job.
 
-**Fix.** Replace the classifier with a structural invariant: if web-evidence tools executed alongside non-empty pre-tool planner prose, that prose is preliminary by construction. Run post-tool synthesis; pass the preliminary prose to the synthesizer as labelled context to reconcile against the evidence. No phrase, token, overlap, or threshold remains for reviewers to fuzz. See M5B.ADR-1 in `shisa-dev/planning/v0.7/IMPLEMENTATION-v0.7.3.1.md`.
+**Fix.** Replace the classifier with a structural invariant: if web-evidence tools executed alongside non-empty pre-tool planner prose, that prose is preliminary by construction. Run post-tool synthesis; pass the preliminary prose to the synthesizer as labelled context to reconcile against the evidence. No phrase, token, overlap, or threshold remains for reviewers to fuzz.
 
 ---
 

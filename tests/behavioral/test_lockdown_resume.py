@@ -1,9 +1,8 @@
 """C2 lockdown-resume behavioral coverage.
 
-These tests pin the trusted command-chat recovery path added for
-planning/PLAN-lockdown-no-deadend.md. The product contract is that an
-authenticated operator can recover a caution-locked session from chat, while
-untrusted or still-active threat input cannot impersonate that recovery.
+These tests pin the product contract that an authenticated operator can recover
+a caution-locked session from chat, while untrusted or still-active threat input
+cannot impersonate that recovery.
 """
 
 from __future__ import annotations

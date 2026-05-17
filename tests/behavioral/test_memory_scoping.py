@@ -1,8 +1,7 @@
 """C2 memory (user, workspace) scoping: end-to-end cross-session checks.
 
-Closes LUS-9 Phase C cross-scope recall leakage. See
-planning/PLAN-lockdown-no-deadend.md §4.4 and
-planning/v0.7/IMPLEMENTATION-v0.7.1.md memory-scoping punchlist.
+Pins the public product contract that memory recall is scoped to the owning
+user/workspace tuple and does not leak across unrelated sessions.
 """
 
 from __future__ import annotations

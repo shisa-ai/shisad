@@ -206,7 +206,7 @@ Browser:
 Browser notes:
 
 - `SHISAD_BROWSER_ENABLED=1` turns on the planner-visible browser tool surface (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, `browser.end_session`).
-- `SHISAD_BROWSER_COMMAND` must point at the shisad browser wrapper protocol, not the upstream Playwright CLI. For source checkouts, the default production wrapper is `scripts/shisad-playwright-cli.mjs`; set `SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs` after installing the prerequisites in `docs/runbooks/BROWSER.md`.
+- `SHISAD_BROWSER_COMMAND` must point at the shisad browser wrapper protocol, not the upstream Playwright CLI. For source checkouts, the wrapper is `scripts/shisad-playwright-cli.mjs`; set `SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs` after installing the prerequisites in `docs/runbooks/BROWSER.md`. The current PyPI wheel does not install this wrapper, so package installs need an explicit compatible wrapper path.
 - Upstream `playwright` / `npx playwright` is not protocol-compatible with shisad because the daemon passes a shisad session selector (`-s=shisad-...`) and uses wrapper-specific subcommands.
 - If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, both the runtime browser sandbox policy and the planner/PEP browser tool registry fall back to `SHISAD_WEB_ALLOWED_DOMAINS`.
 - `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept either comma-separated values (`example.com,api.example.com`) or JSON arrays (`["example.com","api.example.com"]`) from environment variables.
@@ -220,7 +220,7 @@ Browser notes:
 Browser host prerequisites:
 
 - `bubblewrap` must be installed for the default hardened container sandbox.
-- `nodejs` and `npm` must be installed to run the shipped wrapper.
+- `nodejs` and `npm` must be installed to run the source-checkout wrapper.
 - Install the wrapper dependency in the shisad checkout with `npm install @playwright/test`.
 - Install both the Chromium browser binary and native shared libraries: `npx playwright install chromium` and `npx playwright install-deps chromium`.
 - See `docs/runbooks/BROWSER.md` for a complete setup and protocol reference.
@@ -526,8 +526,8 @@ For local dev work, the runner harness (`runner/harness.sh`) sets sane defaults
 automatically. If configuring manually, the core subset is:
 
 ```bash
-export SHISAD_DATA_DIR="$PWD/.local/shisad-dev"
-export SHISAD_SOCKET_PATH="/tmp/shisad-dev.sock"
+export SHISAD_DATA_DIR="$PWD/.local/shisad"
+export SHISAD_SOCKET_PATH="/tmp/shisad.sock"
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_CODING_REPO_ROOT="$PWD"
 export SHISAD_CODING_AGENT_DEFAULT_PREFERENCE='["codex","claude"]'

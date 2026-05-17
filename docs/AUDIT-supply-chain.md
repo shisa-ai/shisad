@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-05-07 (Dependabot 21 Ledger bridge uuid override)*
+*Updated: 2026-05-17 (v0.7.3.1 release-close public-doc hygiene)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation and current risk summary; later docs-only commits, including `shisad@ce627f8`, clarify this audit text without changing the audited dependency snapshot. Historical v0.7.0-v0.7.2 release evidence is retained where explicitly labeled.*
+*Snapshot basis: code/dependency state at `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation and current risk summary; later release-close and docs-only commits, including the v0.7.3.1 candidate, clarify this audit text without changing the audited dependency snapshot. Historical v0.7.0-v0.7.2 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
@@ -112,8 +112,8 @@ Goals:
   - `uv lock --check --directory /home/ubuntu/shisad` passed.
   - The same `pip-audit` command then returned `No known vulnerabilities
     found`.
-  - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo
-    /home/ubuntu/shisad` returned `Supply-chain audit parity: OK`.
+  - The maintainer-side supply-chain parity helper returned
+    `Supply-chain audit parity: OK`.
 - Risk disposition:
   - The Python release-close audit blocker is closed for this candidate.
   - `python-multipart` remains a transitive interop/dev dependency through
@@ -185,8 +185,8 @@ Goals:
     /home/ubuntu/shisad)` initially found `CVE-2026-28684` in transitive
     `python-dotenv 1.2.1` via `pydantic-settings`; the candidate now pins
     `python-dotenv>=1.2.2,<2` and refreshes `uv.lock`.
-  - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo
-    /home/ubuntu/shisad` returned `Supply-chain audit parity: OK`.
+  - The maintainer-side supply-chain parity helper returned
+    `Supply-chain audit parity: OK`.
 - Optional Node bridge audit refresh (historical; superseded for axios by the
   2026-04-25 override refresh above):
   - `npm audit --json` in `contrib/ledger-bridge/` reported 7 moderate /
@@ -262,9 +262,8 @@ Goals:
     Release-close parity needs those packages called out explicitly so the
     audit doc matches the current lock surface.
 - Execution and outcomes:
-  - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo /tmp/shisad-v0.6.5-rc`
-    initially reported missing `mcp` entries for the `dev` and `interop`
-    dependency groups.
+  - The maintainer-side supply-chain parity helper initially reported missing
+    `mcp` entries for the `dev` and `interop` dependency groups.
   - The direct-dependency tables and selected lock inventory/edge-map rows
     below were refreshed to include the new interop surface plus the already
     published `pytest 9.0.3` / `pytest-asyncio 1.3.0` dev-toolchain state.

@@ -35,7 +35,6 @@ class RetrievalBackendRow:
     embedding: list[float]
     # (user, workspace) ownership added in v0.7.1 C2 to close cross-session
     # recall leakage. NULL for pre-migration rows; new writes populate both.
-    # See planning/PLAN-lockdown-no-deadend.md §4.4.
     user_id: str | None = None
     workspace_id: str | None = None
 
@@ -507,8 +506,7 @@ class SQLiteRetrievalBackend:
                 """
             )
         # v0.7.1 C2: (user, workspace) ownership migration. Pre-migration rows
-        # retain NULL owner and are excluded from recall by default (see
-        # planning/PLAN-lockdown-no-deadend.md §4.4).
+        # retain NULL owner and are excluded from recall by default.
         if "user_id" not in columns:
             conn.execute(
                 """

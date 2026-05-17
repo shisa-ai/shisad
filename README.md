@@ -228,7 +228,8 @@ export SHISAD_WEB_ALLOWED_DOMAINS='["search.example.com","docs.example.com"]'
 # uv run python scripts/live_tool_matrix.py --tool-status
 
 # Optional: browser automation baseline (read-mostly navigation plus
-# confirmation-gated write actions) via a Playwright-compatible CLI wrapper.
+# confirmation-gated write actions). The built wheel does not install this
+# source-checkout wrapper; package installs need an explicit compatible wrapper.
 export SHISAD_BROWSER_ENABLED=true
 export SHISAD_BROWSER_COMMAND="/path/to/shisad/scripts/shisad-playwright-cli.mjs"
 export SHISAD_BROWSER_ALLOWED_DOMAINS='["example.com"]'

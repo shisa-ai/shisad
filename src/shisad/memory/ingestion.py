@@ -164,8 +164,7 @@ class RetrievalResult(BaseModel):
     scope: MemoryScope = "user"
     # (user, workspace) ownership mirror of the MemoryEntry fields; surfaced
     # so call sites filtering recall results can see the owner without a
-    # second backend round-trip. Optional for legacy rows (see
-    # planning/PLAN-lockdown-no-deadend.md §4.4).
+    # second backend round-trip. Optional for legacy rows.
     user_id: str | None = None
     workspace_id: str | None = None
     taint_labels: list[TaintLabel] = Field(default_factory=list)
@@ -319,8 +318,7 @@ class IngestionPipeline:
 
         `user_id` and `workspace_id` tag the record with the owning
         operator/workspace so later recall can scope by session identity.
-        See `planning/PLAN-lockdown-no-deadend.md §4.4` for the rework
-        rationale. Call sites that write memory from a session context
+        Call sites that write memory from a session context
         should pass `session.user_id` and `session.workspace_id`; sites
         that have no session (e.g., legacy maintenance imports) may pass
         None, in which case the row is written with NULL owner and
