@@ -236,7 +236,7 @@ def test_provider_runtime_error_does_not_fallback_to_deterministic(
 
         def embed(self, _input_texts: list[str]) -> list[list[float]]:
             raise RuntimeError(
-                "provider failed with provider-secret at "
+                "provider failed with provider-secret and base-secret and user:pass at "
                 "https://user:pass@embedding.example/v1?api_key=runtime-secret"
             )
 
@@ -251,7 +251,10 @@ def test_provider_runtime_error_does_not_fallback_to_deterministic(
                 tmp_path,
                 config_overrides={
                     "embedding_mode": "provider",
-                    "embedding_base_url": "https://embedding.example/v1",
+                    "embedding_base_url": (
+                        "https://user:pass@embedding.example/v1"
+                        "?api_key=base-secret#access_token=fragment-secret"
+                    ),
                     "embedding_api_key": "provider-secret",
                     "embedding_model_id": "text-embedding-test",
                 },
@@ -274,6 +277,8 @@ def test_provider_runtime_error_does_not_fallback_to_deterministic(
     assert error["error"]["code"] == "operation_failed"
     assert "provider failed" in error["error"]["message"]
     assert "runtime-secret" not in rendered
+    assert "base-secret" not in rendered
+    assert "fragment-secret" not in rendered
     assert "user:pass" not in rendered
     assert "provider-secret" not in rendered
 

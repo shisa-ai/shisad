@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from shisad import __version__
 from shisad.core.providers.base import OpenAICompatibleProvider
@@ -40,6 +40,10 @@ _STATE_ROOT_MARKER = ".shisad-memory-sut-state-root"
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,80}", re.IGNORECASE)
 _SECRET_URL_PARAM_RE = re.compile(
     r"(?:^|[?&#])[^=&#]*(?:api[_-]?key|secret|token|password|cookie|authorization)[^=&#]*=",
+    re.IGNORECASE,
+)
+_SECRET_URL_KEY_RE = re.compile(
+    r"(?:api[_-]?key|secret|token|password|cookie|authorization)",
     re.IGNORECASE,
 )
 _URLISH_TOKEN_RE = re.compile(
@@ -401,6 +405,7 @@ class EvaluationSutSession:
             headers={"Authorization": f"Bearer {api_key}"},
         )
         self._public_redaction_literals.add(str(api_key))
+        self._public_redaction_literals.update(_url_secret_literals(str(base_url)))
         self._embeddings_adapter = SyncEmbeddingsAdapter(provider, model_id=str(model_id))
         self._embedding_mode = "provider"
         public_base_url = _public_embedding_base_url(str(base_url))
@@ -754,6 +759,35 @@ def _public_urlish_token(token: str) -> str:
 
 def _has_secret_url_parts(value: str) -> bool:
     return _has_raw_url_credentials(value) or bool(_SECRET_URL_PARAM_RE.search(value))
+
+
+def _url_secret_literals(value: str) -> set[str]:
+    literals: set[str] = set()
+    if "@" in value:
+        authority_source = value.split("://", 1)[1] if "://" in value else value
+        authority = authority_source.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        userinfo = authority.rsplit("@", 1)[0]
+        if userinfo:
+            literals.add(userinfo)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return literals
+    for key, inner in parse_qsl(parts.query, keep_blank_values=True):
+        if inner and _SECRET_URL_KEY_RE.search(key):
+            literals.add(inner)
+    for key, inner in _fragment_pairs(parts.fragment):
+        if inner and _SECRET_URL_KEY_RE.search(key):
+            literals.add(inner)
+    return literals
+
+
+def _fragment_pairs(fragment: str) -> list[tuple[str, str]]:
+    if not fragment:
+        return []
+    if "?" in fragment:
+        return parse_qsl(fragment.split("?", 1)[1], keep_blank_values=True)
+    return parse_qsl(fragment, keep_blank_values=True)
 
 
 def _has_raw_url_credentials(value: str) -> bool:
