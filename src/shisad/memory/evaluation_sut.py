@@ -231,6 +231,7 @@ class EvaluationSutSession:
             scope="user",
             confidence=float(message.get("confidence", 0.95)),
             confirmation_satisfied=True,
+            supersedes=_optional_text(message, "supersedes"),
             user_id=owner.user_id,
             workspace_id=owner.workspace_id,
             created_at=timestamp,
@@ -318,7 +319,7 @@ class EvaluationSutSession:
         )
         evidence: list[dict[str, Any]] = []
         for entry in entries:
-            if entry.superseded_by is not None:
+            if self._entry_superseded_at_or_before_as_of(entry, as_of=as_of):
                 continue
             if as_of is not None and entry.created_at > as_of:
                 continue
@@ -328,6 +329,27 @@ class EvaluationSutSession:
             if len(evidence) >= limit:
                 break
         return evidence
+
+    def _entry_superseded_at_or_before_as_of(
+        self,
+        entry: MemoryEntry,
+        *,
+        as_of: datetime | None,
+    ) -> bool:
+        if entry.superseded_by is None:
+            return False
+        if as_of is None:
+            return True
+        components = self._require_components()
+        owner = self._require_owner()
+        successor = components.memory_manager.get_entry(
+            entry.superseded_by,
+            user_id=owner.user_id,
+            workspace_id=owner.workspace_id,
+        )
+        if successor is None:
+            return True
+        return successor.created_at <= as_of
 
     def _configure_embedding_overrides(self, raw_overrides: object) -> None:
         self._embedding_mode = "deterministic"

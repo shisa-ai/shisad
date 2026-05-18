@@ -6,7 +6,7 @@ from io import StringIO
 from pathlib import Path
 
 from shisad.daemon import services as daemon_services
-from shisad.memory.evaluation_sut import CONTRACT_VERSION, run_sut_jsonl
+from shisad.memory.evaluation_sut import CONTRACT_VERSION, EvaluationSutSession, run_sut_jsonl
 from shisad.memory.runtime_wiring import build_memory_runtime_components
 
 
@@ -259,6 +259,58 @@ def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path
     assert structured[0]["created_at"] == "2026-02-03T04:05:06Z"
     assert {item["source_id"] for item in structured} == {"structured-1"}
     assert before_write_query["evidence"] == []
+
+
+def test_structured_query_as_of_keeps_entry_before_successor_exists(tmp_path: Path) -> None:
+    session = EvaluationSutSession()
+    try:
+        assert session.handle(_hello(tmp_path))["ok"] is True
+        old = session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "fact",
+                "key": "favorite_drink",
+                "value": "Alice prefers jasmine tea.",
+                "source_id": "structured-old",
+                "timestamp": "2026-02-03T00:00:00Z",
+            }
+        )
+        new = session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "fact",
+                "key": "favorite_drink",
+                "value": "Alice prefers oolong.",
+                "source_id": "structured-new",
+                "supersedes": old["entry_id"],
+                "timestamp": "2026-02-10T00:00:00Z",
+            }
+        )
+
+        historical = session.handle(
+            {
+                "op": "query",
+                "query_id": "historical",
+                "query": "favorite drink",
+                "top_k": 3,
+                "timestamp": "2026-02-05T00:00:00Z",
+            }
+        )
+        current = session.handle(
+            {
+                "op": "query",
+                "query_id": "current",
+                "query": "favorite drink",
+                "top_k": 3,
+                "timestamp": "2026-02-11T00:00:00Z",
+            }
+        )
+    finally:
+        session.close()
+
+    assert new["source_id"] == "structured-new"
+    assert [item["source_id"] for item in historical["evidence"]] == ["structured-old"]
+    assert [item["source_id"] for item in current["evidence"]] == ["structured-new"]
 
 
 def test_answer_generation_is_capability_gated(tmp_path: Path) -> None:
