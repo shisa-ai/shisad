@@ -46,6 +46,8 @@ unsupported capabilities, and `envelope_metadata`. Public metadata fields must
 not contain endpoint credentials; provider base URLs are reported without
 userinfo, query strings, or fragments. MELT also applies report redaction before
 copying SUT metadata into report artifacts.
+Provider-backed protocol errors redact the configured API key and URL secrets
+before they are emitted.
 
 Capability vocabulary:
 

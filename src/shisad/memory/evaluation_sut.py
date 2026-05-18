@@ -80,11 +80,15 @@ class EvaluationSutSession:
         self._embeddings_adapter: SyncEmbeddingsAdapter | None = None
         self._config_overrides_accepted: dict[str, object] = {}
         self._config_overrides_rejected: dict[str, str] = {}
+        self._public_redaction_literals: set[str] = set()
 
     def close(self) -> None:
         if self._embeddings_adapter is not None:
             self._embeddings_adapter.close(wait=False)
             self._embeddings_adapter = None
+
+    def redact_public_text(self, text: str) -> str:
+        return _redact_public_text(text, secret_literals=self._public_redaction_literals)
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any]:
         op = _required_text(message, "op")
@@ -364,6 +368,7 @@ class EvaluationSutSession:
         self._embedding_fingerprint = deterministic_embedding_fingerprint()
         self._config_overrides_accepted = {"embedding_mode": "deterministic"}
         self._config_overrides_rejected = {}
+        self._public_redaction_literals = set()
         if not isinstance(raw_overrides, dict):
             self._config_overrides_rejected["config_overrides"] = "must be an object"
             return
@@ -395,6 +400,7 @@ class EvaluationSutSession:
             model_id=str(model_id),
             headers={"Authorization": f"Bearer {api_key}"},
         )
+        self._public_redaction_literals.add(str(api_key))
         self._embeddings_adapter = SyncEmbeddingsAdapter(provider, model_id=str(model_id))
         self._embedding_mode = "provider"
         public_base_url = _public_embedding_base_url(str(base_url))
@@ -493,12 +499,16 @@ def run_sut_jsonl(*, stdin: TextIO | None = None, stdout: TextIO | None = None) 
             except json.JSONDecodeError as exc:
                 response = _error_response("error", "malformed_input", str(exc))
             except _ProtocolError as exc:
-                response = _error_response("error", exc.code, _redact_public_text(exc.message))
+                response = _error_response(
+                    "error",
+                    exc.code,
+                    session.redact_public_text(exc.message),
+                )
             except Exception as exc:
                 response = _error_response(
                     "error",
                     "operation_failed",
-                    _redact_public_text(str(exc)),
+                    session.redact_public_text(str(exc)),
                 )
             output_stream.write(json.dumps(response, sort_keys=True, ensure_ascii=True) + "\n")
             output_stream.flush()
@@ -726,8 +736,14 @@ def _public_embedding_base_url(base_url: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
-def _redact_public_text(text: str) -> str:
-    return _URLISH_TOKEN_RE.sub(lambda match: _public_urlish_token(match.group(0)), text)
+def _redact_public_text(
+    text: str, *, secret_literals: set[str] | frozenset[str] = frozenset()
+) -> str:
+    redacted = _URLISH_TOKEN_RE.sub(lambda match: _public_urlish_token(match.group(0)), text)
+    for literal in sorted(secret_literals, key=len, reverse=True):
+        if literal:
+            redacted = redacted.replace(literal, "<redacted>")
+    return redacted
 
 
 def _public_urlish_token(token: str) -> str:

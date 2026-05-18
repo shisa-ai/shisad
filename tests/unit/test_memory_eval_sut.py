@@ -236,7 +236,7 @@ def test_provider_runtime_error_does_not_fallback_to_deterministic(
 
         def embed(self, _input_texts: list[str]) -> list[list[float]]:
             raise RuntimeError(
-                "provider failed at "
+                "provider failed with provider-secret at "
                 "https://user:pass@embedding.example/v1?api_key=runtime-secret"
             )
 
