@@ -313,6 +313,46 @@ def test_structured_query_as_of_keeps_entry_before_successor_exists(tmp_path: Pa
     assert [item["source_id"] for item in current["evidence"]] == ["structured-new"]
 
 
+def test_structured_query_as_of_searches_beyond_newer_entries(tmp_path: Path) -> None:
+    session = EvaluationSutSession()
+    try:
+        assert session.handle(_hello(tmp_path))["ok"] is True
+        session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "fact",
+                "key": "favorite_drink",
+                "value": "Alice prefers jasmine tea.",
+                "source_id": "structured-old",
+                "timestamp": "2026-02-01T00:00:00Z",
+            }
+        )
+        for index in range(120):
+            session.handle(
+                {
+                    "op": "memory_write",
+                    "entry_type": "fact",
+                    "key": f"future_note_{index}",
+                    "value": f"Future filler note {index}.",
+                    "source_id": f"future-{index}",
+                    "timestamp": f"2026-03-01T00:{index % 60:02d}:00Z",
+                }
+            )
+        historical = session.handle(
+            {
+                "op": "query",
+                "query_id": "historical",
+                "query": "favorite drink",
+                "top_k": 3,
+                "timestamp": "2026-02-05T00:00:00Z",
+            }
+        )
+    finally:
+        session.close()
+
+    assert [item["source_id"] for item in historical["evidence"]] == ["structured-old"]
+
+
 def test_answer_generation_is_capability_gated(tmp_path: Path) -> None:
     responses = _run_messages(
         [

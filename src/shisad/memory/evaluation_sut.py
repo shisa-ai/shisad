@@ -315,7 +315,7 @@ class EvaluationSutSession:
         entries = components.memory_manager.list_entries(
             user_id=owner.user_id,
             workspace_id=owner.workspace_id,
-            limit=max(100, limit),
+            limit=max(1, components.memory_manager.entry_count()),
         )
         evidence: list[dict[str, Any]] = []
         for entry in entries:

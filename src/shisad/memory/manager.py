@@ -594,6 +594,11 @@ class MemoryManager:
         rows.sort(key=lambda item: item.created_at, reverse=True)
         return rows[:limit]
 
+    def entry_count(self) -> int:
+        """Return the number of loaded memory entries."""
+
+        return len(self._entries)
+
     def get_entry(
         self,
         entry_id: str,
