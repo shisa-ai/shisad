@@ -772,6 +772,7 @@ def _url_secret_literals(value: str) -> set[str]:
     try:
         parts = urlsplit(value)
     except ValueError:
+        literals.update(_raw_urlish_secret_literals(value))
         return literals
     for key, inner in parse_qsl(parts.query, keep_blank_values=True):
         if inner and _SECRET_URL_KEY_RE.search(key):
@@ -783,6 +784,19 @@ def _url_secret_literals(value: str) -> set[str]:
         if inner and _SECRET_URL_KEY_RE.search(key):
             literals.add(inner)
     for key, inner in _raw_fragment_pairs(parts.fragment):
+        if inner and _SECRET_URL_KEY_RE.search(key):
+            literals.add(inner)
+    return literals
+
+
+def _raw_urlish_secret_literals(value: str) -> set[str]:
+    literals: set[str] = set()
+    before_fragment, _, fragment = value.partition("#")
+    query = before_fragment.split("?", 1)[1] if "?" in before_fragment else ""
+    for key, inner in _raw_url_pairs(query):
+        if inner and _SECRET_URL_KEY_RE.search(key):
+            literals.add(inner)
+    for key, inner in _raw_fragment_pairs(fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
             literals.add(inner)
     return literals

@@ -288,6 +288,56 @@ def test_provider_runtime_error_does_not_fallback_to_deterministic(
     assert "provider-secret" not in rendered
 
 
+def test_provider_runtime_error_redacts_malformed_base_url_secret_literals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FailingEmbeddingsAdapter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def embed(self, _input_texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("provider failed with bad%2Bsecret and bad+fragment")
+
+        def close(self, *, wait: bool = False) -> None:
+            del wait
+
+    monkeypatch.setattr(evaluation_sut, "SyncEmbeddingsAdapter", FailingEmbeddingsAdapter)
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": (
+                        "https://[bad?secondary_secret=bad%2Bsecret"
+                        "#access_token=bad+fragment"
+                    ),
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {
+                "op": "ingest",
+                "event_id": "event-1",
+                "source_type": "user",
+                "content": "Alice keeps the Zurich notes in the blue folder.",
+                "timestamp": "2026-01-01T12:00:00Z",
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    rendered = json.dumps(responses[1], sort_keys=True)
+    assert responses[1]["ok"] is False
+    assert "provider failed" in responses[1]["error"]["message"]
+    assert "bad%2Bsecret" not in rendered
+    assert "bad+secret" not in rendered
+    assert "bad+fragment" not in rendered
+    assert "bad fragment" not in rendered
+    assert "provider-secret" not in rendered
+
+
 def test_malformed_json_returns_structured_error() -> None:
     stdin = StringIO("{not json}\n")
     stdout = StringIO()
