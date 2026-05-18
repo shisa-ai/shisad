@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import json
 from io import StringIO
 from pathlib import Path
 
+from shisad.daemon import services as daemon_services
 from shisad.memory.evaluation_sut import CONTRACT_VERSION, run_sut_jsonl
 from shisad.memory.runtime_wiring import build_memory_runtime_components
 
@@ -129,6 +131,45 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     assert reset_query["evidence"] == []
 
 
+def test_owner_workspace_scope_prevents_recall_leakage(tmp_path: Path) -> None:
+    bob_hello = _hello(
+        tmp_path,
+        owner={"user_id": "bob", "workspace_id": "workspace-b"},
+    )
+
+    responses = _run_messages(
+        [
+            _hello(tmp_path),
+            {
+                "op": "ingest",
+                "event_id": "event-1",
+                "source_type": "user",
+                "content": "Alice keeps the Zurich notes in the green folder.",
+                "timestamp": "2026-01-01T12:00:00Z",
+            },
+            {
+                "op": "query",
+                "query_id": "alice-query",
+                "query": "Zurich notes",
+                "top_k": 3,
+                "timestamp": "2026-01-02T12:00:00Z",
+            },
+            bob_hello,
+            {
+                "op": "query",
+                "query_id": "bob-query",
+                "query": "Zurich notes",
+                "top_k": 3,
+                "timestamp": "2026-01-02T12:00:00Z",
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert responses[2]["evidence"][0]["source_id"] == responses[1]["source_id"]
+    assert responses[4]["evidence"] == []
+
+
 def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path: Path) -> None:
     responses = _run_messages(
         [
@@ -187,3 +228,9 @@ def test_runtime_component_wiring_uses_daemon_memory_paths(tmp_path: Path) -> No
     assert components.legacy_storage_dir == tmp_path / "memory"
     assert components.ingestion.embedding_fingerprint.model_id == "shisad-deterministic-sha256"
     assert components.memory_manager is not None
+
+
+def test_daemon_and_sut_share_memory_runtime_builder() -> None:
+    build_source = inspect.getsource(daemon_services.DaemonServices.build)
+
+    assert "build_memory_runtime_components(" in build_source
