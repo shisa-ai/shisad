@@ -105,6 +105,70 @@ def test_provider_override_metadata_redacts_base_url_secrets(tmp_path: Path) -> 
     assert "provider-secret" not in rendered
 
 
+def test_provider_override_metadata_redacts_malformed_base_url_secrets(tmp_path: Path) -> None:
+    secret_url = "user:pass@embedding.example/v1?api_key=base-secret#access_token=fragment-secret"
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": secret_url,
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    ack = responses[0]
+    rendered = json.dumps(ack, sort_keys=True)
+    assert ack["ok"] is True
+    assert ack["config_overrides_accepted"]["embedding_base_url"] == "<redacted>"
+    assert ack["envelope_metadata"]["embedding_base_url"] == "<redacted>"
+    assert "base-secret" not in rendered
+    assert "fragment-secret" not in rendered
+    assert "user:pass" not in rendered
+    assert "provider-secret" not in rendered
+
+
+def test_provider_operation_error_redacts_provider_url_secrets(tmp_path: Path) -> None:
+    secret_url = "https://user:pass@127.0.0.1/v1?api_key=base-secret#access_token=fragment-secret"
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": secret_url,
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {
+                "op": "ingest",
+                "event_id": "event-1",
+                "source_type": "user",
+                "content": "Alice keeps the Zurich notes in the blue folder.",
+                "timestamp": "2026-01-01T12:00:00Z",
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    error = responses[1]
+    rendered = json.dumps(error, sort_keys=True)
+    assert error["ok"] is False
+    assert error["error"]["code"] == "operation_failed"
+    assert "base-secret" not in rendered
+    assert "fragment-secret" not in rendered
+    assert "user:pass" not in rendered
+    assert "provider-secret" not in rendered
+
+
 def test_malformed_json_returns_structured_error() -> None:
     stdin = StringIO("{not json}\n")
     stdout = StringIO()

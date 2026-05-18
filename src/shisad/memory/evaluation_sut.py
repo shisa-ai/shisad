@@ -38,6 +38,13 @@ SOFT_UNSUPPORTED_CAPABILITIES = ("answer_generation",)
 CAPABILITY_VOCABULARY = SUPPORTED_CAPABILITIES + SOFT_UNSUPPORTED_CAPABILITIES
 _STATE_ROOT_MARKER = ".shisad-memory-sut-state-root"
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,80}", re.IGNORECASE)
+_SECRET_URL_PARAM_RE = re.compile(
+    r"(?:^|[?&#])[^=&#]*(?:api[_-]?key|secret|token|password|cookie|authorization)[^=&#]*=",
+    re.IGNORECASE,
+)
+_URLISH_TOKEN_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+|[^\s\"'<>]*@[^\s\"'<>]+|[^\s\"'<>]*[?#&][^\s\"'<>]+"
+)
 
 
 @dataclass(frozen=True)
@@ -485,9 +492,13 @@ def run_sut_jsonl(*, stdin: TextIO | None = None, stdout: TextIO | None = None) 
             except json.JSONDecodeError as exc:
                 response = _error_response("error", "malformed_input", str(exc))
             except _ProtocolError as exc:
-                response = _error_response("error", exc.code, exc.message)
-            except (TypeError, ValueError, OSError) as exc:
-                response = _error_response("error", "operation_failed", str(exc))
+                response = _error_response("error", exc.code, _redact_public_text(exc.message))
+            except Exception as exc:
+                response = _error_response(
+                    "error",
+                    "operation_failed",
+                    _redact_public_text(str(exc)),
+                )
             output_stream.write(json.dumps(response, sort_keys=True, ensure_ascii=True) + "\n")
             output_stream.flush()
             if isinstance(payload, dict) and payload.get("op") == "shutdown":
@@ -705,11 +716,36 @@ def _public_embedding_base_url(base_url: str) -> str:
     except ValueError:
         return "<redacted>"
     if not parts.scheme or not parts.netloc or not hostname:
+        if _has_secret_url_parts(base_url):
+            return "<redacted>"
         return base_url
     netloc = hostname
     if port is not None:
         netloc = f"{netloc}:{port}"
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def _redact_public_text(text: str) -> str:
+    return _URLISH_TOKEN_RE.sub(lambda match: _public_urlish_token(match.group(0)), text)
+
+
+def _public_urlish_token(token: str) -> str:
+    if not _has_secret_url_parts(token):
+        return token
+    return _public_embedding_base_url(token)
+
+
+def _has_secret_url_parts(value: str) -> bool:
+    return _has_raw_url_credentials(value) or bool(_SECRET_URL_PARAM_RE.search(value))
+
+
+def _has_raw_url_credentials(value: str) -> bool:
+    if "@" not in value:
+        return False
+    authority_source = value.split("://", 1)[1] if "://" in value else value
+    authority = authority_source.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    userinfo = authority.rsplit("@", 1)[0]
+    return bool(userinfo)
 
 
 def _error_response(op: str, code: str, message: str) -> dict[str, Any]:
