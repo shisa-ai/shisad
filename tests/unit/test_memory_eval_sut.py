@@ -194,6 +194,35 @@ def test_provider_override_metadata_redacts_path_style_secret_parameter(
     assert "provider-secret" not in rendered
 
 
+def test_provider_override_metadata_redacts_semicolon_secret_parameter(
+    tmp_path: Path,
+) -> None:
+    secret_url = "https://embedding.example/v1;api_key=base-secret"
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": secret_url,
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    ack = responses[0]
+    rendered = json.dumps(ack, sort_keys=True)
+    assert ack["ok"] is True
+    assert ack["config_overrides_accepted"]["embedding_base_url"] == "<redacted>"
+    assert ack["envelope_metadata"]["embedding_base_url"] == "<redacted>"
+    assert "base-secret" not in rendered
+    assert "provider-secret" not in rendered
+
+
 def test_provider_embedding_fingerprint_uses_public_base_url_identity(tmp_path: Path) -> None:
     first_secret_url = (
         "https://user:pass@embedding.example/v1"
@@ -358,7 +387,9 @@ def test_provider_runtime_error_redacts_path_style_secret_parameter(
                 tmp_path,
                 config_overrides={
                     "embedding_mode": "provider",
-                    "embedding_base_url": "https://embedding.example/v1&api_key=path-secret",
+                    "embedding_base_url": (
+                        "https://embedding.example/v1&api_key=path-secret?mode=debug"
+                    ),
                     "embedding_api_key": "provider-secret",
                     "embedding_model_id": "text-embedding-test",
                 },
@@ -378,6 +409,50 @@ def test_provider_runtime_error_redacts_path_style_secret_parameter(
     assert responses[1]["ok"] is False
     assert "provider failed" in responses[1]["error"]["message"]
     assert "path-secret" not in rendered
+    assert "provider-secret" not in rendered
+
+
+def test_provider_runtime_error_redacts_semicolon_secret_parameter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FailingEmbeddingsAdapter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def embed(self, _input_texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("provider failed with semi-secret")
+
+        def close(self, *, wait: bool = False) -> None:
+            del wait
+
+    monkeypatch.setattr(evaluation_sut, "SyncEmbeddingsAdapter", FailingEmbeddingsAdapter)
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": "https://embedding.example/v1;api_key=semi-secret",
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {
+                "op": "ingest",
+                "event_id": "event-1",
+                "source_type": "user",
+                "content": "Alice keeps the Zurich notes in the blue folder.",
+                "timestamp": "2026-01-01T12:00:00Z",
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    rendered = json.dumps(responses[1], sort_keys=True)
+    assert responses[1]["ok"] is False
+    assert "provider failed" in responses[1]["error"]["message"]
+    assert "semi-secret" not in rendered
     assert "provider-secret" not in rendered
 
 

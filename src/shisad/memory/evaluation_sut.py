@@ -38,8 +38,9 @@ SOFT_UNSUPPORTED_CAPABILITIES = ("answer_generation",)
 CAPABILITY_VOCABULARY = SUPPORTED_CAPABILITIES + SOFT_UNSUPPORTED_CAPABILITIES
 _STATE_ROOT_MARKER = ".shisad-memory-sut-state-root"
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,80}", re.IGNORECASE)
+_SECRET_VALUE_DELIMITER_RE = re.compile(r"[?#&;]")
 _SECRET_URL_PARAM_RE = re.compile(
-    r"(?:^|[?&#])[^=&#]*(?:api[_-]?key|secret|token|password|cookie|authorization)[^=&#]*=",
+    r"(?:^|[?&#;])[^=&#;]*(?:api[_-]?key|secret|token|password|cookie|authorization)[^=&#;]*=",
     re.IGNORECASE,
 )
 _SECRET_URL_KEY_RE = re.compile(
@@ -47,7 +48,7 @@ _SECRET_URL_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _URLISH_TOKEN_RE = re.compile(
-    r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+|[^\s\"'<>]*@[^\s\"'<>]+|[^\s\"'<>]*[?#&][^\s\"'<>]+"
+    r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+|[^\s\"'<>]*@[^\s\"'<>]+|[^\s\"'<>]*[?#&;][^\s\"'<>]+"
 )
 
 
@@ -781,48 +782,66 @@ def _url_secret_literals(value: str) -> set[str]:
     except ValueError:
         literals.update(_raw_urlish_secret_literals(value))
         return literals
-    for key, inner in parse_qsl(parts.query, keep_blank_values=True):
+    for key, inner in _decoded_url_pairs(parts.query):
         if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+            _add_url_secret_literal(literals, inner)
     for key, inner in _raw_url_pairs(parts.query):
         if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+            _add_url_secret_literal(literals, inner)
     for key, inner in _fragment_pairs(parts.fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+            _add_url_secret_literal(literals, inner)
     for key, inner in _raw_fragment_pairs(parts.fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+            _add_url_secret_literal(literals, inner)
     return literals
 
 
 def _raw_urlish_secret_literals(value: str) -> set[str]:
     literals: set[str] = set()
     before_fragment, _, fragment = value.partition("#")
-    if "?" in before_fragment:
-        query = before_fragment.split("?", 1)[1]
-    elif "&" in before_fragment:
-        query = before_fragment.split("&", 1)[1]
-    else:
-        query = ""
-    for key, inner in parse_qsl(query, keep_blank_values=True):
-        if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
-    for key, inner in _raw_url_pairs(query):
-        if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+    for parameter_text in _raw_urlish_parameter_texts(before_fragment):
+        for key, inner in _decoded_url_pairs(parameter_text):
+            if inner and _SECRET_URL_KEY_RE.search(key):
+                _add_url_secret_literal(literals, inner)
+        for key, inner in _raw_url_pairs(parameter_text):
+            if inner and _SECRET_URL_KEY_RE.search(key):
+                _add_url_secret_literal(literals, inner)
     for key, inner in _fragment_pairs(fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+            _add_url_secret_literal(literals, inner)
     for key, inner in _raw_fragment_pairs(fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
-            literals.add(inner)
+            _add_url_secret_literal(literals, inner)
     return literals
+
+
+def _raw_urlish_parameter_texts(value: str) -> list[str]:
+    texts: list[str] = []
+    for marker in ("?", "&", ";"):
+        start = 0
+        while True:
+            index = value.find(marker, start)
+            if index == -1:
+                break
+            text = value[index + 1 :]
+            if marker in {"&", ";"} and "?" in text:
+                text = text.split("?", 1)[0]
+            texts.append(text)
+            start = index + 1
+    return texts
+
+
+def _decoded_url_pairs(value: str) -> list[tuple[str, str]]:
+    pairs = parse_qsl(value, keep_blank_values=True)
+    if ";" in value:
+        pairs.extend(parse_qsl(value.replace(";", "&"), keep_blank_values=True))
+    return pairs
 
 
 def _raw_url_pairs(value: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
-    for part in value.split("&"):
+    for part in re.split(r"[&;]", value):
         if not part:
             continue
         key, separator, inner = part.partition("=")
@@ -834,8 +853,8 @@ def _fragment_pairs(fragment: str) -> list[tuple[str, str]]:
     if not fragment:
         return []
     if "?" in fragment:
-        return parse_qsl(fragment.split("?", 1)[1], keep_blank_values=True)
-    return parse_qsl(fragment, keep_blank_values=True)
+        return _decoded_url_pairs(fragment.split("?", 1)[1])
+    return _decoded_url_pairs(fragment)
 
 
 def _raw_fragment_pairs(fragment: str) -> list[tuple[str, str]]:
@@ -844,6 +863,15 @@ def _raw_fragment_pairs(fragment: str) -> list[tuple[str, str]]:
     if "?" in fragment:
         return _raw_url_pairs(fragment.split("?", 1)[1])
     return _raw_url_pairs(fragment)
+
+
+def _add_url_secret_literal(literals: set[str], value: str) -> None:
+    if not value:
+        return
+    literals.add(value)
+    prefix = _SECRET_VALUE_DELIMITER_RE.split(value, maxsplit=1)[0]
+    if prefix:
+        literals.add(prefix)
 
 
 def _has_raw_url_credentials(value: str) -> bool:
