@@ -735,6 +735,8 @@ def _public_embedding_base_url(base_url: str) -> str:
         if _has_secret_url_parts(base_url):
             return "<redacted>"
         return base_url
+    if _raw_urlish_secret_literals(parts.path):
+        return "<redacted>"
     netloc = hostname
     if port is not None:
         netloc = f"{netloc}:{port}"
@@ -758,11 +760,16 @@ def _public_urlish_token(token: str) -> str:
 
 
 def _has_secret_url_parts(value: str) -> bool:
-    return _has_raw_url_credentials(value) or bool(_SECRET_URL_PARAM_RE.search(value))
+    return (
+        _has_raw_url_credentials(value)
+        or bool(_SECRET_URL_PARAM_RE.search(value))
+        or bool(_url_secret_literals(value))
+    )
 
 
 def _url_secret_literals(value: str) -> set[str]:
     literals: set[str] = set()
+    literals.update(_raw_urlish_secret_literals(value))
     if "@" in value:
         authority_source = value.split("://", 1)[1] if "://" in value else value
         authority = authority_source.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
@@ -792,7 +799,12 @@ def _url_secret_literals(value: str) -> set[str]:
 def _raw_urlish_secret_literals(value: str) -> set[str]:
     literals: set[str] = set()
     before_fragment, _, fragment = value.partition("#")
-    query = before_fragment.split("?", 1)[1] if "?" in before_fragment else ""
+    if "?" in before_fragment:
+        query = before_fragment.split("?", 1)[1]
+    elif "&" in before_fragment:
+        query = before_fragment.split("&", 1)[1]
+    else:
+        query = ""
     for key, inner in parse_qsl(query, keep_blank_values=True):
         if inner and _SECRET_URL_KEY_RE.search(key):
             literals.add(inner)

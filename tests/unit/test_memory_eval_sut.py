@@ -135,6 +135,65 @@ def test_provider_override_metadata_redacts_malformed_base_url_secrets(tmp_path:
     assert "provider-secret" not in rendered
 
 
+def test_provider_override_metadata_redacts_encoded_secret_parameter_names(
+    tmp_path: Path,
+) -> None:
+    secret_url = "embedding.example/v1?api%5Fkey=base-secret#access%5Ftoken=fragment-secret"
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": secret_url,
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    ack = responses[0]
+    rendered = json.dumps(ack, sort_keys=True)
+    assert ack["ok"] is True
+    assert ack["config_overrides_accepted"]["embedding_base_url"] == "<redacted>"
+    assert ack["envelope_metadata"]["embedding_base_url"] == "<redacted>"
+    assert "base-secret" not in rendered
+    assert "fragment-secret" not in rendered
+    assert "provider-secret" not in rendered
+
+
+def test_provider_override_metadata_redacts_path_style_secret_parameter(
+    tmp_path: Path,
+) -> None:
+    secret_url = "https://embedding.example/v1&api_key=base-secret"
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": secret_url,
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    ack = responses[0]
+    rendered = json.dumps(ack, sort_keys=True)
+    assert ack["ok"] is True
+    assert ack["config_overrides_accepted"]["embedding_base_url"] == "<redacted>"
+    assert ack["envelope_metadata"]["embedding_base_url"] == "<redacted>"
+    assert "base-secret" not in rendered
+    assert "provider-secret" not in rendered
+
+
 def test_provider_embedding_fingerprint_uses_public_base_url_identity(tmp_path: Path) -> None:
     first_secret_url = (
         "https://user:pass@embedding.example/v1"
