@@ -244,6 +244,7 @@ class MemoryManager:
         user_id: str | None = None,
         workspace_id: str | None = None,
         include_unowned: bool = False,
+        created_at: datetime | None = None,
     ) -> MemoryWriteDecision:
         owner_scope_requested = user_id is not None or workspace_id is not None or include_unowned
         owner_user_id = self._normalize_owner_value(user_id)
@@ -313,9 +314,10 @@ class MemoryManager:
                 pii_findings = sorted({finding.kind for finding in findings})
                 stored_value = redacted
 
+        entry_created_at = created_at or datetime.now(UTC)
         expires_at = None
         if source.origin != "user":
-            expires_at = datetime.now(UTC) + timedelta(days=self._default_ttl_days)
+            expires_at = entry_created_at + timedelta(days=self._default_ttl_days)
 
         resolved_taints = list(taint_labels or [])
         if source.origin != "user" and TaintLabel.UNTRUSTED not in resolved_taints:
@@ -452,6 +454,7 @@ class MemoryManager:
             channel_trust=channel_trust,
             confirmation_status=confirmation_status,
             source_id=source_id,
+            created_at=entry_created_at,
             confidence=confidence,
             expires_at=expires_at,
             taint_labels=resolved_taints,

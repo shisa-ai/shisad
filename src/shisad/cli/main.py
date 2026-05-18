@@ -3127,6 +3127,19 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
     click.echo(_dump_model(result))
 
 
+@memory.command("sut")
+def memory_sut() -> None:
+    """Run the MELT memory SUT JSONL protocol over stdio."""
+    from shisad.memory.evaluation_sut import run_sut_jsonl
+
+    raise SystemExit(
+        run_sut_jsonl(
+            stdin=click.get_text_stream("stdin"),
+            stdout=click.get_text_stream("stdout"),
+        )
+    )
+
+
 @memory.command("benchmark")
 @click.option(
     "--fixture",

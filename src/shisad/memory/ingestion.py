@@ -313,6 +313,7 @@ class IngestionPipeline:
         scope: MemoryScope = "user",
         user_id: str | None = None,
         workspace_id: str | None = None,
+        created_at: datetime | None = None,
     ) -> RetrievalResult:
         """Process content through firewall and store retrieval record.
 
@@ -391,7 +392,7 @@ class IngestionPipeline:
             source_id=source_id,
             source_type=source_type,
             collection=resolved_collection,
-            created_at=datetime.now(UTC),
+            created_at=created_at or datetime.now(UTC),
             content_sanitized=inspection.sanitized_text,
             extracted_facts=[
                 Fact(text=fact, confidence=0.6) for fact in inspection.extracted_facts
