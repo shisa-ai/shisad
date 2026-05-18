@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,8 @@ SUPPORTED_CAPABILITIES = (
 )
 SOFT_UNSUPPORTED_CAPABILITIES = ("answer_generation",)
 CAPABILITY_VOCABULARY = SUPPORTED_CAPABILITIES + SOFT_UNSUPPORTED_CAPABILITIES
+_STATE_ROOT_MARKER = ".shisad-memory-sut-state-root"
+_TOKEN_RE = re.compile(r"[a-z0-9]{2,80}", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,7 @@ class EvaluationSutSession:
         try:
             owner = _parse_owner(message.get("owner"))
             paths = _parse_paths(message.get("paths"))
+            _prepare_state_dir(paths.state_dir)
             requested = _string_list(
                 message.get("capabilities_requested", []),
                 "capabilities_requested",
@@ -164,6 +168,7 @@ class EvaluationSutSession:
     def _reset(self, message: dict[str, Any]) -> dict[str, Any]:
         paths = self._require_paths()
         run_id = _optional_text(message, "run_id") or ""
+        _prepare_state_dir(paths.state_dir)
         _clear_directory_contents(paths.state_dir)
         self._build_components()
         return {"op": "reset_ack", "ok": True, "run_id": run_id}
@@ -280,6 +285,8 @@ class EvaluationSutSession:
         if len(evidence) < top_k:
             evidence.extend(
                 self._structured_evidence(
+                    query=query,
+                    as_of=as_of,
                     start_rank=len(evidence) + 1,
                     limit=top_k - len(evidence),
                 )
@@ -294,18 +301,33 @@ class EvaluationSutSession:
             "as_of": _format_timestamp(as_of) if as_of is not None else None,
         }
 
-    def _structured_evidence(self, *, start_rank: int, limit: int) -> list[dict[str, Any]]:
+    def _structured_evidence(
+        self,
+        *,
+        query: str,
+        as_of: datetime | None,
+        start_rank: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
         components = self._require_components()
         owner = self._require_owner()
         entries = components.memory_manager.list_entries(
             user_id=owner.user_id,
             workspace_id=owner.workspace_id,
-            limit=limit,
+            limit=max(100, limit),
         )
-        return [
-            _memory_entry_evidence(entry, rank=start_rank + index)
-            for index, entry in enumerate(entries)
-        ]
+        evidence: list[dict[str, Any]] = []
+        for entry in entries:
+            if entry.superseded_by is not None:
+                continue
+            if as_of is not None and entry.created_at > as_of:
+                continue
+            if not _structured_entry_matches_query(entry, query):
+                continue
+            evidence.append(_memory_entry_evidence(entry, rank=start_rank + len(evidence)))
+            if len(evidence) >= limit:
+                break
+        return evidence
 
     def _configure_embedding_overrides(self, raw_overrides: object) -> None:
         self._embedding_mode = "deterministic"
@@ -488,12 +510,27 @@ def _safe_directory_path(value: object, field: str) -> Path:
 def _clear_directory_contents(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     for child in path.iterdir():
+        if child.name == _STATE_ROOT_MARKER:
+            continue
         if child.is_symlink() or child.is_file():
             child.unlink()
         elif child.is_dir():
             shutil.rmtree(child)
         else:
             child.unlink(missing_ok=True)
+
+
+def _prepare_state_dir(path: Path) -> None:
+    marker = path / _STATE_ROOT_MARKER
+    if path.exists() and not path.is_dir():
+        raise _ProtocolError("unsafe_path", f"state_dir must be a directory: {path}")
+    if path.exists() and not marker.exists() and any(path.iterdir()):
+        raise _ProtocolError(
+            "unsafe_path",
+            f"state_dir must be empty or marked as a shisad memory SUT state root: {path}",
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    marker.touch(exist_ok=True)
 
 
 def _identity() -> dict[str, str]:
@@ -555,6 +592,28 @@ def _memory_entry_evidence(entry: MemoryEntry, *, rank: int) -> dict[str, Any]:
         "key": entry.key,
         "value": entry.value,
     }
+
+
+def _structured_entry_matches_query(entry: MemoryEntry, query: str) -> bool:
+    query_terms = _tokens(query)
+    if not query_terms:
+        return False
+    entry_terms = _tokens(
+        " ".join(
+            str(part)
+            for part in (
+                entry.entry_type,
+                entry.key,
+                entry.predicate or "",
+                entry.value,
+            )
+        )
+    )
+    return bool(query_terms & entry_terms)
+
+
+def _tokens(value: str) -> set[str]:
+    return {match.group(0).casefold() for match in _TOKEN_RE.finditer(value)}
 
 
 def _required_text(message: dict[str, Any], field: str) -> str:

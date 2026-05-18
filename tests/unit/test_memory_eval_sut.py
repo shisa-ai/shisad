@@ -131,6 +131,31 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     assert reset_query["evidence"] == []
 
 
+def test_hello_rejects_non_empty_unmarked_state_root(tmp_path: Path) -> None:
+    unsafe_state = tmp_path / "shared"
+    unsafe_state.mkdir()
+    (unsafe_state / "unrelated.txt").write_text("do not delete", encoding="utf-8")
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                paths={
+                    "state_dir": str(unsafe_state),
+                    "config_dir": str(tmp_path / "config"),
+                    "artifact_dir": str(tmp_path / "artifacts"),
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert responses[0]["op"] == "hello_ack"
+    assert responses[0]["ok"] is False
+    assert responses[0]["error"]["code"] == "unsafe_path"
+    assert (unsafe_state / "unrelated.txt").read_text(encoding="utf-8") == "do not delete"
+
+
 def test_owner_workspace_scope_prevents_recall_leakage(tmp_path: Path) -> None:
     bob_hello = _hello(
         tmp_path,
@@ -177,11 +202,30 @@ def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path
             {"op": "reset", "run_id": "run-001/case-001"},
             {
                 "op": "memory_write",
+                "event_id": "event-unrelated",
+                "entry_type": "fact",
+                "key": "project_code",
+                "value": "The project code is ember.",
+                "source_id": "structured-unrelated",
+                "timestamp": "2026-02-01T00:00:00Z",
+            },
+            {
+                "op": "memory_write",
+                "event_id": "event-1",
                 "entry_type": "fact",
                 "key": "favorite_drink",
                 "value": "Alice prefers jasmine tea.",
                 "source_id": "structured-1",
                 "timestamp": "2026-02-03T04:05:06Z",
+            },
+            {
+                "op": "memory_write",
+                "event_id": "event-future",
+                "entry_type": "fact",
+                "key": "favorite_drink",
+                "value": "Alice switches to oolong.",
+                "source_id": "structured-future",
+                "timestamp": "2026-02-10T00:00:00Z",
             },
             {
                 "op": "query",
@@ -190,12 +234,20 @@ def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path
                 "top_k": 3,
                 "timestamp": "2026-02-04T00:00:00Z",
             },
+            {
+                "op": "query",
+                "query_id": "query-before-write",
+                "query": "favorite drink",
+                "top_k": 3,
+                "timestamp": "2026-02-02T00:00:00Z",
+            },
             {"op": "shutdown"},
         ]
     )
 
-    write_ack = responses[2]
-    query = responses[3]
+    write_ack = responses[3]
+    query = responses[5]
+    before_write_query = responses[6]
     assert write_ack["op"] == "memory_write_ack"
     assert write_ack["source_id"] == "structured-1"
     assert write_ack["created_at"] == "2026-02-03T04:05:06Z"
@@ -205,6 +257,8 @@ def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path
     assert structured
     assert structured[0]["source_id"] == "structured-1"
     assert structured[0]["created_at"] == "2026-02-03T04:05:06Z"
+    assert {item["source_id"] for item in structured} == {"structured-1"}
+    assert before_write_query["evidence"] == []
 
 
 def test_answer_generation_is_capability_gated(tmp_path: Path) -> None:
