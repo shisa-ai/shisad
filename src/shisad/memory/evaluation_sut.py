@@ -776,10 +776,26 @@ def _url_secret_literals(value: str) -> set[str]:
     for key, inner in parse_qsl(parts.query, keep_blank_values=True):
         if inner and _SECRET_URL_KEY_RE.search(key):
             literals.add(inner)
+    for key, inner in _raw_url_pairs(parts.query):
+        if inner and _SECRET_URL_KEY_RE.search(key):
+            literals.add(inner)
     for key, inner in _fragment_pairs(parts.fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
             literals.add(inner)
+    for key, inner in _raw_fragment_pairs(parts.fragment):
+        if inner and _SECRET_URL_KEY_RE.search(key):
+            literals.add(inner)
     return literals
+
+
+def _raw_url_pairs(value: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for part in value.split("&"):
+        if not part:
+            continue
+        key, separator, inner = part.partition("=")
+        pairs.append((key, inner if separator else ""))
+    return pairs
 
 
 def _fragment_pairs(fragment: str) -> list[tuple[str, str]]:
@@ -788,6 +804,14 @@ def _fragment_pairs(fragment: str) -> list[tuple[str, str]]:
     if "?" in fragment:
         return parse_qsl(fragment.split("?", 1)[1], keep_blank_values=True)
     return parse_qsl(fragment, keep_blank_values=True)
+
+
+def _raw_fragment_pairs(fragment: str) -> list[tuple[str, str]]:
+    if not fragment:
+        return []
+    if "?" in fragment:
+        return _raw_url_pairs(fragment.split("?", 1)[1])
+    return _raw_url_pairs(fragment)
 
 
 def _has_raw_url_credentials(value: str) -> bool:
