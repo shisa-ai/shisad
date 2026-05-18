@@ -59,7 +59,10 @@ Embedding overrides:
   keys.
 - `embedding_mode="provider"` accepts `embedding_base_url`,
   `embedding_api_key`, and `embedding_model_id` for an OpenAI-compatible
-  embeddings endpoint.
+  embeddings endpoint. Provider mode fails closed on provider embedding errors
+  instead of falling back to deterministic vectors, and public fingerprints are
+  derived from the public provider identity rather than from secret-bearing URL
+  text.
 
 ## Operations
 

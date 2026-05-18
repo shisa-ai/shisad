@@ -397,11 +397,11 @@ class EvaluationSutSession:
         )
         self._embeddings_adapter = SyncEmbeddingsAdapter(provider, model_id=str(model_id))
         self._embedding_mode = "provider"
+        public_base_url = _public_embedding_base_url(str(base_url))
         self._embedding_fingerprint = EmbeddingFingerprint(
             model_id=str(model_id),
-            base_url=str(base_url),
+            base_url=public_base_url,
         )
-        public_base_url = _public_embedding_base_url(str(base_url))
         self._config_overrides_accepted = {
             "embedding_mode": "provider",
             "embedding_base_url": public_base_url,
@@ -418,6 +418,7 @@ class EvaluationSutSession:
             paths.state_dir,
             embedding_fingerprint=self._embedding_fingerprint,
             embeddings_provider=self._embeddings_adapter,
+            allow_embedding_fallback=self._embedding_mode != "provider",
         )
         self._worker = ConsolidationWorker(
             self._components.memory_manager,

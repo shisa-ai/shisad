@@ -5,6 +5,7 @@ import json
 from io import StringIO
 from pathlib import Path
 
+import shisad.memory.evaluation_sut as evaluation_sut
 from shisad.daemon import services as daemon_services
 from shisad.memory.evaluation_sut import CONTRACT_VERSION, EvaluationSutSession, run_sut_jsonl
 from shisad.memory.runtime_wiring import build_memory_runtime_components
@@ -134,6 +135,63 @@ def test_provider_override_metadata_redacts_malformed_base_url_secrets(tmp_path:
     assert "provider-secret" not in rendered
 
 
+def test_provider_embedding_fingerprint_uses_public_base_url_identity(tmp_path: Path) -> None:
+    first_secret_url = (
+        "https://user:pass@embedding.example/v1"
+        "?api_key=first-secret#access_token=first-fragment"
+    )
+    second_secret_url = (
+        "https://other:creds@embedding.example/v1"
+        "?api_key=second-secret#access_token=second-fragment"
+    )
+
+    first = _run_messages(
+        [
+            _hello(
+                tmp_path / "first",
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": first_secret_url,
+                    "embedding_api_key": "provider-secret-1",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )[0]
+    second = _run_messages(
+        [
+            _hello(
+                tmp_path / "second",
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": second_secret_url,
+                    "embedding_api_key": "provider-secret-2",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )[0]
+
+    first_rendered = json.dumps(first, sort_keys=True)
+    second_rendered = json.dumps(second, sort_keys=True)
+    assert first["envelope_metadata"]["embedding_base_url"] == "https://embedding.example/v1"
+    assert second["envelope_metadata"]["embedding_base_url"] == "https://embedding.example/v1"
+    assert (
+        first["envelope_metadata"]["embedding_fingerprint"]
+        == second["envelope_metadata"]["embedding_fingerprint"]
+    )
+    assert "first-secret" not in first_rendered
+    assert "first-fragment" not in first_rendered
+    assert "user:pass" not in first_rendered
+    assert "provider-secret-1" not in first_rendered
+    assert "second-secret" not in second_rendered
+    assert "second-fragment" not in second_rendered
+    assert "other:creds" not in second_rendered
+    assert "provider-secret-2" not in second_rendered
+
+
 def test_provider_operation_error_redacts_provider_url_secrets(tmp_path: Path) -> None:
     secret_url = "https://user:pass@127.0.0.1/v1?api_key=base-secret#access_token=fragment-secret"
 
@@ -165,6 +223,57 @@ def test_provider_operation_error_redacts_provider_url_secrets(tmp_path: Path) -
     assert error["error"]["code"] == "operation_failed"
     assert "base-secret" not in rendered
     assert "fragment-secret" not in rendered
+    assert "user:pass" not in rendered
+    assert "provider-secret" not in rendered
+
+
+def test_provider_runtime_error_does_not_fallback_to_deterministic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FailingEmbeddingsAdapter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def embed(self, _input_texts: list[str]) -> list[list[float]]:
+            raise RuntimeError(
+                "provider failed at "
+                "https://user:pass@embedding.example/v1?api_key=runtime-secret"
+            )
+
+        def close(self, *, wait: bool = False) -> None:
+            del wait
+
+    monkeypatch.setattr(evaluation_sut, "SyncEmbeddingsAdapter", FailingEmbeddingsAdapter)
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": "https://embedding.example/v1",
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {
+                "op": "ingest",
+                "event_id": "event-1",
+                "source_type": "user",
+                "content": "Alice keeps the Zurich notes in the blue folder.",
+                "timestamp": "2026-01-01T12:00:00Z",
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    error = responses[1]
+    rendered = json.dumps(error, sort_keys=True)
+    assert responses[0]["envelope_metadata"]["embedding_mode"] == "provider"
+    assert error["ok"] is False
+    assert error["error"]["code"] == "operation_failed"
+    assert "provider failed" in error["error"]["message"]
+    assert "runtime-secret" not in rendered
     assert "user:pass" not in rendered
     assert "provider-secret" not in rendered
 

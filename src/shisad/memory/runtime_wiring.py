@@ -38,6 +38,7 @@ def build_memory_runtime_components(
     embedding_fingerprint: EmbeddingFingerprint | None = None,
     embeddings_provider: SyncEmbeddingsProvider | None = None,
     audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
+    allow_embedding_fallback: bool = True,
 ) -> MemoryRuntimeComponents:
     """Build the memory substrate using the daemon's canonical path layout."""
 
@@ -53,6 +54,7 @@ def build_memory_runtime_components(
             embeddings_provider=embeddings_provider,
             legacy_storage_dir=legacy_storage_dir,
             audit_hook=audit_hook,
+            allow_embedding_fallback=allow_embedding_fallback,
         ),
         memory_manager=MemoryManager(
             storage_root,
