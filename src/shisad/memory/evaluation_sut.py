@@ -807,6 +807,13 @@ def _raw_urlish_secret_literals(value: str) -> set[str]:
         for key, inner in _raw_url_pairs(parameter_text):
             if inner and _SECRET_URL_KEY_RE.search(key):
                 _add_url_secret_literal(literals, inner)
+    for parameter_text in _raw_urlish_parameter_texts(fragment):
+        for key, inner in _decoded_url_pairs(parameter_text):
+            if inner and _SECRET_URL_KEY_RE.search(key):
+                _add_url_secret_literal(literals, inner)
+        for key, inner in _raw_url_pairs(parameter_text):
+            if inner and _SECRET_URL_KEY_RE.search(key):
+                _add_url_secret_literal(literals, inner)
     for key, inner in _fragment_pairs(fragment):
         if inner and _SECRET_URL_KEY_RE.search(key):
             _add_url_secret_literal(literals, inner)
