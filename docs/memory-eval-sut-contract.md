@@ -42,9 +42,10 @@ The first non-empty message must be `hello`:
 ```
 
 `hello_ack` returns shisad identity, accepted/rejected overrides, supported and
-unsupported capabilities, and `envelope_metadata`. MELT copies
-`envelope_metadata` verbatim into its report envelope under
-`sut_envelope_metadata`.
+unsupported capabilities, and `envelope_metadata`. Public metadata fields must
+not contain endpoint credentials; provider base URLs are reported without
+userinfo, query strings, or fragments. MELT also applies report redaction before
+copying SUT metadata into report artifacts.
 
 Capability vocabulary:
 

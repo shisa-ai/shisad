@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import urlsplit, urlunsplit
 
 from shisad import __version__
 from shisad.core.providers.base import OpenAICompatibleProvider
@@ -393,9 +394,10 @@ class EvaluationSutSession:
             model_id=str(model_id),
             base_url=str(base_url),
         )
+        public_base_url = _public_embedding_base_url(str(base_url))
         self._config_overrides_accepted = {
             "embedding_mode": "provider",
-            "embedding_base_url": str(base_url),
+            "embedding_base_url": public_base_url,
             "embedding_model_id": str(model_id),
         }
 
@@ -423,7 +425,9 @@ class EvaluationSutSession:
         return {
             "embedding_mode": self._embedding_mode,
             "embedding_model": self._embedding_fingerprint.model_id,
-            "embedding_base_url": self._embedding_fingerprint.base_url,
+            "embedding_base_url": _public_embedding_base_url(
+                self._embedding_fingerprint.base_url
+            ),
             "embedding_fingerprint": self._embedding_fingerprint.stable_hash(),
             "llm_model": None,
             "llm_calls_per_op": {
@@ -691,6 +695,21 @@ def _format_timestamp(value: datetime) -> str:
 def _non_empty_override(overrides: dict[str, object], key: str) -> str | None:
     value = overrides.get(key)
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _public_embedding_base_url(base_url: str) -> str:
+    try:
+        parts = urlsplit(base_url)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        return "<redacted>"
+    if not parts.scheme or not parts.netloc or not hostname:
+        return base_url
+    netloc = hostname
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def _error_response(op: str, code: str, message: str) -> dict[str, Any]:

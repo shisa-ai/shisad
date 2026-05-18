@@ -69,6 +69,42 @@ def test_hello_rejects_partial_owner_scope(tmp_path: Path) -> None:
     assert responses[0]["error"]["code"] == "owner_scope_requires_user_and_workspace"
 
 
+def test_provider_override_metadata_redacts_base_url_secrets(tmp_path: Path) -> None:
+    secret_url = (
+        "https://user:pass@embedding.example/v1"
+        "?api_key=base-secret#access_token=fragment-secret"
+    )
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                config_overrides={
+                    "embedding_mode": "provider",
+                    "embedding_base_url": secret_url,
+                    "embedding_api_key": "provider-secret",
+                    "embedding_model_id": "text-embedding-test",
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    ack = responses[0]
+    rendered = json.dumps(ack, sort_keys=True)
+    assert ack["ok"] is True
+    assert ack["config_overrides_accepted"]["embedding_base_url"] == (
+        "https://embedding.example/v1"
+    )
+    assert ack["envelope_metadata"]["embedding_base_url"] == (
+        "https://embedding.example/v1"
+    )
+    assert "base-secret" not in rendered
+    assert "fragment-secret" not in rendered
+    assert "user:pass" not in rendered
+    assert "provider-secret" not in rendered
+
+
 def test_malformed_json_returns_structured_error() -> None:
     stdin = StringIO("{not json}\n")
     stdout = StringIO()
