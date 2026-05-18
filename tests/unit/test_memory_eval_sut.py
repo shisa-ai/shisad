@@ -296,7 +296,10 @@ def test_provider_runtime_error_redacts_malformed_base_url_secret_literals(
             pass
 
         def embed(self, _input_texts: list[str]) -> list[list[float]]:
-            raise RuntimeError("provider failed with bad%2Bsecret and bad+fragment")
+            raise RuntimeError(
+                "provider failed with bad%2Bsecret and bad+secret "
+                "and bad+fragment and bad fragment"
+            )
 
         def close(self, *, wait: bool = False) -> None:
             del wait
