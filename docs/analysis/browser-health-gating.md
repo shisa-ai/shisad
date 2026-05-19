@@ -58,3 +58,13 @@ Fix the runtime-facing browser availability bug exposed by the Tabelog reservati
   passed: `2 passed, 54 deselected`.
 - CI follow-up, static checks:
   `uv run ruff check src/ tests/ scripts/` passed.
+- CI follow-up, GitHub hosted runner failure:
+  run `26094226652` failed in `security-runtime` and `lint-and-test (3.12)`
+  because `tests/unit/test_daemon_services.py::test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist`
+  expected browser status `ok` while the hosted runner reported
+  `browser_runtime_isolation_unavailable`. The test was updated to set
+  `browser_require_hardened_isolation=False` because it covers valid wrapper
+  registration and web allowlist fallback, not host hardened-isolation availability.
+- CI follow-up, local CI-equivalent non-net-admin suite:
+  `uv run pytest -v -m "not requires_cap_net_admin"` passed:
+  `3750 passed, 16 skipped, 1 deselected`.

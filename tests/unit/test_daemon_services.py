@@ -1602,6 +1602,7 @@ async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
         policy_path=tmp_path / "policy.yaml",
         browser_enabled=True,
         browser_command=str(wrapper),
+        browser_require_hardened_isolation=False,
         web_allowed_domains=["localhost"],
         browser_allowed_domains=[],
     )
