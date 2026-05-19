@@ -1584,6 +1584,10 @@ def test_daemon_config_preserves_ipv6_loopback_approval_origin(tmp_path) -> None
     assert config.approval_bind_port == 8787
 
 
+async def _build_browser_registry_services(config: DaemonConfig) -> DaemonServices:
+    return await DaemonServices.build(config)
+
+
 @pytest.mark.asyncio
 async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
     tmp_path,
@@ -1601,7 +1605,7 @@ async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
         web_allowed_domains=["localhost"],
         browser_allowed_domains=[],
     )
-    services = await DaemonServices.build(config)
+    services = await _build_browser_registry_services(config)
     try:
         assert services.browser_status["status"] == "ok"
         navigate_tool = services.registry.get_tool(ToolName("browser.navigate"))
@@ -1626,7 +1630,7 @@ async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
         web_allowed_domains=["localhost"],
     )
 
-    services = await DaemonServices.build(config)
+    services = await _build_browser_registry_services(config)
     try:
         assert services.browser_status["status"] == "misconfigured"
         assert "browser_command_unconfigured" in services.browser_status["problems"]

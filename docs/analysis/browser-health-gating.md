@@ -47,3 +47,14 @@ Fix the runtime-facing browser availability bug exposed by the Tabelog reservati
 - Live runner cleanup:
   `RUNNER_INHERIT_SHISAD_ENV=1 RUNNER_TMUX_SOCKET_NAME=shisad-dev-browser-gate RUNNER_TMUX_SESSION_NAME=shisad-dev-browser-gate SHISAD_DATA_DIR=/tmp/shisad-browser-gate-data SHISAD_SOCKET_PATH=/tmp/shisad-browser-gate.sock SHISAD_POLICY_PATH=/tmp/shisad-browser-gate-policy.yaml bash runner/harness.sh stop`
   passed: daemon stop requested.
+- CI follow-up, daemon site guard:
+  `uv run python scripts/test_daemon_site_guard.py --baseline tests/fixtures/daemon_site_baseline.json --tests-root tests`
+  initially failed because the new regression added a direct `DaemonServices.build`
+  call site in `tests/unit/test_daemon_services.py` (`28 > baseline 27`);
+  after routing the browser registry tests through a shared helper it passed:
+  `DaemonServices.build: 45`, `run_daemon: 100`.
+- CI follow-up, focused browser registry regression:
+  `uv run pytest tests/unit/test_daemon_services.py -k 'browser_registry_falls_back_to_web_allowlist or misconfigured_runtime_suppresses_browser_tools' -q`
+  passed: `2 passed, 54 deselected`.
+- CI follow-up, static checks:
+  `uv run ruff check src/ tests/ scripts/` passed.
