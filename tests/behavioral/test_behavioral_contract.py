@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sqlite3
 import struct
 import subprocess
@@ -1033,6 +1034,14 @@ class ContractHarness:
     browser_base_url: str
 
 
+def _executable_fake_browser_command(tmp_path: Path) -> str:
+    source = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+    target = tmp_path / "fake_playwright_cli.py"
+    shutil.copy2(source, target)
+    target.chmod(0o755)
+    return str(target)
+
+
 @asynccontextmanager
 async def _contract_harness_context(
     tmp_path: Path,
@@ -1096,10 +1105,7 @@ async def _contract_harness_context(
                 "browser_enabled": web_search_backend_configured
                 if browser_enabled is None
                 else browser_enabled,
-                "browser_command": (
-                    f"{sys.executable} "
-                    f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
-                ),
+                "browser_command": _executable_fake_browser_command(tmp_path),
                 "browser_allowed_domains": browser_allowed_domains or ["127.0.0.1", "localhost"],
                 "browser_require_hardened_isolation": False,
                 "assistant_fs_roots": [workspace_root],

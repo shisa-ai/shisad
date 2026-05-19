@@ -1559,7 +1559,14 @@ class AdminImplMixin(HandlerMixinBase):
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
                 "connect_path": self._sandbox.connect_path_status(),
-                "browser": self._browser_sandbox.policy.model_dump(mode="json"),
+                "browser": {
+                    **self._browser_sandbox.policy.model_dump(mode="json"),
+                    "runtime": dict(getattr(self._services, "browser_status", {})),
+                    "tools_available": any(
+                        str(tool.name).startswith("browser.")
+                        for tool in self._registry.list_tools()
+                    ),
+                },
             },
             "selfmod": self._selfmod_manager.status(),
             "realitycheck": self._realitycheck_toolkit.doctor_status(),

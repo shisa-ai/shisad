@@ -49,6 +49,27 @@ from shisad.skills.artifacts import ArtifactState
 from shisad.skills.manager import InstalledSkill
 
 
+def _write_browser_wrapper(path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "if '--shisad-browser-wrapper-version' in sys.argv:",
+                "    print('shisad-browser-wrapper 2')",
+                "    raise SystemExit(0)",
+                "if '--shisad-browser-wrapper-doctor' in sys.argv:",
+                "    print('shisad-browser-wrapper doctor ok')",
+                "    raise SystemExit(0)",
+                "raise SystemExit(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 def test_u8_daemon_runner_import_defers_disabled_backend_modules() -> None:
     code = textwrap.dedent(
         """
@@ -1566,20 +1587,51 @@ def test_daemon_config_preserves_ipv6_loopback_approval_origin(tmp_path) -> None
 @pytest.mark.asyncio
 async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    wrapper = tmp_path / "shisad-browser-wrapper"
+    _write_browser_wrapper(wrapper)
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
         browser_enabled=True,
+        browser_command=str(wrapper),
         web_allowed_domains=["localhost"],
         browser_allowed_domains=[],
     )
     services = await DaemonServices.build(config)
     try:
+        assert services.browser_status["status"] == "ok"
         navigate_tool = services.registry.get_tool(ToolName("browser.navigate"))
         assert navigate_tool is not None
         assert navigate_tool.destinations == ["localhost"]
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        browser_enabled=True,
+        browser_command="",
+        web_allowed_domains=["localhost"],
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        assert services.browser_status["status"] == "misconfigured"
+        assert "browser_command_unconfigured" in services.browser_status["problems"]
+        assert services.registry.get_tool(ToolName("browser.navigate")) is None
+        assert services.registry.get_tool(ToolName("browser.read_page")) is None
     finally:
         await services.shutdown()
 

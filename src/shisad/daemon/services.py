@@ -267,6 +267,72 @@ def _build_browser_sandbox(
     )
 
 
+def _browser_toolkit_kwargs(
+    *,
+    config: DaemonConfig,
+    sandbox: SandboxOrchestrator,
+    browser_sandbox: Any,
+    allowed_domains: list[str],
+) -> dict[str, Any]:
+    return {
+        "enabled": bool(config.browser_enabled),
+        "command": config.browser_command,
+        "session_root": config.data_dir / "browser",
+        "allowed_domains": list(allowed_domains),
+        "timeout_seconds": config.browser_timeout_seconds,
+        "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
+        "max_read_bytes": config.browser_max_read_bytes,
+        "sandbox_runner": sandbox,
+        "browser_sandbox": browser_sandbox,
+    }
+
+
+async def _browser_startup_status(
+    *,
+    config: DaemonConfig,
+    sandbox: SandboxOrchestrator,
+    browser_sandbox: Any,
+    allowed_domains: list[str],
+) -> dict[str, Any]:
+    if not config.browser_enabled:
+        return {
+            "enabled": False,
+            "command": "",
+            "allowed_domains": list(allowed_domains),
+            "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
+            "problems": [],
+            "protocol": {"supported": False, "probe": "", "reason": ""},
+            "status": "disabled",
+        }
+    try:
+        from shisad.executors.browser import BrowserToolkit
+
+        toolkit = BrowserToolkit(
+            **_browser_toolkit_kwargs(
+                config=config,
+                sandbox=sandbox,
+                browser_sandbox=browser_sandbox,
+                allowed_domains=allowed_domains,
+            )
+        )
+        return dict(await toolkit.doctor_status())
+    except Exception:
+        logger.exception("Browser startup health check failed")
+        return {
+            "enabled": True,
+            "command": config.browser_command,
+            "allowed_domains": list(allowed_domains),
+            "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
+            "problems": ["browser_doctor_failed"],
+            "protocol": {"supported": False, "probe": "", "reason": "browser_doctor_failed"},
+            "status": "misconfigured",
+        }
+
+
+def _browser_surface_available(browser_status: dict[str, Any]) -> bool:
+    return bool(browser_status.get("enabled")) and browser_status.get("status") == "ok"
+
+
 def _realitycheck_disabled_status(
     *,
     config: DaemonConfig,
@@ -439,6 +505,7 @@ class DaemonServices:
     msgvault_toolkit: MsgvaultToolkit
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
+    browser_status: dict[str, Any]
     lockdown_manager: LockdownManager
     rate_limiter: RateLimiter
     monitor: ActionMonitor
@@ -807,10 +874,23 @@ class DaemonServices:
                 browser_destinations = [
                     item.strip() for item in config.web_allowed_domains if item.strip()
                 ]
+            browser_status = await _browser_startup_status(
+                config=config,
+                sandbox=sandbox,
+                browser_sandbox=browser_sandbox,
+                allowed_domains=browser_destinations,
+            )
+            browser_surface_enabled = _browser_surface_available(browser_status)
+            if config.browser_enabled and not browser_surface_enabled:
+                logger.warning(
+                    "Browser tools not registered because browser runtime is %s: %s",
+                    browser_status.get("status", "unknown"),
+                    ", ".join(str(item) for item in browser_status.get("problems", [])) or "none",
+                )
             registry, alarm_tool = _build_tool_registry(
                 event_bus,
                 web_search_destination=search_backend_destination,
-                browser_surface_enabled=bool(config.browser_enabled),
+                browser_surface_enabled=browser_surface_enabled,
                 browser_destinations=browser_destinations,
                 realitycheck_surface_enabled=bool(
                     realitycheck_status.get("surface_enabled", False)
@@ -925,6 +1005,7 @@ class DaemonServices:
                 msgvault_toolkit=msgvault_toolkit,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,
+                browser_status=browser_status,
                 lockdown_manager=lockdown_manager,
                 rate_limiter=rate_limiter,
                 monitor=monitor,
