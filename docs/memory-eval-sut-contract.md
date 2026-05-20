@@ -105,8 +105,8 @@ than silently switching to deterministic embeddings.
 - `ingest`: writes raw event content to retrieval storage. Response `ack`
   includes MELT `event_id`, SUT `source_id`, `chunk_id`, and `created_at`.
 - `memory_write`: writes structured lifecycle setup memory through
-  `MemoryManager.write_with_provenance`. Response includes `entry_id`,
-  `source_id`, and `created_at`.
+  `MemoryManager.write_with_provenance`. Response `memory_write_ack` includes
+  `entry_id`, `source_id`, and `created_at`.
 - `consolidate` / `tick`: runs deterministic consolidation once and returns
   `consolidate_ack` / `tick_ack`.
 - `query`: returns evidence-first retrieval results plus scoped structured
