@@ -101,6 +101,13 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
             "top_k": 5,
             "timestamp": "2026-03-03T12:00:00Z",
         },
+        {"op": "metadata"},
+        {"op": "tick", "timestamp": "2026-03-06T09:00:00Z"},
+        {
+            "op": "answer",
+            "query_id": "answer-unsupported",
+            "query": "jasmine oolong",
+        },
         {"op": "shutdown"},
     ]
 
@@ -170,6 +177,15 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
         and "conflict_entry_ids" not in item["metadata"]
         for item in historical_conflict_structured
     )
+    metadata = next(response for response in responses if response.get("op") == "metadata")
+    assert metadata["ok"] is True
+    assert metadata["contract_version"] == CONTRACT_VERSION
+    assert metadata["id"] == "shisad"
+    tick_ack = next(response for response in responses if response.get("op") == "tick_ack")
+    assert tick_ack["ok"] is True
+    answer = next(response for response in responses if response.get("op") == "answer_result")
+    assert answer["ok"] is False
+    assert answer["error"]["code"] == "unsupported_capability"
     assert responses[-1] == {"op": "shutdown_ack", "ok": True}
 
 
