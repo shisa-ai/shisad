@@ -36,7 +36,7 @@ The first non-empty message must be `hello`:
 {
   "op": "hello",
   "contract_version": "b2",
-  "run": {"run_id": "run-001", "case_id": "case-001", "seed": 42},
+  "run": {"run_id": "run-001", "seed": 42},
   "owner": {"user_id": "melt-user", "workspace_id": "melt-workspace"},
   "paths": {
     "state_dir": "/tmp/melt/state",

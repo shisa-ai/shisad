@@ -17,7 +17,7 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
         {
             "op": "hello",
             "contract_version": CONTRACT_VERSION,
-            "run": {"run_id": "run-001", "case_id": "case-001", "seed": 7},
+            "run": {"run_id": "run-001", "seed": 7},
             "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
             "paths": {
                 "state_dir": str(tmp_path / "state"),
@@ -174,7 +174,7 @@ def test_memory_sut_structured_relationship_metadata_as_of(tmp_path: Path) -> No
             {
                 "op": "hello",
                 "contract_version": CONTRACT_VERSION,
-                "run": {"run_id": "run-001", "case_id": "case-001", "seed": 7},
+                "run": {"run_id": "run-001", "seed": 7},
                 "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
                 "paths": {
                     "state_dir": str(tmp_path / "state"),

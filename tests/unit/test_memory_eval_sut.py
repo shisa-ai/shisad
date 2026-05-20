@@ -23,7 +23,7 @@ def _hello(tmp_path: Path, **updates: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "op": "hello",
         "contract_version": CONTRACT_VERSION,
-        "run": {"run_id": "run-001", "case_id": "case-001", "seed": 42},
+        "run": {"run_id": "run-001", "seed": 42},
         "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
         "paths": {
             "state_dir": str(tmp_path / "state"),
