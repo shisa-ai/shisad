@@ -52,6 +52,9 @@ Note:
 - `tool.lockdown.resume` is a planner-driven structured control tool exposed only
   to trusted command-chat sessions at `caution` lockdown level. It records the
   audit actor chain `human_confirmation -> planner_lockdown_resume`.
+- `shisad memory benchmark` and `shisad memory sut` are CLI evaluation
+  surfaces, not live assistant tools, so they are intentionally omitted from
+  this tool table. See `docs/memory-evals.md` for memory evaluation commands.
 
 | Tool | Status | Detail |
 |------|--------|--------|

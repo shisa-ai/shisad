@@ -4,6 +4,20 @@
 Test (SUT). It runs `MemoryManager`, `IngestionPipeline`, and
 `ConsolidationWorker` in-process. The daemon is not started.
 
+The SUT command is an evaluation surface, not the interactive assistant
+surface. MELT owns benchmark orchestration and report generation; shisad owns a
+stable black-box command that MELT can invoke without importing shisad internals.
+
+## Stability
+
+- Current contract version: `b2`.
+- Transport and operation names are part of the public SUT contract for
+  v0.7.4 evaluation artifacts.
+- Metadata fields that describe shisad internals are reported as facts about
+  the reference SUT, not as requirements for every future SUT.
+- New capabilities should be added through capability negotiation rather than
+  by changing existing operation semantics.
+
 ## Transport
 
 - Transport: JSON Lines over stdio.
@@ -66,6 +80,21 @@ Embedding overrides:
   derived from the public provider identity rather than from secret-bearing URL
   text.
 
+## Isolation and Resources
+
+MELT supplies run-local `state_dir`, `config_dir`, and `artifact_dir` paths in
+the handshake. shisad stores evaluation state under those paths for the current
+run and does not use the daemon's normal runtime data directory.
+
+`reset` clears only the configured SUT `state_dir` contents and rebuilds memory
+components for the next case. It must not delete arbitrary filesystem paths,
+global shisad state, or MELT output artifacts.
+
+MELT enforces adapter-level timeouts. shisad returns structured errors for
+recoverable protocol and operation failures; fatal startup failures may exit
+non-zero. Provider-backed embedding failures in provider mode fail closed rather
+than silently switching to deterministic embeddings.
+
 ## Operations
 
 - `metadata`: returns identity, contract version, capabilities, and envelope
@@ -111,3 +140,21 @@ The SUT returns structured errors for:
 Operation errors do not poison the session. MELT may continue issuing
 operations after a structured error, or it may stop the current run according to
 runner policy.
+
+## Running Through MELT
+
+From the MELT checkout, a local shisad lifecycle smoke run uses the public SUT
+command:
+
+```bash
+uv run melt run \
+  --sut shisad \
+  --sut-command "uv --directory /path/to/shisad run shisad memory sut" \
+  --suite lifecycle \
+  --fixture smoke \
+  --top-k 3 \
+  --output-dir results
+```
+
+See [Memory Evaluations](memory-evals.md) for standard benchmark commands,
+report interpretation, and non-claims.

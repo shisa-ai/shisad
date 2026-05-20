@@ -386,6 +386,8 @@ See `AGENTS.md` for full development process, validation matrix, and commit conv
 | `docs/USE-CASES.md` | Prioritized use cases and capability mapping |
 | `docs/ENV-VARS.md` | Environment variable reference |
 | `docs/TOOL-STATUS.md` | Current tool surface snapshot |
+| `docs/memory-evals.md` | Memory evaluation commands, MELT report interpretation, and non-claims |
+| `docs/memory-eval-sut-contract.md` | Versioned `shisad memory sut` protocol for external evaluators |
 | `docs/adr/` | Architectural decision records |
 | `docs/analysis/` | Security case studies and supply chain analysis |
 | `docs/runbooks/` | Operator runbooks (browser setup, incident response, key rotation, rollback, skill revocation) |
