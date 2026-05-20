@@ -155,6 +155,10 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
         for item in historical_conflict_query["evidence"]
         if item.get("surface") == "structured_memory"
     ]
+    assert {item["source_id"] for item in historical_conflict_structured} == {
+        "structured-jasmine",
+        "structured-oolong",
+    }
     assert all(
         "conflict_source_ids" not in item["metadata"]
         and "conflict_entry_ids" not in item["metadata"]
