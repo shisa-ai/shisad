@@ -123,6 +123,13 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert responses[0]["ok"] is True
     assert responses[0]["contract_version"] == CONTRACT_VERSION
     assert responses[0]["identity"]["id"] == "shisad"
+    assert responses[0]["capabilities_supported"] == [
+        "reset",
+        "time_control",
+        "consolidation",
+        "query_as_of",
+        "structured_memory_write",
+    ]
     assert responses[0]["capabilities_unsupported"] == ["answer_generation"]
     assert responses[1]["op"] == "reset_ack"
     assert responses[1]["run_id"] == "run-001/case-001"

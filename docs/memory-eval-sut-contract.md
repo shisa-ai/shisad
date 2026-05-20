@@ -57,10 +57,14 @@ The first non-empty message must be `hello`:
 
 `hello_ack` returns shisad identity, accepted/rejected overrides, supported and
 unsupported capabilities, and `envelope_metadata`. It echoes the accepted
-`contract_version`; MELT treats a mismatch as a protocol error. Public metadata
-fields must not contain endpoint credentials; provider base URLs are reported
-without userinfo, query strings, or fragments. MELT also applies report
-redaction before copying SUT metadata into report artifacts.
+`contract_version`; MELT treats a mismatch as a protocol error. The
+`capabilities_supported` and `capabilities_unsupported` arrays are an
+order-preserving exact partition of `capabilities_requested`: every requested
+capability appears exactly once in one of the two arrays, and unrequested
+capabilities are omitted from the handshake. Public metadata fields must not
+contain endpoint credentials; provider base URLs are reported without userinfo,
+query strings, or fragments. MELT also applies report redaction before copying
+SUT metadata into report artifacts.
 Provider-backed protocol errors redact the configured API key and URL secrets
 before they are emitted.
 

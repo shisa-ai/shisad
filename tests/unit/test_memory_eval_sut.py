@@ -675,6 +675,13 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     reset_query = responses[5]
     assert marker.read_text(encoding="utf-8") == "keep"
     assert hello["contract_version"] == CONTRACT_VERSION
+    assert hello["capabilities_supported"] == [
+        "reset",
+        "time_control",
+        "consolidation",
+        "query_as_of",
+        "structured_memory_write",
+    ]
     assert hello["capabilities_unsupported"] == ["answer_generation"]
     assert reset_ack["op"] == "reset_ack"
     assert reset_ack["run_id"] == "run-001/case-001"
