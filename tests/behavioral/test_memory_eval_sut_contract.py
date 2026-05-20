@@ -66,6 +66,34 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
             "top_k": 2,
             "timestamp": "2026-06-16T09:00:00Z",
         },
+        {
+            "op": "memory_write",
+            "event_id": "structured-jasmine",
+            "entry_type": "preference",
+            "key": "favorite_drink",
+            "predicate": "likes(jasmine)",
+            "value": "Alice likes jasmine tea.",
+            "source_id": "structured-jasmine",
+            "timestamp": "2026-03-02T09:00:00Z",
+        },
+        {
+            "op": "memory_write",
+            "event_id": "structured-oolong",
+            "entry_type": "preference",
+            "key": "favorite_drink",
+            "predicate": "likes(oolong)",
+            "value": "Alice likes oolong tea.",
+            "source_id": "structured-oolong",
+            "timestamp": "2026-03-03T09:00:00Z",
+        },
+        {"op": "consolidate", "timestamp": "2026-03-04T09:00:00Z"},
+        {
+            "op": "query",
+            "query_id": "query-conflict",
+            "query": "jasmine oolong",
+            "top_k": 5,
+            "timestamp": "2026-03-05T09:00:00Z",
+        },
         {"op": "shutdown"},
     ]
 
@@ -88,7 +116,12 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert responses[3]["evidence"][0]["source_id"] == responses[2]["source_id"]
     assert responses[4]["op"] == "memory_write_ack"
     assert responses[5]["op"] == "consolidate_ack"
-    structured_query = responses[6]
+    query_results = {
+        response["query_id"]: response
+        for response in responses
+        if response.get("op") == "query_result"
+    }
+    structured_query = query_results["query-structured"]
     structured = [
         item
         for item in structured_query["evidence"]
@@ -97,4 +130,16 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert structured_query["op"] == "query_result"
     assert structured[0]["source_id"] == "structured-decay"
     assert structured[0]["metadata"]["decay_score"] < 0.35
-    assert responses[7] == {"op": "shutdown_ack", "ok": True}
+    conflict_query = query_results["query-conflict"]
+    conflict_structured = [
+        item
+        for item in conflict_query["evidence"]
+        if item.get("surface") == "structured_memory"
+    ]
+    conflict_sources = {
+        item["source_id"]: set(item["metadata"].get("conflict_source_ids", []))
+        for item in conflict_structured
+    }
+    assert conflict_sources["structured-jasmine"] == {"structured-oolong"}
+    assert conflict_sources["structured-oolong"] == {"structured-jasmine"}
+    assert responses[-1] == {"op": "shutdown_ack", "ok": True}
