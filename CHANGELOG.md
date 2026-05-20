@@ -41,7 +41,8 @@ records that choice.
 - **Memory benchmark docs distinguish smoke diagnostics from evaluations.**
   Public docs now explain when to use `shisad memory benchmark`, when to use
   MELT, how to reproduce smoke runs, which report fields matter, and why
-  smoke artifacts are preliminary rather than leaderboard claims.
+  smoke artifacts should be interpreted separately from held-out, multi-run
+  benchmark claims.
 
 ## 0.7.3.1 Release Content - 2026-05-16
 
