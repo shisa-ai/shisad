@@ -685,6 +685,9 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
         "structured_memory_write",
     ]
     assert hello["capabilities_unsupported"] == ["answer_generation"]
+    assert hello["envelope_metadata"]["embedding_model"]
+    assert hello["config_overrides_accepted"] == {"embedding_mode": "deterministic"}
+    assert hello["config_overrides_rejected"] == {}
     assert reset_ack["op"] == "reset_ack"
     assert reset_ack["run_id"] == "run-001/case-001"
     assert ack["op"] == "ack"
@@ -740,6 +743,7 @@ def test_metadata_reports_fixed_capability_partition(tmp_path: Path) -> None:
 
     metadata = responses[1]
     assert metadata["op"] == "metadata"
+    assert metadata["envelope_metadata"]["embedding_model"]
     assert metadata["capabilities"] == [
         "reset",
         "time_control",

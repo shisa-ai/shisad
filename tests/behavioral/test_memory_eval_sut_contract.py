@@ -131,6 +131,11 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
         "structured_memory_write",
     ]
     assert responses[0]["capabilities_unsupported"] == ["answer_generation"]
+    assert responses[0]["envelope_metadata"]["embedding_model"]
+    assert responses[0]["config_overrides_accepted"] == {
+        "embedding_mode": "deterministic"
+    }
+    assert responses[0]["config_overrides_rejected"] == {}
     assert responses[1]["op"] == "reset_ack"
     assert responses[1]["run_id"] == "run-001/case-001"
     assert responses[2]["op"] == "ack"
@@ -188,6 +193,10 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert metadata["ok"] is True
     assert metadata["contract_version"] == "b2"
     assert metadata["id"] == "shisad"
+    assert (
+        metadata["envelope_metadata"]["embedding_model"]
+        == responses[0]["envelope_metadata"]["embedding_model"]
+    )
     assert metadata["capabilities"] == [
         "reset",
         "time_control",
