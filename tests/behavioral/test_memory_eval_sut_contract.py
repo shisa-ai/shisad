@@ -8,7 +8,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from shisad.cli import main as cli_main
-from shisad.memory.evaluation_sut import CONTRACT_VERSION
+from shisad.memory.evaluation_sut import CONTRACT_VERSION, EvaluationSutSession
 
 
 def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
@@ -94,6 +94,13 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
             "top_k": 5,
             "timestamp": "2026-03-05T09:00:00Z",
         },
+        {
+            "op": "query",
+            "query_id": "query-conflict-historical",
+            "query": "jasmine oolong",
+            "top_k": 5,
+            "timestamp": "2026-03-03T12:00:00Z",
+        },
         {"op": "shutdown"},
     ]
 
@@ -142,4 +149,87 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     }
     assert conflict_sources["structured-jasmine"] == {"structured-oolong"}
     assert conflict_sources["structured-oolong"] == {"structured-jasmine"}
+    historical_conflict_query = query_results["query-conflict-historical"]
+    historical_conflict_structured = [
+        item
+        for item in historical_conflict_query["evidence"]
+        if item.get("surface") == "structured_memory"
+    ]
+    assert all(
+        "conflict_source_ids" not in item["metadata"]
+        and "conflict_entry_ids" not in item["metadata"]
+        for item in historical_conflict_structured
+    )
     assert responses[-1] == {"op": "shutdown_ack", "ok": True}
+
+
+def test_memory_sut_structured_relationship_metadata_as_of(tmp_path: Path) -> None:
+    session = EvaluationSutSession()
+    try:
+        assert session.handle(
+            {
+                "op": "hello",
+                "contract_version": CONTRACT_VERSION,
+                "run": {"run_id": "run-001", "case_id": "case-001", "seed": 7},
+                "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
+                "paths": {
+                    "state_dir": str(tmp_path / "state"),
+                    "config_dir": str(tmp_path / "config"),
+                    "artifact_dir": str(tmp_path / "artifacts"),
+                },
+                "capabilities_requested": [
+                    "reset",
+                    "time_control",
+                    "consolidation",
+                    "query_as_of",
+                    "structured_memory_write",
+                ],
+                "config_overrides": {"embedding_mode": "deterministic"},
+            }
+        )["ok"] is True
+        old = session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "fact",
+                "key": "favorite_drink",
+                "value": "Alice's favorite drink is jasmine tea.",
+                "source_id": "structured-old",
+                "timestamp": "2026-03-01T09:00:00Z",
+            }
+        )
+        session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "fact",
+                "key": "favorite_drink",
+                "value": "Alice's favorite drink is oolong tea.",
+                "source_id": "structured-new",
+                "supersedes": old["entry_id"],
+                "timestamp": "2026-03-03T09:00:00Z",
+            }
+        )
+        historical = session.handle(
+            {
+                "op": "query",
+                "query_id": "historical",
+                "query": "favorite drink",
+                "top_k": 3,
+                "timestamp": "2026-03-02T09:00:00Z",
+            }
+        )
+        current = session.handle(
+            {
+                "op": "query",
+                "query_id": "current",
+                "query": "favorite drink",
+                "top_k": 3,
+                "timestamp": "2026-03-04T09:00:00Z",
+            }
+        )
+    finally:
+        session.close()
+
+    assert [item["source_id"] for item in historical["evidence"]] == ["structured-old"]
+    assert "superseded_by_source_id" not in historical["evidence"][0]["metadata"]
+    assert [item["source_id"] for item in current["evidence"]] == ["structured-new"]
+    assert current["evidence"][0]["metadata"]["supersedes_source_id"] == "structured-old"
