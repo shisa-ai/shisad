@@ -114,8 +114,11 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     responses = [json.loads(line) for line in result.output.splitlines()]
     assert responses[0]["op"] == "hello_ack"
     assert responses[0]["ok"] is True
+    assert responses[0]["contract_version"] == CONTRACT_VERSION
     assert responses[0]["identity"]["id"] == "shisad"
     assert responses[0]["capabilities_unsupported"] == ["answer_generation"]
+    assert responses[1]["op"] == "reset_ack"
+    assert responses[1]["run_id"] == "run-001/case-001"
     assert responses[2]["op"] == "ack"
     assert str(responses[2]["source_id"]).startswith("melt:event:")
     assert str(responses[2]["chunk_id"])

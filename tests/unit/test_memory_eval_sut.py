@@ -668,20 +668,27 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
         ]
     )
 
+    hello = responses[0]
+    reset_ack = responses[1]
     ack = responses[2]
     query = responses[3]
     reset_query = responses[5]
     assert marker.read_text(encoding="utf-8") == "keep"
-    assert responses[0]["capabilities_unsupported"] == ["answer_generation"]
+    assert hello["contract_version"] == CONTRACT_VERSION
+    assert hello["capabilities_unsupported"] == ["answer_generation"]
+    assert reset_ack["op"] == "reset_ack"
+    assert reset_ack["run_id"] == "run-001/case-001"
     assert ack["op"] == "ack"
     assert ack["event_id"] == "event-1"
     assert str(ack["source_id"]).startswith("melt:event:")
     assert str(ack["chunk_id"])
     assert ack["created_at"] == "2026-01-01T12:00:00Z"
     assert query["op"] == "query_result"
+    assert query["query_id"] == "query-1"
     assert query["owner"] == {"user_id": "alice", "workspace_id": "workspace-a"}
     assert query["evidence"][0]["source_id"] == ack["source_id"]
     assert query["evidence"][0]["created_at"] == "2026-01-01T12:00:00Z"
+    assert reset_query["query_id"] == "query-2"
     assert reset_query["evidence"] == []
 
 

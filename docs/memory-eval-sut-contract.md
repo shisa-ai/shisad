@@ -56,10 +56,11 @@ The first non-empty message must be `hello`:
 ```
 
 `hello_ack` returns shisad identity, accepted/rejected overrides, supported and
-unsupported capabilities, and `envelope_metadata`. Public metadata fields must
-not contain endpoint credentials; provider base URLs are reported without
-userinfo, query strings, or fragments. MELT also applies report redaction before
-copying SUT metadata into report artifacts.
+unsupported capabilities, and `envelope_metadata`. It echoes the accepted
+`contract_version`; MELT treats a mismatch as a protocol error. Public metadata
+fields must not contain endpoint credentials; provider base URLs are reported
+without userinfo, query strings, or fragments. MELT also applies report
+redaction before copying SUT metadata into report artifacts.
 Provider-backed protocol errors redact the configured API key and URL secrets
 before they are emitted.
 
@@ -99,8 +100,8 @@ than silently switching to deterministic embeddings.
 
 - `metadata`: returns identity, contract version, capabilities, and envelope
   metadata.
-- `reset`: clears only the configured `state_dir` contents and rebuilds memory
-  components.
+- `reset`: clears only the configured `state_dir` contents, rebuilds memory
+  components, and returns `reset_ack.run_id` matching the request.
 - `ingest`: writes raw event content to retrieval storage. Response `ack`
   includes MELT `event_id`, SUT `source_id`, `chunk_id`, and `created_at`.
 - `memory_write`: writes structured lifecycle setup memory through
@@ -108,7 +109,8 @@ than silently switching to deterministic embeddings.
   `source_id`, and `created_at`.
 - `consolidate` / `tick`: runs deterministic consolidation once.
 - `query`: returns evidence-first retrieval results plus scoped structured
-  memory evidence. Structured memory evidence includes
+  memory evidence in `query_result`, with `query_id` matching the request.
+  Structured memory evidence includes
   `metadata.decay_score` so lifecycle suites can test decay after
   consolidation. When structured relationships are present, metadata may also
   include `supersedes`, `supersedes_source_id`, `conflict_entry_ids`, and
