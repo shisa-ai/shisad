@@ -82,12 +82,14 @@ Embedding overrides:
   memory evidence. Structured memory evidence includes
   `metadata.decay_score` so lifecycle suites can test decay after
   consolidation. When structured relationships are present, metadata may also
-  include `supersedes`, `supersedes_source_id`, `superseded_by`,
-  `superseded_by_source_id`, `conflict_entry_ids`, and
-  `conflict_source_ids`. For `query_as_of`, entry evidence and relationship
-  metadata are scoped to the query cutoff; future successors or contradictions
-  are not emitted for historical queries. `answer` is empty unless
-  `answer_generation` is supported.
+  include `supersedes`, `supersedes_source_id`, `conflict_entry_ids`, and
+  `conflict_source_ids`. shisad reports supersession on the successor evidence;
+  it does not emit `superseded_by` metadata because current queries suppress
+  superseded entries and historical queries suppress future successors. For
+  `query_as_of`, entry evidence and relationship metadata are scoped to the
+  query cutoff; future successors or contradictions are not emitted for
+  historical queries. `answer` is empty unless `answer_generation` is
+  supported.
 - `answer`: returns `unsupported_capability` while shisad declares
   `answer_generation` unsupported.
 - `shutdown`: returns `shutdown_ack` and terminates the loop.
