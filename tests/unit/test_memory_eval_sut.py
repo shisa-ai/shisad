@@ -733,6 +733,7 @@ def test_hello_capability_partition_preserves_requested_order_and_subset(
     "capabilities_requested",
     [
         ["reset", ""],
+        ["reset", "   "],
         ["reset", "reset"],
     ],
 )
