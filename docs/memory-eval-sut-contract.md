@@ -107,7 +107,8 @@ than silently switching to deterministic embeddings.
 - `memory_write`: writes structured lifecycle setup memory through
   `MemoryManager.write_with_provenance`. Response includes `entry_id`,
   `source_id`, and `created_at`.
-- `consolidate` / `tick`: runs deterministic consolidation once.
+- `consolidate` / `tick`: runs deterministic consolidation once and returns
+  `consolidate_ack` / `tick_ack`.
 - `query`: returns evidence-first retrieval results plus scoped structured
   memory evidence in `query_result`, with `query_id` matching the request.
   Structured memory evidence includes
