@@ -62,9 +62,10 @@ unsupported capabilities, and `envelope_metadata`. It echoes the accepted
 order-preserving exact partition of `capabilities_requested`: every requested
 capability appears exactly once in one of the two arrays, and unrequested
 capabilities are omitted from the handshake. Public metadata fields must not
-contain endpoint credentials; provider base URLs are reported without userinfo,
-query strings, or fragments. MELT also applies report redaction before copying
-SUT metadata into report artifacts.
+contain endpoint credentials; `envelope_metadata.embedding_model` must be
+non-empty, and provider base URLs are reported without userinfo, query strings,
+or fragments. MELT also applies report redaction before copying SUT metadata
+into report artifacts.
 Provider-backed protocol errors redact the configured API key and URL secrets
 before they are emitted.
 

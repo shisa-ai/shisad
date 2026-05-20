@@ -133,7 +133,9 @@ Every MELT report records the fields needed to interpret a result:
 - Suite id, suite version, fixture id, fixture hash, and split.
 - SUT id, SUT version, SUT commit, and SUT contract version.
 - MELT runner commit.
-- Embedding provider/model identity or deterministic fallback.
+- Embedding provider/model identity or deterministic fallback; pre-handshake or
+  undeclared SUT embedding provenance is marked `unavailable` or
+  `unavailable-before-handshake`.
 - Judge identity, prompt hash, canary false-positive rate, or `deterministic`.
 - `top_k`, bypass warnings, runs, seed, timestamp, and hardware metadata when
   available.
