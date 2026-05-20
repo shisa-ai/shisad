@@ -740,10 +740,14 @@ def test_metadata_reports_fixed_capability_partition(tmp_path: Path) -> None:
 
     metadata = responses[1]
     assert metadata["op"] == "metadata"
-    assert metadata["capabilities"] == list(evaluation_sut.SUPPORTED_CAPABILITIES)
-    assert metadata["capabilities_unsupported"] == list(
-        evaluation_sut.SOFT_UNSUPPORTED_CAPABILITIES
-    )
+    assert metadata["capabilities"] == [
+        "reset",
+        "time_control",
+        "consolidation",
+        "query_as_of",
+        "structured_memory_write",
+    ]
+    assert metadata["capabilities_unsupported"] == ["answer_generation"]
 
 
 def test_hello_rejects_unknown_capabilities_requested(tmp_path: Path) -> None:

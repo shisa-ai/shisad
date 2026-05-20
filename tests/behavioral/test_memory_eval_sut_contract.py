@@ -10,8 +10,6 @@ from click.testing import CliRunner
 from shisad.cli import main as cli_main
 from shisad.memory.evaluation_sut import (
     CONTRACT_VERSION,
-    SOFT_UNSUPPORTED_CAPABILITIES,
-    SUPPORTED_CAPABILITIES,
     EvaluationSutSession,
 )
 
@@ -193,10 +191,14 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert metadata["ok"] is True
     assert metadata["contract_version"] == CONTRACT_VERSION
     assert metadata["id"] == "shisad"
-    assert metadata["capabilities"] == list(SUPPORTED_CAPABILITIES)
-    assert metadata["capabilities_unsupported"] == list(
-        SOFT_UNSUPPORTED_CAPABILITIES
-    )
+    assert metadata["capabilities"] == [
+        "reset",
+        "time_control",
+        "consolidation",
+        "query_as_of",
+        "structured_memory_write",
+    ]
+    assert metadata["capabilities_unsupported"] == ["answer_generation"]
     tick_ack = next(response for response in responses if response.get("op") == "tick_ack")
     assert tick_ack["ok"] is True
     answer = next(response for response in responses if response.get("op") == "answer_result")
