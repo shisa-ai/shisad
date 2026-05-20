@@ -79,6 +79,7 @@ uv run melt run \
   --sut-command "uv --directory /path/to/shisad run shisad memory sut" \
   --suite longmemeval \
   --variant S \
+  --fixture external \
   --split dev \
   --dataset-path /path/to/longmemeval.json \
   --top-k 5 \
@@ -95,6 +96,7 @@ uv run melt run \
   --sut shisad \
   --sut-command "uv --directory /path/to/shisad run shisad memory sut" \
   --suite locomo \
+  --fixture external \
   --split dev \
   --dataset-path /path/to/locomo.json \
   --audit-catalog-path /path/to/locomo-audit.json \
@@ -138,9 +140,12 @@ Every MELT report records the fields needed to interpret a result:
 - Separate metrics for retrieval, answer quality, judged accuracy, abstention,
   lifecycle assertions, and raw-verbatim baselines.
 
-MELT marks results as `preliminary` when they are single-run, smoke-fixture, or
-dev/validation-split results. A `final` result requires held-out data, at least
-five runs, and methodology validation.
+MELT derives `preliminary` versus `final` from the split and run count. A
+`final` result requires `--split held_out`, at least five runs, and methodology
+validation; every other non-error report is `preliminary`. Fixture choice does
+not by itself force `preliminary`, so smoke fixtures should still be described
+as smoke checks even when they are used to exercise the held-out/five-run status
+path.
 
 ## Non-Claims
 
