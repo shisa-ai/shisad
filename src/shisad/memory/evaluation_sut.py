@@ -774,7 +774,22 @@ def _clean_text(value: object) -> str | None:
 def _string_list(value: object, field: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise _ProtocolError("invalid_field", f"{field} must be a list of strings")
-    return [item for item in value if item]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not item.strip():
+            raise _ProtocolError(
+                "invalid_field",
+                f"{field} must contain non-empty strings",
+            )
+        if item in seen:
+            raise _ProtocolError(
+                "invalid_field",
+                f"{field} must not contain duplicates",
+            )
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def _positive_int(value: object, field: str) -> int:

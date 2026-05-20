@@ -5,6 +5,8 @@ import json
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 import shisad.memory.evaluation_sut as evaluation_sut
 from shisad.daemon import services as daemon_services
 from shisad.memory.evaluation_sut import CONTRACT_VERSION, EvaluationSutSession, run_sut_jsonl
@@ -725,6 +727,31 @@ def test_hello_capability_partition_preserves_requested_order_and_subset(
         "time_control",
     ]
     assert hello["capabilities_unsupported"] == ["answer_generation"]
+
+
+@pytest.mark.parametrize(
+    "capabilities_requested",
+    [
+        ["reset", ""],
+        ["reset", "reset"],
+    ],
+)
+def test_hello_rejects_malformed_capabilities_requested(
+    tmp_path: Path,
+    capabilities_requested: list[str],
+) -> None:
+    responses = _run_messages(
+        [
+            _hello(tmp_path, capabilities_requested=capabilities_requested),
+            {"op": "shutdown"},
+        ]
+    )
+
+    response = responses[0]
+    assert response["op"] == "hello_ack"
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_field"
+    assert "capabilities_requested" in response["error"]["message"]
 
 
 def test_hello_rejects_non_empty_unmarked_state_root(tmp_path: Path) -> None:
