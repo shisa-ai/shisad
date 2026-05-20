@@ -122,8 +122,8 @@ than silently switching to deterministic embeddings.
   query cutoff; future successors or contradictions are not emitted for
   historical queries. `answer` is empty unless `answer_generation` is
   supported.
-- `answer`: returns `unsupported_capability` while shisad declares
-  `answer_generation` unsupported.
+- `answer`: returns `answer_result` with `unsupported_capability` while shisad
+  declares `answer_generation` unsupported.
 - `shutdown`: returns `shutdown_ack` and terminates the loop.
 
 All operations may include `timestamp` as an ISO-8601 timestamp. shisad maps it
