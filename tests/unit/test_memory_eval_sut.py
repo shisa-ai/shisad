@@ -729,6 +729,38 @@ def test_hello_capability_partition_preserves_requested_order_and_subset(
     assert hello["capabilities_unsupported"] == ["answer_generation"]
 
 
+def test_metadata_reports_fixed_capability_partition(tmp_path: Path) -> None:
+    responses = _run_messages(
+        [
+            _hello(tmp_path),
+            {"op": "metadata"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    metadata = responses[1]
+    assert metadata["op"] == "metadata"
+    assert metadata["capabilities"] == list(evaluation_sut.SUPPORTED_CAPABILITIES)
+    assert metadata["capabilities_unsupported"] == list(
+        evaluation_sut.SOFT_UNSUPPORTED_CAPABILITIES
+    )
+
+
+def test_hello_rejects_unknown_capabilities_requested(tmp_path: Path) -> None:
+    responses = _run_messages(
+        [
+            _hello(tmp_path, capabilities_requested=["reset", "bogus_capability"]),
+            {"op": "shutdown"},
+        ]
+    )
+
+    response = responses[0]
+    assert response["op"] == "hello_ack"
+    assert response["ok"] is False
+    assert response["error"]["code"] == "unknown_capability"
+    assert "bogus_capability" in response["error"]["message"]
+
+
 @pytest.mark.parametrize(
     "capabilities_requested",
     [
