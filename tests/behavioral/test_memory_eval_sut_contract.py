@@ -49,6 +49,23 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
             "top_k": 2,
             "timestamp": "2026-03-02T09:00:00Z",
         },
+        {
+            "op": "memory_write",
+            "event_id": "structured-1",
+            "entry_type": "fact",
+            "key": "parking_permit",
+            "value": "Alice's old parking permit note is stale.",
+            "source_id": "structured-decay",
+            "timestamp": "2026-03-01T09:00:00Z",
+        },
+        {"op": "consolidate", "timestamp": "2026-06-15T09:00:00Z"},
+        {
+            "op": "query",
+            "query_id": "query-structured",
+            "query": "parking permit",
+            "top_k": 2,
+            "timestamp": "2026-06-16T09:00:00Z",
+        },
         {"op": "shutdown"},
     ]
 
@@ -69,4 +86,15 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert responses[3]["query_id"] == "query-1"
     assert responses[3]["answer"] == ""
     assert responses[3]["evidence"][0]["source_id"] == responses[2]["source_id"]
-    assert responses[4] == {"op": "shutdown_ack", "ok": True}
+    assert responses[4]["op"] == "memory_write_ack"
+    assert responses[5]["op"] == "consolidate_ack"
+    structured_query = responses[6]
+    structured = [
+        item
+        for item in structured_query["evidence"]
+        if item.get("surface") == "structured_memory"
+    ]
+    assert structured_query["op"] == "query_result"
+    assert structured[0]["source_id"] == "structured-decay"
+    assert structured[0]["metadata"]["decay_score"] < 0.35
+    assert responses[7] == {"op": "shutdown_ack", "ok": True}
