@@ -213,6 +213,7 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert tick_ack["ok"] is True
     answer = next(response for response in responses if response.get("op") == "answer_result")
     assert answer["ok"] is False
+    assert answer["query_id"] == "answer-unsupported"
     assert answer["error"]["code"] == "unsupported_capability"
     assert responses[-1] == {"op": "shutdown_ack", "ok": True}
 

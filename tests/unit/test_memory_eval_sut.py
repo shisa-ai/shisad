@@ -1202,6 +1202,7 @@ def test_answer_generation_is_capability_gated(tmp_path: Path) -> None:
 
     assert responses[1]["op"] == "answer_result"
     assert responses[1]["ok"] is False
+    assert responses[1]["query_id"] == "query-1"
     assert responses[1]["error"]["code"] == "unsupported_capability"
 
 

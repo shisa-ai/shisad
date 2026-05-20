@@ -117,11 +117,14 @@ class EvaluationSutSession:
         if op == "query":
             return self._query(message)
         if op == "answer":
-            return _error_response(
+            query_id = _required_text(message, "query_id")
+            response = _error_response(
                 "answer_result",
                 "unsupported_capability",
                 "answer_generation is not supported by the shisad evaluation SUT",
             )
+            response["query_id"] = query_id
+            return response
         raise _ProtocolError("unsupported_operation", f"unsupported operation: {op}")
 
     def _hello(self, message: dict[str, Any]) -> dict[str, Any]:
