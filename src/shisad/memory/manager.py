@@ -1956,6 +1956,7 @@ class MemoryManager:
         entry_id: str,
         conflicting_entry_id: str,
         *,
+        event_timestamp: datetime | None = None,
         ingress_handle_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> bool:
@@ -1972,6 +1973,7 @@ class MemoryManager:
         self._record_event(
             entry=entry,
             event_type="contradicted",
+            timestamp=event_timestamp,
             ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
             metadata=payload,
         )
@@ -2618,18 +2620,22 @@ class MemoryManager:
         *,
         entry: MemoryEntry,
         event_type: str,
+        timestamp: datetime | None = None,
         ingress_handle_id: str | None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         payload = dict(metadata or {})
         payload["entry_snapshot"] = entry.model_dump(mode="json")
+        event_fields: dict[str, Any] = {
+            "entry_id": entry.id,
+            "event_type": event_type,
+            "ingress_handle_id": ingress_handle_id,
+            "metadata_json": payload,
+        }
+        if timestamp is not None:
+            event_fields["timestamp"] = timestamp
         self._event_store.append(
-            MemoryEvent(
-                entry_id=entry.id,
-                event_type=event_type,
-                ingress_handle_id=ingress_handle_id,
-                metadata_json=payload,
-            )
+            MemoryEvent(**event_fields)
         )
 
     def _refresh_ttl(self, entry: MemoryEntry) -> MemoryEntry:

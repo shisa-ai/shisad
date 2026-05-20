@@ -902,6 +902,80 @@ def test_structured_query_as_of_keeps_entry_before_successor_exists(tmp_path: Pa
     assert current["evidence"][0]["metadata"]["supersedes_source_id"] == "structured-old"
 
 
+def test_structured_query_as_of_hides_future_conflict_links(tmp_path: Path) -> None:
+    session = EvaluationSutSession()
+    try:
+        assert session.handle(_hello(tmp_path))["ok"] is True
+        session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "preference",
+                "key": "favorite_drink",
+                "predicate": "likes(jasmine)",
+                "value": "Morgan likes jasmine tea.",
+                "source_id": "structured-jasmine",
+                "timestamp": "2026-02-03T00:00:00Z",
+            }
+        )
+        session.handle(
+            {
+                "op": "memory_write",
+                "entry_type": "preference",
+                "key": "favorite_drink",
+                "predicate": "likes(oolong)",
+                "value": "Morgan likes oolong tea.",
+                "source_id": "structured-oolong",
+                "timestamp": "2026-02-04T00:00:00Z",
+            }
+        )
+        consolidated = session.handle(
+            {"op": "consolidate", "timestamp": "2026-02-10T00:00:00Z"}
+        )
+        historical = session.handle(
+            {
+                "op": "query",
+                "query_id": "historical",
+                "query": "jasmine oolong",
+                "top_k": 5,
+                "timestamp": "2026-02-05T00:00:00Z",
+            }
+        )
+        current = session.handle(
+            {
+                "op": "query",
+                "query_id": "current",
+                "query": "jasmine oolong",
+                "top_k": 5,
+                "timestamp": "2026-02-11T00:00:00Z",
+            }
+        )
+    finally:
+        session.close()
+
+    assert consolidated["contradicted_entry_ids"]
+    historical_structured = [
+        item for item in historical["evidence"] if item.get("surface") == "structured_memory"
+    ]
+    assert {item["source_id"] for item in historical_structured} == {
+        "structured-jasmine",
+        "structured-oolong",
+    }
+    assert all(
+        "conflict_entry_ids" not in item["metadata"]
+        and "conflict_source_ids" not in item["metadata"]
+        for item in historical_structured
+    )
+    current_structured = [
+        item for item in current["evidence"] if item.get("surface") == "structured_memory"
+    ]
+    current_conflicts = {
+        item["source_id"]: set(item["metadata"].get("conflict_source_ids", []))
+        for item in current_structured
+    }
+    assert current_conflicts["structured-jasmine"] == {"structured-oolong"}
+    assert current_conflicts["structured-oolong"] == {"structured-jasmine"}
+
+
 def test_structured_query_as_of_searches_beyond_newer_entries(tmp_path: Path) -> None:
     session = EvaluationSutSession()
     try:

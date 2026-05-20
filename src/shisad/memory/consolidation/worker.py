@@ -205,11 +205,12 @@ class ConsolidationWorker:
         )
 
     def run_once(self, *, now: datetime | None = None) -> ConsolidationRunResult:
+        current = now or datetime.now(UTC)
         result = ConsolidationRunResult()
-        decay = self.recompute_decay_scores(now=now)
-        confidence = self.apply_confidence_updates()
+        decay = self.recompute_decay_scores(now=current)
+        confidence = self.apply_confidence_updates(now=current)
         dedup = self.deduplicate_entries()
-        retention = self.enforce_retention(now=now)
+        retention = self.enforce_retention(now=current)
         result.updated_entry_ids.extend(decay.updated_entry_ids)
         result.updated_entry_ids.extend(confidence.updated_entry_ids)
         result.corroborating_entry_ids.extend(confidence.corroborating_entry_ids)
@@ -233,7 +234,8 @@ class ConsolidationWorker:
                 result.updated_entry_ids.append(entry.id)
         return result
 
-    def apply_confidence_updates(self) -> ConsolidationRunResult:
+    def apply_confidence_updates(self, *, now: datetime | None = None) -> ConsolidationRunResult:
+        current = now or datetime.now(UTC)
         result = ConsolidationRunResult()
         entries = self._list_entries()
         preferences = [entry for entry in entries if entry.entry_type == "preference"]
@@ -308,11 +310,13 @@ class ConsolidationWorker:
                 self._manager.mark_conflict(
                     older.id,
                     newer.id,
+                    event_timestamp=current,
                     metadata={"predicate": left_parts[0]},
                 )
                 self._manager.mark_conflict(
                     newer.id,
                     older.id,
+                    event_timestamp=current,
                     metadata={"predicate": left_parts[0]},
                 )
                 result.contradicted_entry_ids.extend([older.id, newer.id])

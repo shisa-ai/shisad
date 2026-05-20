@@ -348,6 +348,7 @@ class EvaluationSutSession:
                     rank=start_rank + len(evidence),
                     entries=entries,
                     as_of=as_of,
+                    memory_manager=components.memory_manager,
                 )
             )
             if len(evidence) >= limit:
@@ -647,6 +648,7 @@ def _memory_entry_evidence(
     rank: int,
     entries: list[MemoryEntry] | None = None,
     as_of: datetime | None = None,
+    memory_manager: Any | None = None,
 ) -> dict[str, Any]:
     entries_by_id = {candidate.id: candidate for candidate in entries or []}
     metadata: dict[str, Any] = {"decay_score": entry.decay_score}
@@ -665,6 +667,12 @@ def _memory_entry_evidence(
             for conflict_id in entry.conflict_entry_ids
             if (conflict := entries_by_id.get(conflict_id)) is not None
             and _memory_entry_visible_at(conflict, as_of=as_of)
+            and _conflict_link_visible_at(
+                entry.id,
+                conflict.id,
+                as_of=as_of,
+                memory_manager=memory_manager,
+            )
         ]
         if visible_conflicts:
             metadata["conflict_entry_ids"] = [conflict.id for conflict in visible_conflicts]
@@ -687,6 +695,29 @@ def _memory_entry_evidence(
 
 def _memory_entry_visible_at(entry: MemoryEntry, *, as_of: datetime | None) -> bool:
     return as_of is None or entry.created_at <= as_of
+
+
+def _conflict_link_visible_at(
+    entry_id: str,
+    conflict_id: str,
+    *,
+    as_of: datetime | None,
+    memory_manager: Any | None,
+) -> bool:
+    if as_of is None:
+        return True
+    if memory_manager is None:
+        return False
+    for event in memory_manager.list_events(
+        entry_id=entry_id,
+        event_type="contradicted",
+        limit=10_000,
+    ):
+        if event.metadata_json.get("conflicting_entry_id") != conflict_id:
+            continue
+        if event.timestamp <= as_of:
+            return True
+    return False
 
 
 def _structured_entry_matches_query(entry: MemoryEntry, query: str) -> bool:
