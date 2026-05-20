@@ -79,7 +79,9 @@ Embedding overrides:
   `source_id`, and `created_at`.
 - `consolidate` / `tick`: runs deterministic consolidation once.
 - `query`: returns evidence-first retrieval results plus scoped structured
-  memory evidence. `answer` is empty unless `answer_generation` is supported.
+  memory evidence. Structured memory evidence includes
+  `metadata.decay_score` so lifecycle suites can test decay after
+  consolidation. `answer` is empty unless `answer_generation` is supported.
 - `answer`: returns `unsupported_capability` while shisad declares
   `answer_generation` unsupported.
 - `shutdown`: returns `shutdown_ack` and terminates the loop.

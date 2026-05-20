@@ -645,6 +645,7 @@ def _memory_entry_evidence(entry: MemoryEntry, *, rank: int) -> dict[str, Any]:
         "entry_type": entry.entry_type,
         "key": entry.key,
         "value": entry.value,
+        "metadata": {"decay_score": entry.decay_score},
     }
 
 

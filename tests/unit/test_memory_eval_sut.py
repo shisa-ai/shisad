@@ -813,6 +813,39 @@ def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path
     assert before_write_query["evidence"] == []
 
 
+def test_structured_query_exposes_decay_metadata_after_consolidation(tmp_path: Path) -> None:
+    responses = _run_messages(
+        [
+            _hello(tmp_path),
+            {"op": "reset", "run_id": "run-001/case-001"},
+            {
+                "op": "memory_write",
+                "entry_type": "fact",
+                "key": "parking_permit",
+                "value": "The old parking permit note is stale.",
+                "source_id": "structured-decay",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            {"op": "consolidate", "timestamp": "2026-05-01T00:00:00Z"},
+            {
+                "op": "query",
+                "query_id": "query-decay",
+                "query": "parking permit",
+                "top_k": 3,
+                "timestamp": "2026-05-02T00:00:00Z",
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    query = responses[4]
+    structured = [
+        item for item in query["evidence"] if item.get("surface") == "structured_memory"
+    ]
+    assert structured[0]["source_id"] == "structured-decay"
+    assert structured[0]["metadata"]["decay_score"] < 0.35
+
+
 def test_structured_query_as_of_keeps_entry_before_successor_exists(tmp_path: Path) -> None:
     session = EvaluationSutSession()
     try:
