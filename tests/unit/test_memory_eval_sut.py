@@ -699,6 +699,34 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     assert reset_query["evidence"] == []
 
 
+def test_hello_capability_partition_preserves_requested_order_and_subset(
+    tmp_path: Path,
+) -> None:
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                capabilities_requested=[
+                    "query_as_of",
+                    "reset",
+                    "answer_generation",
+                    "time_control",
+                ],
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    hello = responses[0]
+    assert hello["op"] == "hello_ack"
+    assert hello["capabilities_supported"] == [
+        "query_as_of",
+        "reset",
+        "time_control",
+    ]
+    assert hello["capabilities_unsupported"] == ["answer_generation"]
+
+
 def test_hello_rejects_non_empty_unmarked_state_root(tmp_path: Path) -> None:
     unsafe_state = tmp_path / "shared"
     unsafe_state.mkdir()
