@@ -342,7 +342,13 @@ class EvaluationSutSession:
                 continue
             if not _structured_entry_matches_query(entry, query):
                 continue
-            evidence.append(_memory_entry_evidence(entry, rank=start_rank + len(evidence)))
+            evidence.append(
+                _memory_entry_evidence(
+                    entry,
+                    rank=start_rank + len(evidence),
+                    entries=entries,
+                )
+            )
             if len(evidence) >= limit:
                 break
         return evidence
@@ -634,7 +640,29 @@ def _retrieval_evidence(result: Any, *, rank: int) -> dict[str, Any]:
     }
 
 
-def _memory_entry_evidence(entry: MemoryEntry, *, rank: int) -> dict[str, Any]:
+def _memory_entry_evidence(
+    entry: MemoryEntry,
+    *,
+    rank: int,
+    entries: list[MemoryEntry] | None = None,
+) -> dict[str, Any]:
+    entries_by_id = {candidate.id: candidate for candidate in entries or []}
+    metadata: dict[str, Any] = {"decay_score": entry.decay_score}
+    if entry.supersedes is not None:
+        metadata["supersedes"] = entry.supersedes
+        if superseded := entries_by_id.get(entry.supersedes):
+            metadata["supersedes_source_id"] = superseded.source_id or superseded.id
+    if entry.superseded_by is not None:
+        metadata["superseded_by"] = entry.superseded_by
+        if successor := entries_by_id.get(entry.superseded_by):
+            metadata["superseded_by_source_id"] = successor.source_id or successor.id
+    if entry.conflict_entry_ids:
+        metadata["conflict_entry_ids"] = list(entry.conflict_entry_ids)
+        metadata["conflict_source_ids"] = [
+            conflict.source_id or conflict.id
+            for conflict_id in entry.conflict_entry_ids
+            if (conflict := entries_by_id.get(conflict_id)) is not None
+        ]
     return {
         "surface": "structured_memory",
         "source_id": entry.source_id or entry.id,
@@ -645,7 +673,7 @@ def _memory_entry_evidence(entry: MemoryEntry, *, rank: int) -> dict[str, Any]:
         "entry_type": entry.entry_type,
         "key": entry.key,
         "value": entry.value,
-        "metadata": {"decay_score": entry.decay_score},
+        "metadata": metadata,
     }
 
 
