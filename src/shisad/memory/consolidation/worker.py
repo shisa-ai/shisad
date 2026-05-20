@@ -310,14 +310,18 @@ class ConsolidationWorker:
                 self._manager.mark_conflict(
                     older.id,
                     newer.id,
-                    event_timestamp=current,
-                    metadata={"predicate": left_parts[0]},
+                    metadata={
+                        "predicate": left_parts[0],
+                        "relationship_timestamp": current.isoformat(),
+                    },
                 )
                 self._manager.mark_conflict(
                     newer.id,
                     older.id,
-                    event_timestamp=current,
-                    metadata={"predicate": left_parts[0]},
+                    metadata={
+                        "predicate": left_parts[0],
+                        "relationship_timestamp": current.isoformat(),
+                    },
                 )
                 result.contradicted_entry_ids.extend([older.id, newer.id])
         return result

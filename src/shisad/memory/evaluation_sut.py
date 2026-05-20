@@ -715,9 +715,20 @@ def _conflict_link_visible_at(
     ):
         if event.metadata_json.get("conflicting_entry_id") != conflict_id:
             continue
-        if event.timestamp <= as_of:
+        relationship_at = _conflict_relationship_timestamp(event)
+        if relationship_at <= as_of:
             return True
     return False
+
+
+def _conflict_relationship_timestamp(event: Any) -> datetime:
+    try:
+        relationship_at = _parse_optional_timestamp(
+            event.metadata_json.get("relationship_timestamp")
+        )
+    except _ProtocolError:
+        relationship_at = None
+    return relationship_at or event.timestamp
 
 
 def _structured_entry_matches_query(entry: MemoryEntry, query: str) -> bool:
