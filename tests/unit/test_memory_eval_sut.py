@@ -895,6 +895,8 @@ def test_structured_query_as_of_keeps_entry_before_successor_exists(tmp_path: Pa
 
     assert new["source_id"] == "structured-new"
     assert [item["source_id"] for item in historical["evidence"]] == ["structured-old"]
+    assert "superseded_by" not in historical["evidence"][0]["metadata"]
+    assert "superseded_by_source_id" not in historical["evidence"][0]["metadata"]
     assert [item["source_id"] for item in current["evidence"]] == ["structured-new"]
     assert current["evidence"][0]["metadata"]["supersedes"] == old["entry_id"]
     assert current["evidence"][0]["metadata"]["supersedes_source_id"] == "structured-old"
