@@ -676,6 +676,8 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     assert ack["op"] == "ack"
     assert ack["event_id"] == "event-1"
     assert str(ack["source_id"]).startswith("melt:event:")
+    assert str(ack["chunk_id"])
+    assert ack["created_at"] == "2026-01-01T12:00:00Z"
     assert query["op"] == "query_result"
     assert query["owner"] == {"user_id": "alice", "workspace_id": "workspace-a"}
     assert query["evidence"][0]["source_id"] == ack["source_id"]

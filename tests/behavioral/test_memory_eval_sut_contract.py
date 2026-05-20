@@ -117,6 +117,9 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert responses[0]["identity"]["id"] == "shisad"
     assert responses[0]["capabilities_unsupported"] == ["answer_generation"]
     assert responses[2]["op"] == "ack"
+    assert str(responses[2]["source_id"]).startswith("melt:event:")
+    assert str(responses[2]["chunk_id"])
+    assert responses[2]["created_at"] == "2026-03-01T09:00:00Z"
     assert responses[3]["op"] == "query_result"
     assert responses[3]["query_id"] == "query-1"
     assert responses[3]["answer"] == ""
