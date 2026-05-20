@@ -123,6 +123,8 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert responses[0]["ok"] is True
     assert responses[0]["contract_version"] == "b2"
     assert responses[0]["identity"]["id"] == "shisad"
+    assert responses[0]["identity"]["version"]
+    assert responses[0]["identity"]["commit"]
     assert responses[0]["capabilities_supported"] == [
         "reset",
         "time_control",
@@ -193,6 +195,8 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     assert metadata["ok"] is True
     assert metadata["contract_version"] == "b2"
     assert metadata["id"] == "shisad"
+    assert metadata["version"] == responses[0]["identity"]["version"]
+    assert metadata["commit"] == responses[0]["identity"]["commit"]
     assert (
         metadata["envelope_metadata"]["embedding_model"]
         == responses[0]["envelope_metadata"]["embedding_model"]

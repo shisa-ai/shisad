@@ -677,6 +677,8 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     reset_query = responses[5]
     assert marker.read_text(encoding="utf-8") == "keep"
     assert hello["contract_version"] == "b2"
+    assert hello["identity"]["version"]
+    assert hello["identity"]["commit"]
     assert hello["capabilities_supported"] == [
         "reset",
         "time_control",
@@ -741,8 +743,11 @@ def test_metadata_reports_fixed_capability_partition(tmp_path: Path) -> None:
         ]
     )
 
+    hello = responses[0]
     metadata = responses[1]
     assert metadata["op"] == "metadata"
+    assert metadata["version"] == hello["identity"]["version"]
+    assert metadata["commit"] == hello["identity"]["commit"]
     assert metadata["envelope_metadata"]["embedding_model"]
     assert metadata["capabilities"] == [
         "reset",
