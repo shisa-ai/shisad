@@ -8,10 +8,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from shisad.cli import main as cli_main
-from shisad.memory.evaluation_sut import (
-    CONTRACT_VERSION,
-    EvaluationSutSession,
-)
+from shisad.memory.evaluation_sut import EvaluationSutSession
 
 
 def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
@@ -19,7 +16,7 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     messages = [
         {
             "op": "hello",
-            "contract_version": CONTRACT_VERSION,
+            "contract_version": "b2",
             "run": {"run_id": "run-001", "seed": 7},
             "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
             "paths": {
@@ -124,7 +121,7 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     responses = [json.loads(line) for line in result.output.splitlines()]
     assert responses[0]["op"] == "hello_ack"
     assert responses[0]["ok"] is True
-    assert responses[0]["contract_version"] == CONTRACT_VERSION
+    assert responses[0]["contract_version"] == "b2"
     assert responses[0]["identity"]["id"] == "shisad"
     assert responses[0]["capabilities_supported"] == [
         "reset",
@@ -189,7 +186,7 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     )
     metadata = next(response for response in responses if response.get("op") == "metadata")
     assert metadata["ok"] is True
-    assert metadata["contract_version"] == CONTRACT_VERSION
+    assert metadata["contract_version"] == "b2"
     assert metadata["id"] == "shisad"
     assert metadata["capabilities"] == [
         "reset",
@@ -213,7 +210,7 @@ def test_memory_sut_structured_relationship_metadata_as_of(tmp_path: Path) -> No
         assert session.handle(
             {
                 "op": "hello",
-                "contract_version": CONTRACT_VERSION,
+                "contract_version": "b2",
                 "run": {"run_id": "run-001", "seed": 7},
                 "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
                 "paths": {

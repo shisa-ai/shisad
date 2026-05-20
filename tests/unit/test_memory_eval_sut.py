@@ -9,7 +9,7 @@ import pytest
 
 import shisad.memory.evaluation_sut as evaluation_sut
 from shisad.daemon import services as daemon_services
-from shisad.memory.evaluation_sut import CONTRACT_VERSION, EvaluationSutSession, run_sut_jsonl
+from shisad.memory.evaluation_sut import EvaluationSutSession, run_sut_jsonl
 from shisad.memory.runtime_wiring import build_memory_runtime_components
 
 
@@ -24,7 +24,7 @@ def _run_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]:
 def _hello(tmp_path: Path, **updates: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "op": "hello",
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": "b2",
         "run": {"run_id": "run-001", "seed": 42},
         "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
         "paths": {
@@ -676,7 +676,7 @@ def test_ingest_query_reset_and_time_scope(tmp_path: Path) -> None:
     query = responses[3]
     reset_query = responses[5]
     assert marker.read_text(encoding="utf-8") == "keep"
-    assert hello["contract_version"] == CONTRACT_VERSION
+    assert hello["contract_version"] == "b2"
     assert hello["capabilities_supported"] == [
         "reset",
         "time_control",
