@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-05-21 (v0.7.4 release-close pip-audit exception review)*
+*Updated: 2026-05-21 (v0.7.4 release audit exception review)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at the v0.7.4 release-close candidate for the 2026-05-21 Python audit review, plus `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation. Historical v0.7.0-v0.7.3.1 release evidence is retained where explicitly labeled.*
+*Snapshot basis: code/dependency state at the v0.7.4 release target for the 2026-05-21 Python audit review, plus `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation. Historical v0.7.0-v0.7.3.1 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 

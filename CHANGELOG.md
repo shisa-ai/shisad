@@ -11,7 +11,7 @@ Normal releases use semver-style versions; exceptional follow-up patch lines
 may use PEP 440-compatible four-segment versions when the release checklist
 records that choice.
 
-## 0.7.4 Release Content - 2026-05-20
+## [0.7.4] - 2026-05-21
 
 ### Added
 
@@ -983,6 +983,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.7.4]: https://github.com/shisa-ai/shisad/compare/v0.7.3.1...v0.7.4
 [0.7.3]: https://github.com/shisa-ai/shisad/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/shisa-ai/shisad/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/shisa-ai/shisad/compare/v0.7.0...v0.7.1

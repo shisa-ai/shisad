@@ -51,15 +51,14 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.7.3.1`: browser/search stabilization and release-process hardening on top
-of `v0.7.3` open-thread/topic resume, fuzzy timeline/archive search,
+`v0.7.4`: memory evaluation and reproducibility infrastructure on top of
+`v0.7.3.1` browser/search stabilization, release-process hardening, and
+`v0.7.3` open-thread/topic resume, fuzzy timeline/archive search,
 procedure-experience candidates, and timeline/procedure security hardening.
-The `v0.7.4` release content is prepared in this tree but is not tagged or
-published yet.
 
 | Version | Focus |
 |---------|-------|
-| v0.7 | Memory foundation + long-term memory surfaces (latest published: `v0.7.3.1`; `v0.7.4` release content prepares the MELT memory evaluation runner + shisad SUT) |
+| v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
