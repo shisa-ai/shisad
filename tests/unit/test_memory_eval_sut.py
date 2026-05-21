@@ -860,6 +860,64 @@ def test_hello_rejects_overlapping_sut_directories(
         assert field in responses[0]["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    "overlap_kind",
+    [
+        "state_config_equal_alias",
+        "state_artifact_nested_alias",
+        "config_artifact_equal_alias",
+    ],
+)
+def test_hello_rejects_symlink_resolved_sut_directory_overlap(
+    tmp_path: Path,
+    overlap_kind: str,
+) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    artifact_dir = tmp_path / "artifacts"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    artifact_dir.mkdir()
+    state_alias = tmp_path / "state-alias"
+    config_alias = tmp_path / "config-alias"
+    try:
+        state_alias.symlink_to(state_dir, target_is_directory=True)
+        config_alias.symlink_to(config_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    expected_fields = ("paths.artifact_dir", "paths.config_dir")
+    if overlap_kind == "state_config_equal_alias":
+        config_dir = state_alias
+        expected_fields = ("paths.config_dir", "paths.state_dir")
+    elif overlap_kind == "state_artifact_nested_alias":
+        artifact_dir = state_alias / "artifacts"
+        expected_fields = ("paths.artifact_dir", "paths.state_dir")
+    else:
+        artifact_dir = config_alias
+
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                paths={
+                    "state_dir": str(state_dir),
+                    "config_dir": str(config_dir),
+                    "artifact_dir": str(artifact_dir),
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert responses[0]["op"] == "hello_ack"
+    assert responses[0]["ok"] is False
+    assert responses[0]["error"]["code"] == "unsafe_path"
+    assert "must not overlap" in responses[0]["error"]["message"]
+    for field in expected_fields:
+        assert field in responses[0]["error"]["message"]
+
+
 def test_owner_workspace_scope_prevents_recall_leakage(tmp_path: Path) -> None:
     bob_hello = _hello(
         tmp_path,
