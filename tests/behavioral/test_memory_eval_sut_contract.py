@@ -134,9 +134,7 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     ]
     assert responses[0]["capabilities_unsupported"] == ["answer_generation"]
     assert responses[0]["envelope_metadata"]["embedding_model"]
-    assert responses[0]["config_overrides_accepted"] == {
-        "embedding_mode": "deterministic"
-    }
+    assert responses[0]["config_overrides_accepted"] == {"embedding_mode": "deterministic"}
     assert responses[0]["config_overrides_rejected"] == {}
     assert responses[1]["op"] == "reset_ack"
     assert responses[1]["run_id"] == "run-001/case-001"
@@ -157,18 +155,14 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
     }
     structured_query = query_results["query-structured"]
     structured = [
-        item
-        for item in structured_query["evidence"]
-        if item.get("surface") == "structured_memory"
+        item for item in structured_query["evidence"] if item.get("surface") == "structured_memory"
     ]
     assert structured_query["op"] == "query_result"
     assert structured[0]["source_id"] == "structured-decay"
     assert structured[0]["metadata"]["decay_score"] < 0.35
     conflict_query = query_results["query-conflict"]
     conflict_structured = [
-        item
-        for item in conflict_query["evidence"]
-        if item.get("surface") == "structured_memory"
+        item for item in conflict_query["evidence"] if item.get("surface") == "structured_memory"
     ]
     conflict_sources = {
         item["source_id"]: set(item["metadata"].get("conflict_source_ids", []))
@@ -221,27 +215,30 @@ def test_memory_sut_cli_jsonl_smoke(tmp_path: Path) -> None:
 def test_memory_sut_structured_relationship_metadata_as_of(tmp_path: Path) -> None:
     session = EvaluationSutSession()
     try:
-        assert session.handle(
-            {
-                "op": "hello",
-                "contract_version": "b2",
-                "run": {"run_id": "run-001", "seed": 7},
-                "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
-                "paths": {
-                    "state_dir": str(tmp_path / "state"),
-                    "config_dir": str(tmp_path / "config"),
-                    "artifact_dir": str(tmp_path / "artifacts"),
-                },
-                "capabilities_requested": [
-                    "reset",
-                    "time_control",
-                    "consolidation",
-                    "query_as_of",
-                    "structured_memory_write",
-                ],
-                "config_overrides": {"embedding_mode": "deterministic"},
-            }
-        )["ok"] is True
+        assert (
+            session.handle(
+                {
+                    "op": "hello",
+                    "contract_version": "b2",
+                    "run": {"run_id": "run-001", "seed": 7},
+                    "owner": {"user_id": "alice", "workspace_id": "workspace-a"},
+                    "paths": {
+                        "state_dir": str(tmp_path / "state"),
+                        "config_dir": str(tmp_path / "config"),
+                        "artifact_dir": str(tmp_path / "artifacts"),
+                    },
+                    "capabilities_requested": [
+                        "reset",
+                        "time_control",
+                        "consolidation",
+                        "query_as_of",
+                        "structured_memory_write",
+                    ],
+                    "config_overrides": {"embedding_mode": "deterministic"},
+                }
+            )["ok"]
+            is True
+        )
         old = session.handle(
             {
                 "op": "memory_write",

@@ -74,8 +74,7 @@ def test_hello_rejects_partial_owner_scope(tmp_path: Path) -> None:
 
 def test_provider_override_metadata_redacts_base_url_secrets(tmp_path: Path) -> None:
     secret_url = (
-        "https://user:pass@embedding.example/v1"
-        "?api_key=base-secret#access_token=fragment-secret"
+        "https://user:pass@embedding.example/v1?api_key=base-secret#access_token=fragment-secret"
     )
 
     responses = _run_messages(
@@ -99,9 +98,7 @@ def test_provider_override_metadata_redacts_base_url_secrets(tmp_path: Path) -> 
     assert ack["config_overrides_accepted"]["embedding_base_url"] == (
         "https://embedding.example/v1"
     )
-    assert ack["envelope_metadata"]["embedding_base_url"] == (
-        "https://embedding.example/v1"
-    )
+    assert ack["envelope_metadata"]["embedding_base_url"] == ("https://embedding.example/v1")
     assert "base-secret" not in rendered
     assert "fragment-secret" not in rendered
     assert "user:pass" not in rendered
@@ -227,8 +224,7 @@ def test_provider_override_metadata_redacts_semicolon_secret_parameter(
 
 def test_provider_embedding_fingerprint_uses_public_base_url_identity(tmp_path: Path) -> None:
     first_secret_url = (
-        "https://user:pass@embedding.example/v1"
-        "?api_key=first-secret#access_token=first-fragment"
+        "https://user:pass@embedding.example/v1?api_key=first-secret#access_token=first-fragment"
     )
     second_secret_url = (
         "https://other:creds@embedding.example/v1"
@@ -466,9 +462,7 @@ def test_provider_runtime_error_redacts_fragment_path_secret_parameter(
             pass
 
         def embed(self, _input_texts: list[str]) -> list[list[float]]:
-            raise RuntimeError(
-                "provider failed with frag-path-secret and frag-semi-secret"
-            )
+            raise RuntimeError("provider failed with frag-path-secret and frag-semi-secret")
 
         def close(self, *, wait: bool = False) -> None:
             del wait
@@ -579,8 +573,7 @@ def test_provider_runtime_error_redacts_malformed_base_url_secret_literals(
 
         def embed(self, _input_texts: list[str]) -> list[list[float]]:
             raise RuntimeError(
-                "provider failed with bad%2Bsecret and bad+secret "
-                "and bad+fragment and bad fragment"
+                "provider failed with bad%2Bsecret and bad+secret and bad+fragment and bad fragment"
             )
 
         def close(self, *, wait: bool = False) -> None:
@@ -595,8 +588,7 @@ def test_provider_runtime_error_redacts_malformed_base_url_secret_literals(
                 config_overrides={
                     "embedding_mode": "provider",
                     "embedding_base_url": (
-                        "https://[bad?secondary_secret=bad%2Bsecret"
-                        "#access_token=bad+fragment"
+                        "https://[bad?secondary_secret=bad%2Bsecret#access_token=bad+fragment"
                     ),
                     "embedding_api_key": "provider-secret",
                     "embedding_model_id": "text-embedding-test",
@@ -920,9 +912,7 @@ def test_memory_write_uses_synthetic_created_at_for_structured_evidence(tmp_path
     assert write_ack["op"] == "memory_write_ack"
     assert write_ack["source_id"] == "structured-1"
     assert write_ack["created_at"] == "2026-02-03T04:05:06Z"
-    structured = [
-        item for item in query["evidence"] if item.get("surface") == "structured_memory"
-    ]
+    structured = [item for item in query["evidence"] if item.get("surface") == "structured_memory"]
     assert structured
     assert structured[0]["source_id"] == "structured-1"
     assert structured[0]["created_at"] == "2026-02-03T04:05:06Z"
@@ -956,9 +946,7 @@ def test_structured_query_exposes_decay_metadata_after_consolidation(tmp_path: P
     )
 
     query = responses[4]
-    structured = [
-        item for item in query["evidence"] if item.get("surface") == "structured_memory"
-    ]
+    structured = [item for item in query["evidence"] if item.get("surface") == "structured_memory"]
     assert structured[0]["source_id"] == "structured-decay"
     assert structured[0]["metadata"]["decay_score"] < 0.35
 
@@ -1045,9 +1033,7 @@ def test_structured_query_as_of_hides_future_conflict_links(tmp_path: Path) -> N
                 "timestamp": "2026-02-04T00:00:00Z",
             }
         )
-        consolidated = session.handle(
-            {"op": "consolidate", "timestamp": "2026-02-10T00:00:00Z"}
-        )
+        consolidated = session.handle({"op": "consolidate", "timestamp": "2026-02-10T00:00:00Z"})
         historical = session.handle(
             {
                 "op": "query",
@@ -1119,9 +1105,9 @@ def test_structured_conflict_links_survive_reopen(tmp_path: Path) -> None:
                 "timestamp": "2026-02-04T00:00:00Z",
             }
         )
-        assert session.handle(
-            {"op": "consolidate", "timestamp": "2026-02-10T00:00:00Z"}
-        )["contradicted_entry_ids"]
+        assert session.handle({"op": "consolidate", "timestamp": "2026-02-10T00:00:00Z"})[
+            "contradicted_entry_ids"
+        ]
     finally:
         session.close()
 

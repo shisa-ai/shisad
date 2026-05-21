@@ -300,8 +300,7 @@ class EvaluationSutSession:
             workspace_id=owner.workspace_id,
         )
         evidence = [
-            _retrieval_evidence(result, rank=index + 1)
-            for index, result in enumerate(pack.results)
+            _retrieval_evidence(result, rank=index + 1) for index, result in enumerate(pack.results)
         ]
         if len(evidence) < top_k:
             evidence.extend(
@@ -456,9 +455,7 @@ class EvaluationSutSession:
         return {
             "embedding_mode": self._embedding_mode,
             "embedding_model": self._embedding_fingerprint.model_id,
-            "embedding_base_url": _public_embedding_base_url(
-                self._embedding_fingerprint.base_url
-            ),
+            "embedding_base_url": _public_embedding_base_url(self._embedding_fingerprint.base_url),
             "embedding_fingerprint": self._embedding_fingerprint.stable_hash(),
             "llm_model": None,
             "llm_calls_per_op": {
