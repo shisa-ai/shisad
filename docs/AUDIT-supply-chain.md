@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-05-17 (v0.7.3.1 release-close public-doc hygiene)*
+*Updated: 2026-05-21 (v0.7.4 release-close pip-audit exception review)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation and current risk summary; later release-close and docs-only commits, including the v0.7.3.1 candidate, clarify this audit text without changing the audited dependency snapshot. Historical v0.7.0-v0.7.2 release evidence is retained where explicitly labeled.*
+*Snapshot basis: code/dependency state at the v0.7.4 release-close candidate for the 2026-05-21 Python audit review, plus `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation. Historical v0.7.0-v0.7.3.1 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
@@ -38,6 +38,51 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-05-21 — v0.7.4 pip-audit no-fix exception review
+
+- Scope: release-close Python dependency audit for the v0.7.4 candidate across
+  the frozen `uv export --all-groups` dependency set.
+- Audit result:
+  - `uvx pip-audit --require-hashes --disable-pip -r <(uv --no-config export
+    --all-groups --frozen --format requirements.txt --no-emit-project
+    --directory /home/ubuntu/shisad)` initially reported 22 advisories across
+    `idna`, `onnx`, `pyjwt`, `torch`, and `transformers`.
+  - `idna` had a fixed version, so the lock was updated with
+    `uv --no-config lock --directory /home/ubuntu/shisad --upgrade-package
+    idna==3.15`.
+  - The remaining advisory set has no fixed version in the PyPA advisory data
+    consumed by `pip-audit`, or is disputed/no-fix upstream. The publish
+    workflow ignores only the explicit advisory IDs listed below; any new or
+    unlisted advisory remains a blocking `pip-audit` failure.
+- Exception set:
+  - `PYSEC-2025-183` / `CVE-2025-45768` (`pyjwt`): transitive through `mcp`
+    in the dev/interop path. No local shisad code imports PyJWT; local JWT
+    handling is secret redaction only. The advisory is supplier-disputed and
+    has no fixed PyPA version.
+  - `PYSEC-2025-148` / `CVE-2025-51480` (`onnx`): `security-build` model-pack
+    build lane only, not daemon runtime. NVD identifies ONNX `1.17.0` and
+    references upstream patch PRs, while the PyPA advisory currently exposes no
+    fixed version range for the locked `1.21.0`.
+  - `PYSEC-2025-189`, `PYSEC-2025-190`, `PYSEC-2025-191`,
+    `PYSEC-2025-192`, `PYSEC-2025-193`, `PYSEC-2025-194`,
+    `PYSEC-2025-195`, `PYSEC-2025-196`, `PYSEC-2025-197`,
+    `PYSEC-2025-210`, and `PYSEC-2026-139` (`torch`): build-only
+    `security-build` dependency for PromptGuard export/model-pack tooling.
+    The live daemon runtime does not require this group.
+  - `PYSEC-2025-211`, `PYSEC-2025-212`, `PYSEC-2025-213`,
+    `PYSEC-2025-214`, `PYSEC-2025-215`, `PYSEC-2025-216`,
+    `PYSEC-2025-217`, and `PYSEC-2025-218` (`transformers`): optional
+    PromptGuard/textguard path. shisad's runtime contract loads local ONNX
+    PromptGuard artifacts through `textguard[promptguard]` and signed-pack
+    verification; it does not fetch or convert arbitrary checkpoints as part
+    of ordinary daemon startup.
+- Risk disposition:
+  - Release audit remains fail-closed for all advisories outside the explicit
+    exception set.
+  - Recheck this exception set on every release close and remove individual
+    ignores as soon as PyPA exposes fixed versions or the optional build/runtime
+    dependency path can move to unaffected packages.
 
 ### 2026-05-07 — Dependabot 21 Ledger bridge uuid remediation
 
@@ -635,7 +680,7 @@ httpx==0.28.1
 httpx-sse==0.4.3
 huggingface-hub==1.10.1
 hyperframe==6.1.0
-idna==3.11
+idna==3.15
 iniconfig==2.3.0
 jinja2==3.1.6
 jsonschema==4.26.0
@@ -850,7 +895,7 @@ huggingface-hub==1.10.1
     #   transformers
 hyperframe==6.1.0
     # via h2
-idna==3.11
+idna==3.15
     # via
     #   anyio
     #   httpx
