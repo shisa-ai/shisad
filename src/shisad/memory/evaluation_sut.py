@@ -552,6 +552,13 @@ def _parse_paths(value: object) -> _SutPaths:
     state_dir = _safe_directory_path(value.get("state_dir"), "paths.state_dir")
     config_dir = _safe_directory_path(value.get("config_dir"), "paths.config_dir")
     artifact_dir = _safe_directory_path(value.get("artifact_dir"), "paths.artifact_dir")
+    _reject_overlapping_sut_paths(
+        {
+            "paths.state_dir": state_dir,
+            "paths.config_dir": config_dir,
+            "paths.artifact_dir": artifact_dir,
+        }
+    )
     return _SutPaths(
         state_dir=state_dir,
         config_dir=config_dir,
@@ -567,6 +574,21 @@ def _safe_directory_path(value: object, field: str) -> Path:
     if path.parent == path or path == Path.home().resolve():
         raise _ProtocolError("unsafe_path", f"unsafe SUT path for {field}: {path}")
     return path
+
+
+def _reject_overlapping_sut_paths(paths: dict[str, Path]) -> None:
+    items = list(paths.items())
+    for index, (left_field, left_path) in enumerate(items):
+        for right_field, right_path in items[index + 1 :]:
+            if (
+                left_path == right_path
+                or left_path in right_path.parents
+                or right_path in left_path.parents
+            ):
+                raise _ProtocolError(
+                    "unsafe_path",
+                    f"{left_field} and {right_field} must not overlap: {left_path} / {right_path}",
+                )
 
 
 def _clear_directory_contents(path: Path) -> None:

@@ -817,6 +817,49 @@ def test_hello_rejects_non_empty_unmarked_state_root(tmp_path: Path) -> None:
     assert (unsafe_state / "unrelated.txt").read_text(encoding="utf-8") == "do not delete"
 
 
+@pytest.mark.parametrize(
+    ("state_rel", "config_rel", "artifact_rel", "expected_fields"),
+    [
+        ("state", "state/config", "artifacts", ("paths.config_dir", "paths.state_dir")),
+        ("state", "config", "state/artifacts", ("paths.artifact_dir", "paths.state_dir")),
+        ("state", "shared", "shared", ("paths.artifact_dir", "paths.config_dir")),
+        (
+            "state",
+            "config/artifacts",
+            "config",
+            ("paths.config_dir", "paths.artifact_dir"),
+        ),
+    ],
+)
+def test_hello_rejects_overlapping_sut_directories(
+    tmp_path: Path,
+    state_rel: str,
+    config_rel: str,
+    artifact_rel: str,
+    expected_fields: tuple[str, str],
+) -> None:
+    responses = _run_messages(
+        [
+            _hello(
+                tmp_path,
+                paths={
+                    "state_dir": str(tmp_path / state_rel),
+                    "config_dir": str(tmp_path / config_rel),
+                    "artifact_dir": str(tmp_path / artifact_rel),
+                },
+            ),
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert responses[0]["op"] == "hello_ack"
+    assert responses[0]["ok"] is False
+    assert responses[0]["error"]["code"] == "unsafe_path"
+    assert "must not overlap" in responses[0]["error"]["message"]
+    for field in expected_fields:
+        assert field in responses[0]["error"]["message"]
+
+
 def test_owner_workspace_scope_prevents_recall_leakage(tmp_path: Path) -> None:
     bob_hello = _hello(
         tmp_path,

@@ -90,7 +90,9 @@ Embedding overrides:
 
 MELT supplies run-local `state_dir`, `config_dir`, and `artifact_dir` paths in
 the handshake. shisad stores evaluation state under those paths for the current
-run and does not use the daemon's normal runtime data directory.
+run and does not use the daemon's normal runtime data directory. The three
+paths must be pairwise disjoint: equal paths, nested paths, or symlink-resolved
+overlaps are rejected during `hello`.
 
 `reset` clears only the configured SUT `state_dir` contents and rebuilds memory
 components for the next case. It must not delete arbitrary filesystem paths,
