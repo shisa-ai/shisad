@@ -16,15 +16,18 @@ records that choice.
 ### Added
 
 - **Memory evaluations can run outside shisad.** MELT (Memory Evaluation for
-  Lifecycle Testing) now provides the external runner for standard memory
-  benchmarks and MELT-native lifecycle smoke suites, so shisad can be measured
-  without importing its internals.
+  Lifecycle Testing) is the external runner for standard memory benchmarks and
+  lifecycle smoke suites, so shisad's memory system can be measured without
+  importing shisad's internals.
 
-- **A public memory evaluation command exposes shisad as a System Under Test.**
-  `shisad memory sut` speaks a versioned JSON Lines (JSONL) protocol over
-  stdio, supports isolated run directories, deterministic time control,
-  structured memory writes, consolidation, historical queries, and structured
-  error responses.
+- **A public memory evaluation command exposes shisad for benchmarking.**
+  `shisad memory sut` speaks a versioned JSON Lines protocol over stdio, with
+  run-scoped directories, deterministic time control, structured memory
+  writes, consolidation, historical queries with explicit time bounds, and
+  structured error responses. The handshake declares which capabilities the
+  system supports and which embedding model, storage backend, and
+  consolidation behavior is in effect, so reports faithfully describe what was
+  measured.
 
 - **Lifecycle memory smoke suites cover behavior static benchmarks miss.**
   The first MELT lifecycle fixture checks raw-event write quality, structured
@@ -43,6 +46,39 @@ records that choice.
   MELT, how to reproduce smoke runs, which report fields matter, and why
   smoke artifacts should be interpreted separately from held-out, multi-run
   benchmark claims.
+
+- **Changelog entries link public issues and pull requests.** Entries
+  referencing publicly tracked work now link the GitHub issue or PR number
+  inline, so users can follow a change back to its public discussion. Earlier
+  entries with clear public provenance were updated to the same convention.
+
+### Fixed
+
+- **Memory queries see the full historical record.** Queries against
+  structured memory now search the full as-of history and preserve link,
+  conflict, decay, and supersession metadata at the time being asked about, so
+  an evaluation that asks what shisad believed at an earlier point sees the
+  relationships that existed then rather than today's resolved view.
+
+- **Memory evaluation answer results echo the originating query id.** When the
+  evaluation command returns an answer result, the response now carries back
+  the query id the question was asked under, so external runners can match
+  answers to their questions unambiguously.
+
+### Security
+
+- **Provider URLs no longer leak secrets in error messages.** When a provider
+  URL is malformed or fails to load, error messages and metadata redact secret
+  literals embedded in path, fragment, query, and delimiter forms, including
+  URL-encoded and decoded variants, so credentials accidentally pasted into
+  provider configuration do not surface in logs or evaluation reports.
+
+- **Memory evaluation runs are owner-scoped and fail closed on missing
+  dependencies.** The evaluation command rejects queries that cross owner
+  boundaries, sanitizes provider metadata in evaluation responses, and fails
+  closed when embeddings are required but not configured, so a misconfigured
+  run cannot silently produce results from another owner's data or an
+  unintended fallback.
 
 ## 0.7.3.1 Release Content - 2026-05-16
 

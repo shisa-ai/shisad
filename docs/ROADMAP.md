@@ -326,7 +326,8 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.4 — Memory evaluation runner and reproducibility
 
-- Status (2026-05-20): release preparation in progress.
+- Status (2026-05-20): release content prepared; pre-tag ReleaseClose in
+  progress.
 - shisad exposes a public `shisad memory sut` JSON Lines (JSONL) command so
   external evaluators can drive the memory subsystem as a black-box System
   Under Test.
