@@ -4225,6 +4225,33 @@ def test_action_confirm_renderer_includes_web_fetch_error() -> None:
     assert lines == ["web.fetch fetched https://example.invalid/ failed: network_unavailable."]
 
 
+def test_action_confirm_renderer_includes_browser_failure_detail() -> None:
+    lines = cli_main._render_confirmed_tool_output(
+        {
+            "tool_name": "browser.navigate",
+            "success": False,
+            "payload": {
+                "ok": False,
+                "error": "browser_subprocess_failed",
+                "details": {
+                    "reason": "browser_subprocess_failed",
+                    "stage": "subprocess",
+                    "exit_code": 17,
+                    "stderr": (
+                        "RangeError: WebAssembly.instantiate(): Out of memory\n"
+                        "second line should stay hidden"
+                    ),
+                },
+            },
+        }
+    )
+
+    assert lines == [
+        "browser.navigate: completed ok=False. error=browser_subprocess_failed",
+        "  detail: RangeError: WebAssembly.instantiate(): Out of memory",
+    ]
+
+
 def test_action_confirm_json_flag_preserves_machine_readable_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
