@@ -61,10 +61,44 @@ def test_format_assistant_message_keeps_non_list_hyphens_inline() -> None:
     assert result == "shisad: Range: 1 - 2 and alpha - beta"
 
 
+def test_format_assistant_message_does_not_split_year_in_list_item() -> None:
+    result = format_assistant_message(
+        "Highlights: - Released in 2024. It supports X - Next item"
+    )
+
+    assert "2024. It supports X" in result
+    assert result == "shisad: Highlights:\n\n- Released in 2024. It supports X\n- Next item"
+
+
+def test_format_assistant_message_does_not_split_digit_hyphen_range_in_item() -> None:
+    result = format_assistant_message(
+        "Options: - Range is 1 - 10 for this setting - Another option"
+    )
+
+    assert "1 - 10" in result
+    assert result == (
+        "shisad: Options:\n\n- Range is 1 - 10 for this setting\n- Another option"
+    )
+
+
 def test_format_assistant_message_does_not_rewrite_fenced_code() -> None:
     result = format_assistant_message("```\nItems: - one - two\n```")
 
     assert result == "shisad: ```\nItems: - one - two\n```"
+
+
+def test_format_assistant_message_skips_normalizer_for_pending_previews() -> None:
+    result = format_assistant_message(
+        "[PENDING CONFIRMATIONS]\n"
+        "Queued for your approval:\n"
+        "1. c-1\n"
+        "   Preview:\n"
+        "     body: - one - two\n\n"
+        "Review all pending: shisad action list",
+        preserve_pending_preview_escapes=True,
+    )
+
+    assert "body: - one - two" in result
 
 
 def test_format_assistant_message_preserves_pending_preview_linebreak_markers() -> None:

@@ -21,14 +21,19 @@ from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
 from shisad.ui.evidence import render_evidence_refs_for_terminal
 
-
 _INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
-_INLINE_LIST_MARKER_RE = re.compile(r"(?<!\n)\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
+_INLINE_LIST_BULLET_CONT_RE = re.compile(
+    r"(?<!\d)\s+(?P<marker>[-*+])\s+(?=\S)"
+)
+_INLINE_LIST_ORDERED_CONT_RE = re.compile(
+    r"\s+(?P<marker>[1-9]\d?[.)])\s+(?=\S)"
+)
 _INLINE_LIST_SUBHEADING_RE = re.compile(
     r"(?P<item_prefix>\n(?:[-*+]|\d+[.)]) [^\n]*?[.!?])\s+"
     r"(?P<heading>[A-Z][^\n:]{1,120}:\n\n?(?:[-*+]|\d+[.)])\s)"
 )
 _MARKDOWN_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_PENDING_BLOCK_START_RE = re.compile(r"^\[PENDING CONFIRMATIONS\]$", re.MULTILINE)
 
 
 def format_user_message(content: str) -> str:
@@ -63,6 +68,8 @@ def _render_assistant_text(
         text,
         preserve_pending_preview_escapes=preserve_pending_preview_escapes,
     )
+    if preserve_pending_preview_escapes and _PENDING_BLOCK_START_RE.search(rendered):
+        return rendered
     return _normalize_inline_markdown_lists(rendered)
 
 
@@ -102,12 +109,21 @@ def _normalize_inline_markdown_list_line(line: str) -> str:
     if first_marker is None:
         return line
 
+    marker = first_marker.group("marker")
+    is_ordered = marker[0].isdigit()
+
     prefix = line[: first_marker.start() + 1].rstrip()
     tail = line[first_marker.start() + 1 :]
-    tail = _INLINE_LIST_MARKER_RE.sub(
+
+    cont_re = _INLINE_LIST_ORDERED_CONT_RE if is_ordered else _INLINE_LIST_BULLET_CONT_RE
+    tail = cont_re.sub(
         lambda match: f"\n{match.group('marker')} ",
         tail,
     ).lstrip()
+
+    if "\n" not in tail:
+        return line
+
     normalized = f"{prefix}\n\n{tail}"
     return _INLINE_LIST_SUBHEADING_RE.sub(_split_inline_list_subheading, normalized)
 
