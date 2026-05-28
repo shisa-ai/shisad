@@ -49,6 +49,24 @@ def test_format_assistant_message_renders_literal_newline_escapes() -> None:
     assert "\\n" not in result
 
 
+def test_format_assistant_message_promotes_inline_bullets_to_markdown_list() -> None:
+    result = format_assistant_message("I can help with: - Read files - Search the web")
+
+    assert result == "shisad: I can help with:\n\n- Read files\n- Search the web"
+
+
+def test_format_assistant_message_keeps_non_list_hyphens_inline() -> None:
+    result = format_assistant_message("Range: 1 - 2 and alpha - beta")
+
+    assert result == "shisad: Range: 1 - 2 and alpha - beta"
+
+
+def test_format_assistant_message_does_not_rewrite_fenced_code() -> None:
+    result = format_assistant_message("```\nItems: - one - two\n```")
+
+    assert result == "shisad: ```\nItems: - one - two\n```"
+
+
 def test_format_assistant_message_preserves_pending_preview_linebreak_markers() -> None:
     result = format_assistant_message(
         "[PENDING CONFIRMATIONS]\n"

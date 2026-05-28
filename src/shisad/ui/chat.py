@@ -22,6 +22,15 @@ from textual.widgets import Footer, Header, Markdown, Static, TextArea
 from shisad.ui.evidence import render_evidence_refs_for_terminal
 
 
+_INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
+_INLINE_LIST_MARKER_RE = re.compile(r"(?<!\n)\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
+_INLINE_LIST_SUBHEADING_RE = re.compile(
+    r"(?P<item_prefix>\n(?:[-*+]|\d+[.)]) [^\n]*?[.!?])\s+"
+    r"(?P<heading>[A-Z][^\n:]{1,120}:\n\n?(?:[-*+]|\d+[.)])\s)"
+)
+_MARKDOWN_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
 def format_user_message(content: str) -> str:
     """Format a user message for display in the chat log."""
     text = content.strip()
@@ -50,10 +59,62 @@ def _render_assistant_text(
     text = content.strip()
     if not text:
         return "(no response)"
-    return render_evidence_refs_for_terminal(
+    rendered = render_evidence_refs_for_terminal(
         text,
         preserve_pending_preview_escapes=preserve_pending_preview_escapes,
     )
+    return _normalize_inline_markdown_lists(rendered)
+
+
+def _normalize_inline_markdown_lists(text: str) -> str:
+    """Promote common single-line markdown-ish lists to real Markdown lists.
+
+    Some provider responses arrive as one wrapped paragraph like
+    ``Things I can do: - read files - search the web``. Textual's Markdown
+    renderer treats that as a paragraph, not a list. Keep the transformation
+    narrow: only rewrite lines whose list starts immediately after a colon,
+    and leave fenced code blocks untouched.
+    """
+    if not text or ":" not in text:
+        return text
+
+    trailing_newline = text.endswith("\n")
+    normalized_lines: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _MARKDOWN_FENCE_RE.match(line):
+            in_fence = not in_fence
+            normalized_lines.append(line)
+            continue
+        if in_fence:
+            normalized_lines.append(line)
+            continue
+        normalized_lines.append(_normalize_inline_markdown_list_line(line))
+
+    normalized = "\n".join(normalized_lines)
+    if trailing_newline:
+        normalized += "\n"
+    return normalized
+
+
+def _normalize_inline_markdown_list_line(line: str) -> str:
+    first_marker = _INLINE_LIST_LEAD_RE.search(line)
+    if first_marker is None:
+        return line
+
+    prefix = line[: first_marker.start() + 1].rstrip()
+    tail = line[first_marker.start() + 1 :]
+    tail = _INLINE_LIST_MARKER_RE.sub(
+        lambda match: f"\n{match.group('marker')} ",
+        tail,
+    ).lstrip()
+    normalized = f"{prefix}\n\n{tail}"
+    return _INLINE_LIST_SUBHEADING_RE.sub(_split_inline_list_subheading, normalized)
+
+
+def _split_inline_list_subheading(match: re.Match[str]) -> str:
+    heading = match.group("heading").replace(":\n", ":\n\n", 1)
+    return f"{match.group('item_prefix')}\n\n{heading}"
 
 
 def _format_error(content: str) -> str:
