@@ -16,6 +16,7 @@ from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.core.url_parsing import safe_url_hostname
+from shisad.daemon.handlers._impl_session import _browser_runtime_unavailable_rejection_reason
 from shisad.daemon.handlers._mixin_typing import (
     HandlerMixinBase,
 )
@@ -135,6 +136,20 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         tool_name = self._registry.resolve_name(tool_name_value) or ToolName(tool_name_value)
         tool_def = self._registry.get_tool(tool_name)
         if tool_def is None:
+            suppressed_browser_reason = _browser_runtime_unavailable_rejection_reason(
+                getattr(getattr(self, "_services", None), "browser_status", {}),
+                tool_name=tool_name,
+            )
+            if suppressed_browser_reason:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="control_api",
+                        tool_name=tool_name,
+                        reason=suppressed_browser_reason,
+                    )
+                )
+                raise ValueError(f"browser runtime unavailable: {suppressed_browser_reason}")
             mcp_manager = getattr(self, "_mcp_manager", None)
             if mcp_manager is not None:
                 startup_error_lookup = getattr(mcp_manager, "startup_error_for_tool", None)

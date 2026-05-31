@@ -1634,6 +1634,41 @@ async def test_i1_tool_execute_surfaces_mcp_startup_registration_errors(
     )
 
 
+@pytest.mark.asyncio
+async def test_gh47_tool_execute_reports_suppressed_browser_runtime_reason() -> None:
+    harness = _McpHarness(payload={}, register_tool=False)
+    harness._services = SimpleNamespace(
+        browser_status={
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": ["browser_command_unconfigured"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="browser runtime unavailable"):
+        await HandlerImplementation.do_tool_execute(
+            harness,  # type: ignore[arg-type]
+            {
+                "session_id": str(harness.session_id),
+                "tool_name": "browser.click",
+                "command": ["browser.click"],
+                "arguments": {"target": "continue", "description": "continue"},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+    assert harness._mcp_manager.calls == []
+    assert any(
+        isinstance(event, ToolRejected)
+        and event.tool_name == ToolName("browser.click")
+        and event.reason == (
+            "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
+        )
+        for event in harness._event_bus.events
+    )
+
+
 # ---------------------------------------------------------------------------
 # MCP-H1..H5: coverage for MCP security gates.
 # ---------------------------------------------------------------------------
