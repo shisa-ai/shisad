@@ -288,6 +288,41 @@ def _browser_toolkit_kwargs(
     }
 
 
+def _browser_runtime_unavailable_planner_note(browser_status: dict[str, Any]) -> str:
+    if not bool(browser_status.get("enabled")) or browser_status.get("status") == "ok":
+        return ""
+    status = str(browser_status.get("status") or "unknown")
+    problems = [
+        str(item).strip()
+        for item in browser_status.get("problems", [])
+        if str(item).strip()
+    ]
+    protocol = browser_status.get("protocol")
+    if isinstance(protocol, dict):
+        reason = str(protocol.get("reason") or "").strip()
+        if reason and reason not in problems:
+            problems.append(reason)
+    reason_text = ", ".join(problems) if problems else "unknown_browser_runtime_problem"
+    return (
+        f"Browser tools are unavailable because runtime status is {status}: "
+        f"{reason_text}. Browser navigation tools are not registered; use "
+        "web.search/web.fetch when search or fetch can satisfy the request, and "
+        "tell the user about this browser runtime configuration problem if browser "
+        "navigation is required. Ask the user to configure SHISAD_BROWSER_COMMAND "
+        "or run `shisad doctor check --component browser`."
+    )
+
+
+def _browser_status_with_planner_note(browser_status: dict[str, Any]) -> dict[str, Any]:
+    status = dict(browser_status)
+    planner_note = _browser_runtime_unavailable_planner_note(status)
+    if planner_note:
+        status["planner_note"] = planner_note
+    else:
+        status.pop("planner_note", None)
+    return status
+
+
 async def _browser_startup_status(
     *,
     config: DaemonConfig,
@@ -296,15 +331,17 @@ async def _browser_startup_status(
     allowed_domains: list[str],
 ) -> dict[str, Any]:
     if not config.browser_enabled:
-        return {
-            "enabled": False,
-            "command": "",
-            "allowed_domains": list(allowed_domains),
-            "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
-            "problems": [],
-            "protocol": {"supported": False, "probe": "", "reason": ""},
-            "status": "disabled",
-        }
+        return _browser_status_with_planner_note(
+            {
+                "enabled": False,
+                "command": "",
+                "allowed_domains": list(allowed_domains),
+                "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
+                "problems": [],
+                "protocol": {"supported": False, "probe": "", "reason": ""},
+                "status": "disabled",
+            }
+        )
     try:
         from shisad.executors.browser import BrowserToolkit
 
@@ -316,18 +353,24 @@ async def _browser_startup_status(
                 allowed_domains=allowed_domains,
             )
         )
-        return dict(await toolkit.doctor_status())
+        return _browser_status_with_planner_note(dict(await toolkit.doctor_status()))
     except Exception:
         logger.exception("Browser startup health check failed")
-        return {
-            "enabled": True,
-            "command": config.browser_command,
-            "allowed_domains": list(allowed_domains),
-            "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
-            "problems": ["browser_doctor_failed"],
-            "protocol": {"supported": False, "probe": "", "reason": "browser_doctor_failed"},
-            "status": "misconfigured",
-        }
+        return _browser_status_with_planner_note(
+            {
+                "enabled": True,
+                "command": config.browser_command,
+                "allowed_domains": list(allowed_domains),
+                "require_hardened_isolation": bool(config.browser_require_hardened_isolation),
+                "problems": ["browser_doctor_failed"],
+                "protocol": {
+                    "supported": False,
+                    "probe": "",
+                    "reason": "browser_doctor_failed",
+                },
+                "status": "misconfigured",
+            }
+        )
 
 
 def _browser_surface_available(browser_status: dict[str, Any]) -> bool:
@@ -879,10 +922,16 @@ class DaemonServices:
             )
             browser_surface_enabled = _browser_surface_available(browser_status)
             if config.browser_enabled and not browser_surface_enabled:
+                planner_note = str(browser_status.get("planner_note") or "").strip()
+                problems = ", ".join(
+                    str(item) for item in browser_status.get("problems", [])
+                ) or "none"
                 logger.warning(
-                    "Browser tools not registered because browser runtime is %s: %s",
-                    browser_status.get("status", "unknown"),
-                    ", ".join(str(item) for item in browser_status.get("problems", [])) or "none",
+                    planner_note
+                    or (
+                        "Browser tools not registered because browser runtime is "
+                        f"{browser_status.get('status', 'unknown')}: {problems}"
+                    )
                 )
             registry, alarm_tool = _build_tool_registry(
                 event_bus,

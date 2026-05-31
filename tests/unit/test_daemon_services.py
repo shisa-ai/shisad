@@ -1635,6 +1635,12 @@ async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
     try:
         assert services.browser_status["status"] == "misconfigured"
         assert "browser_command_unconfigured" in services.browser_status["problems"]
+        assert (
+            "Browser tools are unavailable because runtime status is misconfigured"
+            in services.browser_status["planner_note"]
+        )
+        assert "browser_command_unconfigured" in services.browser_status["planner_note"]
+        assert "web.search/web.fetch" in services.browser_status["planner_note"]
         assert services.registry.get_tool(ToolName("browser.navigate")) is None
         assert services.registry.get_tool(ToolName("browser.read_page")) is None
     finally:

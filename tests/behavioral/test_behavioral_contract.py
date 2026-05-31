@@ -6827,6 +6827,57 @@ async def test_contract_web_fetch_routes_to_confirmation_not_lockdown(
 
 
 @pytest.mark.asyncio
+async def test_gh47_misconfigured_browser_runtime_is_visible_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+    captured_tool_names: list[str] = []
+
+    def _misconfigure_browser(config: DaemonConfig) -> None:
+        config.browser_command = ""
+
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        prestart=_misconfigure_browser,
+    ) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            for tool in tools or []:
+                function = tool.get("function")
+                if isinstance(function, dict):
+                    captured_tool_names.append(str(function.get("name", "")))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "which browser tools are available?"},
+        )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert all(not name.startswith("browser_") for name in captured_tool_names)
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+    assert (
+        "Browser tools are unavailable because runtime status is misconfigured"
+        in trusted_section
+    )
+    assert "browser_command_unconfigured" in trusted_section
+    assert "web.search/web.fetch" in trusted_section
+
+
+@pytest.mark.asyncio
 async def test_contract_browser_navigate_executes_and_returns_page(
     contract_harness: ContractHarness,
 ) -> None:

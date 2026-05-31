@@ -2324,6 +2324,7 @@ def _build_planner_tool_context(
     capabilities: set[Capability],
     tool_allowlist: set[ToolName] | None,
     trust_level: str,
+    runtime_availability_notes: Sequence[str] = (),
 ) -> str:
     visible_tools = [
         tool for tool in registry_tools if tool_allowlist is None or tool.name in tool_allowlist
@@ -2379,6 +2380,11 @@ def _build_planner_tool_context(
         )
     if alias_note:
         lines.append(alias_note)
+    runtime_notes = [note.strip() for note in runtime_availability_notes if note.strip()]
+    if runtime_notes:
+        lines.append("Runtime availability notes:")
+        for note in runtime_notes:
+            lines.append(f"- {note}")
     if not enabled_tools:
         lines.append("Enabled tools: none")
         if _shows_trusted_tool_context(trust_level) and disabled_tools:
@@ -2421,6 +2427,13 @@ def _build_planner_tool_context(
         )
     lines.append("If no tool is needed, respond conversationally without calling tools.")
     return "\n".join(lines)
+
+
+def _planner_runtime_availability_notes(browser_status: Mapping[str, Any]) -> tuple[str, ...]:
+    browser_note = str(browser_status.get("planner_note") or "").strip()
+    if not browser_note:
+        return ()
+    return (browser_note,)
 
 
 def _planner_manifest_includes_report_anomaly(
@@ -8662,6 +8675,9 @@ class SessionImplMixin(HandlerMixinBase):
             capabilities=effective_caps,
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
+            runtime_availability_notes=_planner_runtime_availability_notes(
+                getattr(self._services, "browser_status", {})
+            ),
         )
         task_ledger_snapshot = None
         if not zero_context_session:
