@@ -30,6 +30,21 @@ def _payload_taint_labels(payload: Mapping[str, Any]) -> set[TaintLabel]:
     return labels
 
 
+def _browser_audit_details(tool_name: ToolName, payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not str(tool_name).startswith("browser."):
+        return {}
+    details = payload.get("details")
+    if not isinstance(details, Mapping):
+        return {}
+    safe_details: dict[str, Any] = {}
+    for key, value in details.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, str | int | float | bool) or value is None:
+            safe_details[key] = value
+    return safe_details
+
+
 async def execute_structured_tool(
     *,
     session_id: SessionId,
@@ -45,13 +60,15 @@ async def execute_structured_tool(
 ) -> StructuredToolExecutionResult:
     success = bool(payload.get("ok", False))
     event_fields = dict(approval_event_fields or {})
+    error = "" if success else str(payload.get("error", default_error))
+    details = {} if success else _browser_audit_details(tool_name, payload)
     if not success:
         await emit_event(
             ToolRejected(
                 session_id=session_id,
                 actor=actor,
                 tool_name=tool_name,
-                reason=str(payload.get("error", default_error)),
+                reason=error,
                 **event_fields,
             )
         )
@@ -61,6 +78,8 @@ async def execute_structured_tool(
             actor=actor,
             tool_name=tool_name,
             success=success,
+            error=error,
+            details=details,
             **event_fields,
         )
     )

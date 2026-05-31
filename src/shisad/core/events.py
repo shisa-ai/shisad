@@ -221,6 +221,7 @@ class ToolExecuted(BaseEvent):
     tool_name: ToolName
     success: bool = True
     error: str = ""
+    details: dict[str, Any] = Field(default_factory=dict)
     approval_session_id: str = ""
     approval_task_envelope_id: str = ""
     approval_confirmation_id: str = ""
