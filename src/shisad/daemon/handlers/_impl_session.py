@@ -4293,6 +4293,17 @@ def _flatten_rejection_reason_codes(reasons: list[str]) -> list[str]:
     return codes
 
 
+def _browser_runtime_unavailable_rejection_reason(browser_status: Mapping[str, Any]) -> str:
+    status = str(browser_status.get("status") or "unavailable").strip() or "unavailable"
+    problems = [
+        str(item).strip()
+        for item in browser_status.get("problems", [])
+        if str(item).strip()
+    ]
+    reason = problems[0] if problems else "unknown_browser_runtime_problem"
+    return f"browser_runtime_unavailable:{status}:{reason}"
+
+
 def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
     for vote in votes:
         if str(getattr(vote, "voter", "")) != "ActionMonitorVoter":
@@ -4312,6 +4323,20 @@ def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
     codes = _flatten_rejection_reason_codes(reasons)
+    browser_runtime_reason = next(
+        (code for code in codes if code.startswith("browser_runtime_unavailable:")),
+        "",
+    )
+    if browser_runtime_reason:
+        parts = browser_runtime_reason.split(":", 2)
+        status = parts[1] if len(parts) > 1 and parts[1] else "unavailable"
+        problem = parts[2] if len(parts) > 2 and parts[2] else ""
+        problem_suffix = f": {problem}" if problem else ""
+        return (
+            "I couldn't use browser tools because browser runtime status is "
+            f"{status}{problem_suffix}. I can use web.search/web.fetch when search "
+            "or fetch can satisfy the request."
+        )
     if any(
         code
         in {
@@ -9454,6 +9479,42 @@ class SessionImplMixin(HandlerMixinBase):
                     ),
                 )
             )
+            if (
+                proposal_tool_name.startswith("browser.")
+                and self._registry.get_tool(canonical_proposal_tool) is None
+            ):
+                final_reason = _browser_runtime_unavailable_rejection_reason(
+                    getattr(self._services, "browser_status", {})
+                )
+                rejected += 1
+                rejection_reasons_for_user.append(final_reason)
+                public_arguments = _redact_sensitive_browser_public_arguments(
+                    proposal.tool_name,
+                    proposal.arguments,
+                    turn_sensitive_browser_values,
+                )
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="policy_loop",
+                        tool_name=proposal.tool_name,
+                        reason=final_reason,
+                    )
+                )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(
+                        TraceToolCall(
+                            tool_name=str(proposal.tool_name),
+                            arguments=dict(public_arguments),
+                            pep_decision="skipped:unregistered_browser_tool",
+                            monitor_decision="skipped:unregistered_browser_tool",
+                            control_plane_decision="skipped:unregistered_browser_tool",
+                            final_decision="reject",
+                            executed=False,
+                            execution_success=False,
+                        )
+                    )
+                continue
             proposal_arguments = await self._prepare_browser_tool_arguments(
                 session=session,
                 tool_name=canonical_proposal_tool,

@@ -1600,6 +1600,25 @@ def test_gh47_browser_runtime_note_uses_specific_remediation() -> None:
     assert "SHISAD_BROWSER_COMMAND" not in note
 
 
+def test_gh47_browser_runtime_note_keeps_mixed_remediation_paths() -> None:
+    note = _browser_runtime_unavailable_planner_note(
+        {
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": [
+                "browser_hardened_wildcard_scope_unsupported",
+                "browser_command_unconfigured",
+            ],
+            "protocol": {"supported": False, "probe": "", "reason": ""},
+        }
+    )
+
+    assert "browser_hardened_wildcard_scope_unsupported" in note
+    assert "browser_command_unconfigured" in note
+    assert "SHISAD_BROWSER_COMMAND" in note
+    assert "browser sandbox/isolation settings" in note
+
+
 async def _build_browser_registry_services(config: DaemonConfig) -> DaemonServices:
     return await DaemonServices.build(config)
 
