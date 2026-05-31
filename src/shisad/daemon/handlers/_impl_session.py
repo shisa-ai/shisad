@@ -4308,6 +4308,8 @@ def _browser_runtime_unavailable_rejection_reason(
     *,
     tool_name: str | ToolName = "",
 ) -> str:
+    if not browser_status:
+        return ""
     if tool_name:
         canonical_browser_tool_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
         if canonical_browser_tool_name not in _BROWSER_RUNTIME_GATED_TOOL_NAMES:

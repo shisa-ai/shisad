@@ -2224,9 +2224,10 @@ class HandlerImplementation(
         except (TypeError, ValueError):
             return ""
         if isinstance(payload, dict):
-            reason = str(payload.get("error", "")).strip()
-            if reason:
-                return reason
+            for key in ("error", "reason", "status_reason"):
+                reason = str(payload.get(key, "")).strip()
+                if reason:
+                    return reason
         return ""
 
     def _tool_execute_result_from_execution(
@@ -2253,7 +2254,8 @@ class HandlerImplementation(
             reason=(
                 ""
                 if success
-                else self._structured_tool_reason(tool_output) or execution.error
+                else HandlerImplementation._structured_tool_reason(tool_output)
+                or execution.error
             ),
             checkpoint_id=execution.checkpoint_id or "",
             origin=origin.model_dump(mode="json"),
