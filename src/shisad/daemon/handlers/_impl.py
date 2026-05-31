@@ -3459,6 +3459,25 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=False,
                 checkpoint_id=checkpoint_id,
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=self._sanitize_tool_output_text(
+                            json.dumps(
+                                {
+                                    "ok": False,
+                                    "error": suppressed_browser_reason,
+                                },
+                                ensure_ascii=True,
+                            )
+                        ),
+                        success=False,
+                        taint_labels=label_tool_output(str(tool_name)),
+                        arguments=dict(arguments),
+                    ),
+                ),
             )
 
         if tool_name == "report_anomaly":

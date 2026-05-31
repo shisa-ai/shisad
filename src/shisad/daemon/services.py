@@ -953,6 +953,10 @@ class DaemonServices:
                 browser_destinations = [
                     item.strip() for item in config.web_allowed_domains if item.strip()
                 ]
+            if not browser_destinations:
+                browser_destinations = [
+                    rule.host.strip() for rule in policy_loader.policy.egress if rule.host.strip()
+                ]
             browser_status = await _browser_startup_status(
                 config=config,
                 sandbox=sandbox,

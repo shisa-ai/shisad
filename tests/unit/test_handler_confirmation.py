@@ -230,6 +230,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         *,
         allow_amendment: bool = False,
         execute_success: bool = True,
+        execution_error: str = "",
     ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
@@ -265,6 +266,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
         self._evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
         self._execute_success = execute_success
+        self._execution_error = execution_error
         self.persist_calls = 0
         self._pep = PEP(
             PolicyBundle(default_require_confirmation=False),
@@ -346,10 +348,16 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 ),
                 taint_labels={TaintLabel.USER_REVIEWED},
             )
+        elif not self._execute_success and self._execution_error:
+            tool_output = SimpleNamespace(
+                content=json.dumps({"ok": False, "error": self._execution_error}),
+                taint_labels=set(),
+                success=False,
+            )
         return SimpleNamespace(
             success=self._execute_success,
             checkpoint_id=None,
-            tool_output=tool_output if self._execute_success else None,
+            tool_output=tool_output if (self._execute_success or self._execution_error) else None,
         )
 
     @staticmethod
@@ -2099,6 +2107,33 @@ async def test_m4_failed_confirmed_promote_does_not_endorse_artifact(tmp_path) -
         PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=SessionId("s-1")),
     )
     assert decision.kind.value == "require_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_gh47_confirmation_preserves_runtime_unavailable_execution_reason(
+    tmp_path,
+) -> None:
+    reason = "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
+    harness = _ConfirmationImplHarness(
+        tmp_path,
+        execute_success=False,
+        execution_error=reason,
+    )
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("browser.click")
+    pending.arguments = {"target": "continue", "description": "continue"}
+    pending.approval_envelope = _software_approval_envelope(tool_name=pending.tool_name)
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["status"] == "failed"
+    assert result["status_reason"] == reason
+    assert harness._pending_actions["c-1"].status_reason == reason
 
 
 @pytest.mark.asyncio

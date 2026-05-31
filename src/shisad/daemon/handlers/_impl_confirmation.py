@@ -130,6 +130,22 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
     }
 
 
+def _confirmed_execution_failure_reason(record: Any) -> str:
+    if record is None or bool(getattr(record, "success", False)):
+        return ""
+    try:
+        payload = json.loads(str(getattr(record, "content", "")))
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("error", "reason", "status_reason"):
+        reason = str(payload.get(key, "")).strip()
+        if reason:
+            return reason
+    return ""
+
+
 def _confirmed_tool_output_transcript_content(*, tool_name: str, content: str) -> str:
     canonical_name = canonical_tool_name(tool_name, warn_on_alias=False)
     if canonical_name not in _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES:
@@ -1774,8 +1790,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     )
                 )
         pending.status = "approved" if success else "failed"
+        execution_failure_reason = (
+            "" if success else _confirmed_execution_failure_reason(tool_output)
+        )
         pending.status_reason = (
-            promote_followup_reason or str(params.get("reason", "")).strip() or pending.status
+            promote_followup_reason
+            or execution_failure_reason
+            or str(params.get("reason", "")).strip()
+            or pending.status
         )
         self._sync_task_confirmation_status(pending)
         self._record_task_confirmation_outcome(pending, success=success)

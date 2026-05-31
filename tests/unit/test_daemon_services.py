@@ -1652,6 +1652,42 @@ async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
 
 
 @pytest.mark.asyncio
+async def test_gh47_browser_health_uses_policy_egress_fallback_scope(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    wrapper = tmp_path / "shisad-browser-wrapper"
+    _write_browser_wrapper(wrapper)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        'egress:\n  - host: "*.browser.example"\n',
+        encoding="utf-8",
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        browser_enabled=True,
+        browser_command=str(wrapper),
+        browser_require_hardened_isolation=True,
+        web_allowed_domains=[],
+        browser_allowed_domains=[],
+    )
+    services = await _build_browser_registry_services(config)
+    try:
+        assert services.browser_status["status"] == "misconfigured"
+        assert "*.browser.example" in services.browser_status["allowed_domains"]
+        assert (
+            "browser_hardened_wildcard_scope_unsupported"
+            in services.browser_status["problems"]
+        )
+        assert services.registry.get_tool(ToolName("browser.navigate")) is None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
