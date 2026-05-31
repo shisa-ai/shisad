@@ -4468,6 +4468,8 @@ def _coerce_blocked_action_response_text(
     if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
         return response_text
     codes = _flatten_rejection_reason_codes(rejection_reasons)
+    if any(code.startswith("browser_runtime_unavailable:") for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
     if any(code == "resource:outside_workspace_root" for code in codes):
         return _blocked_action_feedback(rejection_reasons)
     if any(code == "pep:resource_authorization_failed" for code in codes):

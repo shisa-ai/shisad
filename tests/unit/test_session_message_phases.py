@@ -2810,6 +2810,8 @@ def _finalize_execution_result(
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
     provider_response_trusted_origin: str = "",
+    rejected: int = 0,
+    rejection_reasons_for_user: list[str] | None = None,
 ) -> SessionMessageExecutionResult:
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": content},
@@ -2868,10 +2870,10 @@ def _finalize_execution_result(
     )
     return SessionMessageExecutionResult(
         planner_dispatch=planner_dispatch,
-        rejected=0,
+        rejected=rejected,
         pending_confirmation=pending_confirmation,
         executed=len(tool_outputs),
-        rejection_reasons_for_user=[],
+        rejection_reasons_for_user=list(rejection_reasons_for_user or []),
         checkpoint_ids=[],
         pending_confirmation_ids=list(pending_confirmation_ids or []),
         executed_tool_outputs=tool_outputs,
@@ -3226,6 +3228,27 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     assert any(
         "same turn's tool outputs" in message.content for message in trace_turn.messages_sent
     )
+
+
+@pytest.mark.asyncio
+async def test_gh47_finalize_response_overrides_browser_runtime_rejection_prose() -> None:
+    harness = _FinalizeEvidenceHarness()
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Clicking the browser control.",
+        rejected=1,
+        rejection_reasons_for_user=[
+            "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
+        ],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "browser runtime status is misconfigured" in text
+    assert "browser_command_unconfigured" in text
+    assert "web.search/web.fetch" in text
+    assert "Clicking the browser control" not in text
 
 
 @pytest.mark.asyncio
