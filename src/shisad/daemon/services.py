@@ -303,13 +303,48 @@ def _browser_runtime_unavailable_planner_note(browser_status: dict[str, Any]) ->
         if reason and reason not in problems:
             problems.append(reason)
     reason_text = ", ".join(problems) if problems else "unknown_browser_runtime_problem"
+    problem_set = set(problems)
+    if "browser_command_unconfigured" in problem_set:
+        remediation = (
+            "Ask the user to configure SHISAD_BROWSER_COMMAND or run "
+            "`shisad doctor check --component browser`."
+        )
+    elif problem_set.intersection(
+        {"browser_command_unavailable", "browser_command_protocol_incompatible"}
+    ):
+        remediation = (
+            "Ask the user to check the browser command and wrapper protocol, then "
+            "run `shisad doctor check --component browser`."
+        )
+    elif problem_set.intersection(
+        {
+            "browser_cache_not_writable",
+            "browser_dependency_unavailable",
+            "browser_node_modules_unavailable",
+        }
+    ):
+        remediation = (
+            "Ask the user to fix browser runtime dependencies or cache permissions, "
+            "then run `shisad doctor check --component browser`."
+        )
+    elif problem_set.intersection(
+        {
+            "browser_hardened_wildcard_scope_unsupported",
+            "browser_runtime_isolation_unavailable",
+        }
+    ):
+        remediation = (
+            "Ask the user to fix browser sandbox/isolation settings or browser "
+            "allowed-domain scope, then run `shisad doctor check --component browser`."
+        )
+    else:
+        remediation = "Ask the user to run `shisad doctor check --component browser`."
     return (
         f"Browser tools are unavailable because runtime status is {status}: "
         f"{reason_text}. Browser navigation tools are not registered; use "
         "web.search/web.fetch when search or fetch can satisfy the request, and "
         "tell the user about this browser runtime configuration problem if browser "
-        "navigation is required. Ask the user to configure SHISAD_BROWSER_COMMAND "
-        "or run `shisad doctor check --component browser`."
+        f"navigation is required. {remediation}"
     )
 
 

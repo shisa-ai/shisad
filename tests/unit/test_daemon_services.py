@@ -23,6 +23,7 @@ from shisad.core.types import Capability, CredentialRef, SessionId, ToolName, Us
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.services import (
     DaemonServices,
+    _browser_runtime_unavailable_planner_note,
     _build_provider_diagnostics,
     _build_tool_registry,
     _key_gated_acceptance_matrix,
@@ -1582,6 +1583,21 @@ def test_daemon_config_preserves_ipv6_loopback_approval_origin(tmp_path) -> None
     assert config.approval_rp_id == "::1"
     assert config.approval_bind_host == "::1"
     assert config.approval_bind_port == 8787
+
+
+def test_gh47_browser_runtime_note_uses_specific_remediation() -> None:
+    note = _browser_runtime_unavailable_planner_note(
+        {
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": ["browser_runtime_isolation_unavailable"],
+            "protocol": {"supported": False, "probe": "", "reason": ""},
+        }
+    )
+
+    assert "browser_runtime_isolation_unavailable" in note
+    assert "browser sandbox/isolation settings" in note
+    assert "SHISAD_BROWSER_COMMAND" not in note
 
 
 async def _build_browser_registry_services(config: DaemonConfig) -> DaemonServices:

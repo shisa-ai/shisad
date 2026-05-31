@@ -2380,7 +2380,11 @@ def _build_planner_tool_context(
         )
     if alias_note:
         lines.append(alias_note)
-    runtime_notes = [note.strip() for note in runtime_availability_notes if note.strip()]
+    runtime_notes = (
+        [note.strip() for note in runtime_availability_notes if note.strip()]
+        if _shows_trusted_tool_context(trust_level)
+        else []
+    )
     if runtime_notes:
         lines.append("Runtime availability notes:")
         for note in runtime_notes:
