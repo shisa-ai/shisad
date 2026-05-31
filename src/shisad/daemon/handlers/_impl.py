@@ -1316,6 +1316,7 @@ class ApprovedToolExecutionResult:
     checkpoint_id: str | None = None
     tool_output: ToolOutputRecord | None = None
     sandbox_result: SandboxResult | None = None
+    error: str = ""
 
 
 class HandlerImplementation(
@@ -2249,7 +2250,11 @@ class HandlerImplementation(
             exit_code=0 if success else 1,
             stdout=tool_output.content if tool_output is not None else "",
             stderr="",
-            reason="" if success else self._structured_tool_reason(tool_output),
+            reason=(
+                ""
+                if success
+                else self._structured_tool_reason(tool_output) or execution.error
+            ),
             checkpoint_id=execution.checkpoint_id or "",
             origin=origin.model_dump(mode="json"),
         )
@@ -3375,7 +3380,7 @@ class HandlerImplementation(
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
-            return ApprovedToolExecutionResult(success=False)
+            return ApprovedToolExecutionResult(success=False, error="session_missing")
 
         tool_name = ToolName(canonical_tool_name(str(tool_name), warn_on_alias=False))
         origin = self._origin_for(
@@ -3459,6 +3464,7 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=False,
                 checkpoint_id=checkpoint_id,
+                error=suppressed_browser_reason,
                 tool_output=HandlerImplementation._with_tool_output_ingress(
                     self,
                     session=session,
@@ -3916,12 +3922,23 @@ class HandlerImplementation(
             )
 
         if tool is None:
+            tool_unavailable_reason = "tool_unavailable"
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    reason=tool_unavailable_reason,
+                    **approval_event_fields,
+                )
+            )
             await self._event_bus.publish(
                 ToolExecuted(
                     session_id=sid,
                     actor="tool_runtime",
                     tool_name=tool_name,
                     success=False,
+                    error=tool_unavailable_reason,
                     **approval_event_fields,
                 )
             )
@@ -3934,6 +3951,7 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=False,
                 checkpoint_id=checkpoint_id,
+                error=tool_unavailable_reason,
             )
 
         sandbox_result = await self._execute_via_sandbox(

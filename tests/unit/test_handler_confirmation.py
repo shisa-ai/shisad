@@ -231,6 +231,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         allow_amendment: bool = False,
         execute_success: bool = True,
         execution_error: str = "",
+        execution_error_tool_output: bool = True,
     ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
@@ -267,6 +268,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
         self._execute_success = execute_success
         self._execution_error = execution_error
+        self._execution_error_tool_output = execution_error_tool_output
         self.persist_calls = 0
         self._pep = PEP(
             PolicyBundle(default_require_confirmation=False),
@@ -348,7 +350,11 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 ),
                 taint_labels={TaintLabel.USER_REVIEWED},
             )
-        elif not self._execute_success and self._execution_error:
+        elif (
+            not self._execute_success
+            and self._execution_error
+            and self._execution_error_tool_output
+        ):
             tool_output = SimpleNamespace(
                 content=json.dumps({"ok": False, "error": self._execution_error}),
                 taint_labels=set(),
@@ -358,6 +364,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             success=self._execute_success,
             checkpoint_id=None,
             tool_output=tool_output if (self._execute_success or self._execution_error) else None,
+            error=self._execution_error if not self._execute_success else "",
         )
 
     @staticmethod
@@ -2134,6 +2141,32 @@ async def test_gh47_confirmation_preserves_runtime_unavailable_execution_reason(
     assert result["status"] == "failed"
     assert result["status_reason"] == reason
     assert harness._pending_actions["c-1"].status_reason == reason
+
+
+@pytest.mark.asyncio
+async def test_gh47_confirmation_preserves_unstructured_execution_error(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(
+        tmp_path,
+        execute_success=False,
+        execution_error="tool_unavailable",
+        execution_error_tool_output=False,
+    )
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "reason": "planner_action_resolve",
+        }
+    )
+
+    assert result["confirmed"] is False
+    assert result["status_reason"] == "tool_unavailable"
+    assert result["status_reason"] != "planner_action_resolve"
 
 
 @pytest.mark.asyncio

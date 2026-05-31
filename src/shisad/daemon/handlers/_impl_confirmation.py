@@ -1791,7 +1791,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
         pending.status = "approved" if success else "failed"
         execution_failure_reason = (
-            "" if success else _confirmed_execution_failure_reason(tool_output)
+            ""
+            if success
+            else (
+                _confirmed_execution_failure_reason(tool_output)
+                or str(getattr(execution_result, "error", "")).strip()
+            )
         )
         pending.status_reason = (
             promote_followup_reason

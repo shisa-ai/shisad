@@ -1290,6 +1290,33 @@ async def test_gh47_confirmed_browser_tool_rejects_when_runtime_suppressed() -> 
 
 
 @pytest.mark.asyncio
+async def test_gh47_execute_approved_action_reports_unavailable_unregistered_tool() -> None:
+    harness = _McpHarness(payload={}, register_tool=False)
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap"},
+        capabilities=set(),
+        approval_actor="human_confirmation",
+    )
+
+    assert result.success is False
+    assert result.error == "tool_unavailable"
+    rejected_events = [
+        event for event in harness._event_bus.events if isinstance(event, ToolRejected)
+    ]
+    executed_events = [
+        event for event in harness._event_bus.events if isinstance(event, ToolExecuted)
+    ]
+    assert rejected_events[-1].reason == "tool_unavailable"
+    assert executed_events[-1].error == "tool_unavailable"
+    assert harness._control_plane.results == [False]
+
+
+@pytest.mark.asyncio
 async def test_i2_execute_approved_action_sanitizes_mcp_prompt_injection_and_preserves_taint() -> (
     None
 ):
