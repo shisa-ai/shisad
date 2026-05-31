@@ -205,6 +205,16 @@ _POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
 _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _PAGE_TITLE_METADATA_MAX_CHARS = 1600
+_BROWSER_RUNTIME_GATED_TOOL_NAMES = frozenset(
+    {
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+        "browser.click",
+        "browser.type_text",
+        "browser.end_session",
+    }
+)
 
 
 def _is_sensitive_browser_type_text_tool(tool_name: ToolName | str) -> bool:
@@ -4293,14 +4303,30 @@ def _flatten_rejection_reason_codes(reasons: list[str]) -> list[str]:
     return codes
 
 
-def _browser_runtime_unavailable_rejection_reason(browser_status: Mapping[str, Any]) -> str:
+def _browser_runtime_unavailable_rejection_reason(
+    browser_status: Mapping[str, Any],
+    *,
+    tool_name: str | ToolName = "",
+) -> str:
+    if tool_name:
+        canonical_browser_tool_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
+        if canonical_browser_tool_name not in _BROWSER_RUNTIME_GATED_TOOL_NAMES:
+            return ""
     status = str(browser_status.get("status") or "unavailable").strip() or "unavailable"
+    if status == "ok":
+        return ""
+    raw_problems = browser_status.get("problems", [])
+    if not isinstance(raw_problems, list | tuple | set | frozenset):
+        raw_problems = [raw_problems]
     problems = [
         str(item).strip()
-        for item in browser_status.get("problems", [])
+        for item in raw_problems
         if str(item).strip()
     ]
-    reason = problems[0] if problems else "unknown_browser_runtime_problem"
+    if status == "disabled" or browser_status.get("enabled") is False:
+        reason = "browser_disabled"
+    else:
+        reason = problems[0] if problems else "unknown_browser_runtime_problem"
     return f"browser_runtime_unavailable:{status}:{reason}"
 
 
@@ -4331,6 +4357,19 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
         parts = browser_runtime_reason.split(":", 2)
         status = parts[1] if len(parts) > 1 and parts[1] else "unavailable"
         problem = parts[2] if len(parts) > 2 and parts[2] else ""
+        if status == "disabled" or problem == "browser_disabled":
+            return (
+                "I couldn't use browser tools because browser tools are disabled "
+                "in this daemon configuration. I can use web.search/web.fetch when "
+                "search or fetch can satisfy the request."
+            )
+        if problem == "unknown_browser_runtime_problem":
+            return (
+                "I couldn't use browser tools because browser runtime status is "
+                f"{status}. The runtime did not report a specific problem. I can "
+                "use web.search/web.fetch when search or fetch can satisfy the "
+                "request."
+            )
         problem_suffix = f": {problem}" if problem else ""
         return (
             "I couldn't use browser tools because browser runtime status is "
@@ -8705,7 +8744,7 @@ class SessionImplMixin(HandlerMixinBase):
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
             runtime_availability_notes=_planner_runtime_availability_notes(
-                getattr(self._services, "browser_status", {})
+                getattr(getattr(self, "_services", None), "browser_status", {})
             ),
         )
         task_ledger_snapshot = None
@@ -9479,13 +9518,15 @@ class SessionImplMixin(HandlerMixinBase):
                     ),
                 )
             )
-            if (
-                proposal_tool_name.startswith("browser.")
-                and self._registry.get_tool(canonical_proposal_tool) is None
+            final_reason = ""
+            if proposal_tool_name.startswith("browser.") and (
+                self._registry.get_tool(canonical_proposal_tool) is None
             ):
                 final_reason = _browser_runtime_unavailable_rejection_reason(
-                    getattr(self._services, "browser_status", {})
+                    getattr(self._services, "browser_status", {}),
+                    tool_name=proposal_tool_name,
                 )
+            if final_reason:
                 rejected += 1
                 rejection_reasons_for_user.append(final_reason)
                 public_arguments = _redact_sensitive_browser_public_arguments(

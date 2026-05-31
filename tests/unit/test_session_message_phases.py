@@ -1158,6 +1158,114 @@ async def test_gh47_suppressed_browser_tool_rejects_before_argument_prep() -> No
 
 
 @pytest.mark.asyncio
+async def test_gh47_suppressed_browser_tool_feedback_handles_disabled_runtime() -> None:
+    harness = _BrowserSuppressedProposalHarness()
+    harness._services.browser_status = {
+        "enabled": False,
+        "status": "disabled",
+        "problems": [],
+    }
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "browser click continue"}
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps=set(),
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="explicit-browser-click",
+        tool_name=ToolName("browser.click"),
+        arguments={"target": "continue", "description": "continue"},
+        reasoning="Execute the user's explicit browser click request.",
+        data_sources=["user_text:explicit_memory_intent"],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Clicking the browser control.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.rejected == 1
+    assert result.executed == 0
+    assert harness.prepare_browser_calls == 0
+    assert result.rejection_reasons_for_user == [
+        "browser_runtime_unavailable:disabled:browser_disabled"
+    ]
+    feedback = impl_session._blocked_action_feedback(result.rejection_reasons_for_user)
+    assert "browser tools are disabled in this daemon configuration" in feedback
+    assert "unknown_browser_runtime_problem" not in feedback
+
+
+def test_gh47_unknown_browser_tool_does_not_claim_runtime_unavailable() -> None:
+    browser_status = {
+        "enabled": True,
+        "status": "misconfigured",
+        "problems": ["browser_command_unconfigured"],
+    }
+
+    assert (
+        impl_session._browser_runtime_unavailable_rejection_reason(
+            browser_status,
+            tool_name="browser.download",
+        )
+        == ""
+    )
+    assert (
+        impl_session._browser_runtime_unavailable_rejection_reason(
+            {"enabled": True, "status": "ok", "problems": []},
+            tool_name="browser.click",
+        )
+        == ""
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("browser_tool_name", ["browser.type_text", "browser-type-text"])
 async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier(
     browser_tool_name: str,

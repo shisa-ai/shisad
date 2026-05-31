@@ -1255,6 +1255,41 @@ async def test_i1_execute_approved_action_uses_upstream_mcp_tool_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh47_confirmed_browser_tool_rejects_when_runtime_suppressed() -> None:
+    harness = _McpHarness(payload={}, register_tool=False)
+    harness._services = SimpleNamespace(
+        browser_status={
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": ["browser_command_unconfigured"],
+        }
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("browser.click"),
+        arguments={"target": "continue", "description": "continue"},
+        capabilities=set(),
+        approval_actor="human_confirmation",
+    )
+
+    assert result.success is False
+    rejected_events = [
+        event for event in harness._event_bus.events if isinstance(event, ToolRejected)
+    ]
+    executed_events = [
+        event for event in harness._event_bus.events if isinstance(event, ToolExecuted)
+    ]
+    assert rejected_events[-1].reason == (
+        "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
+    )
+    assert executed_events[-1].success is False
+    assert harness._control_plane.results == [False]
+
+
+@pytest.mark.asyncio
 async def test_i2_execute_approved_action_sanitizes_mcp_prompt_injection_and_preserves_taint() -> (
     None
 ):

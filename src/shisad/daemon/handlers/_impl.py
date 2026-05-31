@@ -94,7 +94,10 @@ from shisad.daemon.handlers._impl_assistant import AssistantImplMixin
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._impl_dashboard import DashboardImplMixin
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
-from shisad.daemon.handlers._impl_session import SessionImplMixin
+from shisad.daemon.handlers._impl_session import (
+    SessionImplMixin,
+    _browser_runtime_unavailable_rejection_reason,
+)
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import (
@@ -3422,6 +3425,41 @@ class HandlerImplementation(
                 **approval_event_fields,
             )
         )
+
+        suppressed_browser_reason = _browser_runtime_unavailable_rejection_reason(
+            getattr(getattr(self, "_services", None), "browser_status", {}),
+            tool_name=tool_name,
+        )
+        if tool is None and suppressed_browser_reason:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    reason=suppressed_browser_reason,
+                    **approval_event_fields,
+                )
+            )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=False,
+                    error=suppressed_browser_reason,
+                    **approval_event_fields,
+                )
+            )
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=False,
+            )
+            return ApprovedToolExecutionResult(
+                success=False,
+                checkpoint_id=checkpoint_id,
+            )
 
         if tool_name == "report_anomaly":
             payload = AnomalyReportInput.model_validate(arguments)
