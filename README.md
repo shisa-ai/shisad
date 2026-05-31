@@ -51,13 +51,14 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.7.3`: open-thread/topic resume, fuzzy timeline/archive search,
-procedure-experience candidates, and timeline/procedure security hardening on
-top of the structured long-term memory line.
+`v0.7.4`: memory evaluation and reproducibility infrastructure on top of
+`v0.7.3.1` browser/search stabilization, release-process hardening, and
+`v0.7.3` open-thread/topic resume, fuzzy timeline/archive search,
+procedure-experience candidates, and timeline/procedure security hardening.
 
 | Version | Focus |
 |---------|-------|
-| v0.7 | Memory foundation + long-term memory surfaces (latest published: `v0.7.3` open threads, timeline search, and procedural-memory pilot) |
+| v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
@@ -386,6 +387,8 @@ See `AGENTS.md` for full development process, validation matrix, and commit conv
 | `docs/USE-CASES.md` | Prioritized use cases and capability mapping |
 | `docs/ENV-VARS.md` | Environment variable reference |
 | `docs/TOOL-STATUS.md` | Current tool surface snapshot |
+| `docs/memory-evals.md` | Memory evaluation commands, MELT report interpretation, and non-claims |
+| `docs/memory-eval-sut-contract.md` | Versioned `shisad memory sut` protocol for external evaluators |
 | `docs/adr/` | Architectural decision records |
 | `docs/analysis/` | Security case studies and supply chain analysis |
 | `docs/runbooks/` | Operator runbooks (browser setup, incident response, key rotation, rollback, skill revocation) |

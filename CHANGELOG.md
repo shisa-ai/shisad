@@ -11,6 +11,75 @@ Normal releases use semver-style versions; exceptional follow-up patch lines
 may use PEP 440-compatible four-segment versions when the release checklist
 records that choice.
 
+## [0.7.4] - 2026-05-21
+
+### Added
+
+- **Memory evaluations can run outside shisad.** MELT (Memory Evaluation for
+  Lifecycle Testing) is the external runner for standard memory benchmarks and
+  lifecycle smoke suites, so shisad's memory system can be measured without
+  importing shisad's internals.
+
+- **A public memory evaluation command exposes shisad for benchmarking.**
+  `shisad memory sut` speaks a versioned JSON Lines protocol over stdio, with
+  run-scoped directories, deterministic time control, structured memory
+  writes, consolidation, historical queries with explicit time bounds, and
+  structured error responses. The handshake declares which capabilities the
+  system supports and which embedding model, storage backend, and
+  consolidation behavior is in effect, so reports faithfully describe what was
+  measured.
+
+- **Lifecycle memory smoke suites cover behavior static benchmarks miss.**
+  The first MELT lifecycle fixture checks raw-event write quality, structured
+  correction and contradiction handling, consolidation and decay, core-memory
+  stability, multi-hop recall across sessions, and abstention.
+
+- **Baseline adapter targets fail with setup guidance.** MELT registers
+  Memobase, memv, MIRA-OSS, and Karta as known future adapter targets; selecting
+  one without the needed service, package, dataset, or wrapper now explains the
+  missing setup instead of looking like an unknown adapter name.
+
+### Changed
+
+- **Memory benchmark docs distinguish smoke diagnostics from evaluations.**
+  Public docs now explain when to use `shisad memory benchmark`, when to use
+  MELT, how to reproduce smoke runs, which report fields matter, and why
+  smoke artifacts should be interpreted separately from held-out, multi-run
+  benchmark claims.
+
+- **Changelog entries link public issues and pull requests.** Entries
+  referencing publicly tracked work now link the GitHub issue or PR number
+  inline, so users can follow a change back to its public discussion. Earlier
+  entries with clear public provenance were updated to the same convention.
+
+### Fixed
+
+- **Memory queries see the full historical record.** Queries against
+  structured memory now search the full as-of history and preserve link,
+  conflict, decay, and supersession metadata at the time being asked about, so
+  an evaluation that asks what shisad believed at an earlier point sees the
+  relationships that existed then rather than today's resolved view.
+
+- **Memory evaluation answer results echo the originating query id.** When the
+  evaluation command returns an answer result, the response now carries back
+  the query id the question was asked under, so external runners can match
+  answers to their questions unambiguously.
+
+### Security
+
+- **Provider URLs no longer leak secrets in error messages.** When a provider
+  URL is malformed or fails to load, error messages and metadata redact secret
+  literals embedded in path, fragment, query, and delimiter forms, including
+  URL-encoded and decoded variants, so credentials accidentally pasted into
+  provider configuration do not surface in logs or evaluation reports.
+
+- **Memory evaluation runs are owner-scoped and fail closed on missing
+  dependencies.** The evaluation command rejects queries that cross owner
+  boundaries, sanitizes provider metadata in evaluation responses, and fails
+  closed when embeddings are required but not configured, so a misconfigured
+  run cannot silently produce results from another owner's data or an
+  unintended fallback.
+
 ## 0.7.3.1 Release Content - 2026-05-16
 
 ### Changed
@@ -36,12 +105,12 @@ records that choice.
   missing, and falls back to the search recovery path instead of synthesizing a
   confident-sounding wrong answer. Reservation markers in fetched pages are
   extracted from both English and Japanese phrasing, including split or negated
-  forms.
+  forms. ([#27](https://github.com/shisa-ai/shisad/issues/27), [#28](https://github.com/shisa-ai/shisad/issues/28))
 
 - **Short confirmation cooldowns retry instead of dead-ending.** If you
   resolve a confirmation while a short cooldown is still active, shisad waits
   through the cooldown and retries once. Longer cooldowns still surface as
-  `cooldown_active` so you know to wait.
+  `cooldown_active` so you know to wait. ([#35](https://github.com/shisa-ai/shisad/issues/35))
 
 - **Confirmed fetch follow-ups summarize instead of leaking raw evidence.**
   When you ask a follow-up after confirming a web fetch, the planner now sees a
@@ -51,11 +120,12 @@ records that choice.
 - **Blocked malformed URLs explain what to do next.** When the output firewall
   blocks a malformed URL, the response now tells you to provide a trusted URL
   or ask shisad to search, instead of returning an opaque blocked message.
+  ([#22](https://github.com/shisa-ai/shisad/issues/22))
 
 - **Planner fallback errors explain which route was used.** When a provider
   route fails over to a fallback, the resulting message explains which route
   was used and why, so you can tell whether the answer came from your preferred
-  provider.
+  provider. ([#38](https://github.com/shisa-ai/shisad/issues/38))
 
 ### Fixed
 
@@ -70,18 +140,19 @@ records that choice.
   browser wrapper path is configured, wrapper scripts, env-style launchers,
   interpreter code flags, and hermetic runtime paths are mounted into the
   browser sandbox, so launching the browser from a non-standard install path
-  works without manual configuration.
+  works without manual configuration. ([#25](https://github.com/shisa-ai/shisad/issues/25), [#26](https://github.com/shisa-ai/shisad/issues/26), [PR #32](https://github.com/shisa-ai/shisad/pull/32))
 
 - **Confirmed navigation prefers task-specific destinations.** Confirmed
   navigation retries from the URL the task asked for, validates same-origin
   candidates, and normalizes default ports before comparing destinations, so a
   generic fallback URL no longer wins over the destination you actually
-  requested.
+  requested. ([#29](https://github.com/shisa-ai/shisad/issues/29), [#30](https://github.com/shisa-ai/shisad/issues/30))
 
 - **Browser confirmations bind to the canonical destination.** Allowlist
   confirmation, pending policy aliases, page title replay aliases, and
   confirmation tool aliases are canonicalized before they enter the session, so
   confirmation answers stay attached to the destination you approved.
+  ([#37](https://github.com/shisa-ai/shisad/issues/37))
 
 ### Security
 
@@ -97,7 +168,7 @@ records that choice.
   evidence-attributed prompt text before the planner sees them. Imported
   recovery prompts that lack a verified terminal context are rejected instead
   of being replayed, so a poisoned archive cannot smuggle a recovery
-  instruction past the lockdown gate.
+  instruction past the lockdown gate. ([#31](https://github.com/shisa-ai/shisad/issues/31))
 
 - **Filesystem paths in output are preserved when readable, redacted when
   secret-shaped.** The output firewall distinguishes source-shaped filesystem
@@ -105,7 +176,7 @@ records that choice.
   segments that look like secrets, which are redacted. Browser file URLs,
   Windows paths, drive-scheme paths, and spaced file URLs are redacted
   consistently, including their delimiter variants, while readable source paths
-  in tool diagnostics survive unchanged.
+  in tool diagnostics survive unchanged. ([#34](https://github.com/shisa-ai/shisad/issues/34))
 
 - **PII and pending-confirmation redaction are bounded.** URL path redaction,
   output secret replacement, and PII redaction have explicit bounds, so a
@@ -912,6 +983,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.7.4]: https://github.com/shisa-ai/shisad/compare/v0.7.3.1...v0.7.4
 [0.7.3]: https://github.com/shisa-ai/shisad/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/shisa-ai/shisad/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/shisa-ai/shisad/compare/v0.7.0...v0.7.1

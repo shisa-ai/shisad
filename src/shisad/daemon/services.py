@@ -58,6 +58,7 @@ from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
+from shisad.memory.runtime_wiring import build_memory_runtime_components
 from shisad.memory.timeline import TimelineIndex
 from shisad.scheduler.manager import SchedulerManager
 from shisad.security.control_plane.sidecar import (
@@ -776,22 +777,18 @@ class DaemonServices:
                 connect_path_proxy=connect_path_proxy,
                 checkpoint_store=checkpoint_store,
             )
-            memory_storage_root = config.data_dir / "memory_entries"
-            ingestion = IngestionPipeline(
-                memory_storage_root,
+            memory_components = build_memory_runtime_components(
+                config.data_dir,
                 firewall=firewall,
                 embedding_fingerprint=EmbeddingFingerprint(
                     model_id=embeddings_route.model_id,
                     base_url=embeddings_route.base_url,
                 ),
                 embeddings_provider=embeddings_adapter,
-                legacy_storage_dir=config.data_dir / "memory",
                 audit_hook=event_wiring.audit_memory_event,
             )
-            memory_manager = MemoryManager(
-                memory_storage_root,
-                audit_hook=event_wiring.audit_memory_event,
-            )
+            ingestion = memory_components.ingestion
+            memory_manager = memory_components.memory_manager
             timeline_index = TimelineIndex(
                 config.data_dir / "timeline",
                 transcript_store=transcript_store,

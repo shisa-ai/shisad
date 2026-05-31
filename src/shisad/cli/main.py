@@ -2049,6 +2049,29 @@ def _preview_cli_text(value: object, *, max_chars: int = 1600, max_lines: int = 
     return preview
 
 
+def _tool_error_detail_line(payload: dict[str, Any], *, max_chars: int = 240) -> str:
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        return ""
+    raw_detail = ""
+    for key in ("stderr", "stdout"):
+        value = details.get(key)
+        if isinstance(value, str) and value.strip():
+            raw_detail = value
+            break
+    if not raw_detail and details.get("exit_code") not in ("", None):
+        raw_detail = f"exit_code={details.get('exit_code')}"
+    text = sanitize_terminal_text(raw_detail).strip()
+    if not text:
+        return ""
+    first_line = text.splitlines()[0].strip()
+    if len(first_line) > max_chars:
+        first_line = f"{first_line[: max_chars - 3].rstrip()}..."
+    if not first_line:
+        return ""
+    return f"  detail: {sanitize_terminal_field(first_line)}"
+
+
 def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
     tool_name = sanitize_terminal_field(str(record.get("tool_name", "")).strip() or "tool")
     payload = record.get("payload")
@@ -2111,7 +2134,12 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
         value = payload.get(key)
         if value not in ("", None, [], {}):
             summary_parts.append(f"{key}={sanitize_terminal_field(str(value))}")
-    return [" ".join(summary_parts)]
+    lines = [" ".join(summary_parts)]
+    if error:
+        detail_line = _tool_error_detail_line(payload)
+        if detail_line:
+            lines.append(detail_line)
+    return lines
 
 
 def _render_action_confirm_result(result: ActionConfirmResult) -> str:
@@ -3125,6 +3153,19 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
         response_model=MemoryRotateKeyResult,
     )
     click.echo(_dump_model(result))
+
+
+@memory.command("sut")
+def memory_sut() -> None:
+    """Run the MELT memory SUT JSONL protocol over stdio."""
+    from shisad.memory.evaluation_sut import run_sut_jsonl
+
+    raise SystemExit(
+        run_sut_jsonl(
+            stdin=click.get_text_stream("stdin"),
+            stdout=click.get_text_stream("stdout"),
+        )
+    )
 
 
 @memory.command("benchmark")

@@ -259,6 +259,7 @@ class IngestionPipeline:
         legacy_storage_dir: Path | None = None,
         quarantine_threshold: float = 0.75,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
+        allow_embedding_fallback: bool = True,
     ) -> None:
         self._storage_dir = storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
@@ -279,6 +280,7 @@ class IngestionPipeline:
         self._explicit_encryption_key = encryption_key
         self._quarantine_threshold = quarantine_threshold
         self._audit_hook = audit_hook
+        self._allow_embedding_fallback = allow_embedding_fallback
         self._ensure_schema()
         self._master_secret = self._resolve_master_secret(encryption_key)
         self._key_material_by_id: dict[str, bytes] = {}
@@ -313,6 +315,7 @@ class IngestionPipeline:
         scope: MemoryScope = "user",
         user_id: str | None = None,
         workspace_id: str | None = None,
+        created_at: datetime | None = None,
     ) -> RetrievalResult:
         """Process content through firewall and store retrieval record.
 
@@ -391,7 +394,7 @@ class IngestionPipeline:
             source_id=source_id,
             source_type=source_type,
             collection=resolved_collection,
-            created_at=datetime.now(UTC),
+            created_at=created_at or datetime.now(UTC),
             content_sanitized=inspection.sanitized_text,
             extracted_facts=[
                 Fact(text=fact, confidence=0.6) for fact in inspection.extracted_facts
@@ -1679,7 +1682,7 @@ class IngestionPipeline:
         return mapping[source_type]
 
     def _embed_text(self, text: str) -> list[float]:
-        # Provider-backed semantic vectors with deterministic local fallback.
+        # Provider-backed semantic vectors with deterministic local fallback when allowed.
         if self._embeddings_provider is not None:
             try:
                 vectors = self._embeddings_provider.embed([text])
@@ -1687,9 +1690,11 @@ class IngestionPipeline:
                     values = [float(v) for v in vectors[0]]
                     norm = math.sqrt(sum(v * v for v in values)) or 1.0
                     return [v / norm for v in values]
-            except (OSError, RuntimeError, TypeError, ValueError):
-                # Fail closed to deterministic local fallback.
-                pass
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                if not self._allow_embedding_fallback:
+                    raise RuntimeError(f"embedding provider failed: {exc}") from exc
+            if not self._allow_embedding_fallback:
+                raise RuntimeError("embedding provider returned no vectors")
 
         if not text:
             return [0.0] * 12

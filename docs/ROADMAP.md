@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-05-09*
+*Updated: 2026-05-20*
 *Status: Active*
 
 ## Goal
@@ -323,6 +323,22 @@ TOTP entry remain deferred to `v0.8.0`.
   enrichment, bounded cross-session read expansion, and operator
   snapshot/migration UX remain follow-up work unless promoted during release
   close.
+
+#### v0.7.4 — Memory evaluation runner and reproducibility
+
+- Status (2026-05-21): published on GitHub Releases and PyPI.
+- shisad exposes a public `shisad memory sut` JSON Lines (JSONL) command so
+  external evaluators can drive the memory subsystem as a black-box System
+  Under Test.
+- MELT provides the external evaluation runner for standard memory benchmarks
+  and MELT-native lifecycle suites without importing shisad internals.
+- Lifecycle smoke suites exercise raw-event write quality, structured
+  correction and contradiction handling, consolidation/decay, core-memory
+  stability, multi-hop recall, and abstention.
+- Public docs distinguish `shisad memory benchmark` smoke diagnostics from
+  MELT evaluation artifacts and truth-scope preliminary versus final results.
+- External full-dataset and baseline-adapter execution remains conditional on
+  locally available datasets, services, and optional dependencies.
 
 ### v0.8 — UX overhaul
 

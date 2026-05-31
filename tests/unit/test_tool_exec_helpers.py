@@ -77,6 +77,46 @@ async def test_execute_structured_tool_rejection_emits_rejected_then_executed() 
 
 
 @pytest.mark.asyncio
+async def test_execute_structured_tool_failure_emits_error_and_details_for_audit() -> None:
+    emitted: list[object] = []
+
+    async def _emit(event: object) -> None:
+        emitted.append(event)
+
+    await execute_structured_tool(
+        session_id=SessionId("s1"),
+        tool_name=ToolName("browser.navigate"),
+        payload={
+            "ok": False,
+            "error": "browser_subprocess_failed",
+            "details": {
+                "reason": "browser_subprocess_failed",
+                "stage": "subprocess",
+                "exit_code": 17,
+                "stderr": "failed to read [path] SHISAD_API_KEY=[redacted]",
+            },
+        },
+        default_error="browser_navigate_failed",
+        actor="tool_runtime",
+        emit_event=_emit,
+        record_execution=lambda _success: None,
+        sanitize_output=lambda raw: raw,
+        taint_labels={TaintLabel.UNTRUSTED},
+    )
+
+    executed = emitted[1]
+    assert isinstance(executed, ToolExecuted)
+    assert executed.success is False
+    assert executed.error == "browser_subprocess_failed"
+    assert executed.details == {
+        "reason": "browser_subprocess_failed",
+        "stage": "subprocess",
+        "exit_code": 17,
+        "stderr": "failed to read [path] SHISAD_API_KEY=[redacted]",
+    }
+
+
+@pytest.mark.asyncio
 async def test_execute_structured_tool_uses_default_error_when_missing() -> None:
     emitted: list[object] = []
 
