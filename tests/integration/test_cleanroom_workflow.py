@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -52,6 +53,11 @@ async def _start_daemon(
     await _wait_for_socket(config.socket_path)
     await client.connect()
     return daemon_task, client, config
+
+
+def _fake_browser_command() -> str:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+    return f"{sys.executable} {fixture}"
 
 
 async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> None:
@@ -323,7 +329,13 @@ async def test_gh33_cleanroom_sensitive_browser_proposal_redacts_public_metadata
 
     monkeypatch.setattr(Planner, "propose", _propose_sensitive_browser_type)
 
-    daemon_task, client, config = await _start_daemon(tmp_path)
+    daemon_task, client, config = await _start_daemon(
+        tmp_path,
+        browser_enabled=True,
+        browser_command=_fake_browser_command(),
+        browser_allowed_domains=["127.0.0.1", "localhost"],
+        browser_require_hardened_isolation=False,
+    )
     try:
         created = await client.call(
             "session.create",
