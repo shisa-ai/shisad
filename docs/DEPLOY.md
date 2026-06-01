@@ -195,6 +195,12 @@ if [ -f "$HOME/.config/shisad/runtime.env" ]; then
 fi
 ```
 
+When `runtime.env` is loaded through shell `source`, use comma-separated values
+for list fields, for example `SHISAD_WEB_ALLOWED_DOMAINS=a.com,b.com`. Shell
+parsing strips the inner quotes from single-quoted JSON arrays such as
+`'["a.com","b.com"]'`, so JSON-array list values are only safe for direct
+exports or env-file loaders that preserve those quotes.
+
 ### Provider Credentials
 
 Planner preset to credential mapping:
@@ -392,7 +398,7 @@ Minimum config:
 
 ```bash
 export SHISAD_WEB_SEARCH_BACKEND_URL="http://127.0.0.1:8888"
-export SHISAD_WEB_ALLOWED_DOMAINS='["127.0.0.1:8888"]'
+export SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1:8888
 ```
 
 The backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` alongside
@@ -458,7 +464,9 @@ This is the expected confirmation gate. Rerun with `--confirm`.
 Ensure you are on the latest code (`uv sync --group dev --extra chat`), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible endpoint that supports JSON response formatting.
 
 **Env values with JSON lists cause `SettingsError`:**
-Wrap JSON values in single quotes in env files: `SHISAD_WEB_ALLOWED_DOMAINS='["a.com","b.com"]'`.
+If the env file is shell-sourced, switch list fields to comma-separated values,
+for example `SHISAD_WEB_ALLOWED_DOMAINS=a.com,b.com`. Use JSON arrays only with
+direct exports or env-file loaders that preserve inner quotes.
 
 ---
 

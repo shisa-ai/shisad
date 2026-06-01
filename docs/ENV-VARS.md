@@ -24,6 +24,11 @@ This surface is large. That is now documented, but it should be simplified in a 
 
 - Bool/int/float values use normal string parsing.
 - List fields usually accept either CSV or JSON array syntax.
+- For env files that are loaded with shell `source` / `.`, use CSV for list
+  fields. Bash removes the inner quotes from single-quoted JSON-array values
+  such as `SHISAD_WEB_ALLOWED_DOMAINS='["a.com","b.com"]'`, leaving
+  `[a.com,b.com]`, which is not valid JSON. JSON arrays are safe for direct
+  shell exports and env-file loaders that preserve the inner quotes.
 - Map/nested-object fields usually accept JSON object syntax.
 - Path fields accept normal filesystem paths and `~`.
 - Empty strings on optional fields are treated as unset in many route-local settings.
@@ -209,7 +214,7 @@ Browser notes:
 - `SHISAD_BROWSER_COMMAND` must point at the shisad browser wrapper protocol, not the upstream Playwright CLI. For source checkouts, the wrapper is `scripts/shisad-playwright-cli.mjs`; set `SHISAD_BROWSER_COMMAND=/path/to/shisad/scripts/shisad-playwright-cli.mjs` after installing the prerequisites in `docs/runbooks/BROWSER.md`. The current PyPI wheel does not install this wrapper, so package installs need an explicit compatible wrapper path.
 - Upstream `playwright` / `npx playwright` is not protocol-compatible with shisad because the daemon passes a shisad session selector (`-s=shisad-...`) and uses wrapper-specific subcommands.
 - If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, both the runtime browser sandbox policy and the planner/PEP browser tool registry fall back to `SHISAD_WEB_ALLOWED_DOMAINS`.
-- `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept either comma-separated values (`example.com,api.example.com`) or JSON arrays (`["example.com","api.example.com"]`) from environment variables.
+- `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept either comma-separated values (`example.com,api.example.com`) or JSON arrays (`["example.com","api.example.com"]`) from environment variables. Prefer the comma-separated form in `runtime.env`, `runner/.env`, and other env files that may be shell-sourced; reserve JSON arrays for direct exports or loaders that preserve inner quotes.
 - `SHISAD_BROWSER_ALLOWED_DOMAINS` acts as an auto-approve/browser-egress scope seed, not a hard deny wall for explicit public-host navigation; the runtime still adds the concrete requested browser host to the per-action sandbox allowlist.
 - Hardened browser isolation currently requires literal browser scope entries. If `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1`, wildcard host patterns in `SHISAD_BROWSER_ALLOWED_DOMAINS` or the `SHISAD_WEB_ALLOWED_DOMAINS` fallback are rejected fail-closed because the connect-path runtime cannot precompute wildcard sibling hosts safely.
 - Read-mostly browser actions (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are intended to proceed without confirmation when the destination is authorized. Browser write actions (`browser.click`, `browser.type_text`) are confirmation-gated.

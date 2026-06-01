@@ -116,7 +116,7 @@ Minimum config (local SearxNG example):
 
 ```bash
 SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8888
-SHISAD_WEB_ALLOWED_DOMAINS='["127.0.0.1:8888"]'
+SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1:8888
 ```
 
 The backend host also needs to be in `SHISAD_WEB_ALLOWED_DOMAINS`. See
