@@ -23,6 +23,7 @@ from shisad.core.types import Capability, CredentialRef, SessionId, ToolName, Us
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.services import (
     DaemonServices,
+    _browser_runtime_unavailable_planner_note,
     _build_provider_diagnostics,
     _build_tool_registry,
     _key_gated_acceptance_matrix,
@@ -47,6 +48,27 @@ from shisad.security.lockdown import LockdownLevel
 from shisad.security.risk import RiskObservation, RiskPolicyVersion
 from shisad.skills.artifacts import ArtifactState
 from shisad.skills.manager import InstalledSkill
+
+
+def _write_browser_wrapper(path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "if '--shisad-browser-wrapper-version' in sys.argv:",
+                "    print('shisad-browser-wrapper 2')",
+                "    raise SystemExit(0)",
+                "if '--shisad-browser-wrapper-doctor' in sys.argv:",
+                "    print('shisad-browser-wrapper doctor ok')",
+                "    raise SystemExit(0)",
+                "raise SystemExit(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
 
 
 def test_u8_daemon_runner_import_defers_disabled_backend_modules() -> None:
@@ -1563,23 +1585,135 @@ def test_daemon_config_preserves_ipv6_loopback_approval_origin(tmp_path) -> None
     assert config.approval_bind_port == 8787
 
 
+def test_gh47_browser_runtime_note_uses_specific_remediation() -> None:
+    note = _browser_runtime_unavailable_planner_note(
+        {
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": ["browser_runtime_isolation_unavailable"],
+            "protocol": {"supported": False, "probe": "", "reason": ""},
+        }
+    )
+
+    assert "browser_runtime_isolation_unavailable" in note
+    assert "browser sandbox/isolation settings" in note
+    assert "SHISAD_BROWSER_COMMAND" not in note
+
+
+def test_gh47_browser_runtime_note_keeps_mixed_remediation_paths() -> None:
+    note = _browser_runtime_unavailable_planner_note(
+        {
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": [
+                "browser_hardened_wildcard_scope_unsupported",
+                "browser_command_unconfigured",
+            ],
+            "protocol": {"supported": False, "probe": "", "reason": ""},
+        }
+    )
+
+    assert "browser_hardened_wildcard_scope_unsupported" in note
+    assert "browser_command_unconfigured" in note
+    assert "SHISAD_BROWSER_COMMAND" in note
+    assert "browser sandbox/isolation settings" in note
+
+
+async def _build_browser_registry_services(config: DaemonConfig) -> DaemonServices:
+    return await DaemonServices.build(config)
+
+
 @pytest.mark.asyncio
 async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    wrapper = tmp_path / "shisad-browser-wrapper"
+    _write_browser_wrapper(wrapper)
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=tmp_path / "policy.yaml",
         browser_enabled=True,
+        browser_command=str(wrapper),
+        browser_require_hardened_isolation=False,
         web_allowed_domains=["localhost"],
         browser_allowed_domains=[],
     )
-    services = await DaemonServices.build(config)
+    services = await _build_browser_registry_services(config)
     try:
+        assert services.browser_status["status"] == "ok"
         navigate_tool = services.registry.get_tool(ToolName("browser.navigate"))
         assert navigate_tool is not None
         assert navigate_tool.destinations == ["localhost"]
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh47_browser_health_uses_policy_egress_fallback_scope(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    wrapper = tmp_path / "shisad-browser-wrapper"
+    _write_browser_wrapper(wrapper)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        'egress:\n  - host: "*.browser.example"\n',
+        encoding="utf-8",
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        browser_enabled=True,
+        browser_command=str(wrapper),
+        browser_require_hardened_isolation=True,
+        web_allowed_domains=[],
+        browser_allowed_domains=[],
+    )
+    services = await _build_browser_registry_services(config)
+    try:
+        assert services.browser_status["status"] == "misconfigured"
+        assert "*.browser.example" in services.browser_status["allowed_domains"]
+        assert (
+            "browser_hardened_wildcard_scope_unsupported"
+            in services.browser_status["problems"]
+        )
+        assert services.registry.get_tool(ToolName("browser.navigate")) is None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        browser_enabled=True,
+        browser_command="",
+        web_allowed_domains=["localhost"],
+    )
+
+    services = await _build_browser_registry_services(config)
+    try:
+        assert services.browser_status["status"] == "misconfigured"
+        assert "browser_command_unconfigured" in services.browser_status["problems"]
+        assert (
+            "Browser tools are unavailable because runtime status is misconfigured"
+            in services.browser_status["planner_note"]
+        )
+        assert "browser_command_unconfigured" in services.browser_status["planner_note"]
+        assert "web.search/web.fetch" in services.browser_status["planner_note"]
+        assert services.registry.get_tool(ToolName("browser.navigate")) is None
+        assert services.registry.get_tool(ToolName("browser.read_page")) is None
     finally:
         await services.shutdown()
 

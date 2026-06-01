@@ -1039,6 +1039,232 @@ class _AliasPendingPolicySnapshotHarness(_PendingPolicySnapshotHarness):
         )
 
 
+class _BrowserSuppressedProposalHarness(_PendingPolicySnapshotHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepare_browser_calls = 0
+        self._services = SimpleNamespace(
+            browser_status={
+                "enabled": True,
+                "status": "misconfigured",
+                "problems": ["browser_command_unconfigured"],
+            }
+        )
+        self._registry = SimpleNamespace(
+            get_tool=lambda tool_name: (
+                None
+                if str(tool_name) == "browser.click"
+                else ToolDefinition(name=ToolName(str(tool_name)), description="tool")
+            )
+        )
+        self._pep = SimpleNamespace(
+            evaluate=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("PEP should not evaluate unregistered browser tools")
+            )
+        )
+
+    async def _prepare_browser_tool_arguments(
+        self,
+        *,
+        session: object,
+        tool_name: ToolName,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _ = (session, tool_name, arguments)
+        self.prepare_browser_calls += 1
+        raise AssertionError("browser argument prep should not run for suppressed tools")
+
+
+@pytest.mark.asyncio
+async def test_gh47_suppressed_browser_tool_rejects_before_argument_prep() -> None:
+    harness = _BrowserSuppressedProposalHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "browser click continue"}
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps=set(),
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="explicit-browser-click",
+        tool_name=ToolName("browser.click"),
+        arguments={"target": "continue", "description": "continue"},
+        reasoning="Execute the user's explicit browser click request.",
+        data_sources=["user_text:explicit_memory_intent"],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Clicking the browser control.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.rejected == 1
+    assert result.executed == 0
+    assert harness.prepare_browser_calls == 0
+    assert harness.control_plane_calls == []
+    assert result.rejection_reasons_for_user == [
+        "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
+    ]
+    assert (
+        "browser runtime status is misconfigured: browser_command_unconfigured"
+        in impl_session._blocked_action_feedback(result.rejection_reasons_for_user)
+    )
+
+
+@pytest.mark.asyncio
+async def test_gh47_suppressed_browser_tool_feedback_handles_disabled_runtime() -> None:
+    harness = _BrowserSuppressedProposalHarness()
+    harness._services.browser_status = {
+        "enabled": False,
+        "status": "disabled",
+        "problems": [],
+    }
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "browser click continue"}
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps=set(),
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="explicit-browser-click",
+        tool_name=ToolName("browser.click"),
+        arguments={"target": "continue", "description": "continue"},
+        reasoning="Execute the user's explicit browser click request.",
+        data_sources=["user_text:explicit_memory_intent"],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Clicking the browser control.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.rejected == 1
+    assert result.executed == 0
+    assert harness.prepare_browser_calls == 0
+    assert result.rejection_reasons_for_user == [
+        "browser_runtime_unavailable:disabled:browser_disabled"
+    ]
+    feedback = impl_session._blocked_action_feedback(result.rejection_reasons_for_user)
+    assert "browser tools are disabled in this daemon configuration" in feedback
+    assert "unknown_browser_runtime_problem" not in feedback
+
+
+def test_gh47_unknown_browser_tool_does_not_claim_runtime_unavailable() -> None:
+    browser_status = {
+        "enabled": True,
+        "status": "misconfigured",
+        "problems": ["browser_command_unconfigured"],
+    }
+
+    assert (
+        impl_session._browser_runtime_unavailable_rejection_reason(
+            browser_status,
+            tool_name="browser.download",
+        )
+        == ""
+    )
+    assert (
+        impl_session._browser_runtime_unavailable_rejection_reason(
+            {"enabled": True, "status": "ok", "problems": []},
+            tool_name="browser.click",
+        )
+        == ""
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("browser_tool_name", ["browser.type_text", "browser-type-text"])
 async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classifier(
@@ -2584,6 +2810,8 @@ def _finalize_execution_result(
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
     provider_response_trusted_origin: str = "",
+    rejected: int = 0,
+    rejection_reasons_for_user: list[str] | None = None,
 ) -> SessionMessageExecutionResult:
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": content},
@@ -2642,10 +2870,10 @@ def _finalize_execution_result(
     )
     return SessionMessageExecutionResult(
         planner_dispatch=planner_dispatch,
-        rejected=0,
+        rejected=rejected,
         pending_confirmation=pending_confirmation,
         executed=len(tool_outputs),
-        rejection_reasons_for_user=[],
+        rejection_reasons_for_user=list(rejection_reasons_for_user or []),
         checkpoint_ids=[],
         pending_confirmation_ids=list(pending_confirmation_ids or []),
         executed_tool_outputs=tool_outputs,
@@ -3000,6 +3228,27 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     assert any(
         "same turn's tool outputs" in message.content for message in trace_turn.messages_sent
     )
+
+
+@pytest.mark.asyncio
+async def test_gh47_finalize_response_overrides_browser_runtime_rejection_prose() -> None:
+    harness = _FinalizeEvidenceHarness()
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Clicking the browser control.",
+        rejected=1,
+        rejection_reasons_for_user=[
+            "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
+        ],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "browser runtime status is misconfigured" in text
+    assert "browser_command_unconfigured" in text
+    assert "web.search/web.fetch" in text
+    assert "Clicking the browser control" not in text
 
 
 @pytest.mark.asyncio

@@ -205,6 +205,16 @@ _POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
 _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS = 2200
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _PAGE_TITLE_METADATA_MAX_CHARS = 1600
+_BROWSER_RUNTIME_GATED_TOOL_NAMES = frozenset(
+    {
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+        "browser.click",
+        "browser.type_text",
+        "browser.end_session",
+    }
+)
 
 
 def _is_sensitive_browser_type_text_tool(tool_name: ToolName | str) -> bool:
@@ -2324,6 +2334,7 @@ def _build_planner_tool_context(
     capabilities: set[Capability],
     tool_allowlist: set[ToolName] | None,
     trust_level: str,
+    runtime_availability_notes: Sequence[str] = (),
 ) -> str:
     visible_tools = [
         tool for tool in registry_tools if tool_allowlist is None or tool.name in tool_allowlist
@@ -2379,6 +2390,15 @@ def _build_planner_tool_context(
         )
     if alias_note:
         lines.append(alias_note)
+    runtime_notes = (
+        [note.strip() for note in runtime_availability_notes if note.strip()]
+        if _shows_trusted_tool_context(trust_level)
+        else []
+    )
+    if runtime_notes:
+        lines.append("Runtime availability notes:")
+        for note in runtime_notes:
+            lines.append(f"- {note}")
     if not enabled_tools:
         lines.append("Enabled tools: none")
         if _shows_trusted_tool_context(trust_level) and disabled_tools:
@@ -2421,6 +2441,13 @@ def _build_planner_tool_context(
         )
     lines.append("If no tool is needed, respond conversationally without calling tools.")
     return "\n".join(lines)
+
+
+def _planner_runtime_availability_notes(browser_status: Mapping[str, Any]) -> tuple[str, ...]:
+    browser_note = str(browser_status.get("planner_note") or "").strip()
+    if not browser_note:
+        return ()
+    return (browser_note,)
 
 
 def _planner_manifest_includes_report_anomaly(
@@ -4276,6 +4303,35 @@ def _flatten_rejection_reason_codes(reasons: list[str]) -> list[str]:
     return codes
 
 
+def _browser_runtime_unavailable_rejection_reason(
+    browser_status: Mapping[str, Any],
+    *,
+    tool_name: str | ToolName = "",
+) -> str:
+    if not browser_status:
+        return ""
+    if tool_name:
+        canonical_browser_tool_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
+        if canonical_browser_tool_name not in _BROWSER_RUNTIME_GATED_TOOL_NAMES:
+            return ""
+    status = str(browser_status.get("status") or "unavailable").strip() or "unavailable"
+    if status == "ok":
+        return ""
+    raw_problems = browser_status.get("problems", [])
+    if not isinstance(raw_problems, list | tuple | set | frozenset):
+        raw_problems = [raw_problems]
+    problems = [
+        str(item).strip()
+        for item in raw_problems
+        if str(item).strip()
+    ]
+    if status == "disabled" or browser_status.get("enabled") is False:
+        reason = "browser_disabled"
+    else:
+        reason = problems[0] if problems else "unknown_browser_runtime_problem"
+    return f"browser_runtime_unavailable:{status}:{reason}"
+
+
 def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
     for vote in votes:
         if str(getattr(vote, "voter", "")) != "ActionMonitorVoter":
@@ -4295,6 +4351,33 @@ def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
     codes = _flatten_rejection_reason_codes(reasons)
+    browser_runtime_reason = next(
+        (code for code in codes if code.startswith("browser_runtime_unavailable:")),
+        "",
+    )
+    if browser_runtime_reason:
+        parts = browser_runtime_reason.split(":", 2)
+        status = parts[1] if len(parts) > 1 and parts[1] else "unavailable"
+        problem = parts[2] if len(parts) > 2 and parts[2] else ""
+        if status == "disabled" or problem == "browser_disabled":
+            return (
+                "I couldn't use browser tools because browser tools are disabled "
+                "in this daemon configuration. I can use web.search/web.fetch when "
+                "search or fetch can satisfy the request."
+            )
+        if problem == "unknown_browser_runtime_problem":
+            return (
+                "I couldn't use browser tools because browser runtime status is "
+                f"{status}. The runtime did not report a specific problem. I can "
+                "use web.search/web.fetch when search or fetch can satisfy the "
+                "request."
+            )
+        problem_suffix = f": {problem}" if problem else ""
+        return (
+            "I couldn't use browser tools because browser runtime status is "
+            f"{status}{problem_suffix}. I can use web.search/web.fetch when search "
+            "or fetch can satisfy the request."
+        )
     if any(
         code
         in {
@@ -4385,6 +4468,8 @@ def _coerce_blocked_action_response_text(
     if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
         return response_text
     codes = _flatten_rejection_reason_codes(rejection_reasons)
+    if any(code.startswith("browser_runtime_unavailable:") for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
     if any(code == "resource:outside_workspace_root" for code in codes):
         return _blocked_action_feedback(rejection_reasons)
     if any(code == "pep:resource_authorization_failed" for code in codes):
@@ -8662,6 +8747,9 @@ class SessionImplMixin(HandlerMixinBase):
             capabilities=effective_caps,
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
+            runtime_availability_notes=_planner_runtime_availability_notes(
+                getattr(getattr(self, "_services", None), "browser_status", {})
+            ),
         )
         task_ledger_snapshot = None
         if not zero_context_session:
@@ -9434,6 +9522,44 @@ class SessionImplMixin(HandlerMixinBase):
                     ),
                 )
             )
+            final_reason = ""
+            if proposal_tool_name.startswith("browser.") and (
+                self._registry.get_tool(canonical_proposal_tool) is None
+            ):
+                final_reason = _browser_runtime_unavailable_rejection_reason(
+                    getattr(self._services, "browser_status", {}),
+                    tool_name=proposal_tool_name,
+                )
+            if final_reason:
+                rejected += 1
+                rejection_reasons_for_user.append(final_reason)
+                public_arguments = _redact_sensitive_browser_public_arguments(
+                    proposal.tool_name,
+                    proposal.arguments,
+                    turn_sensitive_browser_values,
+                )
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="policy_loop",
+                        tool_name=proposal.tool_name,
+                        reason=final_reason,
+                    )
+                )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(
+                        TraceToolCall(
+                            tool_name=str(proposal.tool_name),
+                            arguments=dict(public_arguments),
+                            pep_decision="skipped:unregistered_browser_tool",
+                            monitor_decision="skipped:unregistered_browser_tool",
+                            control_plane_decision="skipped:unregistered_browser_tool",
+                            final_decision="reject",
+                            executed=False,
+                            execution_success=False,
+                        )
+                    )
+                continue
             proposal_arguments = await self._prepare_browser_tool_arguments(
                 session=session,
                 tool_name=canonical_proposal_tool,

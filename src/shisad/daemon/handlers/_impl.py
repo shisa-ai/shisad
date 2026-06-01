@@ -94,7 +94,10 @@ from shisad.daemon.handlers._impl_assistant import AssistantImplMixin
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._impl_dashboard import DashboardImplMixin
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
-from shisad.daemon.handlers._impl_session import SessionImplMixin
+from shisad.daemon.handlers._impl_session import (
+    SessionImplMixin,
+    _browser_runtime_unavailable_rejection_reason,
+)
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import (
@@ -1313,6 +1316,7 @@ class ApprovedToolExecutionResult:
     checkpoint_id: str | None = None
     tool_output: ToolOutputRecord | None = None
     sandbox_result: SandboxResult | None = None
+    error: str = ""
 
 
 class HandlerImplementation(
@@ -2220,9 +2224,10 @@ class HandlerImplementation(
         except (TypeError, ValueError):
             return ""
         if isinstance(payload, dict):
-            reason = str(payload.get("error", "")).strip()
-            if reason:
-                return reason
+            for key in ("error", "reason", "status_reason"):
+                reason = str(payload.get(key, "")).strip()
+                if reason:
+                    return reason
         return ""
 
     def _tool_execute_result_from_execution(
@@ -2246,7 +2251,12 @@ class HandlerImplementation(
             exit_code=0 if success else 1,
             stdout=tool_output.content if tool_output is not None else "",
             stderr="",
-            reason="" if success else self._structured_tool_reason(tool_output),
+            reason=(
+                ""
+                if success
+                else HandlerImplementation._structured_tool_reason(tool_output)
+                or execution.error
+            ),
             checkpoint_id=execution.checkpoint_id or "",
             origin=origin.model_dump(mode="json"),
         )
@@ -3372,7 +3382,7 @@ class HandlerImplementation(
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
-            return ApprovedToolExecutionResult(success=False)
+            return ApprovedToolExecutionResult(success=False, error="session_missing")
 
         tool_name = ToolName(canonical_tool_name(str(tool_name), warn_on_alias=False))
         origin = self._origin_for(
@@ -3422,6 +3432,61 @@ class HandlerImplementation(
                 **approval_event_fields,
             )
         )
+
+        suppressed_browser_reason = _browser_runtime_unavailable_rejection_reason(
+            getattr(getattr(self, "_services", None), "browser_status", {}),
+            tool_name=tool_name,
+        )
+        if tool is None and suppressed_browser_reason:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    reason=suppressed_browser_reason,
+                    **approval_event_fields,
+                )
+            )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=False,
+                    error=suppressed_browser_reason,
+                    **approval_event_fields,
+                )
+            )
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=False,
+            )
+            return ApprovedToolExecutionResult(
+                success=False,
+                checkpoint_id=checkpoint_id,
+                error=suppressed_browser_reason,
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=self._sanitize_tool_output_text(
+                            json.dumps(
+                                {
+                                    "ok": False,
+                                    "error": suppressed_browser_reason,
+                                },
+                                ensure_ascii=True,
+                            )
+                        ),
+                        success=False,
+                        taint_labels=label_tool_output(str(tool_name)),
+                        arguments=dict(arguments),
+                    ),
+                ),
+            )
 
         if tool_name == "report_anomaly":
             payload = AnomalyReportInput.model_validate(arguments)
@@ -3859,12 +3924,23 @@ class HandlerImplementation(
             )
 
         if tool is None:
+            tool_unavailable_reason = "tool_unavailable"
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    reason=tool_unavailable_reason,
+                    **approval_event_fields,
+                )
+            )
             await self._event_bus.publish(
                 ToolExecuted(
                     session_id=sid,
                     actor="tool_runtime",
                     tool_name=tool_name,
                     success=False,
+                    error=tool_unavailable_reason,
                     **approval_event_fields,
                 )
             )
@@ -3877,6 +3953,7 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=False,
                 checkpoint_id=checkpoint_id,
+                error=tool_unavailable_reason,
             )
 
         sandbox_result = await self._execute_via_sandbox(

@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sqlite3
 import struct
 import subprocess
@@ -1033,6 +1034,14 @@ class ContractHarness:
     browser_base_url: str
 
 
+def _executable_fake_browser_command(tmp_path: Path) -> str:
+    source = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+    target = tmp_path / "fake_playwright_cli.py"
+    shutil.copy2(source, target)
+    target.chmod(0o755)
+    return str(target)
+
+
 @asynccontextmanager
 async def _contract_harness_context(
     tmp_path: Path,
@@ -1096,10 +1105,7 @@ async def _contract_harness_context(
                 "browser_enabled": web_search_backend_configured
                 if browser_enabled is None
                 else browser_enabled,
-                "browser_command": (
-                    f"{sys.executable} "
-                    f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
-                ),
+                "browser_command": _executable_fake_browser_command(tmp_path),
                 "browser_allowed_domains": browser_allowed_domains or ["127.0.0.1", "localhost"],
                 "browser_require_hardened_isolation": False,
                 "assistant_fs_roots": [workspace_root],
@@ -6818,6 +6824,57 @@ async def test_contract_web_fetch_routes_to_confirmation_not_lockdown(
     assert int(reply.get("blocked_actions", 0)) == 0
     # web.fetch is confirmation-gated (side_effect_action), not blocked
     assert int(reply.get("confirmation_required_actions", 0)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_gh47_misconfigured_browser_runtime_is_visible_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+    captured_tool_names: list[str] = []
+
+    def _misconfigure_browser(config: DaemonConfig) -> None:
+        config.browser_command = ""
+
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        prestart=_misconfigure_browser,
+    ) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            for tool in tools or []:
+                function = tool.get("function")
+                if isinstance(function, dict):
+                    captured_tool_names.append(str(function.get("name", "")))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "which browser tools are available?"},
+        )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert all(not name.startswith("browser_") for name in captured_tool_names)
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = _extract_trusted_context_before_request(planner_input)
+    assert (
+        "Browser tools are unavailable because runtime status is misconfigured"
+        in trusted_section
+    )
+    assert "browser_command_unconfigured" in trusted_section
+    assert "web.search/web.fetch" in trusted_section
 
 
 @pytest.mark.asyncio

@@ -525,7 +525,7 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
         assert confirmed["confirmed"] is False
         assert str(confirmed.get("confirmation_id", "")) == confirmation_id
         assert str(confirmed.get("status", "")) == "failed"
-        assert str(confirmed.get("status_reason", "")) == "approve for regression test"
+        assert str(confirmed.get("status_reason", "")) == "channel_not_available"
 
         remaining = await _wait_for_confirmation_to_leave_pending(
             client,
@@ -551,7 +551,7 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
             item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
         )
         assert str(matching.get("status", "")) == "failed"
-        assert str(matching.get("status_reason", "")) == "approve for regression test"
+        assert str(matching.get("status_reason", "")) == "channel_not_available"
     finally:
         await _shutdown_daemon(daemon_task, client)
 

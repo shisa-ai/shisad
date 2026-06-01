@@ -1873,6 +1873,12 @@ async def test_m1_message_send_session_branch_rejects_non_scheduler_actor() -> N
     assert result.success is False
     assert result.tool_output is not None
     assert "session_delivery_requires_scheduler_actor" in result.tool_output.content
+    direct_result = HandlerImplementation._tool_execute_result_from_execution(
+        harness,  # type: ignore[arg-type]
+        execution=result,
+        origin=harness._origin_for(session=harness._session, actor="planner"),
+    )
+    assert direct_result["reason"] == "session_delivery_requires_scheduler_actor"
     assert harness._delivery.calls == []
     assert harness._transcript_store.calls == []
     assert harness._control_plane.results == [False]

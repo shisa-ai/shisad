@@ -370,6 +370,31 @@ def test_u5_planner_tool_context_shows_full_details_for_trusted_cli() -> None:
     assert "fs.write (native function: fs_write): Write files" in context
 
 
+def test_gh47_planner_tool_context_hides_runtime_notes_from_public_guest() -> None:
+    tool = ToolDefinition(
+        name=ToolName("web.search"),
+        description="Search web",
+        parameters=[],
+        capabilities_required=[Capability.HTTP_REQUEST],
+    )
+
+    context = _build_planner_tool_context(
+        registry_tools=[tool],
+        capabilities={Capability.HTTP_REQUEST},
+        tool_allowlist=None,
+        trust_level="trusted_guest",
+        runtime_availability_notes=(
+            "Browser tools are unavailable because runtime status is misconfigured: "
+            "browser_command_unconfigured. Ask the user to configure "
+            "SHISAD_BROWSER_COMMAND.",
+        ),
+    )
+
+    assert "Runtime availability notes:" not in context
+    assert "SHISAD_BROWSER_COMMAND" not in context
+    assert "browser_command_unconfigured" not in context
+
+
 def test_c3_planner_tool_context_hides_unavailable_fs_tool_ids_from_shell_description() -> None:
     shell_tool = ToolDefinition(
         name=ToolName("shell.exec"),

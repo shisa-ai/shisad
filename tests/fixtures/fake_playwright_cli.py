@@ -929,6 +929,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("command required")
 
     command = args.pop(0)
+    if command == "--shisad-browser-wrapper-version":
+        print("shisad-browser-wrapper 2")
+        return 0
+    if command == "--shisad-browser-wrapper-doctor":
+        print("shisad-browser-wrapper doctor ok")
+        return 0
+
     cwd = Path.cwd()
     state = _load_state(cwd, session)
 
