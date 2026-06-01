@@ -195,11 +195,11 @@ if [ -f "$HOME/.config/shisad/runtime.env" ]; then
 fi
 ```
 
-When `runtime.env` is loaded through shell `source`, use comma-separated values
-for list fields, for example `SHISAD_WEB_ALLOWED_DOMAINS=a.com,b.com`. Shell
-parsing strips the inner quotes from single-quoted JSON arrays such as
-`'["a.com","b.com"]'`, so JSON-array list values are only safe for direct
-exports or env-file loaders that preserve those quotes.
+When `runtime.env` is loaded through shell `source`, prefer comma-separated
+values for list fields, for example `SHISAD_WEB_ALLOWED_DOMAINS=a.com,b.com`.
+Quoted JSON arrays also work, for example
+`SHISAD_WEB_ALLOWED_DOMAINS='["a.com","b.com"]'`, but unquoted JSON arrays lose
+their inner quotes during shell parsing and arrive as invalid JSON.
 
 ### Provider Credentials
 
@@ -465,8 +465,10 @@ Ensure you are on the latest code (`uv sync --group dev --extra chat`), restart 
 
 **Env values with JSON lists cause `SettingsError`:**
 If the env file is shell-sourced, switch list fields to comma-separated values,
-for example `SHISAD_WEB_ALLOWED_DOMAINS=a.com,b.com`. Use JSON arrays only with
-direct exports or env-file loaders that preserve inner quotes.
+for example `SHISAD_WEB_ALLOWED_DOMAINS=a.com,b.com`, or quote the whole JSON
+array value with single quotes. Unquoted JSON arrays such as
+`SHISAD_WEB_ALLOWED_DOMAINS=["a.com","b.com"]` lose their inner quotes during
+shell parsing and arrive as invalid JSON.
 
 ---
 

@@ -37,9 +37,9 @@ wrapper that implements the protocol below.
 
 `SHISAD_BROWSER_ALLOWED_DOMAINS` and `SHISAD_WEB_ALLOWED_DOMAINS` accept CSV
 or JSON-array syntax in environment variables. Use the comma-separated form in
-`runtime.env` or other env files that may be loaded with shell `source`; JSON
-arrays are only safe when the loader preserves the inner quotes, such as a
-direct `export SHISAD_BROWSER_ALLOWED_DOMAINS='["example.com"]'`.
+`runtime.env` or other env files for readability. If you use JSON-array syntax
+in a shell-sourced env file, quote the whole value so the inner quotes are
+preserved, for example `SHISAD_BROWSER_ALLOWED_DOMAINS='["example.com"]'`.
 
 Check the configuration before the first browser turn:
 
