@@ -470,7 +470,7 @@ Then verify through shisad:
 
 ```bash
 export SHISAD_SOCKET_PATH=/tmp/shisad-dev.sock
-shisactl web search "latest Python release" --limit 3
+uv run shisad web search "latest Python release" --limit 3
 
 # Or use the runner wrapper, which targets the harness socket automatically:
 bash runner/harness.sh shisad web search "latest Python release" --limit 3
