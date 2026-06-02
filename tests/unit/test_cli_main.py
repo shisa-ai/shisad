@@ -1208,6 +1208,55 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
 
 
+def test_gh53_web_search_cli_renders_unconfigured_backend_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert method == "web.search"
+        assert params == {"query": "latest Python release", "limit": 3}
+        payload = {
+            "ok": False,
+            "query": "latest Python release",
+            "backend": "",
+            "results": [],
+            "taint_labels": ["untrusted"],
+            "evidence": {"operation": "web_search"},
+            "error": "web_search_backend_unconfigured",
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["web", "search", "latest Python release", "--limit", "3"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Web search is enabled but no search backend is configured" in result.output
+    assert "running daemon" in result.output
+    assert "SHISAD_WEB_SEARCH_BACKEND_URL" in result.output
+    assert "runner/.env" in result.output
+    assert "SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost" in result.output
+    assert "Restart the daemon" in result.output
+    assert "already-running daemon" in result.output
+    assert '"ok": false' not in result.output
+    assert '"error": "web_search_backend_unconfigured"' not in result.output
+
+
 def test_thread_cli_forwards_context_filter_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -405,6 +405,28 @@ def _dump_model(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json", exclude_unset=True), indent=2)
 
 
+def _render_web_search_result(result: WebSearchResult) -> str:
+    if result.ok or result.error != "web_search_backend_unconfigured":
+        return _dump_model(result)
+    return "\n".join(
+        [
+            "Web search is enabled but no search backend is configured for the running daemon.",
+            "",
+            "Set SHISAD_WEB_SEARCH_BACKEND_URL to a SearxNG-style JSON backend in the "
+            "daemon environment.",
+            "Changing the variable only in a later CLI terminal will not affect the "
+            "already-running daemon.",
+            "",
+            "For local ./run.sh development, add this to runner/.env:",
+            "  SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080",
+            "  SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost",
+            "",
+            "Restart the daemon and verify startup logs show:",
+            "  Config: web.search=enabled backend=http://127.0.0.1:8080 ...",
+        ]
+    )
+
+
 def _joined_text_arg(values: tuple[str, ...], *, field_name: str) -> str:
     text = " ".join(part.strip() for part in values if part.strip()).strip()
     if not text:
@@ -4344,7 +4366,7 @@ def web_search(query: str, limit: int) -> None:
         {"query": query, "limit": limit},
         response_model=WebSearchResult,
     )
-    click.echo(_dump_model(result))
+    click.echo(_render_web_search_result(result))
 
 
 @web.command("fetch")
