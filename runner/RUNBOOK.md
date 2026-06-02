@@ -153,8 +153,9 @@ file or provide your own for different postures.
 - **Search returns `search_backend_invalid_json`**: verify the backend directly
   with `curl 'http://127.0.0.1:8080/search?q=shisad&format=json'`; for SearxNG,
   make sure `json` is listed under `search.formats`.
-- **Search fails with `local_destination_not_allowlisted`**: add the backend
-  host to `SHISAD_WEB_ALLOWED_DOMAINS` and restart the daemon.
+- **Search fails with `ip_literal_not_allowlisted` or
+  `local_destination_not_allowlisted`**: add the backend host to
+  `SHISAD_WEB_ALLOWED_DOMAINS` and restart the daemon.
 - **Credential preflight fails**: ensure the key for your planner preset
   is set in `SHISAD_ENV_FILE` or `runner/.env`.
 - **tmux session already exists**: attach with

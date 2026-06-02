@@ -479,7 +479,7 @@ Troubleshooting:
 |---|---|---|
 | `web_search_backend_unconfigured` | The running daemon started without `SHISAD_WEB_SEARCH_BACKEND_URL`. | Set it in `runner/.env` or `SHISAD_ENV_FILE`, then restart the daemon. |
 | `search_backend_invalid_json` | SearxNG JSON output is not enabled, or the backend URL is not the SearxNG base URL. | Add `json` under `search.formats` in `settings.yml`, restart SearxNG, and verify `/search?q=shisad&format=json` with `curl`. |
-| `local_destination_not_allowlisted` or backend host not allowlisted | The loopback backend host is missing from `SHISAD_WEB_ALLOWED_DOMAINS`. | Add `127.0.0.1,localhost` to `SHISAD_WEB_ALLOWED_DOMAINS`, then restart shisad. |
+| `ip_literal_not_allowlisted`, `local_destination_not_allowlisted`, or backend host not allowlisted | The loopback backend host is missing from `SHISAD_WEB_ALLOWED_DOMAINS`. | Add `127.0.0.1,localhost` to `SHISAD_WEB_ALLOWED_DOMAINS`, then restart shisad. |
 | Docker permission denied for `/var/run/docker.sock` | The current user cannot access the Docker daemon. | Run the container command with `sudo`, add the user to the `docker` group, or use a rootless/container alternative. |
 
 ---
