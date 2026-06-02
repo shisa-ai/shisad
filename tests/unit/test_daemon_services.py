@@ -1688,6 +1688,35 @@ async def test_gh47_browser_health_uses_policy_egress_fallback_scope(
 
 
 @pytest.mark.asyncio
+async def test_gh52_web_toolkit_uses_policy_egress_fallback_scope(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "egress:\n  - host: 127.0.0.1\n",
+        encoding="utf-8",
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        web_search_enabled=True,
+        web_search_backend_url="http://127.0.0.1:8080",
+        web_allowed_domains=[],
+    )
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        assert impl._web_toolkit.allowed_domains == ["127.0.0.1"]
+        assert impl._web_toolkit._host_block_reason("127.0.0.1") == ""
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_gh_browser_misconfigured_runtime_suppresses_browser_tools(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
