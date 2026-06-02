@@ -431,13 +431,13 @@ SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080
 SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost
 ```
 
-Loopback, private-network, and IP-literal backend hosts must also appear in
-`SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses `127.0.0.1,localhost`
-for that reason. Public backend hosts do not need this allowlist entry just to
-run `web.search`, but listing the backend and common result hosts preapproves
-backend redirects and later `web.fetch` calls. See `docs/ENV-VARS.md` for the
-full web-tooling variable reference. In env files, prefer the comma-separated
-list form shown above.
+IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts must
+also appear in `SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses
+`127.0.0.1,localhost` for that reason. Public backend hosts do not need this
+allowlist entry just to run `web.search`, but listing the backend and common
+result hosts preapproves backend redirects and later `web.fetch` calls. See
+`docs/ENV-VARS.md` for the full web-tooling variable reference. In env files,
+prefer the comma-separated list form shown above.
 
 Restart the shisad daemon after changing `SHISAD_WEB_*` values. The search
 backend URL and allowlist are read at daemon startup, so exporting variables in

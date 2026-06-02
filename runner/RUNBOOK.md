@@ -124,8 +124,8 @@ SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080
 SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost
 ```
 
-Loopback, private-network, and IP-literal backend hosts need to be in
-`SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses
+IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts need
+to be in `SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses
 `127.0.0.1,localhost` for that reason. Restart the daemon after changing
 `SHISAD_WEB_*` values; exporting them in a separate CLI terminal does not
 update an already-running daemon.
