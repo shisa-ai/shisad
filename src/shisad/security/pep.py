@@ -368,8 +368,9 @@ class PEP:
                 return self._reject(
                     tool_name,
                     (
-                        f"Egress blocked: destination '{destination.host}' looks like a local/"
-                        "private network target and is not allowlisted by operator policy."
+                        f"Egress blocked: destination '{destination.host}' looks like a local "
+                        "host (localhost or a .local/.internal/.lan name) and is not "
+                        "allowlisted by operator policy."
                     ),
                     reason_code="pep:local_destination_not_allowlisted",
                 )

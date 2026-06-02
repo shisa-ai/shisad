@@ -198,6 +198,25 @@ def test_pep_blocks_ip_literal_without_operator_allowlist_even_if_user_goal() ->
     assert decision.kind == PEPDecisionKind.REJECT
 
 
+def test_pep_local_destination_rejection_names_exact_host_classes() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_web_fetch())
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        trust_level="trusted",
+    )
+
+    decision = pep.evaluate(
+        ToolName("web.fetch"),
+        {"url": "http://search.local:8080/"},
+        context,
+    )
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.reason_code == "pep:local_destination_not_allowlisted"
+    assert "localhost or a .local/.internal/.lan name" in decision.reason
+    assert "private network" not in decision.reason.lower()
+
+
 def test_pep_allows_operator_allowlisted_ip_literal() -> None:
     policy = PolicyBundle(
         egress=[EgressRule(host="127.0.0.1", ports=[80], protocols=["http"])],
