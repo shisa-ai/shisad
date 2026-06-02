@@ -4015,14 +4015,19 @@ def _trim_internal_planner_sections(text: str) -> str:
 
 def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
     summary = str(tool_output_summary)
+    summary_lines = summary.splitlines()
     search_entries = [
         line.strip()
-        for line in summary.splitlines()
-        if line.strip().startswith("- web.search:")
+        for line in summary_lines
+        if line.startswith("- web.search:")
     ]
     if not search_entries:
         return None
     search_summary = "\n".join(search_entries)
+    fs_read_succeeded = any(
+        line.startswith("- fs.read:") and "success=True" in line
+        for line in summary_lines
+    )
     setup_hint = (
         "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
         "IP-literal, localhost, or .local/.internal/.lan backend hosts to the "
@@ -4031,7 +4036,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         "preapproved, restart shisad, then retry"
     )
     if "web_search_backend_unconfigured" in search_summary:
-        if "fs.read: success=True" in summary:
+        if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search is not configured "
                 "for this daemon, so I can't complete the web-search portion right "
@@ -4045,7 +4050,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         "ip_literal_not_allowlisted" in search_summary
         or "local_destination_not_allowlisted" in search_summary
     ):
-        if "fs.read: success=True" in summary:
+        if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search backend is not "
                 "allowed by the effective web allowlist, so I can't complete the "
@@ -4056,7 +4061,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
             f"I can't search the web right now. {setup_hint}."
         )
     if "redirect_host_not_preapproved" in search_summary:
-        if "fs.read: success=True" in summary:
+        if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search backend redirected "
                 "to a host outside the effective web allowlist, so I can't complete "
@@ -4067,7 +4072,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
             f"allowlist, so I can't search the web right now. {setup_hint}."
         )
     if "search_backend_invalid_json" in search_summary:
-        if "fs.read: success=True" in summary:
+        if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search backend did not "
                 "return valid JSON, so I can't complete the web-search portion right "
