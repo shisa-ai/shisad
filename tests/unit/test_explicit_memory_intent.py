@@ -146,6 +146,11 @@ def _memory_registry() -> ToolRegistry:
             {},
         ),
         (
+            "what reminders do we have?",
+            "reminder.list",
+            {},
+        ),
+        (
             "fetch https://example.com",
             "web.fetch",
             {"url": "https://example.com"},

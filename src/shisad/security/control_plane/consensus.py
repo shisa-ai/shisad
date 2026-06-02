@@ -79,6 +79,20 @@ class SequenceVoter:
             "web.fetch",
         }
     )
+    _SAFE_TRUSTED_READONLY_MEMORY_TOOLS: frozenset[str] = frozenset(
+        {
+            "note.get",
+            "note.list",
+            "note.search",
+            "reminder.list",
+            "task.list",
+            "thread.inspect",
+            "thread.list",
+            "thread.why",
+            "todo.get",
+            "todo.list",
+        }
+    )
 
     def __init__(
         self,
@@ -98,9 +112,19 @@ class SequenceVoter:
                 risk_tier=RiskTier.LOW,
                 reason_codes=["sequence:ok"],
             )
+        reasons = [item.reason_code for item in findings]
+        if self._allow_trusted_readonly_memory_after_rapid_fire(data=data, findings=findings):
+            return VoterDecision(
+                voter="BehavioralSequenceAnalyzer",
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.MEDIUM,
+                reason_codes=[
+                    *reasons,
+                    "sequence:allow_trusted_readonly_memory_after_rapid_fire",
+                ],
+            )
         if any(item.pattern_name == "exfil_after_read" for item in findings):
             tool_name = str(data.action.tool_name).strip()
-            reasons = [item.reason_code for item in findings]
             if tool_name in self._SAFE_EGRESS_AFTER_READ_TOOLS:
                 return VoterDecision(
                     voter="BehavioralSequenceAnalyzer",
@@ -136,6 +160,26 @@ class SequenceVoter:
             risk_tier=highest.risk_tier,
             reason_codes=reasons,
         )
+
+    @classmethod
+    def _allow_trusted_readonly_memory_after_rapid_fire(
+        cls,
+        *,
+        data: ConsensusInput,
+        findings: list[Any],
+    ) -> bool:
+        if any(item.pattern_name != "rapid_fire" for item in findings):
+            return False
+        if not data.trace_result.allowed:
+            return False
+        action = data.action
+        if action.action_kind != ActionKind.MEMORY_READ:
+            return False
+        if str(action.tool_name).strip() not in cls._SAFE_TRUSTED_READONLY_MEMORY_TOOLS:
+            return False
+        if not _strict_metadata_bool(data.metadata_payload.get("trusted_input"), default=False):
+            return False
+        return bool(str(data.metadata_payload.get("raw_user_text", "")).strip())
 
 
 class ResourceVoter:

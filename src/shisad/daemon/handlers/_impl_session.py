@@ -3072,7 +3072,11 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 data_sources=["user_text:explicit_memory_intent"],
             )
 
-    if re.fullmatch(r"(?:list|show) (?:my )?reminders", normalized, flags=re.IGNORECASE):
+    if re.fullmatch(
+        r"(?:(?:list|show) (?:my )?reminders|what reminders do (?:i|we) have\??)",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
         return ActionProposal(
             action_id="explicit-reminder-list",
             tool_name=ToolName("reminder.list"),
@@ -3415,6 +3419,11 @@ def _is_mixed_pending_confirmation_context(text: str) -> bool:
 def _is_tool_results_summary_only_response(text: str) -> bool:
     stripped = str(text or "").strip()
     return bool(stripped) and stripped.startswith(_TOOL_RESULTS_SUMMARY_HEADER)
+
+
+def _is_placeholder_tool_progress_response(text: str) -> bool:
+    normalized = normalize_intent_text(str(text or "")).lower().strip(" .!?")
+    return normalized in {"working on it"}
 
 
 def _normalized_url_for_confirmation_match(value: str) -> str:
@@ -4329,7 +4338,11 @@ def _coerce_internal_tool_narration_response_text(
         return safe_summary
     if not str(response_text or "").lstrip().startswith("I completed the tool step"):
         stripped_summary_tail = _strip_appended_tool_results_summary(response_text)
-        if stripped_summary_tail != str(response_text or "").strip() and stripped_summary_tail:
+        if (
+            stripped_summary_tail != str(response_text or "").strip()
+            and stripped_summary_tail
+            and not _is_placeholder_tool_progress_response(stripped_summary_tail)
+        ):
             response_text = stripped_summary_tail
     if _is_plain_greeting(user_text):
         cleaned_greeting = _trim_internal_planner_sections(response_text)
@@ -6501,14 +6514,20 @@ def _find_tool_output_preview_text(payload_value: Any) -> str:
 def _find_tool_entries_preview_text(payload: Mapping[str, Any]) -> str:
     entries = payload.get("entries")
     if not isinstance(entries, list):
+        entries = payload.get("tasks")
+    if not isinstance(entries, list):
         return ""
     preview_rows: list[str] = []
     for item in entries[:_TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_LINES]:
         if isinstance(item, Mapping):
+            goal = str(item.get("goal", "")).strip()
             value = (
-                str(item.get("name", "")).strip()
+                goal
+                if goal.startswith("Reminder: ")
+                else str(item.get("name", "")).strip()
                 or str(item.get("path", "")).strip()
                 or str(item.get("title", "")).strip()
+                or goal
             )
             if not value and item.get("key") not in ("", None):
                 raw_memory_value = item.get("value")

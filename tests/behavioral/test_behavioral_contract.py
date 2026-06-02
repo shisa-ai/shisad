@@ -6785,6 +6785,45 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
 
 
 @pytest.mark.asyncio
+async def test_contract_reminder_question_lists_without_policy_veto(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    created = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "remind me to call dentist at 2030-01-01T09:00:00Z"},
+    )
+    assert created.get("lockdown_level") == "normal"
+    assert int(created.get("blocked_actions", 0)) == 0
+    assert int(created.get("confirmation_required_actions", 0)) == 0
+    created_outputs = _extract_tool_outputs(created)
+    created_payload = created_outputs["reminder.create"][0]
+    assert created_payload.get("ok") is True
+
+    listed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what reminders do we have?"},
+    )
+
+    assert listed.get("lockdown_level") == "normal"
+    assert int(listed.get("blocked_actions", 0)) == 0
+    assert int(listed.get("confirmation_required_actions", 0)) == 0
+    assert int(listed.get("executed_actions", 0)) == 1
+    reminder_outputs = _extract_tool_outputs(listed)
+    assert "reminder.list" in reminder_outputs
+    reminder_list_payload = reminder_outputs["reminder.list"][0]
+    assert reminder_list_payload.get("ok") is True
+    assert any(
+        "call dentist" in json.dumps(item, ensure_ascii=True).lower()
+        for item in reminder_list_payload.get("tasks", [])
+    )
+    response_text = str(listed.get("response", ""))
+    assert "call dentist" in response_text.lower()
+    assert "consensus:veto:BehavioralSequenceAnalyzer" not in response_text
+
+
+@pytest.mark.asyncio
 async def test_contract_multi_tool_executes_both_tools_in_one_turn(
     contract_harness: ContractHarness,
 ) -> None:

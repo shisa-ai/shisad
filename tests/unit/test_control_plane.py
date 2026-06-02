@@ -187,6 +187,93 @@ async def test_m5_t1c_sequence_voter_blocks_http_request_after_read() -> None:
     assert vote.decision == VoteKind.BLOCK
 
 
+@pytest.mark.asyncio
+async def test_gh54_sequence_voter_allows_trusted_reminder_list_after_recent_actions() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh54-reminder-list")
+    now = datetime.now(UTC)
+    for index, tool_name in enumerate(("note.list", "todo.list", "thread.list", "task.list")):
+        history.append_action(
+            ControlPlaneAction(
+                timestamp=now + timedelta(milliseconds=index * 100),
+                origin=origin,
+                tool_name=tool_name,
+                action_kind=ActionKind.MEMORY_READ,
+                resource_id=f"memory:{index}",
+            ),
+            decision_status="allow",
+        )
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="reminder.list",
+        action_kind=ActionKind.MEMORY_READ,
+        resource_id="reminders",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "what reminders do we have?",
+                "action_arguments": {"limit": 10},
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.ALLOW
+    assert "sequence:allow_trusted_readonly_memory_after_rapid_fire" in vote.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_gh54_sequence_voter_still_blocks_untrusted_reminder_list_rapid_fire() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh54-reminder-list-untrusted")
+    now = datetime.now(UTC)
+    for index, tool_name in enumerate(("note.list", "todo.list", "thread.list", "task.list")):
+        history.append_action(
+            ControlPlaneAction(
+                timestamp=now + timedelta(milliseconds=index * 100),
+                origin=origin,
+                tool_name=tool_name,
+                action_kind=ActionKind.MEMORY_READ,
+                resource_id=f"memory:{index}",
+            ),
+            decision_status="allow",
+        )
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="reminder.list",
+        action_kind=ActionKind.MEMORY_READ,
+        resource_id="reminders",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": False,
+                "operator_owned_cli_input": False,
+                "raw_user_text": "",
+                "action_arguments": {"limit": 10},
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.BLOCK
+
+
 def test_m5_t2_sequence_detects_rapid_fire_pattern() -> None:
     history = SessionActionHistoryStore()
     analyzer = BehavioralSequenceAnalyzer()
