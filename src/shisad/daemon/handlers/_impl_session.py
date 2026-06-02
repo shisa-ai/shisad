@@ -4063,6 +4063,11 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
     ]
     if not search_entries:
         return None
+    if any(
+        _top_level_tool_summary_succeeded(row, "web.search")
+        for row in search_entries
+    ):
+        return None
     search_errors = {_top_level_tool_summary_error(row) for row in search_entries}
     fs_read_succeeded = any(
         _top_level_tool_summary_succeeded(lines[0], "fs.read")

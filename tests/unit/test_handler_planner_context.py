@@ -1469,6 +1469,36 @@ def test_gh52_rc_lus_ignores_failed_fs_read_success_like_path() -> None:
     assert "I read the requested local file" not in response
 
 
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "web_search_backend_unconfigured",
+        "local_destination_not_allowlisted",
+        "redirect_host_not_preapproved",
+        "search_backend_invalid_json",
+    ),
+)
+def test_gh52_rc_lus_does_not_coerce_repeated_web_search_when_any_search_succeeds(
+    reason: str,
+) -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text="Search completed with results.",
+        user_text="Search the web for Python news",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=2,
+        tool_output_summary=(
+            "Tool results summary:\n"
+            "- web.search: success=False, ok=False, results=0, "
+            f"error={reason}\n"
+            "- web.search: success=True, ok=True, results=2"
+        ),
+    )
+
+    assert response == "Search completed with results."
+
+
 def _transcript_entry(
     role: str,
     content: str,
