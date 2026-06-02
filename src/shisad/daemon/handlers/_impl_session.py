@@ -4357,6 +4357,7 @@ def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
     codes = _flatten_rejection_reason_codes(reasons)
+    normalized_codes = {code.removeprefix("pep:") for code in codes}
     browser_runtime_reason = next(
         (code for code in codes if code.startswith("browser_runtime_unavailable:")),
         "",
@@ -4383,6 +4384,22 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             "I couldn't use browser tools because browser runtime status is "
             f"{status}{problem_suffix}. I can use web.search/web.fetch when search "
             "or fetch can satisfy the request."
+        )
+    if normalized_codes.intersection(
+        {
+            "web_search_backend_unconfigured",
+            "web_search_backend_not_allowlisted",
+            "ip_literal_not_allowlisted",
+            "local_destination_not_allowlisted",
+        }
+    ):
+        return (
+            "I couldn't complete web search because the search backend is not "
+            "configured or not allowed for this daemon. Configure "
+            "SHISAD_WEB_SEARCH_BACKEND_URL, and add IP-literal, localhost, or "
+            ".local/.internal/.lan backend hosts to the effective web allowlist "
+            "(SHISAD_WEB_ALLOWED_DOMAINS, or policy egress hosts when that variable "
+            "is unset), restart shisad, then retry."
         )
     if any(
         code

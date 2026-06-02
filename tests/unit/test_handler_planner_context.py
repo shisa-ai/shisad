@@ -640,7 +640,16 @@ def test_m3_s0b3_blocked_action_feedback_explains_web_policy_restriction() -> No
 
 def test_m3_s0b3_blocked_action_feedback_explains_backend_config_error() -> None:
     message = _blocked_action_feedback(["web_search_backend_unconfigured"])
-    assert "live web access is disabled or restricted" in message
+    assert "SHISAD_WEB_SEARCH_BACKEND_URL" in message
+    assert "effective web allowlist" in message
+    assert "live web access is disabled or restricted" not in message
+
+
+def test_gh52_blocked_action_feedback_explains_prefixed_local_backend_error() -> None:
+    message = _blocked_action_feedback(["pep:local_destination_not_allowlisted"])
+    assert "IP-literal, localhost, or .local/.internal/.lan" in message
+    assert "effective web allowlist" in message
+    assert "live web access is disabled or restricted" not in message
 
 
 def test_m3_s0b3_blocked_action_feedback_explains_stage2_gate() -> None:
