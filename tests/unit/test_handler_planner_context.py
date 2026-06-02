@@ -645,10 +645,11 @@ def test_m3_s0b3_blocked_action_feedback_explains_backend_config_error() -> None
     assert "live web access is disabled or restricted" not in message
 
 
-def test_gh52_blocked_action_feedback_explains_prefixed_local_backend_error() -> None:
+def test_gh52_blocked_action_feedback_explains_prefixed_local_egress_error() -> None:
     message = _blocked_action_feedback(["pep:local_destination_not_allowlisted"])
-    assert "IP-literal, localhost, or .local/.internal/.lan" in message
-    assert "effective web allowlist" in message
+    assert "local or IP-literal destination" in message
+    assert "egress policy" in message
+    assert "SHISAD_WEB_SEARCH_BACKEND_URL" not in message
     assert "live web access is disabled or restricted" not in message
 
 
@@ -1331,6 +1332,38 @@ def test_rc_lus_coerces_noninternal_web_search_backend_failure() -> None:
     assert "SHISAD_WEB_SEARCH_BACKEND_URL" in response
     assert "IP-literal, localhost, or .local/.internal/.lan" in response
     assert "search returned no direct comparisons" not in response
+
+
+@pytest.mark.parametrize(
+    ("reason", "prefix"),
+    (
+        ("local_destination_not_allowlisted", "Web search backend is not allowed"),
+        ("ip_literal_not_allowlisted", "Web search backend is not allowed"),
+        ("redirect_host_not_preapproved", "Web search backend redirected"),
+        ("search_backend_invalid_json", "Web search backend did not return valid JSON"),
+    ),
+)
+def test_gh52_rc_lus_coerces_web_search_backend_setup_failures(
+    reason: str,
+    prefix: str,
+) -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text="I could not retrieve search results.",
+        user_text="Search the web for Python news",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        tool_output_summary=(
+            "Tool results summary:\n"
+            "- web.search: success=False, ok=False, results=0, "
+            f"error={reason}"
+        ),
+    )
+
+    assert response.startswith(prefix)
+    assert "SHISAD_WEB_SEARCH_BACKEND_URL" in response
+    assert "could not retrieve search results" not in response
 
 
 def _transcript_entry(

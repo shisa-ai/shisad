@@ -4014,7 +4014,8 @@ def _trim_internal_planner_sections(text: str) -> str:
 
 
 def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
-    if "web_search_backend_unconfigured" not in str(tool_output_summary):
+    summary = str(tool_output_summary)
+    if "web.search" not in summary:
         return None
     setup_hint = (
         "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
@@ -4023,16 +4024,38 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         "hosts when that variable is unset), add any destinations you want "
         "preapproved, restart shisad, then retry"
     )
-    if "fs.read: success=True" in str(tool_output_summary):
+    if "web_search_backend_unconfigured" in summary:
+        if "fs.read: success=True" in summary:
+            return (
+                "I read the requested local file, but web search is not configured "
+                "for this daemon, so I can't complete the web-search portion right "
+                f"now. {setup_hint} the search."
+            )
         return (
-            "I read the requested local file, but web search is not configured "
-            "for this daemon, so I can't complete the web-search portion right "
-            f"now. {setup_hint} the search."
+            "Web search is not configured for this daemon, so I can't search the web "
+            f"right now. {setup_hint}."
         )
-    return (
-        "Web search is not configured for this daemon, so I can't search the web "
-        f"right now. {setup_hint}."
-    )
+    if (
+        "ip_literal_not_allowlisted" in summary
+        or "local_destination_not_allowlisted" in summary
+    ):
+        return (
+            "Web search backend is not allowed by the effective web allowlist, so "
+            f"I can't search the web right now. {setup_hint}."
+        )
+    if "redirect_host_not_preapproved" in summary:
+        return (
+            "Web search backend redirected to a host outside the effective web "
+            f"allowlist, so I can't search the web right now. {setup_hint}."
+        )
+    if "search_backend_invalid_json" in summary:
+        return (
+            "Web search backend did not return valid JSON, so I can't search the "
+            "web right now. Check that SHISAD_WEB_SEARCH_BACKEND_URL points at "
+            "the search backend base URL and that JSON output is enabled, restart "
+            "shisad, then retry."
+        )
+    return None
 
 
 def _memory_write_ack_response(
@@ -4389,8 +4412,6 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
         {
             "web_search_backend_unconfigured",
             "web_search_backend_not_allowlisted",
-            "ip_literal_not_allowlisted",
-            "local_destination_not_allowlisted",
         }
     ):
         return (
@@ -4400,6 +4421,18 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             ".local/.internal/.lan backend hosts to the effective web allowlist "
             "(SHISAD_WEB_ALLOWED_DOMAINS, or policy egress hosts when that variable "
             "is unset), restart shisad, then retry."
+        )
+    if normalized_codes.intersection(
+        {
+            "ip_literal_not_allowlisted",
+            "local_destination_not_allowlisted",
+        }
+    ):
+        return (
+            "I couldn't complete that request because the local or IP-literal "
+            "destination is not allowed by this daemon's egress policy. Use an "
+            "allowed public destination or add the destination host to the "
+            "applicable egress allowlist, then retry."
         )
     if any(
         code
