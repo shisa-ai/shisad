@@ -4013,20 +4013,61 @@ def _trim_internal_planner_sections(text: str) -> str:
     return cleaned.strip()
 
 
+def _tool_output_summary_sections(tool_output_summary: str) -> list[tuple[str, list[str]]]:
+    sections: list[tuple[str, list[str]]] = []
+    current_tool: str | None = None
+    current_lines: list[str] = []
+    for line in str(tool_output_summary).splitlines():
+        match = re.match(r"^- (?P<tool>[A-Za-z0-9_.-]+):", line)
+        if match is not None:
+            if current_tool is not None:
+                sections.append((current_tool, current_lines))
+            current_tool = match.group("tool")
+            current_lines = [line]
+            continue
+        if current_tool is not None and line.startswith("  "):
+            current_lines.append(line)
+            continue
+        if current_tool is not None and line.strip():
+            sections.append((current_tool, current_lines))
+            current_tool = None
+            current_lines = []
+    if current_tool is not None:
+        sections.append((current_tool, current_lines))
+    return sections
+
+
+def _top_level_tool_summary_succeeded(row: str, tool_name: str) -> bool:
+    return (
+        re.match(
+            rf"^- {re.escape(tool_name)}:\s*success=True(?:,|$)",
+            row,
+        )
+        is not None
+    )
+
+
+def _top_level_tool_summary_error(row: str) -> str:
+    match = re.search(r"(?:^|, )error=(?P<error>[A-Za-z0-9_:-]+)$", row)
+    if match is None:
+        return ""
+    return match.group("error")
+
+
 def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
-    summary = str(tool_output_summary)
-    summary_lines = summary.splitlines()
+    sections = _tool_output_summary_sections(tool_output_summary)
     search_entries = [
-        line.strip()
-        for line in summary_lines
-        if line.startswith("- web.search:")
+        lines[0].strip()
+        for tool_name, lines in sections
+        if tool_name == "web.search" and lines
     ]
     if not search_entries:
         return None
-    search_summary = "\n".join(search_entries)
+    search_errors = {_top_level_tool_summary_error(row) for row in search_entries}
     fs_read_succeeded = any(
-        line.startswith("- fs.read:") and "success=True" in line
-        for line in summary_lines
+        _top_level_tool_summary_succeeded(lines[0], "fs.read")
+        for tool_name, lines in sections
+        if tool_name == "fs.read" and lines
     )
     setup_hint = (
         "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
@@ -4035,7 +4076,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         "hosts when that variable is unset), add any destinations you want "
         "preapproved, restart shisad, then retry"
     )
-    if "web_search_backend_unconfigured" in search_summary:
+    if "web_search_backend_unconfigured" in search_errors:
         if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search is not configured "
@@ -4047,8 +4088,8 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
             f"right now. {setup_hint}."
         )
     if (
-        "ip_literal_not_allowlisted" in search_summary
-        or "local_destination_not_allowlisted" in search_summary
+        "ip_literal_not_allowlisted" in search_errors
+        or "local_destination_not_allowlisted" in search_errors
     ):
         if fs_read_succeeded:
             return (
@@ -4060,7 +4101,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
             "Web search backend is not allowed by the effective web allowlist, so "
             f"I can't search the web right now. {setup_hint}."
         )
-    if "redirect_host_not_preapproved" in search_summary:
+    if "redirect_host_not_preapproved" in search_errors:
         if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search backend redirected "
@@ -4071,7 +4112,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
             "Web search backend redirected to a host outside the effective web "
             f"allowlist, so I can't search the web right now. {setup_hint}."
         )
-    if "search_backend_invalid_json" in search_summary:
+    if "search_backend_invalid_json" in search_errors:
         if fs_read_succeeded:
             return (
                 "I read the requested local file, but web search backend did not "
@@ -4094,7 +4135,12 @@ def _memory_write_ack_response(
     user_text: str,
     tool_output_summary: str,
 ) -> str | None:
-    if "note.create: success=True" not in tool_output_summary:
+    sections = _tool_output_summary_sections(tool_output_summary)
+    if not any(
+        _top_level_tool_summary_succeeded(lines[0], "note.create")
+        for tool_name, lines in sections
+        if tool_name == "note.create" and lines
+    ):
         return None
     if not re.search(r"\b(?:remember|note|store|save)\b", user_text, flags=re.IGNORECASE):
         return None
@@ -4106,14 +4152,23 @@ def _exact_memory_answer_from_tool_summary(
     user_text: str,
     tool_output_summary: str,
 ) -> str | None:
-    if "note.search:" not in tool_output_summary and "retrieve_rag:" not in tool_output_summary:
+    sections = _tool_output_summary_sections(tool_output_summary)
+    memory_sections = [
+        "\n".join(lines)
+        for tool_name, lines in sections
+        if tool_name in {"note.search", "retrieve_rag"}
+        and lines
+        and _top_level_tool_summary_succeeded(lines[0], tool_name)
+    ]
+    if not memory_sections:
         return None
     normalized_user = normalize_intent_text(user_text).lower()
     if not re.search(r"\bwhat(?:'s| is)\s+my\b", normalized_user):
         return None
+    memory_summary = "\n".join(memory_sections)
     for match in re.finditer(
         r"\bmy\s+(?P<label>[A-Za-z0-9 _-]{2,80}?)\s+is\s+(?P<value>[^.\n]+)",
-        tool_output_summary,
+        memory_summary,
         flags=re.IGNORECASE,
     ):
         label = " ".join(str(match.group("label") or "").split()).strip(" :")
