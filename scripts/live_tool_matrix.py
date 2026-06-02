@@ -22,6 +22,8 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "web_search_disabled",
         "web_search_backend_unconfigured",
         "web_search_backend_not_allowlisted",
+        "ip_literal_not_allowlisted",
+        "local_destination_not_allowlisted",
         "web_allowlist_unconfigured",
         "web_fetch_disabled",
         "destination_not_allowlisted",

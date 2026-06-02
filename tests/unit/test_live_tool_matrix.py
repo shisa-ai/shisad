@@ -117,3 +117,24 @@ def test_msgvault_account_required_is_disabled_probe_setup_reason() -> None:
 
     assert row.status == "pass_disabled"
     assert row.detail == "msgvault_account_required"
+
+
+def test_web_local_backend_allowlist_errors_are_disabled_probe_reasons() -> None:
+    module = _load_live_tool_matrix_module()
+
+    for reason in ("ip_literal_not_allowlisted", "local_destination_not_allowlisted"):
+        tool_row = module._classify_tool_result(
+            tool_name="tool.web.search",
+            result={"allowed": False, "reason": reason},
+            strict_disabled=False,
+        )
+        rpc_row = module._classify_structured_rpc_result(
+            method_name="tool.web.search",
+            result={"ok": False, "error": reason},
+            strict_disabled=False,
+        )
+
+        assert tool_row.status == "pass_disabled"
+        assert tool_row.detail == reason
+        assert rpc_row.status == "pass_disabled"
+        assert rpc_row.detail == reason
