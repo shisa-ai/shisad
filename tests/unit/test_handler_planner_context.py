@@ -1366,6 +1366,45 @@ def test_gh52_rc_lus_coerces_web_search_backend_setup_failures(
     assert "could not retrieve search results" not in response
 
 
+def test_gh52_rc_lus_coerces_mixed_fs_read_web_search_local_backend_failure() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text="I read the file and could not retrieve search results.",
+        user_text="Read README.md and search for Python news",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=2,
+        tool_output_summary=(
+            "Tool results summary:\n"
+            "- fs.read: success=True, ok=True, README.md output: # ShisaD\n"
+            "- web.search: success=False, ok=False, results=0, "
+            "error=local_destination_not_allowlisted"
+        ),
+    )
+
+    assert response.startswith("I read the requested local file")
+    assert "web search backend is not allowed" in response
+    assert "effective web allowlist" in response
+
+
+def test_gh52_rc_lus_does_not_blame_search_backend_for_web_fetch_failure() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text="Search completed, but fetching the local result was blocked.",
+        user_text="Search for Python news and fetch the local result",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=2,
+        tool_output_summary=(
+            "Tool results summary:\n"
+            "- web.search: success=True, ok=True, results=1\n"
+            "- web.fetch: success=False, ok=False, error=local_destination_not_allowlisted"
+        ),
+    )
+
+    assert response == "Search completed, but fetching the local result was blocked."
+
+
 def _transcript_entry(
     role: str,
     content: str,
