@@ -44,8 +44,8 @@ Copy `runner/.env.example` to `runner/.env` for local-only values.
 
 `tool.web.search` needs an external JSON search backend
 (`SHISAD_WEB_SEARCH_BACKEND_URL`, SearxNG-style). Without it, search
-returns no results. See `runner/RUNBOOK.md` and `docs/DEPLOY.md` for the
-recommended setup.
+returns no results. See `docs/DEPLOY.md` for the local SearxNG recipe and
+`runner/RUNBOOK.md` for runner-specific restart and verification commands.
 
 The harness clears inherited `SHISAD_*` env by default so it does not accidentally start with a preconfigured operator daemon (Discord/Telegram/etc). Set `RUNNER_INHERIT_SHISAD_ENV=1` to opt out.
 

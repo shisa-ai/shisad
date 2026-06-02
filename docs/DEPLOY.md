@@ -394,16 +394,93 @@ The runtime expects a SearxNG-style `/search?q=...&format=json` endpoint. A
 local [SearxNG](https://docs.searxng.org/) instance is the typical dev setup;
 any SearxNG-compatible endpoint works.
 
-Minimum config:
+### Local Source Checkout Setup
+
+For a local `./run.sh` or `runner/harness.sh` checkout, one working setup is a
+loopback-only SearxNG container with JSON responses enabled:
 
 ```bash
-export SHISAD_WEB_SEARCH_BACKEND_URL="http://127.0.0.1:8888"
-export SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1:8888
+mkdir -p .local/searxng
+cat > .local/searxng/settings.yml <<'YAML'
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "replace-with-random-secret"
+  limiter: false
+  public_instance: false
+YAML
+
+sudo docker run -d \
+  --name shisad-searxng \
+  --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -v "$PWD/.local/searxng:/etc/searxng:rw" \
+  searxng/searxng:latest
+```
+
+Then add the shisad-side settings to `runner/.env` (gitignored):
+
+```env
+SHISAD_WEB_SEARCH_ENABLED=true
+SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080
+SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost
 ```
 
 The backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` alongside
 any other destinations you want reachable for `web.fetch` / `web.search`. See
-`docs/ENV-VARS.md` for the full web-tooling variable reference.
+`docs/ENV-VARS.md` for the full web-tooling variable reference. In env files,
+prefer the comma-separated list form shown above.
+
+Restart the shisad daemon after changing `SHISAD_WEB_*` values. The search
+backend URL and allowlist are read at daemon startup, so exporting variables in
+a separate CLI terminal does not update an already-running daemon.
+
+```bash
+bash runner/harness.sh stop
+bash runner/harness.sh start --no-debug
+```
+
+After restart, startup logs should show the configured backend and allowlist
+count:
+
+```text
+Config: web.search=enabled backend=http://127.0.0.1:8080 web.fetch=enabled allowed_domains=2 ...
+```
+
+Verify the backend directly first:
+
+```bash
+curl -fsS 'http://127.0.0.1:8080/search?q=shisad&format=json' -o /tmp/searxng.json
+python - <<'PY'
+import json
+payload = json.load(open('/tmp/searxng.json'))
+print(len(payload.get('results', [])))
+PY
+```
+
+Then verify through shisad:
+
+```bash
+export SHISAD_SOCKET_PATH=/tmp/shisad-dev.sock
+shisactl web search "latest Python release" --limit 3
+
+# Or use the runner wrapper, which targets the harness socket automatically:
+bash runner/harness.sh shisad web search "latest Python release" --limit 3
+```
+
+Troubleshooting:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `web_search_backend_unconfigured` | The running daemon started without `SHISAD_WEB_SEARCH_BACKEND_URL`. | Set it in `runner/.env` or `SHISAD_ENV_FILE`, then restart the daemon. |
+| `search_backend_invalid_json` | SearxNG JSON output is not enabled, or the backend URL is not the SearxNG base URL. | Add `json` under `search.formats` in `settings.yml`, restart SearxNG, and verify `/search?q=shisad&format=json` with `curl`. |
+| `local_destination_not_allowlisted` or backend host not allowlisted | The loopback backend host is missing from `SHISAD_WEB_ALLOWED_DOMAINS`. | Add `127.0.0.1,localhost` to `SHISAD_WEB_ALLOWED_DOMAINS`, then restart shisad. |
+| Docker permission denied for `/var/run/docker.sock` | The current user cannot access the Docker daemon. | Run the container command with `sudo`, add the user to the `docker` group, or use a rootless/container alternative. |
 
 ---
 

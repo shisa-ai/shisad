@@ -159,8 +159,11 @@ Web:
 Web notes:
 
 - `SHISAD_WEB_SEARCH_BACKEND_URL` must point at a compatible search backend that serves JSON search results over HTTP(S). The current runtime expects a SearxNG-style `/search` endpoint.
-- The search backend host must also be present in `SHISAD_WEB_ALLOWED_DOMAINS`, alongside any fetch/search destinations you want auto-approved in the tested environment.
+- For local source checkouts, `docs/DEPLOY.md` has an end-to-end SearxNG container recipe. The common runner setting is `SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080`.
+- The search backend host must also be present in `SHISAD_WEB_ALLOWED_DOMAINS`, alongside any fetch/search destinations you want auto-approved in the tested environment. For local SearxNG, use `SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost` in `runner/.env`.
+- Restart the daemon after changing `SHISAD_WEB_*` values. The running daemon reads these variables at startup, so exporting them in a later CLI terminal does not update an existing daemon.
 - If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset, `tool.web.search` stays available in the registry but reports `web_search_backend_unconfigured` in live tool-status checks instead of silently locking down the session.
+- `search_backend_invalid_json` usually means the backend did not return JSON for `/search?q=...&format=json`; for SearxNG, enable `json` under `search.formats`.
 
 msgvault email:
 

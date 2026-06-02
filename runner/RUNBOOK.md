@@ -112,15 +112,29 @@ shell's `SHISAD_*` values instead of clearing them.
 the tool reports `web_search_backend_unconfigured` in doctor output and
 returns no results — research-shaped prompts will degrade accordingly.
 
-Minimum config (local SearxNG example):
+For local development, first start a loopback-only SearxNG instance with JSON
+responses enabled. The full Docker recipe and troubleshooting table live in
+`docs/DEPLOY.md`.
 
-```bash
-SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8888
-SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1:8888
+Minimum `runner/.env` config for that local SearxNG setup:
+
+```env
+SHISAD_WEB_SEARCH_ENABLED=true
+SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8080
+SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost
 ```
 
-The backend host also needs to be in `SHISAD_WEB_ALLOWED_DOMAINS`. See
-`docs/DEPLOY.md` for the operator-level overview and `docs/ENV-VARS.md`
+The backend host also needs to be in `SHISAD_WEB_ALLOWED_DOMAINS`. Restart the
+daemon after changing `SHISAD_WEB_*` values; exporting them in a separate CLI
+terminal does not update an already-running daemon.
+
+```bash
+bash runner/harness.sh stop
+bash runner/harness.sh start --no-debug
+bash runner/harness.sh shisad web search "latest Python release" --limit 3
+```
+
+See `docs/DEPLOY.md` for the operator-level overview and `docs/ENV-VARS.md`
 for the full variable reference.
 
 ## Default Policy
@@ -133,6 +147,14 @@ file or provide your own for different postures.
 
 - **Daemon not reachable after start**: check `bash runner/harness.sh logs`
   for startup errors (missing deps, port conflicts, bad config).
+- **Search returns `web_search_backend_unconfigured`**:
+  `SHISAD_WEB_SEARCH_BACKEND_URL` is missing from the daemon environment.
+  Add it to `SHISAD_ENV_FILE` or `runner/.env`, then restart the daemon.
+- **Search returns `search_backend_invalid_json`**: verify the backend directly
+  with `curl 'http://127.0.0.1:8080/search?q=shisad&format=json'`; for SearxNG,
+  make sure `json` is listed under `search.formats`.
+- **Search fails with `local_destination_not_allowlisted`**: add the backend
+  host to `SHISAD_WEB_ALLOWED_DOMAINS` and restart the daemon.
 - **Credential preflight fails**: ensure the key for your planner preset
   is set in `SHISAD_ENV_FILE` or `runner/.env`.
 - **tmux session already exists**: attach with
