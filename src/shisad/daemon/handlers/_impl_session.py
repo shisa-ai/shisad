@@ -4016,16 +4016,20 @@ def _trim_internal_planner_sections(text: str) -> str:
 def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
     if "web_search_backend_unconfigured" not in str(tool_output_summary):
         return None
+    setup_hint = (
+        "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
+        "SHISAD_WEB_ALLOWED_DOMAINS only for loopback/private/IP-literal "
+        "backends or destinations you want preapproved, restart shisad, then retry"
+    )
     if "fs.read: success=True" in str(tool_output_summary):
         return (
             "I read the requested local file, but web search is not configured "
             "for this daemon, so I can't complete the web-search portion right "
-            "now. Configure a web search backend and allowed domains, then retry "
-            "the search."
+            f"now. {setup_hint} the search."
         )
     return (
         "Web search is not configured for this daemon, so I can't search the web "
-        "right now. Configure a web search backend and allowed domains, then retry."
+        f"right now. {setup_hint}."
     )
 
 

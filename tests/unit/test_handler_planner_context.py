@@ -1292,6 +1292,9 @@ def test_rc_lus_coerces_web_search_backend_unconfigured_summary() -> None:
     )
 
     assert response.startswith("Web search is not configured")
+    assert "Configure a web search backend and allowed domains" not in response
+    assert "SHISAD_WEB_SEARCH_BACKEND_URL" in response
+    assert "loopback/private/IP-literal" in response
     assert "function call" not in response
 
 
@@ -1315,6 +1318,9 @@ def test_rc_lus_coerces_noninternal_web_search_backend_failure() -> None:
     )
 
     assert response.startswith("I read the requested local file")
+    assert "Configure a web search backend and allowed domains" not in response
+    assert "SHISAD_WEB_SEARCH_BACKEND_URL" in response
+    assert "loopback/private/IP-literal" in response
     assert "search returned no direct comparisons" not in response
 
 
