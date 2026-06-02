@@ -94,6 +94,64 @@ def test_web_search_returns_structured_results(
     assert result["evidence"]["operation"] == "web_search"
 
 
+def test_web_search_allows_public_backend_without_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "shisad.assistant.web._open_no_redirect",
+        lambda *_args, **_kwargs: _FakeResponse(
+            body=b'{"results": [{"title": "Result", "url": "https://docs.example/a"}]}',
+            status=200,
+            headers={"Content-Type": "application/json"},
+        ),
+    )
+    toolkit = WebToolkit(
+        data_dir=tmp_path,
+        search_enabled=True,
+        search_backend_url="https://search.example",
+        fetch_enabled=True,
+        allowed_domains=[],
+        timeout_seconds=5.0,
+        max_fetch_bytes=65536,
+    )
+
+    result = toolkit.search(query="shisad roadmap", limit=1)
+
+    assert result["ok"] is True
+    assert result["backend"] == "https://search.example"
+    assert result["results"][0]["url"] == "https://docs.example/a"
+
+
+@pytest.mark.parametrize(
+    ("backend_url", "reason"),
+    (
+        ("http://127.0.0.1:8080", "ip_literal_not_allowlisted"),
+        ("http://localhost:8080", "local_destination_not_allowlisted"),
+        ("http://search.local:8080", "local_destination_not_allowlisted"),
+    ),
+)
+def test_web_search_blocks_local_backend_without_allowlist(
+    tmp_path: Path,
+    backend_url: str,
+    reason: str,
+) -> None:
+    toolkit = WebToolkit(
+        data_dir=tmp_path,
+        search_enabled=True,
+        search_backend_url=backend_url,
+        fetch_enabled=True,
+        allowed_domains=[],
+        timeout_seconds=5.0,
+        max_fetch_bytes=65536,
+    )
+
+    result = toolkit.search(query="shisad roadmap")
+
+    assert result["ok"] is False
+    assert result["error"] == reason
+
+
 def test_web_fetch_allows_public_destination_without_allowlist(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

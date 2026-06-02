@@ -221,7 +221,8 @@ export SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["1234567890"],"telegram":[
 ```bash
 # web_fetch and web_search are enabled by default.
 # web_search needs a compatible JSON search backend (SearxNG-style /search?q=...&format=json).
-# IP-literal, localhost, and .local/.internal/.lan backends must also be present in SHISAD_WEB_ALLOWED_DOMAINS.
+# IP-literal, localhost, and .local/.internal/.lan backends must be in the effective web allowlist.
+# Set SHISAD_WEB_ALLOWED_DOMAINS for that list; if unset, daemon policy egress hosts are used.
 # Public backend hosts can be listed to preapprove backend redirects and related fetches.
 # For local SearxNG setup, see docs/DEPLOY.md#web-search-backend-recommended.
 export SHISAD_WEB_SEARCH_BACKEND_URL="https://search.example.com"

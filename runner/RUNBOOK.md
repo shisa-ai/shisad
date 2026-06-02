@@ -125,10 +125,12 @@ SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost
 ```
 
 IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts need
-to be in `SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses
-`127.0.0.1,localhost` for that reason. Restart the daemon after changing
-`SHISAD_WEB_*` values; exporting them in a separate CLI terminal does not
-update an already-running daemon.
+to be in the effective web allowlist. For this runner setup, set that list with
+`SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses
+`127.0.0.1,localhost` for that reason. If the variable is unset, the daemon
+falls back to policy egress hosts. Restart the daemon after changing
+`SHISAD_WEB_*` values; exporting them in a separate CLI terminal does not update
+an already-running daemon.
 
 ```bash
 bash runner/harness.sh stop
@@ -157,7 +159,8 @@ file or provide your own for different postures.
   make sure `json` is listed under `search.formats`.
 - **Search fails with `ip_literal_not_allowlisted` or
   `local_destination_not_allowlisted`**: add the backend host to
-  `SHISAD_WEB_ALLOWED_DOMAINS` and restart the daemon.
+  `SHISAD_WEB_ALLOWED_DOMAINS` for runner/env-file setups, or to policy egress
+  hosts when using policy fallback, then restart the daemon.
 - **Credential preflight fails**: ensure the key for your planner preset
   is set in `SHISAD_ENV_FILE` or `runner/.env`.
 - **tmux session already exists**: attach with

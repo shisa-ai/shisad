@@ -4018,8 +4018,9 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         return None
     setup_hint = (
         "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
-        "SHISAD_WEB_ALLOWED_DOMAINS only for IP-literal, localhost, or "
-        ".local/.internal/.lan backend hosts, or destinations you want "
+        "IP-literal, localhost, or .local/.internal/.lan backend hosts to the "
+        "effective web allowlist (SHISAD_WEB_ALLOWED_DOMAINS, or policy egress "
+        "hosts when that variable is unset), add any destinations you want "
         "preapproved, restart shisad, then retry"
     )
     if "fs.read: success=True" in str(tool_output_summary):

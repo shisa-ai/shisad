@@ -16,7 +16,7 @@ Current snapshot:
 
 Note:
 
-- `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` before the tool can show up as `WORKS`; public backend hosts do not need that allowlist entry just to run `web.search`.
+- `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts must appear in the effective web allowlist before the tool can show up as `WORKS`; set `SHISAD_WEB_ALLOWED_DOMAINS` for runner/env-file setups, or rely on policy egress hosts when that variable is unset. Public backend hosts do not need an allowlist entry just to run `web.search`.
 - `tool.email.search` and `tool.email.read` are `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_MSGVAULT_ENABLED=1`. In a configured environment, shisad calls local `msgvault --local` read/search commands for tool output; reads also inspect local msgvault archive email metadata. msgvault remains responsible for provider sync and provider credentials.
 - `tool.email.read` resolves the requested msgvault id against local archive
   email metadata before calling `show-message` with the matched internal id;

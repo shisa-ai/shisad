@@ -432,8 +432,10 @@ SHISAD_WEB_ALLOWED_DOMAINS=127.0.0.1,localhost
 ```
 
 IP-literal, `localhost`, and `.local` / `.internal` / `.lan` backend hosts must
-also appear in `SHISAD_WEB_ALLOWED_DOMAINS`; the local recipe above uses
-`127.0.0.1,localhost` for that reason. Public backend hosts do not need this
+be present in the effective web allowlist. For source-checkout runner setups,
+set that list with `SHISAD_WEB_ALLOWED_DOMAINS`; when the variable is unset,
+the daemon falls back to policy egress hosts. The local recipe above uses
+`127.0.0.1,localhost` for that reason. Public backend hosts do not need an
 allowlist entry just to run `web.search`, but listing the backend and common
 result hosts preapproves backend redirects and later `web.fetch` calls. See
 `docs/ENV-VARS.md` for the full web-tooling variable reference. In env files,
@@ -482,7 +484,7 @@ Troubleshooting:
 |---|---|---|
 | `web_search_backend_unconfigured` | The running daemon started without `SHISAD_WEB_SEARCH_BACKEND_URL`. | Set it in `runner/.env` or `SHISAD_ENV_FILE`, then restart the daemon. |
 | `search_backend_invalid_json` | SearxNG JSON output is not enabled, or the backend URL is not the SearxNG base URL. | Add `json` under `search.formats` in `settings.yml`, restart SearxNG, and verify `/search?q=shisad&format=json` with `curl`. |
-| `ip_literal_not_allowlisted`, `local_destination_not_allowlisted`, or backend host not allowlisted | The configured backend host is an IP literal, `localhost`, or `.local` / `.internal` / `.lan` name that is missing from `SHISAD_WEB_ALLOWED_DOMAINS`. | Add the actual backend host to `SHISAD_WEB_ALLOWED_DOMAINS` (for the local recipe: `127.0.0.1,localhost`), then restart shisad. |
+| `ip_literal_not_allowlisted`, `local_destination_not_allowlisted`, or backend host not allowlisted | The configured backend host is an IP literal, `localhost`, or `.local` / `.internal` / `.lan` name that is missing from the effective web allowlist. | Add the actual backend host to `SHISAD_WEB_ALLOWED_DOMAINS` for runner/env-file setups (for the local recipe: `127.0.0.1,localhost`), or to policy egress hosts when using policy fallback, then restart shisad. |
 | Docker permission denied for `/var/run/docker.sock` | The current user cannot access the Docker daemon. | Run the container command with `sudo`, add the user to the `docker` group, or use a rootless/container alternative. |
 
 ---
