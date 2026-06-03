@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-05-21 (v0.7.4 release audit exception review)*
+*Updated: 2026-06-03 (Codex ACP adapter refresh evidence)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at the v0.7.4 release target for the 2026-05-21 Python audit review, plus `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation. Historical v0.7.0-v0.7.3.1 release evidence is retained where explicitly labeled.*
+*Snapshot basis: code/dependency state at the v0.7.4 release target for the 2026-05-21 Python audit review; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.7.3.1 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07 |
+| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07; Codex ACP adapter provenance is recorded for `0.15.0`; the current full coding-adapter npm audit reports `3` moderate advisories through the unchanged Claude adapter chain |
 
 ## Pre-analysis Notes
 
@@ -1379,15 +1379,21 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
   uses OIDC trusted publishing with SBOM and attestations.
 - The runtime npx adapter surface is now lockable via
   `SHISAD_REQUIRE_LOCAL_ADAPTERS=1`.
+- Codex ACP runtime adapter provenance is current for
+  `@zed-industries/codex-acp@0.15.0`; the full current coding-adapter set still
+  carries `3` moderate npm advisories through the unchanged Claude adapter
+  chain and remains part of the accepted runtime-npx adapter risk.
 - Bootstrap/installer paths (apt-get, curl-pipe-sh) remain mutable but are
   operationally standard and accepted risk at this scale.
 
 ## Decision Summary
 
 This repo is **baseline-hardened with a small set of accepted operational
-risks**. The v0.5.3 hardening pass and the v0.6.0 release-close refresh closed
-the immediate CI/release-path gaps. Remaining open items (periodic hygiene
-inventory diffs, internal package mirror/proxy, external GitHub/PyPI release
-environment audits, hardware-backed release signing, and future container-image
+risks**. The v0.5.3 hardening pass, the v0.6.0 release-close refresh, and the
+2026-06-03 Codex ACP adapter evidence refresh closed the immediate
+CI/release-path and Codex adapter provenance gaps. Remaining open items
+(periodic hygiene inventory diffs, internal package mirror/proxy, external
+GitHub/PyPI release environment audits, the current Claude adapter-chain
+moderate advisory, hardware-backed release signing, and future container-image
 signing) are lower priority or release-close/future-surface work with
 documented deferral targets.
