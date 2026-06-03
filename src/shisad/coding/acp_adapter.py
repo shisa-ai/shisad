@@ -656,10 +656,17 @@ async def _wait_for_process_group_exit(
     while time.monotonic() < deadline:
         running = _process_group_has_running_members(process_group_id)
         if running is None:
-            return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.02, remaining))
+            continue
         if not running:
             return True
-        await asyncio.sleep(0.02)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(0.02, remaining))
     running = _process_group_has_running_members(process_group_id)
     return None if running is None else not running
 

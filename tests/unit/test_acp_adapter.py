@@ -131,6 +131,38 @@ def test_m3_acp_adapter_process_group_probe_reports_unknown_without_proc(
 
 
 @pytest.mark.asyncio
+async def test_m3_acp_adapter_process_group_unknown_waits_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = 0.0
+    sleeps: list[float] = []
+
+    def fake_monotonic() -> float:
+        return clock
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal clock
+        sleeps.append(delay)
+        clock += delay
+
+    monkeypatch.setattr(acp_adapter_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(acp_adapter_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "_process_group_has_running_members",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = await acp_adapter_module._wait_for_process_group_exit(
+        4242,
+        timeout=0.05,
+    )
+
+    assert result is None
+    assert sum(sleeps) == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_cleanup_escalates_when_group_state_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
