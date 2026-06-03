@@ -464,6 +464,10 @@ class _ProcessStderrTail:
         decoded = self._buffer.decode("utf-8", errors="replace").strip()
         return _redact_transport_error_message(decoded)
 
+    def mark_incomplete(self) -> None:
+        if self._buffer:
+            self._truncated = True
+
 
 class _AcpProcessExited(RuntimeError):
     def __init__(self, *, phase: str, returncode: int | None, stderr: str) -> None:
@@ -493,12 +497,17 @@ async def _drain_process_stderr(process: Any, stderr_tail: _ProcessStderrTail) -
         stderr_tail.append(chunk)
 
 
-async def _wait_for_stderr_flush(stderr_task: asyncio.Task[None] | None) -> None:
+async def _wait_for_stderr_flush(
+    stderr_task: asyncio.Task[None] | None,
+    stderr_tail: _ProcessStderrTail,
+) -> None:
     if stderr_task is None:
         await asyncio.sleep(0)
         return
-    with suppress(asyncio.TimeoutError):
+    try:
         await asyncio.wait_for(asyncio.shield(stderr_task), timeout=0.1)
+    except TimeoutError:
+        stderr_tail.mark_incomplete()
 
 
 async def _await_acp_step(
@@ -524,7 +533,7 @@ async def _await_acp_step(
                     operation_exception = operation_task.exception()
                     operation_failed = operation_exception is not None
             if isinstance(operation_exception, RequestError):
-                await _wait_for_stderr_flush(stderr_task)
+                await _wait_for_stderr_flush(stderr_task, stderr_tail)
                 process_wait_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await process_wait_task
@@ -534,7 +543,7 @@ async def _await_acp_step(
                 operation_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await operation_task
-                await _wait_for_stderr_flush(stderr_task)
+                await _wait_for_stderr_flush(stderr_task, stderr_tail)
                 raise _AcpProcessExited(
                     phase=phase,
                     returncode=returncode,
@@ -550,7 +559,7 @@ async def _await_acp_step(
         operation_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await operation_task
-        await _wait_for_stderr_flush(stderr_task)
+        await _wait_for_stderr_flush(stderr_task, stderr_tail)
         raise _AcpProcessExited(
             phase=phase,
             returncode=returncode,
@@ -607,13 +616,20 @@ def _signal_processes(pids: tuple[int, ...], sig: signal.Signals) -> None:
             os.kill(pid, sig)
 
 
-async def _terminate_process_tree(process: Any) -> None:
+async def _terminate_process_tree(
+    process: Any,
+    *,
+    extra_pids: tuple[int, ...] = (),
+) -> None:
     pid = getattr(process, "pid", None)
     if not isinstance(pid, int) or pid <= 0:
+        _signal_processes(extra_pids, signal.SIGTERM)
+        remaining_extra = tuple(target for target in extra_pids if _process_exists(target))
+        _signal_processes(remaining_extra, signal.SIGKILL)
         return
 
     descendants = _descendant_pids(pid)
-    targets = (*reversed(descendants), pid)
+    targets = tuple(dict.fromkeys((*reversed(descendants), *reversed(extra_pids), pid)))
     _signal_processes(targets, signal.SIGTERM)
     with suppress(asyncio.TimeoutError, ProcessLookupError):
         await asyncio.wait_for(process.wait(), timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC)
@@ -866,6 +882,7 @@ class AcpAdapter(CodingAgentAdapter):
         conn: Any | None = None
         process: Any | None = None
         stderr_tail = _ProcessStderrTail()
+        known_descendant_pids: set[int] = set()
 
         async def _run_session() -> CodingAgentRunOutput:
             nonlocal applied_config, conn, process, selected_mode, session_id
@@ -881,6 +898,9 @@ class AcpAdapter(CodingAgentAdapter):
                 stderr_task = asyncio.create_task(_drain_process_stderr(process, stderr_tail))
 
                 async def _step(awaitable: Awaitable[Any], phase: str) -> Any:
+                    pid = getattr(process, "pid", None)
+                    if isinstance(pid, int) and pid > 0:
+                        known_descendant_pids.update(_descendant_pids(pid))
                     return await _await_acp_step(
                         awaitable,
                         process=process,
@@ -979,7 +999,16 @@ class AcpAdapter(CodingAgentAdapter):
                         applied_config={**applied_config, **recorder.applied_config},
                     )
                 except asyncio.CancelledError:
-                    await _terminate_process_tree(process)
+                    await _terminate_process_tree(
+                        process,
+                        extra_pids=tuple(known_descendant_pids),
+                    )
+                    raise
+                except Exception:
+                    await _terminate_process_tree(
+                        process,
+                        extra_pids=tuple(known_descendant_pids),
+                    )
                     raise
                 finally:
                     stderr_task.cancel()
@@ -997,7 +1026,10 @@ class AcpAdapter(CodingAgentAdapter):
                     await conn.cancel(session_id=session_id)
             with suppress(Exception):
                 if process is not None:
-                    await _terminate_process_tree(process)
+                    await _terminate_process_tree(
+                        process,
+                        extra_pids=tuple(known_descendant_pids),
+                    )
             duration_ms = int((time.monotonic() - start) * 1000)
             return CodingAgentRunOutput(
                 result=CodingAgentResult(
