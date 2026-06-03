@@ -93,6 +93,10 @@ class FakeAcpAgent(Agent):
         required_env_keys: tuple[str, ...] = (),
         child_pid_file: str | None = None,
         child_sleep: float = 60.0,
+        exit_on_set_session_mode: bool = False,
+        exit_on_set_config_option: bool = False,
+        exit_stderr: str = "",
+        exit_code: int = 1,
     ) -> None:
         self._agent_name = agent_name
         self._default_mode = default_mode
@@ -105,6 +109,10 @@ class FakeAcpAgent(Agent):
         self._child_pid_file = child_pid_file
         self._child_sleep = max(0.0, child_sleep)
         self._child_process: subprocess.Popen[bytes] | None = None
+        self._exit_on_set_session_mode = exit_on_set_session_mode
+        self._exit_on_set_config_option = exit_on_set_config_option
+        self._exit_stderr = exit_stderr
+        self._exit_code = exit_code
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
 
@@ -150,6 +158,14 @@ class FakeAcpAgent(Agent):
             str(self._child_process.pid),
             encoding="utf-8",
         )
+
+    def _exit_process_if_configured(self, should_exit: bool) -> None:
+        if not should_exit:
+            return
+        if self._exit_stderr:
+            print(self._exit_stderr, file=sys.stderr)
+            sys.stderr.flush()
+        os._exit(self._exit_code)
 
     async def new_session(
         self,
@@ -228,6 +244,7 @@ class FakeAcpAgent(Agent):
         **kwargs: Any,
     ) -> SetSessionModeResponse | None:
         _ = kwargs
+        self._exit_process_if_configured(self._exit_on_set_session_mode)
         state = self._sessions[session_id]
         state["config"]["mode"] = mode_id
         if self._client is not None:
@@ -256,6 +273,7 @@ class FakeAcpAgent(Agent):
         **kwargs: Any,
     ) -> SetSessionConfigOptionResponse | None:
         _ = kwargs
+        self._exit_process_if_configured(self._exit_on_set_config_option)
         state = self._sessions[session_id]
         state["config"][config_id] = value
         return SetSessionConfigOptionResponse(config_options=self._config_options(state["config"]))
@@ -472,6 +490,8 @@ async def _main() -> None:
     parser.add_argument("--require-env", action="append", default=[])
     parser.add_argument("--child-pid-file")
     parser.add_argument("--child-sleep", type=float, default=60.0)
+    parser.add_argument("--exit-on-set-session-mode", action="store_true")
+    parser.add_argument("--exit-on-set-config-option", action="store_true")
     args = parser.parse_args()
     _ = default_environment()
     if args.exit_before_initialize:
@@ -489,6 +509,10 @@ async def _main() -> None:
             required_env_keys=tuple(str(item) for item in args.require_env),
             child_pid_file=args.child_pid_file,
             child_sleep=args.child_sleep,
+            exit_on_set_session_mode=args.exit_on_set_session_mode,
+            exit_on_set_config_option=args.exit_on_set_config_option,
+            exit_stderr=args.stderr,
+            exit_code=args.exit_code,
         )
     )
 

@@ -75,6 +75,9 @@ _CODING_AGENT_ENV_PREFIXES = (
 )
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
 _PROCESS_STDERR_TAIL_MAX_BYTES = 8192
+_PROCESS_STDERR_TRUNCATED_MESSAGE = (
+    "[stderr truncated before redaction; retained output suppressed]"
+)
 _PROCESS_TREE_SHUTDOWN_GRACE_SEC = 0.2
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
 _TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT = 4096
@@ -443,17 +446,21 @@ class _ProcessStderrTail:
     def __init__(self, *, max_bytes: int = _PROCESS_STDERR_TAIL_MAX_BYTES) -> None:
         self._max_bytes = max(1, max_bytes)
         self._buffer = bytearray()
+        self._truncated = False
 
     def append(self, chunk: bytes) -> None:
         if not chunk:
             return
         self._buffer.extend(chunk)
         if len(self._buffer) > self._max_bytes:
+            self._truncated = True
             del self._buffer[: len(self._buffer) - self._max_bytes]
 
     def text(self) -> str:
         if not self._buffer:
             return ""
+        if self._truncated:
+            return _PROCESS_STDERR_TRUNCATED_MESSAGE
         decoded = self._buffer.decode("utf-8", errors="replace").strip()
         return _redact_transport_error_message(decoded)
 
@@ -898,6 +905,7 @@ class AcpAdapter(CodingAgentAdapter):
                         current_mode=current_mode,
                         available_modes=available_modes,
                         config=config,
+                        request_step=_step,
                     )
 
                     available_config = _extract_config_ids(
@@ -909,6 +917,7 @@ class AcpAdapter(CodingAgentAdapter):
                         available_config=available_config,
                         selected_mode=selected_mode,
                         config=config,
+                        request_step=_step,
                     )
 
                     prompt_response = await _step(
@@ -1093,15 +1102,25 @@ class AcpAdapter(CodingAgentAdapter):
         current_mode: str | None,
         available_modes: set[str],
         config: CodingAgentConfig,
+        request_step: Callable[[Awaitable[Any], str], Awaitable[Any]] | None = None,
     ) -> str | None:
         desired_modes = self._spec.read_only_modes if config.read_only else self._spec.write_modes
+
+        async def _request(awaitable: Awaitable[Any], phase: str) -> Any:
+            if request_step is None:
+                return await awaitable
+            return await request_step(awaitable, phase)
+
         for candidate in desired_modes:
             if candidate not in available_modes:
                 continue
             if candidate == current_mode:
                 return current_mode
             try:
-                await conn.set_session_mode(candidate, session_id=session_id)
+                await _request(
+                    conn.set_session_mode(candidate, session_id=session_id),
+                    "set_session_mode",
+                )
                 return candidate
             except RequestError:
                 continue
@@ -1115,6 +1134,7 @@ class AcpAdapter(CodingAgentAdapter):
         available_config: set[str],
         selected_mode: str | None,
         config: CodingAgentConfig,
+        request_step: Callable[[Awaitable[Any], str], Awaitable[Any]] | None = None,
     ) -> dict[str, str]:
         desired: dict[str, str] = {}
         if config.model:
@@ -1135,9 +1155,18 @@ class AcpAdapter(CodingAgentAdapter):
             desired["mode"] = desired_mode
 
         applied: dict[str, str] = {}
+
+        async def _request(awaitable: Awaitable[Any], phase: str) -> Any:
+            if request_step is None:
+                return await awaitable
+            return await request_step(awaitable, phase)
+
         for config_id, value in desired.items():
             try:
-                await conn.set_config_option(config_id, session_id=session_id, value=value)
+                await _request(
+                    conn.set_config_option(config_id, session_id=session_id, value=value),
+                    "set_config_option",
+                )
             except RequestError:
                 continue
             applied[config_id] = value

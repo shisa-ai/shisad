@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 from acp import RequestError
 
-from shisad.coding.acp_adapter import AcpAdapter, _request_error_payload
+from shisad.coding.acp_adapter import (
+    _PROCESS_STDERR_TRUNCATED_MESSAGE,
+    AcpAdapter,
+    _request_error_payload,
+)
 from shisad.coding.models import CodingAgentConfig
 from shisad.coding.registry import AgentCommandSpec
 
@@ -262,6 +266,107 @@ async def test_m3_acp_adapter_startup_exit_surfaces_stderr(tmp_path: Path) -> No
     }
     assert "exited during acp initialize" in result.result.summary.lower()
     assert "unknown variant 'default'" in result.result.summary
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_truncated_stderr_fails_closed_for_secrets(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-tail-secret-that-must-not-leak"
+    diagnostic = f"OPENAI_API_KEY={'x' * 9000}{secret}"
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "codex",
+            "--exit-before-initialize",
+            "--stderr",
+            diagnostic,
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            timeout_sec=1.0,
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error["stderr"] == _PROCESS_STDERR_TRUNCATED_MESSAGE
+    assert _PROCESS_STDERR_TRUNCATED_MESSAGE in result.result.summary
+    assert secret not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_mode_exit_surfaces_stderr(tmp_path: Path) -> None:
+    diagnostic = "mode setup failed after session start"
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "claude",
+            "--exit-on-set-session-mode",
+            "--stderr",
+            diagnostic,
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            timeout_sec=1.0,
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error == {
+        "kind": "process_exit",
+        "phase": "set_session_mode",
+        "returncode": 1,
+        "stderr": diagnostic,
+    }
+    assert "exited during acp set_session_mode" in result.result.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_config_exit_surfaces_stderr(tmp_path: Path) -> None:
+    diagnostic = "config setup failed after session start"
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "codex",
+            "--default-mode",
+            "plan",
+            "--exit-on-set-config-option",
+            "--stderr",
+            diagnostic,
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            timeout_sec=1.0,
+            read_only=True,
+            model="fast-model",
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error == {
+        "kind": "process_exit",
+        "phase": "set_config_option",
+        "returncode": 1,
+        "stderr": diagnostic,
+    }
+    assert "exited during acp set_config_option" in result.result.summary.lower()
 
 
 @pytest.mark.asyncio

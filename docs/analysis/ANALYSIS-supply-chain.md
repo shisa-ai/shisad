@@ -123,7 +123,7 @@ Gap:
 Current state:
 - `src/shisad/coding/registry.py` pins:
   - `@agentclientprotocol/claude-agent-acp@0.29.2`
-  - `@zed-industries/codex-acp@0.12.0`
+  - `@zed-industries/codex-acp@0.15.0`
   - `opencode-ai@1.3.10`
 
 Good:

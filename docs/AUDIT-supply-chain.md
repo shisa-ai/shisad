@@ -558,6 +558,42 @@ Security checks recorded for the refreshed adapter set:
 - `npm audit signatures --json` for the installed temporary project reported
   no invalid or missing signatures.
 
+## Follow-up Codex ACP Refresh (2026-06-03)
+
+The Codex ACP adapter was refreshed again after `@zed-industries/codex-acp@0.12.0`
+failed before ACP initialization with current Codex configuration containing
+`service_tier = "default"`. The adapter exit was reproduced locally; the newer
+adapter completed a live ACP canary through the normal registry path.
+
+1. Refreshed Codex ACP adapter within its active namespace:
+   - from `@zed-industries/codex-acp@0.12.0`
+   - to `@zed-industries/codex-acp@0.15.0`
+   - npm `dist.shasum`: `7d3f9096c6b8575ecde0455692c7900691a195ef`
+   - npm `dist.integrity`:
+     `sha512-eAv7sGBeiYrYkOulF729nrM51szS7WIhBtugRj5wWq6csRKZUhAZfoUZlF8xUWdHPtOIzd/eT6MNG6gMHu6z0w==`
+   - published: `2026-05-22T14:39:48.839Z`
+   - rationale: the active Codex ACP namespace published a bridge compatible
+     with the current Codex CLI/config surface; a default-registry live canary
+     completed through `@zed-industries/codex-acp@0.15.0`.
+
+Security checks recorded for the refreshed Codex adapter:
+
+- `npm audit --omit=dev --json` in a temporary npm project containing only
+  `@zed-industries/codex-acp@0.15.0` reported `0` vulnerabilities.
+- `npm audit signatures --json` for the Codex-only temporary project reported
+  no invalid or missing signatures.
+
+Security checks recorded for the full current adapter set:
+
+- `npm audit --omit=dev --json` in a temporary npm project containing
+  `@agentclientprotocol/claude-agent-acp@0.29.2`,
+  `@zed-industries/codex-acp@0.15.0`, and `opencode-ai@1.3.10` reported
+  `3` moderate vulnerabilities, all through the unchanged Claude adapter chain:
+  `@agentclientprotocol/claude-agent-acp` -> `@anthropic-ai/claude-agent-sdk`
+  -> `@anthropic-ai/sdk` advisory `GHSA-p7fg-763f-g4gf`.
+- `npm audit signatures --json` for the full temporary project reported no
+  invalid or missing signatures.
+
 ## Evidence and Commands (Snapshot Reproducibility)
 
 The audit findings below are based on these commands run against the working tree:
