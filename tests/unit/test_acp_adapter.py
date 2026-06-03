@@ -75,6 +75,10 @@ async def _failed_rpc() -> object:
     raise BrokenPipeError("connection lost")
 
 
+async def _request_error_rpc() -> object:
+    raise RequestError.auth_required({"missing_env": ["SHISAD_TEST_AUTH"]})
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_step_prefers_process_exit_when_rpc_fails_same_tick() -> None:
     stderr_tail = _ProcessStderrTail()
@@ -95,6 +99,23 @@ async def test_m3_acp_step_prefers_process_exit_when_rpc_fails_same_tick() -> No
         "returncode": 17,
         "stderr": "adapter crashed during send",
     }
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_step_preserves_request_error_when_process_exits_same_tick() -> None:
+    stderr_tail = _ProcessStderrTail()
+    stderr_tail.append(b"adapter exited after structured error")
+
+    with pytest.raises(RequestError) as captured:
+        await _await_acp_step(
+            _request_error_rpc(),
+            process=_ImmediatelyExitedProcess(),
+            stderr_tail=stderr_tail,
+            stderr_task=None,
+            phase="initialize",
+        )
+
+    assert captured.value.data == {"missing_env": ["SHISAD_TEST_AUTH"]}
 
 
 @pytest.mark.asyncio

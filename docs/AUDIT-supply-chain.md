@@ -590,9 +590,10 @@ Security checks recorded for the full current adapter set:
 - `npm audit --omit=dev --json` in a temporary npm project containing
   `@agentclientprotocol/claude-agent-acp@0.29.2`,
   `@zed-industries/codex-acp@0.15.0`, and `opencode-ai@1.3.10` reported
-  `3` moderate vulnerabilities, all through the unchanged Claude adapter chain:
-  `@agentclientprotocol/claude-agent-acp` -> `@anthropic-ai/claude-agent-sdk`
-  -> `@anthropic-ai/sdk` advisory `GHSA-p7fg-763f-g4gf`.
+  `3` moderate vulnerability rows, all through one advisory in the unchanged
+  Claude adapter chain: `@agentclientprotocol/claude-agent-acp` ->
+  `@anthropic-ai/claude-agent-sdk` -> `@anthropic-ai/sdk` advisory
+  `GHSA-p7fg-763f-g4gf`.
 - `npm audit signatures --json` for the full temporary project reported no
   invalid or missing signatures.
 

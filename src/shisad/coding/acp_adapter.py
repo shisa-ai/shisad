@@ -517,10 +517,17 @@ async def _await_acp_step(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if process_wait_task in done:
+            operation_exception: BaseException | None = None
             operation_failed = operation_task not in done
             if operation_task.done():
                 with suppress(asyncio.CancelledError):
-                    operation_failed = operation_task.exception() is not None
+                    operation_exception = operation_task.exception()
+                    operation_failed = operation_exception is not None
+            if isinstance(operation_exception, RequestError):
+                process_wait_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await process_wait_task
+                return await operation_task
             if operation_failed:
                 returncode = await process_wait_task
                 operation_task.cancel()
