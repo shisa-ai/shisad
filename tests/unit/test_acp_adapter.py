@@ -13,6 +13,9 @@ from acp import RequestError
 from shisad.coding.acp_adapter import (
     _PROCESS_STDERR_TRUNCATED_MESSAGE,
     AcpAdapter,
+    _AcpProcessExited,
+    _await_acp_step,
+    _ProcessStderrTail,
     _request_error_payload,
 )
 from shisad.coding.models import CodingAgentConfig
@@ -61,6 +64,37 @@ async def _wait_until_process_exits(pid: int) -> bool:
             return True
         await asyncio.sleep(0.02)
     return False
+
+
+class _ImmediatelyExitedProcess:
+    async def wait(self) -> int:
+        return 17
+
+
+async def _failed_rpc() -> object:
+    raise BrokenPipeError("connection lost")
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_step_prefers_process_exit_when_rpc_fails_same_tick() -> None:
+    stderr_tail = _ProcessStderrTail()
+    stderr_tail.append(b"adapter crashed during send")
+
+    with pytest.raises(_AcpProcessExited) as captured:
+        await _await_acp_step(
+            _failed_rpc(),
+            process=_ImmediatelyExitedProcess(),
+            stderr_tail=stderr_tail,
+            stderr_task=None,
+            phase="prompt",
+        )
+
+    assert captured.value.payload() == {
+        "kind": "process_exit",
+        "phase": "prompt",
+        "returncode": 17,
+        "stderr": "adapter crashed during send",
+    }
 
 
 @pytest.mark.asyncio

@@ -516,6 +516,22 @@ async def _await_acp_step(
             {operation_task, process_wait_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        if process_wait_task in done:
+            operation_failed = operation_task not in done
+            if operation_task.done():
+                with suppress(asyncio.CancelledError):
+                    operation_failed = operation_task.exception() is not None
+            if operation_failed:
+                returncode = await process_wait_task
+                operation_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await operation_task
+                await _wait_for_stderr_flush(stderr_task)
+                raise _AcpProcessExited(
+                    phase=phase,
+                    returncode=returncode,
+                    stderr=stderr_tail.text(),
+                )
         if operation_task in done:
             process_wait_task.cancel()
             with suppress(asyncio.CancelledError):
