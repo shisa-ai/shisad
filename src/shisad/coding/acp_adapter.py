@@ -524,6 +524,7 @@ async def _await_acp_step(
                     operation_exception = operation_task.exception()
                     operation_failed = operation_exception is not None
             if isinstance(operation_exception, RequestError):
+                await _wait_for_stderr_flush(stderr_task)
                 process_wait_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await process_wait_task

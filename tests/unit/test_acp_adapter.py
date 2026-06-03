@@ -79,6 +79,11 @@ async def _request_error_rpc() -> object:
     raise RequestError.auth_required({"missing_env": ["SHISAD_TEST_AUTH"]})
 
 
+async def _delayed_stderr(stderr_tail: _ProcessStderrTail) -> None:
+    await asyncio.sleep(0)
+    stderr_tail.append(b"structured error stderr")
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_step_prefers_process_exit_when_rpc_fails_same_tick() -> None:
     stderr_tail = _ProcessStderrTail()
@@ -116,6 +121,23 @@ async def test_m3_acp_step_preserves_request_error_when_process_exits_same_tick(
         )
 
     assert captured.value.data == {"missing_env": ["SHISAD_TEST_AUTH"]}
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_step_flushes_stderr_before_same_tick_request_error() -> None:
+    stderr_tail = _ProcessStderrTail()
+    stderr_task = asyncio.create_task(_delayed_stderr(stderr_tail))
+
+    with pytest.raises(RequestError):
+        await _await_acp_step(
+            _request_error_rpc(),
+            process=_ImmediatelyExitedProcess(),
+            stderr_tail=stderr_tail,
+            stderr_task=stderr_task,
+            phase="initialize",
+        )
+
+    assert stderr_tail.text() == "structured error stderr"
 
 
 @pytest.mark.asyncio
