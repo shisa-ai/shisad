@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -80,6 +81,15 @@ _PROCESS_STDERR_TRUNCATED_MESSAGE = (
     "[stderr truncated before redaction; retained output suppressed]"
 )
 _PROCESS_TREE_SHUTDOWN_GRACE_SEC = 0.2
+_PROCESS_GROUP_WRAPPER_CODE = (
+    "import os, sys\n"
+    "argv = sys.argv[1:]\n"
+    "try:\n"
+    "    os.setsid()\n"
+    "except (AttributeError, OSError):\n"
+    "    pass\n"
+    "os.execvp(argv[0], argv)\n"
+)
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
 _TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT = 4096
 _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
@@ -175,15 +185,19 @@ def _command_executable_exists(command: tuple[str, ...]) -> bool:
 def _agent_process_command(command: tuple[str, ...]) -> tuple[str, ...]:
     if not _command_executable_exists(command):
         return command
-    setsid = shutil.which("setsid")
-    if setsid is None:
+    if os.name != "posix" or not hasattr(os, "setsid"):
         return command
     # Isolate adapter CLIs so cleanup can terminate descendants the CLI leaves behind.
-    return (setsid, "--wait", *command)
+    return (sys.executable, "-c", _PROCESS_GROUP_WRAPPER_CODE, *command)
 
 
-def _uses_setsid_wrapper(command: tuple[str, ...]) -> bool:
-    return len(command) >= 2 and Path(command[0]).name == "setsid" and command[1] == "--wait"
+def _uses_process_group_wrapper(command: tuple[str, ...]) -> bool:
+    return (
+        len(command) >= 3
+        and command[0] == sys.executable
+        and command[1] == "-c"
+        and command[2] == _PROCESS_GROUP_WRAPPER_CODE
+    )
 
 
 def _bounded_summary(text: str, *, max_chars: int = _CODING_AGENT_SUMMARY_MAX_CHARS) -> str:
@@ -969,7 +983,7 @@ class AcpAdapter(CodingAgentAdapter):
         process_group_id: int | None = None
         stderr_tail = _ProcessStderrTail()
         launch_command = _agent_process_command(self._spec.command)
-        launch_uses_setsid = _uses_setsid_wrapper(launch_command)
+        launch_uses_process_group_wrapper = _uses_process_group_wrapper(launch_command)
 
         async def _run_session() -> CodingAgentRunOutput:
             nonlocal applied_config, conn, process, process_group_id, selected_mode, session_id
@@ -983,8 +997,8 @@ class AcpAdapter(CodingAgentAdapter):
                 conn = inner_conn
                 process = inner_process
                 process_group_id = _process_group_id(process)
-                if process_group_id is None and launch_uses_setsid:
-                    # setsid may not have switched groups when we inspect immediately.
+                if process_group_id is None and launch_uses_process_group_wrapper:
+                    # The wrapper may not have switched groups when we inspect immediately.
                     pid = getattr(process, "pid", None)
                     if isinstance(pid, int) and pid > 0:
                         process_group_id = pid

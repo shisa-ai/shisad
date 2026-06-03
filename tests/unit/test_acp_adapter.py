@@ -14,6 +14,7 @@ from shisad.coding.acp_adapter import (
     _PROCESS_STDERR_TRUNCATED_MESSAGE,
     AcpAdapter,
     _AcpProcessExited,
+    _agent_process_command,
     _await_acp_step,
     _ProcessStderrTail,
     _request_error_payload,
@@ -92,6 +93,21 @@ async def _slow_secret_stderr(stderr_tail: _ProcessStderrTail) -> None:
 async def _late_secret_stderr(stderr_tail: _ProcessStderrTail) -> None:
     await asyncio.sleep(0.2)
     stderr_tail.append(b"OPENAI_API_KEY=sk-late-secret")
+
+
+def test_m3_acp_adapter_process_group_wrapper_does_not_require_gnu_setsid() -> None:
+    original_command = (sys.executable, "-c", "pass")
+    launch_command = _agent_process_command(original_command)
+
+    if os.name == "posix" and hasattr(os, "setsid"):
+        assert launch_command[:3] != ("setsid", "--wait", sys.executable)
+        assert Path(launch_command[0]).name != "setsid"
+        assert "--wait" not in launch_command
+        assert launch_command[0] == sys.executable
+        assert launch_command[1] == "-c"
+        assert launch_command[3:] == original_command
+    else:
+        assert launch_command == original_command
 
 
 @pytest.mark.asyncio
