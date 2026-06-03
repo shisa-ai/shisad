@@ -89,6 +89,11 @@ async def _slow_secret_stderr(stderr_tail: _ProcessStderrTail) -> None:
     await asyncio.sleep(60)
 
 
+async def _late_secret_stderr(stderr_tail: _ProcessStderrTail) -> None:
+    await asyncio.sleep(0.2)
+    stderr_tail.append(b"OPENAI_API_KEY=sk-late-secret")
+
+
 @pytest.mark.asyncio
 async def test_m3_acp_step_prefers_process_exit_when_rpc_fails_same_tick() -> None:
     stderr_tail = _ProcessStderrTail()
@@ -166,6 +171,25 @@ async def test_m3_acp_step_suppresses_stderr_when_flush_times_out() -> None:
         stderr_task.cancel()
         with suppress(asyncio.CancelledError):
             await stderr_task
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_step_suppresses_late_stderr_after_flush_timeout() -> None:
+    stderr_tail = _ProcessStderrTail()
+    stderr_task = asyncio.create_task(_late_secret_stderr(stderr_tail))
+
+    with pytest.raises(RequestError):
+        await _await_acp_step(
+            _request_error_rpc(),
+            process=_ImmediatelyExitedProcess(),
+            stderr_tail=stderr_tail,
+            stderr_task=stderr_task,
+            phase="initialize",
+        )
+    await asyncio.wait_for(stderr_task, timeout=1.0)
+
+    assert stderr_tail.text() == _PROCESS_STDERR_TRUNCATED_MESSAGE
+    assert "sk-late-secret" not in stderr_tail.text()
 
 
 @pytest.mark.asyncio
@@ -314,6 +338,42 @@ async def test_m3_acp_adapter_timeout_cleans_up_descendant_processes(tmp_path: P
 
     assert result.result.success is False
     assert result.error_code == "timeout"
+    assert child_exited
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_success_cleans_up_descendant_process(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "success-child.pid"
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "claude",
+            "--child-pid-file",
+            str(child_pid_file),
+            "--child-sleep",
+            "60.0",
+        )
+    )
+
+    run_task = asyncio.create_task(
+        adapter.run(
+            prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+            workdir=tmp_path,
+            config=CodingAgentConfig(
+                preferred_agent="claude",
+                timeout_sec=2.0,
+                read_only=True,
+            ),
+        )
+    )
+    child_pid = await _wait_for_pid_file(child_pid_file)
+    result = await run_task
+
+    child_exited = await _wait_until_process_exits(child_pid)
+    if not child_exited:
+        with suppress(ProcessLookupError):
+            os.kill(child_pid, signal.SIGKILL)
+
+    assert result.result.success is True
     assert child_exited
 
 

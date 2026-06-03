@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import re
+import shutil
 import signal
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -162,6 +163,27 @@ def _coding_agent_environment() -> dict[str, str]:
         ):
             env[key] = value
     return env
+
+
+def _command_executable_exists(command: tuple[str, ...]) -> bool:
+    executable = command[0]
+    if Path(executable).is_absolute():
+        return Path(executable).exists()
+    return shutil.which(executable) is not None
+
+
+def _agent_process_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    if not _command_executable_exists(command):
+        return command
+    setsid = shutil.which("setsid")
+    if setsid is None:
+        return command
+    # Isolate adapter CLIs so cleanup can terminate descendants the CLI leaves behind.
+    return (setsid, "--wait", *command)
+
+
+def _uses_setsid_wrapper(command: tuple[str, ...]) -> bool:
+    return len(command) >= 2 and Path(command[0]).name == "setsid" and command[1] == "--wait"
 
 
 def _bounded_summary(text: str, *, max_chars: int = _CODING_AGENT_SUMMARY_MAX_CHARS) -> str:
@@ -465,8 +487,7 @@ class _ProcessStderrTail:
         return _redact_transport_error_message(decoded)
 
     def mark_incomplete(self) -> None:
-        if self._buffer:
-            self._truncated = True
+        self._truncated = True
 
 
 class _AcpProcessExited(RuntimeError):
@@ -586,6 +607,41 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
+def _process_group_has_running_members(process_group_id: int | None) -> bool:
+    if process_group_id is None:
+        return False
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return False
+    # Poll the live group instead of caching child PIDs that may later be reused.
+    for stat_file in proc_root.glob("[0-9]*/stat"):
+        try:
+            stat = stat_file.read_text(encoding="utf-8")
+            fields = stat.rsplit(")", 1)[1].strip().split()
+            state = fields[0]
+            group_id = int(fields[2])
+        except (OSError, IndexError, ValueError):
+            continue
+        if group_id == process_group_id and state != "Z":
+            return True
+    return False
+
+
+async def _wait_for_process_group_exit(
+    process_group_id: int | None,
+    *,
+    timeout: float,
+) -> bool:
+    if process_group_id is None:
+        return True
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_group_has_running_members(process_group_id):
+            return True
+        await asyncio.sleep(0.02)
+    return not _process_group_has_running_members(process_group_id)
+
+
 def _descendant_pids(pid: int) -> tuple[int, ...]:
     descendants: list[int] = []
     seen: set[int] = set()
@@ -616,30 +672,59 @@ def _signal_processes(pids: tuple[int, ...], sig: signal.Signals) -> None:
             os.kill(pid, sig)
 
 
+def _process_group_id(process: Any) -> int | None:
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError):
+        return None
+    if pgid <= 0 or pgid == os.getpgrp():
+        return None
+    return pgid
+
+
+def _signal_process_group_id(process_group_id: int | None, sig: signal.Signals) -> None:
+    if process_group_id is None:
+        return
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(process_group_id, sig)
+
+
 async def _terminate_process_tree(
     process: Any,
     *,
-    extra_pids: tuple[int, ...] = (),
+    process_group_id: int | None = None,
 ) -> None:
     pid = getattr(process, "pid", None)
     if not isinstance(pid, int) or pid <= 0:
-        _signal_processes(extra_pids, signal.SIGTERM)
-        remaining_extra = tuple(target for target in extra_pids if _process_exists(target))
-        _signal_processes(remaining_extra, signal.SIGKILL)
+        _signal_process_group_id(process_group_id, signal.SIGTERM)
+        _signal_process_group_id(process_group_id, signal.SIGKILL)
         return
 
     descendants = _descendant_pids(pid)
-    targets = tuple(dict.fromkeys((*reversed(descendants), *reversed(extra_pids), pid)))
+    targets = (*reversed(descendants), pid)
+    _signal_process_group_id(process_group_id, signal.SIGTERM)
     _signal_processes(targets, signal.SIGTERM)
     with suppress(asyncio.TimeoutError, ProcessLookupError):
         await asyncio.wait_for(process.wait(), timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC)
+    group_exited = await _wait_for_process_group_exit(
+        process_group_id,
+        timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC,
+    )
 
     remaining = tuple(target for target in targets if _process_exists(target))
-    if not remaining:
+    if not remaining and group_exited:
         return
+    _signal_process_group_id(process_group_id, signal.SIGKILL)
     _signal_processes(remaining, signal.SIGKILL)
     with suppress(asyncio.TimeoutError, ProcessLookupError):
         await asyncio.wait_for(process.wait(), timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC)
+    await _wait_for_process_group_exit(
+        process_group_id,
+        timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC,
+    )
 
 
 def _extract_summary(notifications: tuple[dict[str, Any], ...]) -> str:
@@ -881,26 +966,31 @@ class AcpAdapter(CodingAgentAdapter):
         applied_config: dict[str, str] = {}
         conn: Any | None = None
         process: Any | None = None
+        process_group_id: int | None = None
         stderr_tail = _ProcessStderrTail()
-        known_descendant_pids: set[int] = set()
+        launch_command = _agent_process_command(self._spec.command)
+        launch_uses_setsid = _uses_setsid_wrapper(launch_command)
 
         async def _run_session() -> CodingAgentRunOutput:
-            nonlocal applied_config, conn, process, selected_mode, session_id
+            nonlocal applied_config, conn, process, process_group_id, selected_mode, session_id
             async with spawn_agent_process(
                 recorder,
-                *self._spec.command,
+                *launch_command,
                 env=env,
                 cwd=str(workdir),
                 transport_kwargs={"limit": DEFAULT_STDIO_BUFFER_LIMIT_BYTES},
             ) as (inner_conn, inner_process):
                 conn = inner_conn
                 process = inner_process
+                process_group_id = _process_group_id(process)
+                if process_group_id is None and launch_uses_setsid:
+                    # setsid may not have switched groups when we inspect immediately.
+                    pid = getattr(process, "pid", None)
+                    if isinstance(pid, int) and pid > 0:
+                        process_group_id = pid
                 stderr_task = asyncio.create_task(_drain_process_stderr(process, stderr_tail))
 
                 async def _step(awaitable: Awaitable[Any], phase: str) -> Any:
-                    pid = getattr(process, "pid", None)
-                    if isinstance(pid, int) and pid > 0:
-                        known_descendant_pids.update(_descendant_pids(pid))
                     return await _await_acp_step(
                         awaitable,
                         process=process,
@@ -998,19 +1088,11 @@ class AcpAdapter(CodingAgentAdapter):
                         selected_mode=recorder.current_mode or selected_mode,
                         applied_config={**applied_config, **recorder.applied_config},
                     )
-                except asyncio.CancelledError:
-                    await _terminate_process_tree(
-                        process,
-                        extra_pids=tuple(known_descendant_pids),
-                    )
-                    raise
-                except Exception:
-                    await _terminate_process_tree(
-                        process,
-                        extra_pids=tuple(known_descendant_pids),
-                    )
-                    raise
                 finally:
+                    await _terminate_process_tree(
+                        process,
+                        process_group_id=process_group_id,
+                    )
                     stderr_task.cancel()
                     with suppress(asyncio.CancelledError, Exception):
                         await stderr_task
@@ -1026,10 +1108,7 @@ class AcpAdapter(CodingAgentAdapter):
                     await conn.cancel(session_id=session_id)
             with suppress(Exception):
                 if process is not None:
-                    await _terminate_process_tree(
-                        process,
-                        extra_pids=tuple(known_descendant_pids),
-                    )
+                    await _terminate_process_tree(process, process_group_id=process_group_id)
             duration_ms = int((time.monotonic() - start) * 1000)
             return CodingAgentRunOutput(
                 result=CodingAgentResult(
