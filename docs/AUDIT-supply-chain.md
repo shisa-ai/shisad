@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07; Codex ACP adapter provenance is recorded for `0.15.0`; the current full coding-adapter npm audit reports `3` moderate advisories through the unchanged Claude adapter chain |
+| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07; Codex ACP adapter provenance is recorded for `0.15.0`; the current full coding-adapter npm audit reports `3` moderate vulnerability rows through one advisory in the unchanged Claude adapter chain |
 
 ## Pre-analysis Notes
 
@@ -462,7 +462,9 @@ New packages should meet a higher bar than upgrades:
 
 ## DEFERRALS
 
-No open supply-chain deferrals as of 2026-05-07.
+No open supply-chain deferrals as of 2026-06-03. The current Claude
+adapter-chain advisory is recorded above as accepted runtime-npx adapter risk,
+not as a new open deferral in this document.
 
 ### Closed Deferrals
 
@@ -1381,8 +1383,9 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
   `SHISAD_REQUIRE_LOCAL_ADAPTERS=1`.
 - Codex ACP runtime adapter provenance is current for
   `@zed-industries/codex-acp@0.15.0`; the full current coding-adapter set still
-  carries `3` moderate npm advisories through the unchanged Claude adapter
-  chain and remains part of the accepted runtime-npx adapter risk.
+  carries `3` moderate npm vulnerability rows through one advisory in the
+  unchanged Claude adapter chain and remains part of the accepted runtime-npx
+  adapter risk.
 - Bootstrap/installer paths (apt-get, curl-pipe-sh) remain mutable but are
   operationally standard and accepted risk at this scale.
 
@@ -1391,9 +1394,9 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 This repo is **baseline-hardened with a small set of accepted operational
 risks**. The v0.5.3 hardening pass, the v0.6.0 release-close refresh, and the
 2026-06-03 Codex ACP adapter evidence refresh closed the immediate
-CI/release-path and Codex adapter provenance gaps. Remaining open items
-(periodic hygiene inventory diffs, internal package mirror/proxy, external
-GitHub/PyPI release environment audits, the current Claude adapter-chain
-moderate advisory, hardware-backed release signing, and future container-image
-signing) are lower priority or release-close/future-surface work with
-documented deferral targets.
+CI/release-path and Codex adapter provenance gaps. The current Claude
+adapter-chain advisory is recorded as accepted runtime-npx adapter risk rather
+than an open deferral. Remaining open items (periodic hygiene inventory diffs,
+internal package mirror/proxy, external GitHub/PyPI release environment audits,
+hardware-backed release signing, and future container-image signing) are lower
+priority or release-close/future-surface work with documented deferral targets.
