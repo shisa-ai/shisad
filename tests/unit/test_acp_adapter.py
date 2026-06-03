@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -19,6 +23,40 @@ def _fake_agent_spec(agent_name: str, *extra_args: str) -> AgentCommandSpec:
         read_only_modes=("plan", "read-only"),
         write_modes=("build", "auto"),
     )
+
+
+async def _wait_for_pid_file(path: Path) -> int:
+    for _ in range(100):
+        if path.exists():
+            return int(path.read_text(encoding="utf-8").strip())
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"timed out waiting for child pid file {path}")
+
+
+def _process_is_running(pid: int) -> bool:
+    proc_stat = Path("/proc") / str(pid) / "stat"
+    if proc_stat.exists():
+        try:
+            fields = proc_stat.read_text(encoding="utf-8").split()
+        except OSError:
+            return False
+        if len(fields) > 2 and fields[2] == "Z":
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _wait_until_process_exits(pid: int) -> bool:
+    for _ in range(50):
+        if not _process_is_running(pid):
+            return True
+        await asyncio.sleep(0.02)
+    return False
 
 
 @pytest.mark.asyncio
@@ -132,6 +170,45 @@ async def test_m3_acp_adapter_timeout_maps_to_clean_failure(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_m3_acp_adapter_timeout_cleans_up_descendant_processes(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "claude",
+            "--initialize-sleep",
+            "5.0",
+            "--child-pid-file",
+            str(child_pid_file),
+            "--child-sleep",
+            "60.0",
+        )
+    )
+
+    run_task = asyncio.create_task(
+        adapter.run(
+            prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+            workdir=tmp_path,
+            config=CodingAgentConfig(
+                preferred_agent="claude",
+                timeout_sec=1.0,
+                read_only=True,
+            ),
+        )
+    )
+    child_pid = await _wait_for_pid_file(child_pid_file)
+    result = await run_task
+
+    child_exited = await _wait_until_process_exits(child_pid)
+    if not child_exited:
+        with suppress(ProcessLookupError):
+            os.kill(child_pid, signal.SIGKILL)
+
+    assert result.result.success is False
+    assert result.error_code == "timeout"
+    assert child_exited
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_timeout_covers_initialize_handshake(tmp_path: Path) -> None:
     adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--initialize-sleep", "0.25"))
 
@@ -148,6 +225,43 @@ async def test_m3_acp_adapter_timeout_covers_initialize_handshake(tmp_path: Path
     assert result.result.success is False
     assert result.error_code == "timeout"
     assert "timed out" in result.result.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_startup_exit_surfaces_stderr(tmp_path: Path) -> None:
+    diagnostic = (
+        "error loading config: /home/ubuntu/.codex/config.toml:4:16: "
+        "unknown variant 'default', expected 'fast' or 'flex'"
+    )
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec(
+            "codex",
+            "--exit-before-initialize",
+            "--stderr",
+            diagnostic,
+        )
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            timeout_sec=1.0,
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error == {
+        "kind": "process_exit",
+        "phase": "initialize",
+        "returncode": 1,
+        "stderr": diagnostic,
+    }
+    assert "exited during acp initialize" in result.result.summary.lower()
+    assert "unknown variant 'default'" in result.result.summary
 
 
 @pytest.mark.asyncio

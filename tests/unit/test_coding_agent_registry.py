@@ -24,7 +24,7 @@ def test_m3_default_agent_registry_contains_pinned_acp_commands() -> None:
     assert registry["codex"].command == (
         "npx",
         "-y",
-        "@zed-industries/codex-acp@0.12.0",
+        "@zed-industries/codex-acp@0.15.0",
     )
     assert registry["opencode"].command == (
         "npx",

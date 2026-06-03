@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import re
+import signal
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -73,6 +74,8 @@ _CODING_AGENT_ENV_PREFIXES = (
     "OPENROUTER_",
 )
 _CODING_AGENT_SUMMARY_MAX_CHARS = 4000
+_PROCESS_STDERR_TAIL_MAX_BYTES = 8192
+_PROCESS_TREE_SHUTDOWN_GRACE_SEC = 0.2
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
 _TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT = 4096
 _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
@@ -436,6 +439,162 @@ def _request_error_payload(exc: RequestError) -> dict[str, Any]:
     return payload
 
 
+class _ProcessStderrTail:
+    def __init__(self, *, max_bytes: int = _PROCESS_STDERR_TAIL_MAX_BYTES) -> None:
+        self._max_bytes = max(1, max_bytes)
+        self._buffer = bytearray()
+
+    def append(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self._buffer.extend(chunk)
+        if len(self._buffer) > self._max_bytes:
+            del self._buffer[: len(self._buffer) - self._max_bytes]
+
+    def text(self) -> str:
+        if not self._buffer:
+            return ""
+        decoded = self._buffer.decode("utf-8", errors="replace").strip()
+        return _redact_transport_error_message(decoded)
+
+
+class _AcpProcessExited(RuntimeError):
+    def __init__(self, *, phase: str, returncode: int | None, stderr: str) -> None:
+        super().__init__(f"ACP process exited during {phase}")
+        self.phase = phase
+        self.returncode = returncode
+        self.stderr = stderr
+
+    def payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "kind": "process_exit",
+            "phase": self.phase,
+            "returncode": self.returncode,
+            "stderr": self.stderr,
+        }
+        return payload
+
+
+async def _drain_process_stderr(process: Any, stderr_tail: _ProcessStderrTail) -> None:
+    stderr = getattr(process, "stderr", None)
+    if stderr is None:
+        return
+    while True:
+        chunk = await stderr.read(1024)
+        if not chunk:
+            return
+        stderr_tail.append(chunk)
+
+
+async def _wait_for_stderr_flush(stderr_task: asyncio.Task[None] | None) -> None:
+    if stderr_task is None:
+        await asyncio.sleep(0)
+        return
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(stderr_task), timeout=0.1)
+
+
+async def _await_acp_step(
+    awaitable: Awaitable[Any],
+    *,
+    process: Any,
+    stderr_tail: _ProcessStderrTail,
+    stderr_task: asyncio.Task[None] | None,
+    phase: str,
+) -> Any:
+    operation_task: asyncio.Future[Any] = asyncio.ensure_future(awaitable)
+    process_wait_task: asyncio.Task[Any] = asyncio.create_task(process.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {operation_task, process_wait_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation_task in done:
+            process_wait_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await process_wait_task
+            return await operation_task
+
+        returncode = await process_wait_task
+        operation_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await operation_task
+        await _wait_for_stderr_flush(stderr_task)
+        raise _AcpProcessExited(
+            phase=phase,
+            returncode=returncode,
+            stderr=stderr_tail.text(),
+        )
+    finally:
+        if not operation_task.done():
+            operation_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await operation_task
+        if not process_wait_task.done():
+            process_wait_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await process_wait_task
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _descendant_pids(pid: int) -> tuple[int, ...]:
+    descendants: list[int] = []
+    seen: set[int] = set()
+    pending = [pid]
+    while pending:
+        current = pending.pop()
+        children_file = Path("/proc") / str(current) / "task" / str(current) / "children"
+        try:
+            raw_children = children_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for raw_child in raw_children.split():
+            try:
+                child_pid = int(raw_child)
+            except ValueError:
+                continue
+            if child_pid in seen:
+                continue
+            seen.add(child_pid)
+            descendants.append(child_pid)
+            pending.append(child_pid)
+    return tuple(descendants)
+
+
+def _signal_processes(pids: tuple[int, ...], sig: signal.Signals) -> None:
+    for pid in pids:
+        with suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+
+
+async def _terminate_process_tree(process: Any) -> None:
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return
+
+    descendants = _descendant_pids(pid)
+    targets = (*reversed(descendants), pid)
+    _signal_processes(targets, signal.SIGTERM)
+    with suppress(asyncio.TimeoutError, ProcessLookupError):
+        await asyncio.wait_for(process.wait(), timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC)
+
+    remaining = tuple(target for target in targets if _process_exists(target))
+    if not remaining:
+        return
+    _signal_processes(remaining, signal.SIGKILL)
+    with suppress(asyncio.TimeoutError, ProcessLookupError):
+        await asyncio.wait_for(process.wait(), timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC)
+
+
 def _extract_summary(notifications: tuple[dict[str, Any], ...]) -> str:
     messages: list[str] = []
     for notification in notifications:
@@ -675,6 +834,7 @@ class AcpAdapter(CodingAgentAdapter):
         applied_config: dict[str, str] = {}
         conn: Any | None = None
         process: Any | None = None
+        stderr_tail = _ProcessStderrTail()
 
         async def _run_session() -> CodingAgentRunOutput:
             nonlocal applied_config, conn, process, selected_mode, session_id
@@ -687,78 +847,111 @@ class AcpAdapter(CodingAgentAdapter):
             ) as (inner_conn, inner_process):
                 conn = inner_conn
                 process = inner_process
-                await conn.initialize(
-                    PROTOCOL_VERSION,
-                    client_info=Implementation(name="shisad", version="0.4.0"),
-                )
-                new_session = await conn.new_session(cwd=str(workdir))
-                session_id = str(new_session.session_id)
-                if on_session_started is not None:
-                    try:
-                        callback_result = on_session_started(session_id)
-                        if inspect.isawaitable(callback_result):
-                            await callback_result
-                    except Exception:
-                        logger.warning(
-                            "ACP session-start callback failed for agent=%s session_id=%s",
-                            self._spec.name,
-                            session_id,
-                            exc_info=True,
-                        )
+                stderr_task = asyncio.create_task(_drain_process_stderr(process, stderr_tail))
 
-                available_modes = _extract_mode_ids(getattr(new_session, "modes", None))
-                current_mode = (
-                    str(getattr(getattr(new_session, "modes", None), "current_mode_id", "")).strip()
-                    or None
-                )
-                selected_mode = await self._apply_mode(
-                    conn=conn,
-                    session_id=session_id,
-                    current_mode=current_mode,
-                    available_modes=available_modes,
-                    config=config,
-                )
+                async def _step(awaitable: Awaitable[Any], phase: str) -> Any:
+                    return await _await_acp_step(
+                        awaitable,
+                        process=process,
+                        stderr_tail=stderr_tail,
+                        stderr_task=stderr_task,
+                        phase=phase,
+                    )
 
-                available_config = _extract_config_ids(getattr(new_session, "config_options", None))
-                applied_config = await self._apply_config(
-                    conn=conn,
-                    session_id=session_id,
-                    available_config=available_config,
-                    selected_mode=selected_mode,
-                    config=config,
-                )
-
-                prompt_response = await conn.prompt(
-                    [text_block(prompt_text)],
-                    session_id=session_id,
-                )
-                await asyncio.sleep(0)
-                duration_ms = int((time.monotonic() - start) * 1000)
-                raw_updates = tuple(recorder.notifications)
-                if not _extract_summary(raw_updates):
-                    await asyncio.sleep(0.05)
-                    raw_updates = tuple(recorder.notifications)
-                cost_usd = recorder.cost_usd
-                if cost_usd is None:
-                    cost_usd = _extract_cost_usd(getattr(prompt_response, "field_meta", None))
-                return CodingAgentRunOutput(
-                    result=CodingAgentResult(
-                        agent=self._spec.name,
-                        task=prompt_text,
-                        success=True,
-                        summary=_bounded_summary(
-                            _extract_summary(raw_updates) or "Coding agent completed."
+                try:
+                    await _step(
+                        conn.initialize(
+                            PROTOCOL_VERSION,
+                            client_info=Implementation(name="shisad", version="0.4.0"),
                         ),
-                        cost=cost_usd,
-                        duration_ms=duration_ms,
-                        files_changed=_extract_files_changed(raw_updates),
-                    ),
-                    stop_reason=str(getattr(prompt_response, "stop_reason", "")).strip(),
-                    session_id=session_id,
-                    raw_updates=raw_updates,
-                    selected_mode=recorder.current_mode or selected_mode,
-                    applied_config={**applied_config, **recorder.applied_config},
-                )
+                        "initialize",
+                    )
+                    new_session = await _step(conn.new_session(cwd=str(workdir)), "new_session")
+                    session_id = str(new_session.session_id)
+                    if on_session_started is not None:
+                        try:
+                            callback_result = on_session_started(session_id)
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+                        except Exception:
+                            logger.warning(
+                                "ACP session-start callback failed for agent=%s session_id=%s",
+                                self._spec.name,
+                                session_id,
+                                exc_info=True,
+                            )
+
+                    available_modes = _extract_mode_ids(getattr(new_session, "modes", None))
+                    current_mode = (
+                        str(
+                            getattr(
+                                getattr(new_session, "modes", None),
+                                "current_mode_id",
+                                "",
+                            )
+                        ).strip()
+                        or None
+                    )
+                    selected_mode = await self._apply_mode(
+                        conn=conn,
+                        session_id=session_id,
+                        current_mode=current_mode,
+                        available_modes=available_modes,
+                        config=config,
+                    )
+
+                    available_config = _extract_config_ids(
+                        getattr(new_session, "config_options", None)
+                    )
+                    applied_config = await self._apply_config(
+                        conn=conn,
+                        session_id=session_id,
+                        available_config=available_config,
+                        selected_mode=selected_mode,
+                        config=config,
+                    )
+
+                    prompt_response = await _step(
+                        conn.prompt(
+                            [text_block(prompt_text)],
+                            session_id=session_id,
+                        ),
+                        "prompt",
+                    )
+                    await asyncio.sleep(0)
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    raw_updates = tuple(recorder.notifications)
+                    if not _extract_summary(raw_updates):
+                        await asyncio.sleep(0.05)
+                        raw_updates = tuple(recorder.notifications)
+                    cost_usd = recorder.cost_usd
+                    if cost_usd is None:
+                        cost_usd = _extract_cost_usd(getattr(prompt_response, "field_meta", None))
+                    return CodingAgentRunOutput(
+                        result=CodingAgentResult(
+                            agent=self._spec.name,
+                            task=prompt_text,
+                            success=True,
+                            summary=_bounded_summary(
+                                _extract_summary(raw_updates) or "Coding agent completed."
+                            ),
+                            cost=cost_usd,
+                            duration_ms=duration_ms,
+                            files_changed=_extract_files_changed(raw_updates),
+                        ),
+                        stop_reason=str(getattr(prompt_response, "stop_reason", "")).strip(),
+                        session_id=session_id,
+                        raw_updates=raw_updates,
+                        selected_mode=recorder.current_mode or selected_mode,
+                        applied_config={**applied_config, **recorder.applied_config},
+                    )
+                except asyncio.CancelledError:
+                    await _terminate_process_tree(process)
+                    raise
+                finally:
+                    stderr_task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await stderr_task
 
         try:
             if config.timeout_sec is not None:
@@ -769,12 +962,9 @@ class AcpAdapter(CodingAgentAdapter):
             with suppress(Exception):
                 if conn is not None and session_id:
                     await conn.cancel(session_id=session_id)
-            with suppress(ProcessLookupError):
-                if process is not None:
-                    process.kill()
             with suppress(Exception):
                 if process is not None:
-                    await process.wait()
+                    await _terminate_process_tree(process)
             duration_ms = int((time.monotonic() - start) * 1000)
             return CodingAgentRunOutput(
                 result=CodingAgentResult(
@@ -787,6 +977,31 @@ class AcpAdapter(CodingAgentAdapter):
                     files_changed=_extract_files_changed(tuple(recorder.notifications)),
                 ),
                 error_code="timeout",
+                session_id=session_id,
+                raw_updates=tuple(recorder.notifications),
+                selected_mode=recorder.current_mode or selected_mode,
+                applied_config={**applied_config, **recorder.applied_config},
+            )
+        except _AcpProcessExited as exc:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            summary = (
+                f"Coding agent '{self._spec.name}' exited during ACP {exc.phase} "
+                f"(exit code {exc.returncode})."
+            )
+            if exc.stderr:
+                summary = f"{summary} stderr: {exc.stderr}"
+            return CodingAgentRunOutput(
+                result=CodingAgentResult(
+                    agent=self._spec.name,
+                    task=prompt_text,
+                    success=False,
+                    summary=_bounded_summary(summary),
+                    cost=recorder.cost_usd,
+                    duration_ms=duration_ms,
+                    files_changed=_extract_files_changed(tuple(recorder.notifications)),
+                ),
+                error_code="protocol_error",
+                transport_error=exc.payload(),
                 session_id=session_id,
                 raw_updates=tuple(recorder.notifications),
                 selected_mode=recorder.current_mode or selected_mode,
@@ -813,6 +1028,9 @@ class AcpAdapter(CodingAgentAdapter):
         except RequestError as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
             transport_error = _request_error_payload(exc)
+            stderr = stderr_tail.text()
+            if stderr:
+                transport_error["stderr"] = stderr
             error_message = str(transport_error.get("message", "")).strip() or str(exc)
             summary = (
                 f"Coding agent '{self._spec.name}' failed during ACP negotiation: {error_message}"
@@ -820,6 +1038,8 @@ class AcpAdapter(CodingAgentAdapter):
             code = transport_error.get("code")
             if isinstance(code, int):
                 summary = f"{summary} (code {code})"
+            if stderr:
+                summary = f"{summary}; stderr: {stderr}"
             return CodingAgentRunOutput(
                 result=CodingAgentResult(
                     agent=self._spec.name,
@@ -841,6 +1061,14 @@ class AcpAdapter(CodingAgentAdapter):
             summary = f"Coding agent '{self._spec.name}' failed during ACP transport."
             if detail:
                 summary = f"{summary} {detail}"
+            transport_error = {
+                "kind": "transport_exception",
+                "message": _redact_transport_error_message(detail or exc.__class__.__name__),
+            }
+            stderr = stderr_tail.text()
+            if stderr:
+                transport_error["stderr"] = stderr
+                summary = f"{summary} stderr: {stderr}"
             return CodingAgentRunOutput(
                 result=CodingAgentResult(
                     agent=self._spec.name,
@@ -850,6 +1078,7 @@ class AcpAdapter(CodingAgentAdapter):
                     duration_ms=duration_ms,
                 ),
                 error_code="protocol_error",
+                transport_error=transport_error,
                 session_id=session_id,
                 raw_updates=tuple(recorder.notifications),
                 selected_mode=recorder.current_mode or selected_mode,

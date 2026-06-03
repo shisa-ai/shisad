@@ -29,6 +29,32 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_name", _live_agents())
+async def test_m3_live_coding_agent_canary(agent_name: str, tmp_path: Path) -> None:
+    registry = build_default_agent_registry()
+    spec = registry[agent_name]
+    adapter = AcpAdapter(spec=spec)
+    (tmp_path / "README.md").write_text("live canary\n", encoding="utf-8")
+
+    result = await adapter.run(
+        prompt_text=(
+            "TASK KIND: review\nFILES:\n- README.md\nINSTRUCTIONS:\n"
+            "Reply with the exact literal token ACP_CANARY_OK in your review summary."
+        ),
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent=agent_name,
+            read_only=True,
+            timeout_sec=120.0,
+        ),
+    )
+
+    assert result.result.success is True
+    assert result.error_code == ""
+    assert "ACP_CANARY_OK" in result.result.summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_name", _live_agents())
 async def test_m3_live_coding_agent_smoke(agent_name: str, tmp_path: Path) -> None:
     registry = build_default_agent_registry()
     spec = registry[agent_name]

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -89,6 +91,8 @@ class FakeAcpAgent(Agent):
         fail_initialize: bool = False,
         large_single_line_summary_bytes: int = 0,
         required_env_keys: tuple[str, ...] = (),
+        child_pid_file: str | None = None,
+        child_sleep: float = 60.0,
     ) -> None:
         self._agent_name = agent_name
         self._default_mode = default_mode
@@ -98,6 +102,9 @@ class FakeAcpAgent(Agent):
         self._fail_initialize = fail_initialize
         self._large_single_line_summary_bytes = max(0, large_single_line_summary_bytes)
         self._required_env_keys = tuple(required_env_keys)
+        self._child_pid_file = child_pid_file
+        self._child_sleep = max(0.0, child_sleep)
+        self._child_process: subprocess.Popen[bytes] | None = None
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
 
@@ -112,6 +119,7 @@ class FakeAcpAgent(Agent):
         **kwargs: Any,
     ) -> InitializeResponse:
         _ = (client_capabilities, client_info, kwargs)
+        self._spawn_child_if_configured()
         if self._initialize_sleep > 0:
             await asyncio.sleep(self._initialize_sleep)
         if self._fail_initialize:
@@ -123,6 +131,24 @@ class FakeAcpAgent(Agent):
             protocol_version=min(protocol_version, PROTOCOL_VERSION),
             agent_info=Implementation(name=f"fake-{self._agent_name}", version="0.1.0"),
             agent_capabilities=AgentCapabilities(),
+        )
+
+    def _spawn_child_if_configured(self) -> None:
+        if not self._child_pid_file or self._child_process is not None:
+            return
+        self._child_process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                f"import time; time.sleep({self._child_sleep!r})",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        Path(self._child_pid_file).write_text(
+            str(self._child_process.pid),
+            encoding="utf-8",
         )
 
     async def new_session(
@@ -439,10 +465,19 @@ async def _main() -> None:
     parser.add_argument("--initialize-sleep", type=float, default=0.0)
     parser.add_argument("--new-session-sleep", type=float, default=0.0)
     parser.add_argument("--fail-initialize", action="store_true")
+    parser.add_argument("--exit-before-initialize", action="store_true")
+    parser.add_argument("--exit-code", type=int, default=1)
+    parser.add_argument("--stderr", default="")
     parser.add_argument("--large-single-line-summary-bytes", type=int, default=0)
     parser.add_argument("--require-env", action="append", default=[])
+    parser.add_argument("--child-pid-file")
+    parser.add_argument("--child-sleep", type=float, default=60.0)
     args = parser.parse_args()
     _ = default_environment()
+    if args.exit_before_initialize:
+        if args.stderr:
+            print(args.stderr, file=sys.stderr)
+        raise SystemExit(args.exit_code)
     await run_agent(
         FakeAcpAgent(
             agent_name=args.agent_name,
@@ -452,6 +487,8 @@ async def _main() -> None:
             fail_initialize=args.fail_initialize,
             large_single_line_summary_bytes=args.large_single_line_summary_bytes,
             required_env_keys=tuple(str(item) for item in args.require_env),
+            child_pid_file=args.child_pid_file,
+            child_sleep=args.child_sleep,
         )
     )
 

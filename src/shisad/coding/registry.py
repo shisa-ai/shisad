@@ -97,7 +97,7 @@ def build_default_agent_registry(
             ),
             "codex": AgentCommandSpec(
                 name="codex",
-                command=("npx", "-y", "@zed-industries/codex-acp@0.12.0"),
+                command=("npx", "-y", "@zed-industries/codex-acp@0.15.0"),
             ),
             "opencode": AgentCommandSpec(
                 name="opencode",
