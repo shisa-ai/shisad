@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from acp import RequestError
 
+import shisad.coding.acp_adapter as acp_adapter_module
 from shisad.coding.acp_adapter import (
     _PROCESS_STDERR_TRUNCATED_MESSAGE,
     AcpAdapter,
@@ -72,6 +73,13 @@ class _ImmediatelyExitedProcess:
         return 17
 
 
+class _ExitedPidProcess:
+    pid = 123456
+
+    async def wait(self) -> int:
+        return 0
+
+
 async def _failed_rpc() -> object:
     raise BrokenPipeError("connection lost")
 
@@ -108,6 +116,46 @@ def test_m3_acp_adapter_process_group_wrapper_does_not_require_gnu_setsid() -> N
         assert launch_command[3:] == original_command
     else:
         assert launch_command == original_command
+
+
+def test_m3_acp_adapter_process_group_probe_reports_unknown_without_proc(
+    tmp_path: Path,
+) -> None:
+    assert (
+        acp_adapter_module._process_group_has_running_members(
+            12345,
+            proc_root=tmp_path / "missing-proc",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_cleanup_escalates_when_group_state_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signaled_groups: list[tuple[int | None, signal.Signals]] = []
+
+    monkeypatch.setattr(acp_adapter_module, "_descendant_pids", lambda _pid: ())
+    monkeypatch.setattr(acp_adapter_module, "_process_exists", lambda _pid: False)
+    monkeypatch.setattr(acp_adapter_module, "_signal_processes", lambda _pids, _sig: None)
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "_process_group_has_running_members",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "_signal_process_group_id",
+        lambda process_group_id, sig: signaled_groups.append((process_group_id, sig)),
+    )
+
+    await acp_adapter_module._terminate_process_tree(
+        _ExitedPidProcess(),
+        process_group_id=4242,
+    )
+
+    assert signaled_groups == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
 
 
 @pytest.mark.asyncio

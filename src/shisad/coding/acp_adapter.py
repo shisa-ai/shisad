@@ -621,12 +621,16 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
-def _process_group_has_running_members(process_group_id: int | None) -> bool:
+def _process_group_has_running_members(
+    process_group_id: int | None,
+    *,
+    proc_root: Path | None = None,
+) -> bool | None:
     if process_group_id is None:
         return False
-    proc_root = Path("/proc")
+    proc_root = proc_root or Path("/proc")
     if not proc_root.exists():
-        return False
+        return None
     # Poll the live group instead of caching child PIDs that may later be reused.
     for stat_file in proc_root.glob("[0-9]*/stat"):
         try:
@@ -645,15 +649,19 @@ async def _wait_for_process_group_exit(
     process_group_id: int | None,
     *,
     timeout: float,
-) -> bool:
+) -> bool | None:
     if process_group_id is None:
         return True
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _process_group_has_running_members(process_group_id):
+        running = _process_group_has_running_members(process_group_id)
+        if running is None:
+            return None
+        if not running:
             return True
         await asyncio.sleep(0.02)
-    return not _process_group_has_running_members(process_group_id)
+    running = _process_group_has_running_members(process_group_id)
+    return None if running is None else not running
 
 
 def _descendant_pids(pid: int) -> tuple[int, ...]:
@@ -729,7 +737,7 @@ async def _terminate_process_tree(
     )
 
     remaining = tuple(target for target in targets if _process_exists(target))
-    if not remaining and group_exited:
+    if not remaining and group_exited is True:
         return
     _signal_process_group_id(process_group_id, signal.SIGKILL)
     _signal_processes(remaining, signal.SIGKILL)
