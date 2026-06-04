@@ -211,13 +211,19 @@ class ActionMonitor:
         re.IGNORECASE,
     )
     _NEGATED_COMMAND_SUFFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^[`'\"\s,.;:)]*(?:(?:but|and|then|please)\s+)*"
+        r"^[`'\"\s,.;:)]*(?:(?:but|and|then|please)[\s,]+)*"
         r"(?:do\s+not|don't|dont|never|not)\s+"
         rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+)?"
         r"(?:"
-        r"it|this|that|the\s+(?:command|cli|diagnostic|query|status)|"
-        r"[`'\"]?(?:shisad|shisactl)\b"
+        r"it|this|that|the\s+(?:command|cli|diagnostic|query|status)"
         r")",
+        re.IGNORECASE,
+    )
+    _NEGATED_REPEATED_COMMAND_SUFFIX_PREFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s,;:])(?:(?:but|and|then|please)[\s,]+)*"
+        r"(?:do\s+not|don't|dont|never|not)\s+"
+        rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+)?"
+        r"(?:the\s+)?[`'\"]*$",
         re.IGNORECASE,
     )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
@@ -471,8 +477,27 @@ class ActionMonitor:
         )
 
     @classmethod
-    def _command_suffix_has_negated_reference(cls, suffix: str) -> bool:
-        return bool(cls._NEGATED_COMMAND_SUFFIX_RE.search(suffix))
+    def _command_suffix_has_negated_reference(cls, suffix: str, command: list[str]) -> bool:
+        if cls._NEGATED_COMMAND_SUFFIX_RE.search(suffix):
+            return True
+        normalized_suffix = cls._normalize_shell_command_text(suffix)
+        candidates = {
+            cls._normalize_shell_command_text(" ".join(command)),
+            cls._normalize_shell_command_text(shlex.join(command)),
+        }
+        for candidate in candidates:
+            if not candidate:
+                continue
+            start = 0
+            while True:
+                index = normalized_suffix.find(candidate, start)
+                if index < 0:
+                    break
+                prefix = normalized_suffix[:index]
+                if cls._NEGATED_REPEATED_COMMAND_SUFFIX_PREFIX_RE.search(prefix):
+                    return True
+                start = index + len(candidate)
+        return False
 
     @classmethod
     def _command_prefix_has_negated_reference(cls, prefix: str) -> bool:
@@ -529,7 +554,9 @@ class ActionMonitor:
                     prefix
                 ) or cls._command_suffix_has_run_intent(suffix)
                 negated_reference = cls._command_prefix_has_negated_reference(prefix)
-                negated_suffix_reference = cls._command_suffix_has_negated_reference(suffix)
+                negated_suffix_reference = cls._command_suffix_has_negated_reference(
+                    suffix, command
+                )
                 non_imperative_reference = cls._command_prefix_has_non_imperative_reference(prefix)
                 mention_only = cls._command_reference_is_mention_only(prefix) or (
                     fenced_span and cls._fenced_command_reference_is_mention_only(prefix)
