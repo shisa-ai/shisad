@@ -181,9 +181,15 @@ class SequenceVoter:
 
     @staticmethod
     def _trusted_readonly_memory_intent_match(*, user_text: str, tool_name: str) -> bool:
-        normalized = strip_optional_greeting_prefix(user_text).casefold()
+        normalized = normalize_intent_text(strip_optional_greeting_prefix(user_text))
         if tool_name == "reminder.list":
-            return bool(re.search(r"\breminders?\b", normalized))
+            return bool(
+                re.fullmatch(
+                    r"(?:(?:list|show) (?:my )?reminders|what reminders do (?:i|we) have\??)",
+                    normalized,
+                    flags=re.IGNORECASE,
+                )
+            )
         return False
 
 

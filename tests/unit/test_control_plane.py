@@ -308,6 +308,48 @@ async def test_gh54_sequence_voter_blocks_trusted_reminder_list_without_current_
     assert vote.decision == VoteKind.BLOCK
 
 
+@pytest.mark.parametrize(
+    "raw_user_text",
+    [
+        "remind me to call dentist at 2030-01-01T09:00:00Z",
+        "don't show reminders right now",
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh54_sequence_voter_blocks_same_tool_non_list_reminder_mentions(
+    raw_user_text: str,
+) -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh54-reminder-list-non-list")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="reminder.list",
+        action_kind=ActionKind.MEMORY_READ,
+        resource_id="reminders",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": raw_user_text,
+                "action_arguments": {"limit": 10},
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.BLOCK
+
+
 @pytest.mark.asyncio
 async def test_gh54_sequence_voter_blocks_sibling_memory_read_rapid_fire() -> None:
     history = SessionActionHistoryStore()
