@@ -171,17 +171,14 @@ class ActionMonitor:
         r"(?:^|[\s.;,!?])(?:"
         r"what\s+(?:does|would|will|is|are)\s+"
         r"(?:this|that|these|those|it|the\s+\w+|this\s+\w+|that\s+\w+)"
-        r"(?:\s+(?:do|mean|show))?|"
+        r".*|"
         r"what's\s+(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+)|"
-        r"(?:explain|describe)(?:\s+(?:this|that|the))?"
-        r"(?:\s+(?:command|diagnostic|query))?|"
-        r"tell\s+me\s+about(?:\s+(?:this|that|the))?"
-        r"(?:\s+(?:command|diagnostic|query))?|"
-        r"meaning\s+of(?:\s+(?:this|that|the))?"
-        r"(?:\s+(?:command|diagnostic|query))?|"
+        r"(?:explain|describe)\b.*|"
+        r"tell\s+me\s+about\b.*|"
+        r"meaning\s+of\b.*|"
         r"how\s+(?:does|would|will)\s+"
         r"(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+)"
-        r"(?:\s+(?:work|run|behave))?"
+        r".*"
         r")\s*[.?!:]*\s*$",
         re.IGNORECASE,
     )
