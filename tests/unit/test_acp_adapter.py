@@ -126,6 +126,22 @@ def test_m3_acp_adapter_process_group_wrapper_does_not_require_gnu_setsid() -> N
         assert launch_command == original_command
 
 
+def test_m3_acp_adapter_process_group_id_skips_missing_posix_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(acp_adapter_module.os, "getpgid", raising=False)
+
+    assert acp_adapter_module._process_group_id(_ExitedPidProcess()) is None
+
+
+def test_m3_acp_adapter_signal_process_group_skips_missing_posix_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(acp_adapter_module.os, "killpg", raising=False)
+
+    acp_adapter_module._signal_process_group_id(4242, signal.SIGTERM)
+
+
 def test_m3_acp_adapter_process_group_probe_reports_unknown_without_proc(
     tmp_path: Path,
 ) -> None:

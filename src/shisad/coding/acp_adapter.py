@@ -705,11 +705,20 @@ def _process_group_id(process: Any) -> int | None:
     pid = getattr(process, "pid", None)
     if not isinstance(pid, int) or pid <= 0:
         return None
-    try:
-        pgid = os.getpgid(pid)
-    except (ProcessLookupError, PermissionError):
+    getpgid = getattr(os, "getpgid", None)
+    getpgrp = getattr(os, "getpgrp", None)
+    if not callable(getpgid) or not callable(getpgrp):
         return None
-    if pgid <= 0 or pgid == os.getpgrp():
+    try:
+        pgid_value = getpgid(pid)
+        current_pgrp_value = getpgrp()
+    except (OSError, ProcessLookupError, PermissionError):
+        return None
+    if not isinstance(pgid_value, int) or not isinstance(current_pgrp_value, int):
+        return None
+    pgid = pgid_value
+    current_pgrp = current_pgrp_value
+    if pgid <= 0 or pgid == current_pgrp:
         return None
     return pgid
 
@@ -717,8 +726,11 @@ def _process_group_id(process: Any) -> int | None:
 def _signal_process_group_id(process_group_id: int | None, sig: signal.Signals) -> None:
     if process_group_id is None:
         return
+    killpg = getattr(os, "killpg", None)
+    if not callable(killpg):
+        return
     with suppress(ProcessLookupError, PermissionError):
-        os.killpg(process_group_id, sig)
+        killpg(process_group_id, sig)
 
 
 async def _terminate_process_tree(
