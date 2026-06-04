@@ -226,6 +226,10 @@ class ActionMonitor:
         r"(?:the\s+)?[`'\"]*$",
         re.IGNORECASE,
     )
+    _REPEATED_COMMAND_EXACT_TAIL_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:command|please|now)(?:[\s,.;:!?)]*(?:command|please|now))*[\s,.;:!?)]*$",
+        re.IGNORECASE,
+    )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s;:,])(?:what\s+(?:does|would|will|is|are)|what's|"
         r"explain|describe|tell\s+me\s+about|meaning\s+of|"
@@ -481,12 +485,7 @@ class ActionMonitor:
         tail = suffix_after_candidate.lstrip(" `'\t\n\r\"")
         if not tail or tail[0] in ".,;:!?)]}":
             return True
-        for word in ("command", "please", "now"):
-            if tail == word:
-                return True
-            if tail.startswith(f"{word} ") or tail.startswith(f"{word}."):
-                return True
-        return False
+        return bool(ActionMonitor._REPEATED_COMMAND_EXACT_TAIL_RE.fullmatch(tail))
 
     @classmethod
     def _command_suffix_has_negated_reference(cls, suffix: str, command: list[str]) -> bool:
