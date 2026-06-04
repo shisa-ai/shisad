@@ -298,6 +298,14 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
             "`shisad audit query --json` explain this first",
             ["shisad", "audit", "query", "--json"],
         ),
+        (
+            "tell me about `shisad status`, and check the docs",
+            ["shisad", "status"],
+        ),
+        (
+            "describe `shisad status`, then run another query",
+            ["shisad", "status"],
+        ),
     ],
 )
 def test_gh55_action_monitor_rejects_command_mentions_without_run_intent(
