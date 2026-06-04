@@ -142,6 +142,41 @@ def test_m3_acp_adapter_signal_process_group_skips_missing_posix_api(
     acp_adapter_module._signal_process_group_id(4242, signal.SIGTERM)
 
 
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_cleanup_skips_missing_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signaled_groups: list[tuple[int | None, signal.Signals]] = []
+    signaled_processes: list[tuple[tuple[int, ...], signal.Signals]] = []
+
+    monkeypatch.delattr(acp_adapter_module.signal, "SIGKILL", raising=False)
+    monkeypatch.setattr(acp_adapter_module, "_descendant_pids", lambda _pid: ())
+    monkeypatch.setattr(acp_adapter_module, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "_process_group_has_running_members",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "_signal_process_group_id",
+        lambda process_group_id, sig: signaled_groups.append((process_group_id, sig)),
+    )
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "_signal_processes",
+        lambda pids, sig: signaled_processes.append((pids, sig)),
+    )
+
+    await acp_adapter_module._terminate_process_tree(
+        _ExitedPidProcess(),
+        process_group_id=4242,
+    )
+
+    assert signaled_groups == [(4242, signal.SIGTERM)]
+    assert signaled_processes == [((123456,), signal.SIGTERM)]
+
+
 def test_m3_acp_adapter_process_group_probe_reports_unknown_without_proc(
     tmp_path: Path,
 ) -> None:

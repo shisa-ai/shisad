@@ -733,6 +733,11 @@ def _signal_process_group_id(process_group_id: int | None, sig: signal.Signals) 
         killpg(process_group_id, sig)
 
 
+def _process_kill_signal() -> signal.Signals | None:
+    sigkill = getattr(signal, "SIGKILL", None)
+    return sigkill if isinstance(sigkill, signal.Signals) else None
+
+
 async def _terminate_process_tree(
     process: Any,
     *,
@@ -741,7 +746,9 @@ async def _terminate_process_tree(
     pid = getattr(process, "pid", None)
     if not isinstance(pid, int) or pid <= 0:
         _signal_process_group_id(process_group_id, signal.SIGTERM)
-        _signal_process_group_id(process_group_id, signal.SIGKILL)
+        kill_signal = _process_kill_signal()
+        if kill_signal is not None:
+            _signal_process_group_id(process_group_id, kill_signal)
         return
 
     descendants = _descendant_pids(pid)
@@ -758,8 +765,11 @@ async def _terminate_process_tree(
     remaining = tuple(target for target in targets if _process_exists(target))
     if not remaining and group_exited is True:
         return
-    _signal_process_group_id(process_group_id, signal.SIGKILL)
-    _signal_processes(remaining, signal.SIGKILL)
+    kill_signal = _process_kill_signal()
+    if kill_signal is None:
+        return
+    _signal_process_group_id(process_group_id, kill_signal)
+    _signal_processes(remaining, kill_signal)
     with suppress(asyncio.TimeoutError, ProcessLookupError):
         await asyncio.wait_for(process.wait(), timeout=_PROCESS_TREE_SHUTDOWN_GRACE_SEC)
     await _wait_for_process_group_exit(
