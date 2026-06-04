@@ -201,11 +201,23 @@ class ActionMonitor:
         r"(?:\s+(?:please|now))*\s*(?:[.!?)]|$)",
         re.IGNORECASE,
     )
+    _SHOW_COMMAND_DISPLAY_PREFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s,;:])show\s+(?:the\s+)?(?:command|cli|diagnostic|query|status)\s*[`'\"]*$",
+        re.IGNORECASE,
+    )
+    _SHOW_COMMAND_DISPLAY_SUFFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
+        r"show\s+(?:the\s+)?(?:command|cli|diagnostic|query|status)\b",
+        re.IGNORECASE,
+    )
     _NEGATED_COMMAND_SUFFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^[`'\"\s,.;:)]*(?:(?:but|and|then)\s+)?"
+        r"^[`'\"\s,.;:)]*(?:(?:but|and|then|please)\s+)*"
         r"(?:do\s+not|don't|dont|never|not)\s+"
         rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+)?"
-        r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b",
+        r"(?:"
+        r"it|this|that|the\s+(?:command|cli|diagnostic|query|status)|"
+        r"[`'\"]?(?:shisad|shisactl)\b"
+        r")",
         re.IGNORECASE,
     )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
@@ -447,11 +459,16 @@ class ActionMonitor:
 
     @classmethod
     def _command_prefix_has_run_intent(cls, prefix: str) -> bool:
-        return bool(cls._COMMAND_RUN_INTENT_RE.search(cls._local_command_prefix_context(prefix)))
+        context = cls._local_command_prefix_context(prefix)
+        return not cls._SHOW_COMMAND_DISPLAY_PREFIX_RE.search(context) and bool(
+            cls._COMMAND_RUN_INTENT_RE.search(context)
+        )
 
     @classmethod
     def _command_suffix_has_run_intent(cls, suffix: str) -> bool:
-        return bool(cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix))
+        return not cls._SHOW_COMMAND_DISPLAY_SUFFIX_RE.search(suffix) and bool(
+            cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix)
+        )
 
     @classmethod
     def _command_suffix_has_negated_reference(cls, suffix: str) -> bool:

@@ -386,6 +386,22 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
             "show `shisad status`, but do not run it",
             ["shisad", "status"],
         ),
+        (
+            "run `shisad status`, please don't run it",
+            ["shisad", "status"],
+        ),
+        (
+            "run `shisad status`, but don't run `shisad status`",
+            ["shisad", "status"],
+        ),
+        (
+            "show the command `shisad status`",
+            ["shisad", "status"],
+        ),
+        (
+            "tell me about `shisad status`, then show the command",
+            ["shisad", "status"],
+        ),
     ],
 )
 def test_gh55_action_monitor_rejects_command_mentions_without_run_intent(
