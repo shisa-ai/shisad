@@ -172,7 +172,7 @@ class ActionMonitor:
         r"what\s+(?:does|would|will|is|are)\s+"
         r"(?:this|that|these|those|it|the\s+\w+|this\s+\w+|that\s+\w+)"
         r".*|"
-        r"what's\s+(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+)|"
+        r"what's\s+(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+).*|"
         r"(?:explain|describe)\b.*|"
         r"tell\s+me\s+about\b.*|"
         r"meaning\s+of\b.*|"
