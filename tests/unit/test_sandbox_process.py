@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import shisad.executors.sandbox.process as sandbox_process_module
 from shisad.executors.connect_path import ConnectPathResult, NoopConnectPathProxy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
@@ -82,6 +84,34 @@ def test_m3_process_fail_open_executes_when_runtime_unavailable() -> None:
     assert result.blocked_reason == ""
     assert result.exit_code == 0
     assert "ok" in result.stdout
+
+
+def test_m3_process_kill_tree_falls_back_when_sigkill_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self) -> None:
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess()
+    signaled: list[tuple[object, signal.Signals]] = []
+
+    monkeypatch.delattr(sandbox_process_module.signal, "SIGKILL", raising=False)
+    monkeypatch.setattr(
+        SandboxProcessRunner,
+        "_signal_process_tree",
+        lambda target, signum: signaled.append((target, signum)),
+    )
+
+    SandboxProcessRunner._kill_process_tree(process)
+
+    assert signaled == []
+    assert process.killed is True
 
 
 def test_m3_process_default_backends_include_runtime_capabilities() -> None:

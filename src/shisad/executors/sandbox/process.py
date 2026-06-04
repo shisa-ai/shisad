@@ -580,11 +580,18 @@ class SandboxProcessRunner:
 
     @staticmethod
     def _kill_process_tree(process: Any) -> None:
-        SandboxProcessRunner._signal_process_tree(process, signal.SIGKILL)
+        kill_signal = SandboxProcessRunner._process_kill_signal()
+        if kill_signal is not None:
+            SandboxProcessRunner._signal_process_tree(process, kill_signal)
         try:
             process.kill()
         except ProcessLookupError:
             return
+
+    @staticmethod
+    def _process_kill_signal() -> signal.Signals | None:
+        sigkill = getattr(signal, "SIGKILL", None)
+        return sigkill if isinstance(sigkill, signal.Signals) else None
 
     @staticmethod
     def _signal_process_tree(process: Any, signum: int) -> None:
