@@ -168,6 +168,14 @@ def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_current_tu
             "do not execute ```shisad audit query --json```",
             ["shisad", "audit", "query", "--json"],
         ),
+        (
+            "do not show `shisad audit query --all --json`",
+            ["shisad", "audit", "query", "--all", "--json"],
+        ),
+        (
+            "never check `shisad status`",
+            ["shisad", "status"],
+        ),
     ],
 )
 def test_gh55_action_monitor_rejects_negated_diagnostic_command_mentions(
@@ -688,6 +696,23 @@ def test_m6_action_monitor_allows_explicit_browser_navigation() -> None:
         ],
     )
     assert decision.kind == MonitorDecisionType.APPROVE
+
+
+def test_gh55_action_monitor_does_not_treat_openai_as_open_browser_navigation() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="summarize the OpenAI release notes",
+        actions=[
+            SimpleNamespace(
+                tool_name="browser.navigate",
+                arguments={"url": "http://example.com"},
+                reasoning="Do not let substring cues skip suspicious URL review.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.SUSPICIOUS
+    assert "browser.navigate:suspicious_destination" in decision.flags
 
 
 def test_m2_t10_rate_limiter_blocks_burst() -> None:

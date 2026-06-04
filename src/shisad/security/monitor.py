@@ -151,7 +151,7 @@ class ActionMonitor:
     )
     _NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s.;,!?])(?:do not|don't|dont|never|not)\s+"
-        r"(?:(?:run|execute|call|try|use|invoke|start|launch)\s*)?$",
+        r"(?:(?:run|execute|call|try|use|invoke|start|launch|check|show)\s*)?$",
         re.IGNORECASE,
     )
     _COMMAND_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
@@ -278,8 +278,8 @@ class ActionMonitor:
         )
         return any(cls._cue_matches(goal_text, cue) for cue in cues)
 
-    @staticmethod
-    def _goal_mentions_browser_navigation(goal_text: str) -> bool:
+    @classmethod
+    def _goal_mentions_browser_navigation(cls, goal_text: str) -> bool:
         cues = (
             "browser",
             "browse",
@@ -287,7 +287,7 @@ class ActionMonitor:
             "visit",
             "navigate",
         )
-        return any(token in goal_text for token in cues)
+        return any(cls._cue_matches(goal_text, cue) for cue in cues)
 
     @staticmethod
     def _cue_matches(goal_text: str, cue: str) -> bool:
