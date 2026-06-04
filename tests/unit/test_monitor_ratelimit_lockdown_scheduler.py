@@ -128,6 +128,14 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
             "run `shisad status`, but don't run `shisad audit query --json`",
             ["shisad", "status"],
         ),
+        (
+            "run `shisad status`, but don't run `shisad status --json`",
+            ["shisad", "status"],
+        ),
+        (
+            "run `shisad audit query --json`, but don't run `shisad audit query --json --limit 10`",
+            ["shisad", "audit", "query", "--json"],
+        ),
     ],
 )
 def test_gh55_action_monitor_allows_explicit_read_only_diagnostic_commands(
@@ -404,6 +412,10 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
         ),
         (
             "run `shisad status`, but don't run the `shisad status` command",
+            ["shisad", "status"],
+        ),
+        (
+            "run `shisad status`, but don't run `shisad status` please",
             ["shisad", "status"],
         ),
         (

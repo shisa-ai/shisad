@@ -476,6 +476,18 @@ class ActionMonitor:
             cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix)
         )
 
+    @staticmethod
+    def _command_repeated_suffix_match_is_exact(suffix_after_candidate: str) -> bool:
+        tail = suffix_after_candidate.lstrip(" `'\t\n\r\"")
+        if not tail or tail[0] in ".,;:!?)]}":
+            return True
+        for word in ("command", "please", "now"):
+            if tail == word:
+                return True
+            if tail.startswith(f"{word} ") or tail.startswith(f"{word}."):
+                return True
+        return False
+
     @classmethod
     def _command_suffix_has_negated_reference(cls, suffix: str, command: list[str]) -> bool:
         if cls._NEGATED_COMMAND_SUFFIX_RE.search(suffix):
@@ -494,7 +506,10 @@ class ActionMonitor:
                 if index < 0:
                     break
                 prefix = normalized_suffix[:index]
-                if cls._NEGATED_REPEATED_COMMAND_SUFFIX_PREFIX_RE.search(prefix):
+                suffix_after_candidate = normalized_suffix[index + len(candidate) :]
+                if cls._NEGATED_REPEATED_COMMAND_SUFFIX_PREFIX_RE.search(
+                    prefix
+                ) and cls._command_repeated_suffix_match_is_exact(suffix_after_candidate):
                     return True
                 start = index + len(candidate)
         return False
