@@ -167,6 +167,13 @@ class ActionMonitor:
         r"how\s+(?:does|would|will))\b",
         re.IGNORECASE,
     )
+    _FENCED_COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s.;,!?])(?:what\s+(?:does|would|will)\s+"
+        r"(?:this|that|the\s+command|this\s+command|the\s+diagnostic)"
+        r"(?:\s+do)?|explain(?:\s+(?:this|that|the))?"
+        r"(?:\s+(?:command|diagnostic|query))?)\s*[.?!:]*\s*$",
+        re.IGNORECASE,
+    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -388,6 +395,11 @@ class ActionMonitor:
         context = cls._local_command_prefix_context(prefix).strip(" `'\")")
         return bool(cls._COMMAND_MENTION_ONLY_RE.search(context))
 
+    @classmethod
+    def _fenced_command_reference_is_mention_only(cls, prefix: str) -> bool:
+        context = prefix.removesuffix("```").strip(" `'\")")
+        return bool(cls._FENCED_COMMAND_MENTION_ONLY_RE.search(context[-160:]))
+
     @staticmethod
     def _command_span_is_fenced(prefix: str, suffix: str) -> bool:
         return prefix.endswith("```") and suffix.startswith("```")
@@ -416,14 +428,18 @@ class ActionMonitor:
                 prefix = normalized_goal[:index]
                 suffix = normalized_goal[index + len(candidate) :]
                 negation_prefix = prefix[max(0, len(prefix) - 48) :].rstrip("`'\" ")
+                fenced_span = cls._command_span_is_fenced(prefix, suffix)
+                mention_only = cls._command_reference_is_mention_only(prefix) or (
+                    fenced_span and cls._fenced_command_reference_is_mention_only(prefix)
+                )
                 if (
                     cls._command_prefix_is_delimited(prefix)
                     and cls._command_suffix_is_delimited(suffix)
                     and cls._NEGATED_COMMAND_REFERENCE_RE.search(negation_prefix) is None
-                    and not cls._command_reference_is_mention_only(prefix)
+                    and not mention_only
                     and (
                         cls._command_prefix_has_run_intent(prefix)
-                        or cls._command_span_is_fenced(prefix, suffix)
+                        or fenced_span
                         or cls._command_span_is_bare_goal(prefix)
                     )
                 ):

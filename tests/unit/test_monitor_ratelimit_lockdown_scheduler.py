@@ -47,6 +47,22 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="browser setup status",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={"command": ["echo", "browser"]},
+                reasoning="A browser mention is not a shell side-effect request.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
 @pytest.mark.parametrize(
     ("user_goal", "command"),
     [
@@ -220,6 +236,14 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
         ),
         (
             "explain `shisad audit query --json` before we run anything",
+            ["shisad", "audit", "query", "--json"],
+        ),
+        (
+            "what does this do? ```shisad status```",
+            ["shisad", "status"],
+        ),
+        (
+            "explain this command. ```shisad audit query --json```",
             ["shisad", "audit", "query", "--json"],
         ),
     ],
