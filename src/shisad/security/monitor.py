@@ -53,13 +53,12 @@ class ActionMonitor:
         "shisactl",
         "shisad",
     }
+    _LOCAL_DIAGNOSTIC_ARGUMENT_KEYS: ClassVar[frozenset[str]] = frozenset({"command"})
     _LOCAL_DIAGNOSTIC_FLAG_OPTIONS: ClassVar[dict[tuple[str, ...], frozenset[str]]] = {
         ("action", "list"): frozenset({"--json", "--raw"}),
         ("action", "pending"): frozenset({"--raw"}),
         ("audit", "query"): frozenset({"--all", "--json"}),
         ("audit", "verify"): frozenset(),
-        ("doctor",): frozenset(),
-        ("doctor", "check"): frozenset(),
         ("lockdown", "status"): frozenset({"--all", "--json"}),
         ("status",): frozenset(),
     }
@@ -70,8 +69,6 @@ class ActionMonitor:
             {"--actor", "--data-dir", "--limit", "--session", "--since", "--type"}
         ),
         ("audit", "verify"): frozenset({"--data-dir"}),
-        ("doctor",): frozenset(),
-        ("doctor", "check"): frozenset({"--component"}),
         ("lockdown", "status"): frozenset({"--session"}),
         ("status",): frozenset(),
     }
@@ -157,6 +154,19 @@ class ActionMonitor:
         r"(?:(?:run|execute|call|try|use|invoke|start|launch)\s*)?$",
         re.IGNORECASE,
     )
+    _COMMAND_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s.;,!?])(?:please\s+)?"
+        r"(?:run|execute|call|try|use|invoke|start|launch|check|show)"
+        r"\s*(?::|\b)(?:\s+(?:the\s+)?(?:command|cli|diagnostic|query|status))?"
+        r"\s*[`'\"]*$",
+        re.IGNORECASE,
+    )
+    _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s;:,])(?:what\s+(?:does|would|will|is|are)|what's|"
+        r"explain|describe|tell\s+me\s+about|meaning\s+of|"
+        r"how\s+(?:does|would|will))\b",
+        re.IGNORECASE,
+    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -225,8 +235,8 @@ class ActionMonitor:
             )
         return MonitorDecision(kind=MonitorDecisionType.APPROVE)
 
-    @staticmethod
-    def _goal_mentions_side_effect(goal_text: str) -> bool:
+    @classmethod
+    def _goal_mentions_side_effect(cls, goal_text: str) -> bool:
         cues = (
             "send",
             "post",
@@ -244,7 +254,7 @@ class ActionMonitor:
             "lookup",
             "download",
         )
-        return any(token in goal_text for token in cues)
+        return any(cls._cue_matches(goal_text, cue) for cue in cues)
 
     @staticmethod
     def _goal_mentions_browser_navigation(goal_text: str) -> bool:
@@ -344,6 +354,48 @@ class ActionMonitor:
     def _normalize_shell_command_text(text: str) -> str:
         return " ".join(text.lower().split())
 
+    @staticmethod
+    def _local_command_prefix_context(prefix: str) -> str:
+        return re.split(r"[.!?]", prefix[-96:])[-1]
+
+    @staticmethod
+    def _command_prefix_is_delimited(prefix: str) -> bool:
+        return not prefix or prefix[-1].isspace() or prefix[-1] in "`'\"([{:"
+
+    @staticmethod
+    def _command_suffix_is_delimited(suffix: str) -> bool:
+        if not suffix:
+            return True
+        index = 0
+        consumed_closer = False
+        while index < len(suffix) and suffix[index] in "`'\"":
+            consumed_closer = True
+            index += 1
+        if index >= len(suffix):
+            return True
+        if suffix[index] in ".,;!?)]}":
+            return True
+        if suffix[index].isspace():
+            return consumed_closer
+        return False
+
+    @classmethod
+    def _command_prefix_has_run_intent(cls, prefix: str) -> bool:
+        return bool(cls._COMMAND_RUN_INTENT_RE.search(cls._local_command_prefix_context(prefix)))
+
+    @classmethod
+    def _command_reference_is_mention_only(cls, prefix: str) -> bool:
+        context = cls._local_command_prefix_context(prefix).strip(" `'\")")
+        return bool(cls._COMMAND_MENTION_ONLY_RE.search(context))
+
+    @staticmethod
+    def _command_span_is_fenced(prefix: str, suffix: str) -> bool:
+        return prefix.endswith("```") and suffix.startswith("```")
+
+    @staticmethod
+    def _command_span_is_bare_goal(prefix: str) -> bool:
+        return prefix.strip(" `'\t\n\r\"") == ""
+
     @classmethod
     def _command_text_matches_current_goal(cls, *, goal_text: str, command: list[str]) -> bool:
         normalized_goal = cls._normalize_shell_command_text(goal_text)
@@ -361,8 +413,20 @@ class ActionMonitor:
                 index = normalized_goal.find(candidate, start)
                 if index < 0:
                     break
-                prefix = normalized_goal[max(0, index - 48) : index].rstrip("`'\" ")
-                if cls._NEGATED_COMMAND_REFERENCE_RE.search(prefix) is None:
+                prefix = normalized_goal[:index]
+                suffix = normalized_goal[index + len(candidate) :]
+                negation_prefix = prefix[max(0, len(prefix) - 48) :].rstrip("`'\" ")
+                if (
+                    cls._command_prefix_is_delimited(prefix)
+                    and cls._command_suffix_is_delimited(suffix)
+                    and cls._NEGATED_COMMAND_REFERENCE_RE.search(negation_prefix) is None
+                    and not cls._command_reference_is_mention_only(prefix)
+                    and (
+                        cls._command_prefix_has_run_intent(prefix)
+                        or cls._command_span_is_fenced(prefix, suffix)
+                        or cls._command_span_is_bare_goal(prefix)
+                    )
+                ):
                     return True
                 start = index + len(candidate)
         return False
@@ -380,9 +444,7 @@ class ActionMonitor:
             ("action", "pending"),
             ("audit", "query"),
             ("audit", "verify"),
-            ("doctor", "check"),
             ("lockdown", "status"),
-            ("doctor",),
             ("status",),
         )
         for prefix in candidates:
@@ -446,9 +508,14 @@ class ActionMonitor:
     ) -> bool:
         if not isinstance(arguments, dict):
             return False
-        for risky_field in ("write_paths", "network_urls", "env"):
-            value = arguments.get(risky_field)
-            if value not in (None, "", [], {}, ()):
+        for key, value in arguments.items():
+            if key not in cls._LOCAL_DIAGNOSTIC_ARGUMENT_KEYS and value not in (
+                None,
+                "",
+                [],
+                {},
+                (),
+            ):
                 return False
         command_raw = arguments.get("command")
         if not isinstance(command_raw, list) or not command_raw:

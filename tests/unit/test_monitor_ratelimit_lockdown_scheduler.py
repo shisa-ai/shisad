@@ -69,10 +69,6 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
             ["shisad", "status"],
         ),
         (
-            "try `shisad doctor check --component browser` to inspect the browser setup",
-            ["shisad", "doctor", "check", "--component", "browser"],
-        ),
-        (
             "please check `shisad lockdown status --session sess-g1 --json`",
             ["shisad", "lockdown", "status", "--session", "sess-g1", "--json"],
         ),
@@ -166,6 +162,14 @@ def test_gh55_action_monitor_rejects_negated_diagnostic_command_mentions(
     [
         {
             "command": ["shisad", "audit", "query", "--json"],
+            "read_paths": ["."],
+        },
+        {
+            "command": ["shisad", "audit", "query", "--data-dir", "."],
+            "cwd": "/tmp",
+        },
+        {
+            "command": ["shisad", "audit", "query", "--json"],
             "write_paths": ["."],
         },
         {
@@ -178,6 +182,9 @@ def test_gh55_action_monitor_rejects_negated_diagnostic_command_mentions(
         },
         {
             "command": ["shisad", "lockdown", "set", "normal"],
+        },
+        {
+            "command": ["shisad", "doctor", "check", "--component", "browser"],
         },
     ],
 )
@@ -193,6 +200,42 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
                 tool_name="shell.exec",
                 arguments=arguments,
                 reasoning="Only read-only diagnostic commands may bypass goal-misaligned reject.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize(
+    ("user_goal", "command"),
+    [
+        (
+            "show `shisad action list --session sess-g1 --json`",
+            ["shisad", "action", "list"],
+        ),
+        (
+            "what does `shisad status` show?",
+            ["shisad", "status"],
+        ),
+        (
+            "explain `shisad audit query --json` before we run anything",
+            ["shisad", "audit", "query", "--json"],
+        ),
+    ],
+)
+def test_gh55_action_monitor_rejects_command_mentions_without_run_intent(
+    user_goal: str,
+    command: list[str],
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal=user_goal,
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={"command": command},
+                reasoning="Command mentions and prefix matches do not authorize shell execution.",
             )
         ],
     )
