@@ -168,10 +168,21 @@ class ActionMonitor:
         re.IGNORECASE,
     )
     _FENCED_COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s.;,!?])(?:what\s+(?:does|would|will)\s+"
-        r"(?:this|that|the\s+command|this\s+command|the\s+diagnostic)"
-        r"(?:\s+do)?|explain(?:\s+(?:this|that|the))?"
-        r"(?:\s+(?:command|diagnostic|query))?)\s*[.?!:]*\s*$",
+        r"(?:^|[\s.;,!?])(?:"
+        r"what\s+(?:does|would|will|is|are)\s+"
+        r"(?:this|that|these|those|it|the\s+\w+|this\s+\w+|that\s+\w+)"
+        r"(?:\s+(?:do|mean|show))?|"
+        r"what's\s+(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+)|"
+        r"(?:explain|describe)(?:\s+(?:this|that|the))?"
+        r"(?:\s+(?:command|diagnostic|query))?|"
+        r"tell\s+me\s+about(?:\s+(?:this|that|the))?"
+        r"(?:\s+(?:command|diagnostic|query))?|"
+        r"meaning\s+of(?:\s+(?:this|that|the))?"
+        r"(?:\s+(?:command|diagnostic|query))?|"
+        r"how\s+(?:does|would|will)\s+"
+        r"(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+)"
+        r"(?:\s+(?:work|run|behave))?"
+        r")\s*[.?!:]*\s*$",
         re.IGNORECASE,
     )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
