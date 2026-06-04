@@ -100,6 +100,14 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
             "tell me about `shisad status`, then execute it",
             ["shisad", "status"],
         ),
+        (
+            "tell me about `shisad status`, then execute it please",
+            ["shisad", "status"],
+        ),
+        (
+            "describe `shisad status`, then run that now",
+            ["shisad", "status"],
+        ),
     ],
 )
 def test_gh55_action_monitor_allows_explicit_read_only_diagnostic_commands(

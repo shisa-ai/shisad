@@ -165,7 +165,7 @@ class ActionMonitor:
         r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
         r"(?:run|execute|call|try|use|invoke|start|launch|check)\s+"
         r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b"
-        r"\s*(?:[.!?)]|$)",
+        r"(?:\s+(?:please|now))*\s*(?:[.!?)]|$)",
         re.IGNORECASE,
     )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
