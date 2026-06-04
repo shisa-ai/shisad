@@ -1230,7 +1230,7 @@ class AcpAdapter(CodingAgentAdapter):
             )
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
-            detail = str(exc).strip()
+            detail = _redact_transport_error_message(str(exc).strip())
             summary = f"Coding agent '{self._spec.name}' failed during ACP transport."
             if detail:
                 summary = f"{summary} {detail}"

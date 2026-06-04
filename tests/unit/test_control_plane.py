@@ -66,6 +66,25 @@ def _origin(session_id: str = "s1") -> Origin:
     )
 
 
+def _append_recent_memory_read_burst(
+    history: SessionActionHistoryStore,
+    *,
+    origin: Origin,
+    now: datetime,
+) -> None:
+    for index, tool_name in enumerate(("note.list", "todo.list", "thread.list", "task.list")):
+        history.append_action(
+            ControlPlaneAction(
+                timestamp=now + timedelta(milliseconds=index * 100),
+                origin=origin,
+                tool_name=tool_name,
+                action_kind=ActionKind.MEMORY_READ,
+                resource_id=f"memory:{index}",
+            ),
+            decision_status="allow",
+        )
+
+
 def test_m5_t1_sequence_detects_fs_read_then_egress() -> None:
     history = SessionActionHistoryStore()
     analyzer = BehavioralSequenceAnalyzer()
@@ -193,17 +212,7 @@ async def test_gh54_sequence_voter_allows_trusted_reminder_list_after_recent_act
     analyzer = BehavioralSequenceAnalyzer()
     origin = _origin("s-gh54-reminder-list")
     now = datetime.now(UTC)
-    for index, tool_name in enumerate(("note.list", "todo.list", "thread.list", "task.list")):
-        history.append_action(
-            ControlPlaneAction(
-                timestamp=now + timedelta(milliseconds=index * 100),
-                origin=origin,
-                tool_name=tool_name,
-                action_kind=ActionKind.MEMORY_READ,
-                resource_id=f"memory:{index}",
-            ),
-            decision_status="allow",
-        )
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
     candidate = ControlPlaneAction(
         timestamp=now + timedelta(milliseconds=450),
         origin=origin,
@@ -237,17 +246,7 @@ async def test_gh54_sequence_voter_still_blocks_untrusted_reminder_list_rapid_fi
     analyzer = BehavioralSequenceAnalyzer()
     origin = _origin("s-gh54-reminder-list-untrusted")
     now = datetime.now(UTC)
-    for index, tool_name in enumerate(("note.list", "todo.list", "thread.list", "task.list")):
-        history.append_action(
-            ControlPlaneAction(
-                timestamp=now + timedelta(milliseconds=index * 100),
-                origin=origin,
-                tool_name=tool_name,
-                action_kind=ActionKind.MEMORY_READ,
-                resource_id=f"memory:{index}",
-            ),
-            decision_status="allow",
-        )
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
     candidate = ControlPlaneAction(
         timestamp=now + timedelta(milliseconds=450),
         origin=origin,
@@ -266,6 +265,74 @@ async def test_gh54_sequence_voter_still_blocks_untrusted_reminder_list_rapid_fi
                 "trusted_input": False,
                 "operator_owned_cli_input": False,
                 "raw_user_text": "",
+                "action_arguments": {"limit": 10},
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_gh54_sequence_voter_blocks_trusted_reminder_list_without_current_turn_intent() -> (
+    None
+):
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh54-reminder-list-unrelated")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="reminder.list",
+        action_kind=ActionKind.MEMORY_READ,
+        resource_id="reminders",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "what todos do we have?",
+                "action_arguments": {"limit": 10},
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_gh54_sequence_voter_blocks_sibling_memory_read_rapid_fire() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh54-memory-read-sibling")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="note.list",
+        action_kind=ActionKind.MEMORY_READ,
+        resource_id="notes",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "what notes do we have?",
                 "action_arguments": {"limit": 10},
             },
         )

@@ -103,6 +103,14 @@ async def _late_secret_stderr(stderr_tail: _ProcessStderrTail) -> None:
     stderr_tail.append(b"OPENAI_API_KEY=sk-late-secret")
 
 
+class _TransportExceptionSpawn:
+    async def __aenter__(self) -> object:
+        raise RuntimeError("connection failed with API key: sk-generic-secret")
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
 def test_m3_acp_adapter_process_group_wrapper_does_not_require_gnu_setsid() -> None:
     original_command = (sys.executable, "-c", "pass")
     launch_command = _agent_process_command(original_command)
@@ -319,6 +327,38 @@ async def test_m3_acp_adapter_collects_summary_mode_cost_and_raw_updates(
     assert result.applied_config["permission_mode"] == "approve-all"
     assert result.raw_updates
     assert result.stop_reason == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_generic_transport_exception_summary_redacts_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-generic-secret"
+    monkeypatch.setattr(
+        acp_adapter_module,
+        "spawn_agent_process",
+        lambda *_args, **_kwargs: _TransportExceptionSpawn(),
+    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("codex"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "protocol_error"
+    assert result.transport_error == {
+        "kind": "transport_exception",
+        "message": "connection failed with API key: [redacted]",
+    }
+    assert "[redacted]" in result.result.summary
+    assert secret not in repr(result)
 
 
 @pytest.mark.asyncio

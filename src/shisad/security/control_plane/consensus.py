@@ -81,16 +81,7 @@ class SequenceVoter:
     )
     _SAFE_TRUSTED_READONLY_MEMORY_TOOLS: frozenset[str] = frozenset(
         {
-            "note.get",
-            "note.list",
-            "note.search",
             "reminder.list",
-            "task.list",
-            "thread.inspect",
-            "thread.list",
-            "thread.why",
-            "todo.get",
-            "todo.list",
         }
     )
 
@@ -173,13 +164,27 @@ class SequenceVoter:
         if not data.trace_result.allowed:
             return False
         action = data.action
+        tool_name = str(action.tool_name).strip()
         if action.action_kind != ActionKind.MEMORY_READ:
             return False
-        if str(action.tool_name).strip() not in cls._SAFE_TRUSTED_READONLY_MEMORY_TOOLS:
+        if tool_name not in cls._SAFE_TRUSTED_READONLY_MEMORY_TOOLS:
             return False
         if not _strict_metadata_bool(data.metadata_payload.get("trusted_input"), default=False):
             return False
-        return bool(str(data.metadata_payload.get("raw_user_text", "")).strip())
+        user_text = str(data.metadata_payload.get("raw_user_text", "")).strip()
+        if not user_text:
+            return False
+        return cls._trusted_readonly_memory_intent_match(
+            user_text=user_text,
+            tool_name=tool_name,
+        )
+
+    @staticmethod
+    def _trusted_readonly_memory_intent_match(*, user_text: str, tool_name: str) -> bool:
+        normalized = strip_optional_greeting_prefix(user_text).casefold()
+        if tool_name == "reminder.list":
+            return bool(re.search(r"\breminders?\b", normalized))
+        return False
 
 
 class ResourceVoter:
