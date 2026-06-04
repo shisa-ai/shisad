@@ -886,7 +886,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "privateKey=private-camel-secret "
                 "AWS Secret Access Key: aws-qualified-space-secret "
                 "SSH Private Key: ssh-qualified-space-secret "
-                "Invalid API key: sk-space-secret Auth token: auth-space-secret "
+                "Invalid API key: sk-space-secret "
+                "Incorrect API key provided: sk-provider-secret "
+                "Auth token: auth-space-secret "
                 "Access token: access-space-secret OpenAI API key: sk-openai-space-secret "
                 "API token: api-token-space-secret "
                 "API credential: api-credential-space-secret "
@@ -896,12 +898,14 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "api_key": "sk-test-secret",
                 "x-api-key": "header-secret",
                 "API key": "sk-mapping-space-secret",
+                "API key provided": "sk-provider-structured-secret",
                 "auth token": "auth-mapping-space-secret",
                 "cookie": "session=secret",
                 "nested": {"authorization": "Bearer token-value"},
                 "detail": "Authorization: Basic dXNlcjpwYXNz",
                 "space_detail": "API key: sk-detail-space-secret",
                 "space_list_detail": "API keys: sk-list-a, sk-list-b",
+                "provider_detail": "Incorrect API key provided: sk-provider-detail-secret",
                 "detail_auth_list": "Auth token: tok-a tok-b",
                 "human_detail": "Access token: access-detail-secret",
                 "space_token_list": "Auth token: tok-a tok-b",
@@ -919,6 +923,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                     '{"OpenAI API key":"sk-openai-json",'
                     '"API token":"api-token-json",'
                     '"API credential":"api-credential-json",'
+                    '"API key provided":"sk-provider-json",'
                     '"access token":["tok-human-a","tok-human-b"],"safe":"ok"}'
                 ),
                 "diagnostic": "tokenizer: gpt2 token_count: 8192",
@@ -1027,7 +1032,8 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "AWS_SECRET_ACCESS_KEY=[redacted] Secret Access Key: [redacted] "
         "secretAccessKey=[redacted] privateKey=[redacted] "
         "AWS Secret Access Key: [redacted] SSH Private Key: [redacted] "
-        "Invalid API key: [redacted] Auth token: [redacted] Access token: "
+        "Invalid API key: [redacted] Incorrect API key provided: [redacted] "
+        "Auth token: [redacted] Access token: "
         "[redacted] OpenAI API key: [redacted] API token: [redacted] "
         "API credential: [redacted] Authorization: [redacted]"
     )
@@ -1035,12 +1041,14 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "api_key": "[redacted]",
         "x-api-key": "[redacted]",
         "API key": "[redacted]",
+        "API key provided": "[redacted]",
         "auth token": "[redacted]",
         "cookie": "[redacted]",
         "nested": {"authorization": "[redacted]"},
         "detail": "Authorization: [redacted]",
         "space_detail": "API key: [redacted]",
         "space_list_detail": "API keys: [redacted]",
+        "provider_detail": "Incorrect API key provided: [redacted]",
         "detail_auth_list": "Auth token: [redacted]",
         "human_detail": "Access token: [redacted]",
         "space_token_list": "Auth token: [redacted]",
@@ -1052,6 +1060,7 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
             '{"OpenAI API key":"[redacted]",'
             '"API token":"[redacted]",'
             '"API credential":"[redacted]",'
+            '"API key provided":"[redacted]",'
             '"access token":"[redacted]","safe":"ok"}'
         ),
         "diagnostic": "tokenizer: gpt2 token_count: 8192",
@@ -1146,6 +1155,10 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
     assert "auth-space-secret" not in repr(payload)
     assert "sk-detail-space-secret" not in repr(payload)
     assert "sk-list-b" not in repr(payload)
+    assert "sk-provider-secret" not in repr(payload)
+    assert "sk-provider-structured-secret" not in repr(payload)
+    assert "sk-provider-detail-secret" not in repr(payload)
+    assert "sk-provider-json" not in repr(payload)
     assert "tok-b" not in repr(payload)
     assert "sk-json-b" not in repr(payload)
     assert "tok-json-b" not in repr(payload)

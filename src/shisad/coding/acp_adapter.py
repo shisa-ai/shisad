@@ -119,33 +119,37 @@ _TRANSPORT_ERROR_SECRET_LABEL = (
     rf"{_TRANSPORT_ERROR_HUMAN_SECRET_LABEL}|"
     rf"{_TRANSPORT_ERROR_SECRET_IDENTIFIER_LABEL})"
 )
+_TRANSPORT_ERROR_SECRET_LABEL_SUFFIX = r"(?:\s+(?:provided|supplied|passed|received|returned))?"
+_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX = (
+    rf"(?:{_TRANSPORT_ERROR_SECRET_LABEL}s?){_TRANSPORT_ERROR_SECRET_LABEL_SUFFIX}"
+)
 _TRANSPORT_ERROR_SECRET_KEY_RE = re.compile(
-    rf"{_TRANSPORT_ERROR_SECRET_LABEL}",
+    rf"{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX}",
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_QUOTED_SECRET_RE = re.compile(
-    rf"(?P<label_quote>['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
+    rf"(?P<label_quote>['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX})"
     rf"(?P=label_quote)(?P<sep>\s*[:=]\s*)"
     rf"(?P<value_quote>['\"])(?P<value>(?:\\.|(?!(?P=value_quote)).)*)"
     rf"(?P=value_quote)",
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_ESCAPED_QUOTED_SECRET_RE = re.compile(
-    rf"(?P<label_quote>\\['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
+    rf"(?P<label_quote>\\['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX})"
     rf"(?P=label_quote)(?P<sep>\s*[:=]\s*)"
     rf"(?P<value_quote>\\['\"])(?P<value>(?:\\\\.|(?!(?P=value_quote)).)*)"
     rf"(?P=value_quote)",
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_ESCAPED_SECRET_CONTAINER_PREFIX_RE = re.compile(
-    rf"(?P<label_quote>\\['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL})"
+    rf"(?P<label_quote>\\['\"])(?P<label>{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX})"
     rf"(?P=label_quote)(?P<sep>\s*[:=]\s*)",
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_SECRET_CONTAINER_PREFIX_RE = re.compile(
     rf"(?P<label_expr>(?:(?P<label_quote>['\"])(?P<quoted_label>"
-    rf"{_TRANSPORT_ERROR_SECRET_LABEL})(?P=label_quote)|"
-    rf"\b(?P<plain_label>{_TRANSPORT_ERROR_SECRET_LABEL}s?)\b))"
+    rf"{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX})(?P=label_quote)|"
+    rf"\b(?P<plain_label>{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX})\b))"
     r"(?P<sep>\s*[:=]\s*)",
     flags=re.IGNORECASE,
 )
@@ -155,7 +159,7 @@ _TRANSPORT_ERROR_SECRET_HEADER_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TRANSPORT_ERROR_SECRET_ASSIGNMENT_PREFIX_RE = re.compile(
-    rf"(?P<label>(?<!-)\b{_TRANSPORT_ERROR_SECRET_LABEL}s?\b)"
+    rf"(?P<label>(?<!-)\b{_TRANSPORT_ERROR_SECRET_LABEL_WITH_SUFFIX}\b)"
     r"(?P<sep>\s*[:=]\s*)",
     flags=re.IGNORECASE,
 )
