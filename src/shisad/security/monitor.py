@@ -149,21 +149,44 @@ class ActionMonitor:
             "--word-regexp",
         }
     )
+    _COMMAND_RUN_VERBS_RE_SOURCE: ClassVar[str] = (
+        r"run|execute|call|try|use|invoke|start|launch|check|show"
+    )
     _NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s.;,!?])(?:do not|don't|dont|never|not)\s+"
-        r"(?:(?:run|execute|call|try|use|invoke|start|launch|check|show)\s*)?$",
+        rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*)?$",
+        re.IGNORECASE,
+    )
+    _SCOPED_NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s.;,!?])(?:"
+        r"(?:do not|don't|dont|never)\s+"
+        r"(?:want|need|expect|ask|intend|mean|plan)\b|"
+        r"not\s+"
+        r"(?:asking|telling|requesting|trying|going|planning|expecting|intending|meaning)\b"
+        r")"
+        rf"(?:(?![.;,!?]).){{0,96}}\b(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
+        re.IGNORECASE,
+    )
+    _NON_IMPERATIVE_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s.;,!?])(?:"
+        r"what\s+(?:happens\s+if|would\s+happen\s+if|will\s+happen\s+if|if)|"
+        r"what\s+if|"
+        r"if|when|"
+        r"(?:should|could|can)\s+(?:i|we)"
+        r")\b"
+        rf"(?:(?![.;,!?]).){{0,64}}\b(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
         re.IGNORECASE,
     )
     _COMMAND_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s.;,!?])(?:please\s+)?"
-        r"(?:run|execute|call|try|use|invoke|start|launch|check|show)"
+        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
         r"\s*(?::|\b)(?:\s+(?:the\s+)?(?:command|cli|diagnostic|query|status))?"
         r"\s*[`'\"]*$",
         re.IGNORECASE,
     )
     _COMMAND_SUFFIX_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
-        r"(?:run|execute|call|try|use|invoke|start|launch|check)\s+"
+        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+"
         r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b"
         r"(?:\s+(?:please|now))*\s*(?:[.!?)]|$)",
         re.IGNORECASE,
@@ -414,6 +437,19 @@ class ActionMonitor:
         return bool(cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix))
 
     @classmethod
+    def _command_prefix_has_negated_reference(cls, prefix: str) -> bool:
+        context = cls._local_command_prefix_context(prefix).strip(" `'\")")
+        return bool(
+            cls._NEGATED_COMMAND_REFERENCE_RE.search(context)
+            or cls._SCOPED_NEGATED_COMMAND_REFERENCE_RE.search(context)
+        )
+
+    @classmethod
+    def _command_prefix_has_non_imperative_reference(cls, prefix: str) -> bool:
+        context = cls._local_command_prefix_context(prefix).strip(" `'\")")
+        return bool(cls._NON_IMPERATIVE_COMMAND_REFERENCE_RE.search(context))
+
+    @classmethod
     def _command_reference_is_mention_only(cls, prefix: str) -> bool:
         context = cls._local_command_prefix_context(prefix).strip(" `'\")")
         return bool(cls._COMMAND_MENTION_ONLY_RE.search(context))
@@ -450,20 +486,22 @@ class ActionMonitor:
                     break
                 prefix = normalized_goal[:index]
                 suffix = normalized_goal[index + len(candidate) :]
-                negation_prefix = prefix[max(0, len(prefix) - 48) :].rstrip("`'\" ")
                 fenced_span = cls._command_span_is_fenced(prefix, suffix)
                 run_intent = cls._command_prefix_has_run_intent(
                     prefix
                 ) or cls._command_suffix_has_run_intent(suffix)
+                negated_reference = cls._command_prefix_has_negated_reference(prefix)
+                non_imperative_reference = cls._command_prefix_has_non_imperative_reference(prefix)
                 mention_only = cls._command_reference_is_mention_only(prefix) or (
                     fenced_span and cls._fenced_command_reference_is_mention_only(prefix)
                 )
-                if run_intent:
+                if run_intent and not non_imperative_reference:
                     mention_only = False
                 if (
                     cls._command_prefix_is_delimited(prefix)
                     and cls._command_suffix_is_delimited(suffix)
-                    and cls._NEGATED_COMMAND_REFERENCE_RE.search(negation_prefix) is None
+                    and not negated_reference
+                    and not non_imperative_reference
                     and not mention_only
                     and (run_intent or not cls._command_suffix_has_trailing_text(suffix))
                     and (run_intent or fenced_span or cls._command_span_is_bare_goal(prefix))

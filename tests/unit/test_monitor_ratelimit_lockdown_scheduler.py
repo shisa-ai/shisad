@@ -101,11 +101,19 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
             ["shisad", "status"],
         ),
         (
+            "tell me about `shisad status`, then show it",
+            ["shisad", "status"],
+        ),
+        (
             "tell me about `shisad status`, then execute it please",
             ["shisad", "status"],
         ),
         (
             "describe `shisad status`, then run that now",
+            ["shisad", "status"],
+        ),
+        (
+            "can you run `shisad status`?",
             ["shisad", "status"],
         ),
     ],
@@ -175,6 +183,14 @@ def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_current_tu
         (
             "never check `shisad status`",
             ["shisad", "status"],
+        ),
+        (
+            "I don't want you to run `shisad status`",
+            ["shisad", "status"],
+        ),
+        (
+            "I'm not asking you to show `shisad audit query --json`",
+            ["shisad", "audit", "query", "--json"],
         ),
     ],
 )
@@ -328,6 +344,18 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
         ),
         (
             "describe `shisad audit query --json`, then run the query docs",
+            ["shisad", "audit", "query", "--json"],
+        ),
+        (
+            "what happens if I run `shisad status`?",
+            ["shisad", "status"],
+        ),
+        (
+            "what if we check `shisad lockdown status --json`?",
+            ["shisad", "lockdown", "status", "--json"],
+        ),
+        (
+            "should I run `shisad audit query --json`?",
             ["shisad", "audit", "query", "--json"],
         ),
     ],
