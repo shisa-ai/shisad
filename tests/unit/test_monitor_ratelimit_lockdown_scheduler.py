@@ -92,6 +92,14 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
             "show `shisad action list --session sess-g1 --json`",
             ["shisad", "action", "list", "--session", "sess-g1", "--json"],
         ),
+        (
+            "describe this command, then run ```shisad status```",
+            ["shisad", "status"],
+        ),
+        (
+            "tell me about `shisad status`, then execute it",
+            ["shisad", "status"],
+        ),
     ],
 )
 def test_gh55_action_monitor_allows_explicit_read_only_diagnostic_commands(
@@ -281,6 +289,14 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
         (
             "what's this shell command? ```shisad status```",
             ["shisad", "status"],
+        ),
+        (
+            "```shisad status``` what does this do?",
+            ["shisad", "status"],
+        ),
+        (
+            "`shisad audit query --json` explain this first",
+            ["shisad", "audit", "query", "--json"],
         ),
     ],
 )

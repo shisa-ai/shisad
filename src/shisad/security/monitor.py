@@ -161,6 +161,12 @@ class ActionMonitor:
         r"\s*[`'\"]*$",
         re.IGNORECASE,
     )
+    _COMMAND_SUFFIX_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
+        r"(?:run|execute|call|try|use|invoke|start|launch|check)\s+"
+        r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))?\b",
+        re.IGNORECASE,
+    )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s;:,])(?:what\s+(?:does|would|will|is|are)|what's|"
         r"explain|describe|tell\s+me\s+about|meaning\s+of|"
@@ -394,9 +400,17 @@ class ActionMonitor:
             return consumed_closer
         return False
 
+    @staticmethod
+    def _command_suffix_has_trailing_text(suffix: str) -> bool:
+        return bool(suffix.strip(" `'\t\n\r\".,;:!?)]}"))
+
     @classmethod
     def _command_prefix_has_run_intent(cls, prefix: str) -> bool:
         return bool(cls._COMMAND_RUN_INTENT_RE.search(cls._local_command_prefix_context(prefix)))
+
+    @classmethod
+    def _command_suffix_has_run_intent(cls, suffix: str) -> bool:
+        return bool(cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix))
 
     @classmethod
     def _command_reference_is_mention_only(cls, prefix: str) -> bool:
@@ -437,19 +451,21 @@ class ActionMonitor:
                 suffix = normalized_goal[index + len(candidate) :]
                 negation_prefix = prefix[max(0, len(prefix) - 48) :].rstrip("`'\" ")
                 fenced_span = cls._command_span_is_fenced(prefix, suffix)
+                run_intent = cls._command_prefix_has_run_intent(
+                    prefix
+                ) or cls._command_suffix_has_run_intent(suffix)
                 mention_only = cls._command_reference_is_mention_only(prefix) or (
                     fenced_span and cls._fenced_command_reference_is_mention_only(prefix)
                 )
+                if run_intent:
+                    mention_only = False
                 if (
                     cls._command_prefix_is_delimited(prefix)
                     and cls._command_suffix_is_delimited(suffix)
                     and cls._NEGATED_COMMAND_REFERENCE_RE.search(negation_prefix) is None
                     and not mention_only
-                    and (
-                        cls._command_prefix_has_run_intent(prefix)
-                        or fenced_span
-                        or cls._command_span_is_bare_goal(prefix)
-                    )
+                    and (run_intent or not cls._command_suffix_has_trailing_text(suffix))
+                    and (run_intent or fenced_span or cls._command_span_is_bare_goal(prefix))
                 ):
                     return True
                 start = index + len(candidate)
