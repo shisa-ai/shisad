@@ -47,6 +47,159 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+@pytest.mark.parametrize(
+    ("user_goal", "command"),
+    [
+        (
+            "ok what's going on? ```shisad audit query --type OutputFirewallAlert "
+            "--session 0fc2e5246a4d4987920e0e7dc10b4ce4 --json```",
+            [
+                "shisad",
+                "audit",
+                "query",
+                "--type",
+                "OutputFirewallAlert",
+                "--session",
+                "0fc2e5246a4d4987920e0e7dc10b4ce4",
+                "--json",
+            ],
+        ),
+        (
+            "run `shisad status` so we can see daemon state",
+            ["shisad", "status"],
+        ),
+        (
+            "try `shisad doctor check --component browser` to inspect the browser setup",
+            ["shisad", "doctor", "check", "--component", "browser"],
+        ),
+        (
+            "please check `shisad lockdown status --session sess-g1 --json`",
+            ["shisad", "lockdown", "status", "--session", "sess-g1", "--json"],
+        ),
+        (
+            "show `shisad action list --session sess-g1 --json`",
+            ["shisad", "action", "list", "--session", "sess-g1", "--json"],
+        ),
+    ],
+)
+def test_gh55_action_monitor_allows_explicit_read_only_diagnostic_commands(
+    user_goal: str,
+    command: list[str],
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal=user_goal,
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={"command": command},
+                reasoning="Run the user-provided local diagnostic command.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.APPROVE
+    assert decision.flags == []
+
+
+def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_current_turn_match() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="ok what's going on?",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": [
+                        "shisad",
+                        "audit",
+                        "query",
+                        "--type",
+                        "OutputFirewallAlert",
+                        "--session",
+                        "sess-g1",
+                        "--json",
+                    ]
+                },
+                reasoning="Planner-selected command is not grounded in current user text.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize(
+    ("user_goal", "command"),
+    [
+        (
+            "don't run `shisad status`",
+            ["shisad", "status"],
+        ),
+        (
+            "do not execute ```shisad audit query --json```",
+            ["shisad", "audit", "query", "--json"],
+        ),
+    ],
+)
+def test_gh55_action_monitor_rejects_negated_diagnostic_command_mentions(
+    user_goal: str,
+    command: list[str],
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal=user_goal,
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={"command": command},
+                reasoning="Negated current-turn command mentions do not authorize shell execution.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {
+            "command": ["shisad", "audit", "query", "--json"],
+            "write_paths": ["."],
+        },
+        {
+            "command": ["shisad", "audit", "query", "--json"],
+            "network_urls": ["https://example.com"],
+        },
+        {
+            "command": ["shisad", "audit", "query", "--json"],
+            "env": {"PYTHONPATH": "."},
+        },
+        {
+            "command": ["shisad", "lockdown", "set", "normal"],
+        },
+    ],
+)
+def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejected(
+    arguments: dict[str, object],
+) -> None:
+    monitor = ActionMonitor()
+    command_text = " ".join(str(token) for token in arguments["command"])
+    decision = monitor.evaluate(
+        user_goal=f"run `{command_text}`",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments=arguments,
+                reasoning="Only read-only diagnostic commands may bypass goal-misaligned reject.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
 def test_gh12_action_monitor_confirms_read_only_shell_file_discovery() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(

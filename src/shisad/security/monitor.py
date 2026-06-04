@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, ClassVar
@@ -47,6 +48,32 @@ class ActionMonitor:
     _READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS: ClassVar[set[str]] = {
         "grep",
         "rg",
+    }
+    _LOCAL_DIAGNOSTIC_CLI_COMMANDS: ClassVar[set[str]] = {
+        "shisactl",
+        "shisad",
+    }
+    _LOCAL_DIAGNOSTIC_FLAG_OPTIONS: ClassVar[dict[tuple[str, ...], frozenset[str]]] = {
+        ("action", "list"): frozenset({"--json", "--raw"}),
+        ("action", "pending"): frozenset({"--raw"}),
+        ("audit", "query"): frozenset({"--all", "--json"}),
+        ("audit", "verify"): frozenset(),
+        ("doctor",): frozenset(),
+        ("doctor", "check"): frozenset(),
+        ("lockdown", "status"): frozenset({"--all", "--json"}),
+        ("status",): frozenset(),
+    }
+    _LOCAL_DIAGNOSTIC_VALUE_OPTIONS: ClassVar[dict[tuple[str, ...], frozenset[str]]] = {
+        ("action", "list"): frozenset({"--limit", "--session", "--status"}),
+        ("action", "pending"): frozenset({"--limit", "--session", "--status"}),
+        ("audit", "query"): frozenset(
+            {"--actor", "--data-dir", "--limit", "--session", "--since", "--type"}
+        ),
+        ("audit", "verify"): frozenset({"--data-dir"}),
+        ("doctor",): frozenset(),
+        ("doctor", "check"): frozenset({"--component"}),
+        ("lockdown", "status"): frozenset({"--session"}),
+        ("status",): frozenset(),
     }
     _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS: ClassVar[set[str]] = {
         "&&",
@@ -125,6 +152,11 @@ class ActionMonitor:
             "--word-regexp",
         }
     )
+    _NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:^|[\s.;,!?])(?:do not|don't|dont|never|not)\s+"
+        r"(?:(?:run|execute|call|try|use|invoke|start|launch)\s*)?$",
+        re.IGNORECASE,
+    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -150,6 +182,11 @@ class ActionMonitor:
                 continue
 
             if tool == "shell.exec":
+                if self._is_explicit_read_only_diagnostic_shell_command(
+                    goal_text=goal_text,
+                    arguments=getattr(action, "arguments", {}),
+                ):
+                    continue
                 if self._is_read_only_shell_file_discovery(
                     goal_text=goal_text,
                     arguments=getattr(action, "arguments", {}),
@@ -302,6 +339,139 @@ class ActionMonitor:
         if "/" in token or "\\" in token:
             return ""
         return token.lower()
+
+    @staticmethod
+    def _normalize_shell_command_text(text: str) -> str:
+        return " ".join(text.lower().split())
+
+    @classmethod
+    def _command_text_matches_current_goal(cls, *, goal_text: str, command: list[str]) -> bool:
+        normalized_goal = cls._normalize_shell_command_text(goal_text)
+        if not normalized_goal:
+            return False
+        candidates = {
+            cls._normalize_shell_command_text(" ".join(command)),
+            cls._normalize_shell_command_text(shlex.join(command)),
+        }
+        for candidate in candidates:
+            if not candidate:
+                continue
+            start = 0
+            while True:
+                index = normalized_goal.find(candidate, start)
+                if index < 0:
+                    break
+                prefix = normalized_goal[max(0, index - 48) : index].rstrip("`'\" ")
+                if cls._NEGATED_COMMAND_REFERENCE_RE.search(prefix) is None:
+                    return True
+                start = index + len(candidate)
+        return False
+
+    @classmethod
+    def _diagnostic_command_prefix(cls, command: list[str]) -> tuple[tuple[str, ...], int] | None:
+        if len(command) < 2:
+            return None
+        executable = cls._shell_command_name(command[0])
+        if executable not in cls._LOCAL_DIAGNOSTIC_CLI_COMMANDS:
+            return None
+        lowered = [token.lower() for token in command]
+        candidates: tuple[tuple[str, ...], ...] = (
+            ("action", "list"),
+            ("action", "pending"),
+            ("audit", "query"),
+            ("audit", "verify"),
+            ("doctor", "check"),
+            ("lockdown", "status"),
+            ("doctor",),
+            ("status",),
+        )
+        for prefix in candidates:
+            end = 1 + len(prefix)
+            if tuple(lowered[1:end]) == prefix:
+                return prefix, end
+        return None
+
+    @staticmethod
+    def _diagnostic_option_value_is_safe(value: str) -> bool:
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return not any(char in stripped for char in ("\x00", "\n", "\r"))
+
+    @classmethod
+    def _diagnostic_options_are_read_only(
+        cls,
+        *,
+        prefix: tuple[str, ...],
+        command: list[str],
+        start_index: int,
+    ) -> bool:
+        flag_options = cls._LOCAL_DIAGNOSTIC_FLAG_OPTIONS.get(prefix)
+        value_options = cls._LOCAL_DIAGNOSTIC_VALUE_OPTIONS.get(prefix)
+        if flag_options is None or value_options is None:
+            return False
+        index = start_index
+        while index < len(command):
+            token = command[index]
+            lowered = token.lower()
+            if not lowered.startswith("--") or lowered == "--":
+                return False
+            option, has_inline_value, inline_value = lowered.partition("=")
+            if option in flag_options:
+                if has_inline_value:
+                    return False
+                index += 1
+                continue
+            if option not in value_options:
+                return False
+            if has_inline_value:
+                if not cls._diagnostic_option_value_is_safe(inline_value):
+                    return False
+                index += 1
+                continue
+            if index + 1 >= len(command):
+                return False
+            value = command[index + 1]
+            if value.startswith("--") or not cls._diagnostic_option_value_is_safe(value):
+                return False
+            index += 2
+        return True
+
+    @classmethod
+    def _is_explicit_read_only_diagnostic_shell_command(
+        cls,
+        *,
+        goal_text: str,
+        arguments: Any,
+    ) -> bool:
+        if not isinstance(arguments, dict):
+            return False
+        for risky_field in ("write_paths", "network_urls", "env"):
+            value = arguments.get(risky_field)
+            if value not in (None, "", [], {}, ()):
+                return False
+        command_raw = arguments.get("command")
+        if not isinstance(command_raw, list) or not command_raw:
+            return False
+        command: list[str] = []
+        for token in command_raw:
+            if not isinstance(token, str):
+                return False
+            stripped = token.strip()
+            if not stripped:
+                return False
+            command.append(stripped)
+        if not cls._command_text_matches_current_goal(goal_text=goal_text, command=command):
+            return False
+        prefix_match = cls._diagnostic_command_prefix(command)
+        if prefix_match is None:
+            return False
+        prefix, start_index = prefix_match
+        return cls._diagnostic_options_are_read_only(
+            prefix=prefix,
+            command=command,
+            start_index=start_index,
+        )
 
     @staticmethod
     def _grep_token_dereferences_recursively(token: str) -> bool:
@@ -555,6 +725,8 @@ def combine_monitor_with_policy(
     if risk_score >= auto_approve_threshold:
         if monitor.kind == MonitorDecisionType.APPROVE and pep_kind == "allow":
             return ("allow", "pep_monitor_agree")
+        if monitor.kind == MonitorDecisionType.APPROVE and pep_kind == "require_confirmation":
+            return ("require_confirmation", "pep_requires_confirmation")
         return ("require_confirmation", monitor.reason or "monitor_not_confident")
 
     if pep_kind == "require_confirmation":

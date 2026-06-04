@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import struct
@@ -758,6 +759,23 @@ async def _stub_complete(
         if "git diff" in goal_lower
         else None
     )
+    diagnostic_audit_command_match = re.search(
+        r"\bshisa(?:d|ctl)\s+audit\s+query\b[^\n`]*",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    diagnostic_audit_command_call = None
+    if diagnostic_audit_command_match is not None:
+        try:
+            diagnostic_audit_command = shlex.split(diagnostic_audit_command_match.group(0))
+        except ValueError:
+            diagnostic_audit_command = []
+        if diagnostic_audit_command:
+            diagnostic_audit_command_call = _tool_call(
+                "shell.exec",
+                {"command": diagnostic_audit_command},
+                call_id="t-diagnostic-audit-query",
+            )
     fs_write_call = (
         _tool_call(
             "fs.write",
@@ -815,6 +833,8 @@ async def _stub_complete(
         tool_calls.append(git_log_call)
     elif git_diff_call is not None:
         tool_calls.append(git_diff_call)
+    elif diagnostic_audit_command_call is not None:
+        tool_calls.append(diagnostic_audit_command_call)
     elif fs_write_call is not None:
         tool_calls.append(fs_write_call)
 
@@ -1565,6 +1585,37 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
     assert int(followup.get("confirmation_required_actions", 0)) == 0
     assert followup.get("pending_confirmation_ids") == []
     assert "todo.log" in str(followup.get("response", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_direct_diagnostic_audit_command_executes_or_confirms_without_monitor_reject(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    command = (
+        "shisad audit query --type OutputFirewallAlert "
+        "--session 0fc2e5246a4d4987920e0e7dc10b4ce4 --json"
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"ok what's going on? ```{command}```",
+        },
+    )
+
+    response_text = str(reply.get("response", ""))
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    executed_actions = int(reply.get("executed_actions", 0))
+    confirmation_actions = int(reply.get("confirmation_required_actions", 0))
+    assert executed_actions + confirmation_actions == 1
+    if executed_actions:
+        assert "shell.exec" in _extract_tool_outputs(reply)
+    else:
+        assert reply.get("pending_confirmation_ids")
+    assert "goal-misaligned" not in response_text
+    assert "policy-evasive" not in response_text
 
 
 @pytest.mark.asyncio
@@ -6909,8 +6960,7 @@ async def test_gh47_misconfigured_browser_runtime_is_visible_to_planner(
     planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
     trusted_section = _extract_trusted_context_before_request(planner_input)
     assert (
-        "Browser tools are unavailable because runtime status is misconfigured"
-        in trusted_section
+        "Browser tools are unavailable because runtime status is misconfigured" in trusted_section
     )
     assert "browser_command_unconfigured" in trusted_section
     assert "web.search/web.fetch" in trusted_section

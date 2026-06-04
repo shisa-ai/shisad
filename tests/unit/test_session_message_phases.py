@@ -69,7 +69,7 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.control_plane.trace import PlanVerificationResult
 from shisad.security.firewall import FirewallResult
-from shisad.security.monitor import MonitorDecisionType
+from shisad.security.monitor import ActionMonitor, MonitorDecisionType
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 from shisad.ui.evidence import render_evidence_refs_for_terminal
@@ -1861,6 +1861,92 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+
+
+@pytest.mark.asyncio
+async def test_gh55_command_chat_diagnostic_shell_command_queues_confirmation() -> None:
+    harness = _PendingPolicySnapshotHarness()
+    harness._monitor = ActionMonitor()
+    command = [
+        "shisad",
+        "audit",
+        "query",
+        "--type",
+        "OutputFirewallAlert",
+        "--session",
+        "0fc2e5246a4d4987920e0e7dc10b4ce4",
+        "--json",
+    ]
+    content = "ok what's going on? ```" + " ".join(command) + "```"
+    validated = _validation_result(params={"session_id": "sess-g1", "content": content})
+    validated.operator_owned_cli_input = True
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.SHELL_EXEC},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.SHELL_EXEC}),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("shell.exec"),
+        arguments={"command": command},
+        reasoning="Run the user-provided local diagnostic command.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.rejected == 0
+    assert result.pending_confirmation == 1
+    assert result.rejection_reasons_for_user == []
+    assert harness.pending_action_calls[0]["reason"] == "pep_requires_confirmation"
 
 
 @pytest.mark.asyncio
