@@ -160,26 +160,36 @@ class ActionMonitor:
     _SCOPED_NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s.;,!?])(?:"
         r"(?:do not|don't|dont|never)\s+"
-        r"(?:want|need|expect|ask|intend|mean|plan)\b|"
+        r"(?:want|need|expect|ask|intend|mean|plan)\s+"
+        r"(?:(?:you|me|us|them|it|this|that)\s+)?(?:to\s+)?|"
         r"not\s+"
-        r"(?:asking|telling|requesting|trying|going|planning|expecting|intending|meaning)\b"
+        r"(?:asking|telling|requesting|trying|going|planning|expecting|intending|meaning)\s+"
+        r"(?:(?:you|me|us|them|it|this|that)\s+)?(?:to\s+)?"
         r")"
-        rf"(?:(?![.;,!?]).){{0,96}}\b(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
+        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
         re.IGNORECASE,
     )
     _NON_IMPERATIVE_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"(?:^|[\s.;,!?])(?:"
-        r"what\s+(?:happens\s+if|would\s+happen\s+if|will\s+happen\s+if|if)|"
-        r"what\s+if|"
-        r"if|when|"
+        r"(?:what\s+(?:happens\s+if|would\s+happen\s+if|will\s+happen\s+if|if)|"
+        r"what\s+if)\s+(?:(?:i|we|you|they|someone)\s+)?|"
+        r"(?:if|when)\s+(?:i|we|you|they|someone)\s+|"
         r"(?:should|could|can)\s+(?:i|we)"
         r")\b"
         rf"(?:(?![.;,!?]).){{0,64}}\b(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
         re.IGNORECASE,
     )
     _COMMAND_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s.;,!?])(?:please\s+)?"
+        r"(?:"
+        r"^\s*(?:(?:please|ok|okay|now|if\s+possible)\s+)*"
+        r"(?:(?:can|could|would|will)\s+you\s+|let'?s\s+|go\s+ahead\s+and\s+)?"
+        r"(?:just\s+|please\s+|now\s+)?"
         rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
+        r"|(?:^|[\s,;:])(?:then|and)\s+(?:please\s+)?"
+        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
+        r"|(?:^|[\s,;:])(?:just|instead)\s+"
+        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
+        r")"
         r"\s*(?::|\b)(?:\s+(?:the\s+)?(?:command|cli|diagnostic|query|status))?"
         r"\s*[`'\"]*$",
         re.IGNORECASE,
@@ -189,6 +199,13 @@ class ActionMonitor:
         rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+"
         r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b"
         r"(?:\s+(?:please|now))*\s*(?:[.!?)]|$)",
+        re.IGNORECASE,
+    )
+    _NEGATED_COMMAND_SUFFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"^[`'\"\s,.;:)]*(?:(?:but|and|then)\s+)?"
+        r"(?:do\s+not|don't|dont|never|not)\s+"
+        rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+)?"
+        r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b",
         re.IGNORECASE,
     )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
@@ -437,6 +454,10 @@ class ActionMonitor:
         return bool(cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix))
 
     @classmethod
+    def _command_suffix_has_negated_reference(cls, suffix: str) -> bool:
+        return bool(cls._NEGATED_COMMAND_SUFFIX_RE.search(suffix))
+
+    @classmethod
     def _command_prefix_has_negated_reference(cls, prefix: str) -> bool:
         context = cls._local_command_prefix_context(prefix).strip(" `'\")")
         return bool(
@@ -491,6 +512,7 @@ class ActionMonitor:
                     prefix
                 ) or cls._command_suffix_has_run_intent(suffix)
                 negated_reference = cls._command_prefix_has_negated_reference(prefix)
+                negated_suffix_reference = cls._command_suffix_has_negated_reference(suffix)
                 non_imperative_reference = cls._command_prefix_has_non_imperative_reference(prefix)
                 mention_only = cls._command_reference_is_mention_only(prefix) or (
                     fenced_span and cls._fenced_command_reference_is_mention_only(prefix)
@@ -501,6 +523,7 @@ class ActionMonitor:
                     cls._command_prefix_is_delimited(prefix)
                     and cls._command_suffix_is_delimited(suffix)
                     and not negated_reference
+                    and not negated_suffix_reference
                     and not non_imperative_reference
                     and not mention_only
                     and (run_intent or not cls._command_suffix_has_trailing_text(suffix))
