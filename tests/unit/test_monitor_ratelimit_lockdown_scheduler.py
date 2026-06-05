@@ -109,7 +109,15 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
             ["shisad", "status"],
         ),
         (
+            "tell me about `shisad status`, then execute it, please",
+            ["shisad", "status"],
+        ),
+        (
             "describe `shisad status`, then run that now",
+            ["shisad", "status"],
+        ),
+        (
+            "describe `shisad status`, then run that, now",
             ["shisad", "status"],
         ),
         (
@@ -135,6 +143,11 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
         (
             "run `shisad audit query --json`, but don't run `shisad audit query --json --limit 10`",
             ["shisad", "audit", "query", "--json"],
+        ),
+        (
+            "run `shisad audit query --session sess`, but don't run "
+            "`shisad audit query --session sesscommandplease`",
+            ["shisad", "audit", "query", "--session", "sess"],
         ),
     ],
 )

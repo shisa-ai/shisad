@@ -198,7 +198,7 @@ class ActionMonitor:
         r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
         rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+"
         r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b"
-        r"(?:\s+(?:please|now))*\s*(?:[.!?)]|$)",
+        r"(?:[\s,]+(?:please|now))*\s*(?:[.!?)]|$)",
         re.IGNORECASE,
     )
     _SHOW_COMMAND_DISPLAY_PREFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
@@ -227,7 +227,8 @@ class ActionMonitor:
         re.IGNORECASE,
     )
     _REPEATED_COMMAND_EXACT_TAIL_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:command|please|now)(?:[\s,.;:!?)]*(?:command|please|now))*[\s,.;:!?)]*$",
+        r"(?:command|please|now)(?:[\s,.;:!?)]{1,}(?:command|please|now))*"
+        r"[\s,.;:!?)]*$",
         re.IGNORECASE,
     )
     _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
