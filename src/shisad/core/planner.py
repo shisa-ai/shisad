@@ -571,6 +571,18 @@ class Planner:
             if not isinstance(parsed_arguments, dict):
                 invalid_count += 1
                 continue
+            schema_errors = self._tool_argument_schema_errors(
+                canonical_name=canonical_name,
+                arguments=dict(parsed_arguments),
+            )
+            if schema_errors:
+                logger.debug(
+                    "Dropping content tool call with invalid schema for %s: %s",
+                    canonical_name,
+                    "; ".join(schema_errors),
+                )
+                invalid_count += 1
+                continue
             payload = {
                 "action_id": f"content-call-{index + 1}",
                 "tool_name": canonical_name,
@@ -688,6 +700,16 @@ class Planner:
         registry_names = {str(tool.name) for tool in self._tool_registry.list_tools()}
         return registry_names.intersection(payload_names)
 
+    def _tool_argument_schema_errors(
+        self,
+        *,
+        canonical_name: str,
+        arguments: dict[str, Any],
+    ) -> list[str]:
+        if self._tool_registry is None:
+            return []
+        return self._tool_registry.validate_call(ToolName(canonical_name), arguments)
+
     def _is_content_tool_fallback_enabled(self) -> bool:
         return (
             self._capabilities.supports_content_tool_calls
@@ -737,6 +759,18 @@ class Planner:
             parsed_arguments = self._parse_tool_arguments(function.get("arguments"))
             if parsed_arguments is None:
                 logger.debug("Dropping native tool call with invalid arguments payload")
+                invalid_count += 1
+                continue
+            schema_errors = self._tool_argument_schema_errors(
+                canonical_name=canonical_name,
+                arguments=parsed_arguments,
+            )
+            if schema_errors:
+                logger.debug(
+                    "Dropping native tool call with invalid schema for %s: %s",
+                    canonical_name,
+                    "; ".join(schema_errors),
+                )
                 invalid_count += 1
                 continue
             action_id_raw = raw_call.get("id")

@@ -16,6 +16,7 @@ from shisad.core.planner import (
 )
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter, tool_definitions_to_openai
@@ -418,6 +419,39 @@ async def test_m5_cf_v0351_schema_strict_mode_rejects_unknown_content_tool_calls
             "echo",
             PolicyContext(capabilities={Capability.FILE_READ}),
             tools=_tools_payload(registry, {"echo"}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_gh55_schema_strict_mode_rejects_content_shell_exec_missing_command_intent() -> None:
+    registry = _make_registry()
+    registry.register(ShellExecTool.tool_definition())
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = _StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content='<tool_call>{"name":"shell.exec","arguments":{"command":["shisad","status"]}}</tool_call>',
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+        schema_strict_mode=True,
+    )
+
+    with pytest.raises(PlannerOutputError, match="strict schema validation"):
+        await planner.propose(
+            "run shisad status",
+            PolicyContext(capabilities={Capability.SHELL_EXEC}),
+            tools=_tools_payload(registry, {"shell.exec"}),
         )
 
 

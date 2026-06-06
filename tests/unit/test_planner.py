@@ -9,6 +9,7 @@ import pytest
 
 from shisad.core.planner import Planner, PlannerOutputError
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecision, TaintLabel, ToolName
@@ -180,6 +181,43 @@ async def test_m5_cf_v0351_schema_strict_mode_rejects_malformed_native_tool_call
         await planner.propose(
             "hello",
             PolicyContext(capabilities={Capability.FILE_READ}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_gh55_schema_strict_mode_rejects_native_shell_exec_missing_command_intent() -> None:
+    registry = _make_registry()
+    registry.register(ShellExecTool.tool_definition())
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="Running status.",
+                    tool_calls=[
+                        {
+                            "id": "call_shell",
+                            "type": "function",
+                            "function": {
+                                "name": "shell.exec",
+                                "arguments": json.dumps({"command": ["shisad", "status"]}),
+                            },
+                        }
+                    ],
+                )
+            ]
+        ),
+        pep,
+        max_retries=0,
+        tool_registry=registry,
+        schema_strict_mode=True,
+    )
+
+    with pytest.raises(PlannerOutputError, match="strict schema validation"):
+        await planner.propose(
+            "run shisad status",
+            PolicyContext(capabilities={Capability.SHELL_EXEC}),
         )
 
 
