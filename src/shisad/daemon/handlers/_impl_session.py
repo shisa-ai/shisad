@@ -4066,16 +4066,11 @@ def _top_level_tool_summary_error(row: str) -> str:
 def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
     sections = _tool_output_summary_sections(tool_output_summary)
     search_entries = [
-        lines[0].strip()
-        for tool_name, lines in sections
-        if tool_name == "web.search" and lines
+        lines[0].strip() for tool_name, lines in sections if tool_name == "web.search" and lines
     ]
     if not search_entries:
         return None
-    if any(
-        _top_level_tool_summary_succeeded(row, "web.search")
-        for row in search_entries
-    ):
+    if any(_top_level_tool_summary_succeeded(row, "web.search") for row in search_entries):
         return None
     search_errors = {_top_level_tool_summary_error(row) for row in search_entries}
     fs_read_succeeded = any(
@@ -4453,11 +4448,7 @@ def _browser_runtime_unavailable_rejection_reason(
     raw_problems = browser_status.get("problems", [])
     if not isinstance(raw_problems, list | tuple | set | frozenset):
         raw_problems = [raw_problems]
-    problems = [
-        str(item).strip()
-        for item in raw_problems
-        if str(item).strip()
-    ]
+    problems = [str(item).strip() for item in raw_problems if str(item).strip()]
     if status == "disabled" or browser_status.get("enabled") is False:
         reason = "browser_disabled"
     else:
@@ -10005,6 +9996,7 @@ class SessionImplMixin(HandlerMixinBase):
             monitor_decision = self._monitor.evaluate(
                 user_goal=validated.firewall_result.sanitized_text,
                 actions=[proposal],
+                operator_owned_cli_input=operator_owned_cli_input,
             )
             if monitor_decision.kind != MonitorDecisionType.REJECT:
                 self._monitor_reject_counts[sid] = 0

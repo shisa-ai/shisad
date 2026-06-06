@@ -67,6 +67,7 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
 def test_gh55_shell_exec_schema_exposes_structured_command_intent() -> None:
     schema = ShellExecTool.tool_definition().json_schema()
 
+    assert "command_intent" in schema["required"]
     assert schema["properties"]["command_intent"]["enum"] == [
         "execute",
         "informational",
@@ -98,6 +99,7 @@ def test_gh55_action_monitor_allows_structured_read_only_diagnostic_execute_inte
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="The command LLM already selected an execution action.",
+        operator_owned_cli_input=True,
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
@@ -123,12 +125,29 @@ def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_execute_in
 ) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
-        user_goal="The command text may appear in user prose, but intent is structured.",
+        user_goal="search for docs about the shisad status command",
+        operator_owned_cli_input=True,
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
                 arguments=arguments,
                 reasoning="Only structured execute intent authorizes this monitor exception.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+def test_gh55_action_monitor_rejects_diagnostic_execute_intent_without_trusted_cli() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="search for docs about the shisad status command",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={"command": ["shisad", "status"], "command_intent": "execute"},
+                reasoning="Model-owned intent is not enough without trusted CLI provenance.",
             )
         ],
     )

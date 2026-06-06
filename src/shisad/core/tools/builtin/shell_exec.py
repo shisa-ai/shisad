@@ -36,7 +36,7 @@ class ShellExecTool:
                         "calling shell.exec to run the command; for informational "
                         "mentions or explanations, do not call shell.exec."
                     ),
-                    required=False,
+                    required=True,
                     enum=["execute", "informational"],
                 ),
                 ToolParameter(

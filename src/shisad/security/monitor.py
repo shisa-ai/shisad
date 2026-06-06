@@ -25,6 +25,12 @@ class MonitorDecision(BaseModel):
     flags: list[str] = Field(default_factory=list)
 
 
+class _DiagnosticShellCommandDecision(StrEnum):
+    ALLOW = "allow"
+    REJECT = "reject"
+    NOT_DIAGNOSTIC = "not_diagnostic"
+
+
 class ActionMonitor:
     """Deterministic M2 monitor with clean-room constraints."""
 
@@ -160,7 +166,13 @@ class ActionMonitor:
         "ignore policy",
     }
 
-    def evaluate(self, *, user_goal: str, actions: list[Any]) -> MonitorDecision:
+    def evaluate(
+        self,
+        *,
+        user_goal: str,
+        actions: list[Any],
+        operator_owned_cli_input: bool = False,
+    ) -> MonitorDecision:
         if not actions:
             return MonitorDecision(kind=MonitorDecisionType.APPROVE)
 
@@ -176,9 +188,14 @@ class ActionMonitor:
                 continue
 
             if tool == "shell.exec":
-                if self._is_explicit_read_only_diagnostic_shell_command(
+                diagnostic_decision = self._local_diagnostic_shell_command_decision(
                     arguments=getattr(action, "arguments", {}),
-                ):
+                    operator_owned_cli_input=operator_owned_cli_input,
+                )
+                if diagnostic_decision == _DiagnosticShellCommandDecision.ALLOW:
+                    continue
+                if diagnostic_decision == _DiagnosticShellCommandDecision.REJECT:
+                    reject_flags.append(f"{tool}:local_diagnostic_shell_not_authorized")
                     continue
                 if self._is_read_only_shell_file_discovery(
                     goal_text=goal_text,
@@ -406,13 +423,31 @@ class ActionMonitor:
         return True
 
     @classmethod
-    def _is_explicit_read_only_diagnostic_shell_command(
+    def _local_diagnostic_shell_command_decision(
         cls,
         *,
         arguments: Any,
-    ) -> bool:
+        operator_owned_cli_input: bool,
+    ) -> _DiagnosticShellCommandDecision:
         if not isinstance(arguments, dict):
-            return False
+            return _DiagnosticShellCommandDecision.NOT_DIAGNOSTIC
+        command_raw = arguments.get("command")
+        if not isinstance(command_raw, list) or not command_raw:
+            return _DiagnosticShellCommandDecision.NOT_DIAGNOSTIC
+        command: list[str] = []
+        for token in command_raw:
+            if not isinstance(token, str):
+                return _DiagnosticShellCommandDecision.REJECT
+            stripped = token.strip()
+            if not stripped:
+                return _DiagnosticShellCommandDecision.REJECT
+            command.append(stripped)
+        prefix_match = cls._diagnostic_command_prefix(command)
+        if prefix_match is None:
+            executable = cls._shell_command_name(command[0])
+            if executable in cls._LOCAL_DIAGNOSTIC_CLI_COMMANDS:
+                return _DiagnosticShellCommandDecision.REJECT
+            return _DiagnosticShellCommandDecision.NOT_DIAGNOSTIC
         for key, value in arguments.items():
             if key not in cls._LOCAL_DIAGNOSTIC_ARGUMENT_KEYS and value not in (
                 None,
@@ -421,29 +456,19 @@ class ActionMonitor:
                 {},
                 (),
             ):
-                return False
+                return _DiagnosticShellCommandDecision.REJECT
+        if not operator_owned_cli_input:
+            return _DiagnosticShellCommandDecision.REJECT
         if arguments.get("command_intent") != cls._LOCAL_DIAGNOSTIC_COMMAND_INTENT:
-            return False
-        command_raw = arguments.get("command")
-        if not isinstance(command_raw, list) or not command_raw:
-            return False
-        command: list[str] = []
-        for token in command_raw:
-            if not isinstance(token, str):
-                return False
-            stripped = token.strip()
-            if not stripped:
-                return False
-            command.append(stripped)
-        prefix_match = cls._diagnostic_command_prefix(command)
-        if prefix_match is None:
-            return False
+            return _DiagnosticShellCommandDecision.REJECT
         prefix, start_index = prefix_match
-        return cls._diagnostic_options_are_read_only(
+        if not cls._diagnostic_options_are_read_only(
             prefix=prefix,
             command=command,
             start_index=start_index,
-        )
+        ):
+            return _DiagnosticShellCommandDecision.REJECT
+        return _DiagnosticShellCommandDecision.ALLOW
 
     @staticmethod
     def _grep_token_dereferences_recursively(token: str) -> bool:
