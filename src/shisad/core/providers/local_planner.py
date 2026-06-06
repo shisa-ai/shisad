@@ -356,6 +356,7 @@ class LocalPlannerProvider:
                         "tool_name": "shell.exec",
                         "arguments": {
                             "command": command_tokens,
+                            "command_intent": "execute",
                         },
                         "reasoning": "Run explicit command requested by user via sandbox runtime",
                         "data_sources": ["user_signal"],

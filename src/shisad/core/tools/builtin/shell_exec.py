@@ -29,6 +29,17 @@ class ShellExecTool:
                     items_semantic_type="command_token",
                 ),
                 ToolParameter(
+                    name="command_intent",
+                    type="string",
+                    description=(
+                        "Planner-owned intent marker. Set to 'execute' only when "
+                        "calling shell.exec to run the command; for informational "
+                        "mentions or explanations, do not call shell.exec."
+                    ),
+                    required=False,
+                    enum=["execute", "informational"],
+                ),
+                ToolParameter(
                     name="read_paths",
                     type="array",
                     description="Read-only filesystem paths required by command",

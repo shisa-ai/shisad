@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
@@ -63,106 +64,45 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_gh55_shell_exec_schema_exposes_structured_command_intent() -> None:
+    schema = ShellExecTool.tool_definition().json_schema()
+
+    assert schema["properties"]["command_intent"]["enum"] == [
+        "execute",
+        "informational",
+    ]
+
+
 @pytest.mark.parametrize(
-    ("user_goal", "command"),
+    "command",
     [
-        (
-            "ok what's going on? ```shisad audit query --type OutputFirewallAlert "
-            "--session 0fc2e5246a4d4987920e0e7dc10b4ce4 --json```",
-            [
-                "shisad",
-                "audit",
-                "query",
-                "--type",
-                "OutputFirewallAlert",
-                "--session",
-                "0fc2e5246a4d4987920e0e7dc10b4ce4",
-                "--json",
-            ],
-        ),
-        (
-            "run `shisad status` so we can see daemon state",
-            ["shisad", "status"],
-        ),
-        (
-            "please check `shisad lockdown status --session sess-g1 --json`",
-            ["shisad", "lockdown", "status", "--session", "sess-g1", "--json"],
-        ),
-        (
-            "show `shisad action list --session sess-g1 --json`",
-            ["shisad", "action", "list", "--session", "sess-g1", "--json"],
-        ),
-        (
-            "describe this command, then run ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about `shisad status`, then execute it",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about `shisad status`, then show it",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about `shisad status`, then execute it please",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about `shisad status`, then execute it, please",
-            ["shisad", "status"],
-        ),
-        (
-            "describe `shisad status`, then run that now",
-            ["shisad", "status"],
-        ),
-        (
-            "describe `shisad status`, then run that, now",
-            ["shisad", "status"],
-        ),
-        (
-            "can you run `shisad status`?",
-            ["shisad", "status"],
-        ),
-        (
-            "if possible run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "I don't want an explanation just run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run `shisad audit query --json`",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run `shisad status --json`",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad audit query --json`, but don't run `shisad audit query --json --limit 10`",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "run `shisad audit query --session sess`, but don't run "
-            "`shisad audit query --session sesscommandplease`",
-            ["shisad", "audit", "query", "--session", "sess"],
-        ),
+        [
+            "shisad",
+            "audit",
+            "query",
+            "--type",
+            "OutputFirewallAlert",
+            "--session",
+            "0fc2e5246a4d4987920e0e7dc10b4ce4",
+            "--json",
+        ],
+        ["shisad", "status"],
+        ["shisad", "lockdown", "status", "--session", "sess-g1", "--json"],
+        ["shisad", "action", "list", "--session", "sess-g1", "--json"],
+        ["shisactl", "audit", "verify", "--data-dir", "."],
     ],
 )
-def test_gh55_action_monitor_allows_explicit_read_only_diagnostic_commands(
-    user_goal: str,
+def test_gh55_action_monitor_allows_structured_read_only_diagnostic_execute_intent(
     command: list[str],
 ) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
-        user_goal=user_goal,
+        user_goal="The command LLM already selected an execution action.",
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={"command": command},
-                reasoning="Run the user-provided local diagnostic command.",
+                arguments={"command": command, "command_intent": "execute"},
+                reasoning="Run the planner-classified local diagnostic command.",
             )
         ],
     )
@@ -171,74 +111,24 @@ def test_gh55_action_monitor_allows_explicit_read_only_diagnostic_commands(
     assert decision.flags == []
 
 
-def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_current_turn_match() -> None:
-    monitor = ActionMonitor()
-    decision = monitor.evaluate(
-        user_goal="ok what's going on?",
-        actions=[
-            SimpleNamespace(
-                tool_name="shell.exec",
-                arguments={
-                    "command": [
-                        "shisad",
-                        "audit",
-                        "query",
-                        "--type",
-                        "OutputFirewallAlert",
-                        "--session",
-                        "sess-g1",
-                        "--json",
-                    ]
-                },
-                reasoning="Planner-selected command is not grounded in current user text.",
-            )
-        ],
-    )
-
-    assert decision.kind == MonitorDecisionType.REJECT
-
-
 @pytest.mark.parametrize(
-    ("user_goal", "command"),
+    "arguments",
     [
-        (
-            "don't run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "do not execute ```shisad audit query --json```",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "do not show `shisad audit query --all --json`",
-            ["shisad", "audit", "query", "--all", "--json"],
-        ),
-        (
-            "never check `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "I don't want you to run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "I'm not asking you to show `shisad audit query --json`",
-            ["shisad", "audit", "query", "--json"],
-        ),
+        {"command": ["shisad", "status"]},
+        {"command": ["shisad", "status"], "command_intent": "informational"},
     ],
 )
-def test_gh55_action_monitor_rejects_negated_diagnostic_command_mentions(
-    user_goal: str,
-    command: list[str],
+def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_execute_intent(
+    arguments: dict[str, object],
 ) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
-        user_goal=user_goal,
+        user_goal="The command text may appear in user prose, but intent is structured.",
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={"command": command},
-                reasoning="Negated current-turn command mentions do not authorize shell execution.",
+                arguments=arguments,
+                reasoning="Only structured execute intent authorizes this monitor exception.",
             )
         ],
     )
@@ -251,29 +141,36 @@ def test_gh55_action_monitor_rejects_negated_diagnostic_command_mentions(
     [
         {
             "command": ["shisad", "audit", "query", "--json"],
+            "command_intent": "execute",
             "read_paths": ["."],
         },
         {
             "command": ["shisad", "audit", "query", "--data-dir", "."],
+            "command_intent": "execute",
             "cwd": "/tmp",
         },
         {
             "command": ["shisad", "audit", "query", "--json"],
+            "command_intent": "execute",
             "write_paths": ["."],
         },
         {
             "command": ["shisad", "audit", "query", "--json"],
+            "command_intent": "execute",
             "network_urls": ["https://example.com"],
         },
         {
             "command": ["shisad", "audit", "query", "--json"],
+            "command_intent": "execute",
             "env": {"PYTHONPATH": "."},
         },
         {
             "command": ["shisad", "lockdown", "set", "normal"],
+            "command_intent": "execute",
         },
         {
             "command": ["shisad", "doctor", "check", "--component", "browser"],
+            "command_intent": "execute",
         },
     ],
 )
@@ -289,178 +186,6 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
                 tool_name="shell.exec",
                 arguments=arguments,
                 reasoning="Only read-only diagnostic commands may bypass goal-misaligned reject.",
-            )
-        ],
-    )
-
-    assert decision.kind == MonitorDecisionType.REJECT
-
-
-@pytest.mark.parametrize(
-    ("user_goal", "command"),
-    [
-        (
-            "show `shisad action list --session sess-g1 --json`",
-            ["shisad", "action", "list"],
-        ),
-        (
-            "what does `shisad status` show?",
-            ["shisad", "status"],
-        ),
-        (
-            "explain `shisad audit query --json` before we run anything",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "what does this do? ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "explain this command. ```shisad audit query --json```",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "describe this command. ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about this command. ```shisad audit query --json```",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "what is this command? ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "how does this work? ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about this shell command. ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "describe this audit command. ```shisad audit query --json```",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "what is this audit query? ```shisad audit query --json```",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "what's this audit query? ```shisad audit query --json```",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "what's this shell command? ```shisad status```",
-            ["shisad", "status"],
-        ),
-        (
-            "```shisad status``` what does this do?",
-            ["shisad", "status"],
-        ),
-        (
-            "`shisad audit query --json` explain this first",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "tell me about `shisad status`, and check the docs",
-            ["shisad", "status"],
-        ),
-        (
-            "describe `shisad status`, then run another query",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about `shisad status`, and check status page",
-            ["shisad", "status"],
-        ),
-        (
-            "describe `shisad audit query --json`, then run the query docs",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "what happens if I run `shisad status`?",
-            ["shisad", "status"],
-        ),
-        (
-            "what if we check `shisad lockdown status --json`?",
-            ["shisad", "lockdown", "status", "--json"],
-        ),
-        (
-            "should I run `shisad audit query --json`?",
-            ["shisad", "audit", "query", "--json"],
-        ),
-        (
-            "show me how to run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "what is the command to run `shisad status`?",
-            ["shisad", "status"],
-        ),
-        (
-            "I told you not to run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run it",
-            ["shisad", "status"],
-        ),
-        (
-            "show `shisad status`, but do not run it",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, please don't run it",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but please, don't run it",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run the `shisad status` command",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run `shisad status` please",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run `shisad status` please!",
-            ["shisad", "status"],
-        ),
-        (
-            "run `shisad status`, but don't run the `shisad status` command, please",
-            ["shisad", "status"],
-        ),
-        (
-            "show the command `shisad status`",
-            ["shisad", "status"],
-        ),
-        (
-            "tell me about `shisad status`, then show the command",
-            ["shisad", "status"],
-        ),
-    ],
-)
-def test_gh55_action_monitor_rejects_command_mentions_without_run_intent(
-    user_goal: str,
-    command: list[str],
-) -> None:
-    monitor = ActionMonitor()
-    decision = monitor.evaluate(
-        user_goal=user_goal,
-        actions=[
-            SimpleNamespace(
-                tool_name="shell.exec",
-                arguments={"command": command},
-                reasoning="Command mentions and prefix matches do not authorize shell execution.",
             )
         ],
     )

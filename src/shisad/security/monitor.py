@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, ClassVar
@@ -53,7 +52,10 @@ class ActionMonitor:
         "shisactl",
         "shisad",
     }
-    _LOCAL_DIAGNOSTIC_ARGUMENT_KEYS: ClassVar[frozenset[str]] = frozenset({"command"})
+    _LOCAL_DIAGNOSTIC_ARGUMENT_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"command", "command_intent"}
+    )
+    _LOCAL_DIAGNOSTIC_COMMAND_INTENT: ClassVar[str] = "execute"
     _LOCAL_DIAGNOSTIC_FLAG_OPTIONS: ClassVar[dict[tuple[str, ...], frozenset[str]]] = {
         ("action", "list"): frozenset({"--json", "--raw"}),
         ("action", "pending"): frozenset({"--raw"}),
@@ -149,109 +151,6 @@ class ActionMonitor:
             "--word-regexp",
         }
     )
-    _COMMAND_RUN_VERBS_RE_SOURCE: ClassVar[str] = (
-        r"run|execute|call|try|use|invoke|start|launch|check|show"
-    )
-    _NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s.;,!?])(?:do not|don't|dont|never|not)\s+"
-        rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*)?$",
-        re.IGNORECASE,
-    )
-    _SCOPED_NEGATED_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s.;,!?])(?:"
-        r"(?:do not|don't|dont|never)\s+"
-        r"(?:want|need|expect|ask|intend|mean|plan)\s+"
-        r"(?:(?:you|me|us|them|it|this|that)\s+)?(?:to\s+)?|"
-        r"not\s+"
-        r"(?:asking|telling|requesting|trying|going|planning|expecting|intending|meaning)\s+"
-        r"(?:(?:you|me|us|them|it|this|that)\s+)?(?:to\s+)?"
-        r")"
-        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
-        re.IGNORECASE,
-    )
-    _NON_IMPERATIVE_COMMAND_REFERENCE_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s.;,!?])(?:"
-        r"(?:what\s+(?:happens\s+if|would\s+happen\s+if|will\s+happen\s+if|if)|"
-        r"what\s+if)\s+(?:(?:i|we|you|they|someone)\s+)?|"
-        r"(?:if|when)\s+(?:i|we|you|they|someone)\s+|"
-        r"(?:should|could|can)\s+(?:i|we)"
-        r")\b"
-        rf"(?:(?![.;,!?]).){{0,64}}\b(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s*$",
-        re.IGNORECASE,
-    )
-    _COMMAND_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:"
-        r"^\s*(?:(?:please|ok|okay|now|if\s+possible)\s+)*"
-        r"(?:(?:can|could|would|will)\s+you\s+|let'?s\s+|go\s+ahead\s+and\s+)?"
-        r"(?:just\s+|please\s+|now\s+)?"
-        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
-        r"|(?:^|[\s,;:])(?:then|and)\s+(?:please\s+)?"
-        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
-        r"|(?:^|[\s,;:])(?:just|instead)\s+"
-        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})"
-        r")"
-        r"\s*(?::|\b)(?:\s+(?:the\s+)?(?:command|cli|diagnostic|query|status))?"
-        r"\s*[`'\"]*$",
-        re.IGNORECASE,
-    )
-    _COMMAND_SUFFIX_RUN_INTENT_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
-        rf"(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+"
-        r"(?:it|this|that|the\s+(?:command|cli|diagnostic|query|status))\b"
-        r"(?:[\s,]+(?:please|now))*\s*(?:[.!?)]|$)",
-        re.IGNORECASE,
-    )
-    _SHOW_COMMAND_DISPLAY_PREFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s,;:])show\s+(?:the\s+)?(?:command|cli|diagnostic|query|status)\s*[`'\"]*$",
-        re.IGNORECASE,
-    )
-    _SHOW_COMMAND_DISPLAY_SUFFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^[`'\"\s,.;:)]*(?:(?:then|and|please)\s+)*"
-        r"show\s+(?:the\s+)?(?:command|cli|diagnostic|query|status)\b",
-        re.IGNORECASE,
-    )
-    _NEGATED_COMMAND_SUFFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^[`'\"\s,.;:)]*(?:(?:but|and|then|please)[\s,]+)*"
-        r"(?:do\s+not|don't|dont|never|not)\s+"
-        rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+)?"
-        r"(?:"
-        r"it|this|that|the\s+(?:command|cli|diagnostic|query|status)"
-        r")",
-        re.IGNORECASE,
-    )
-    _NEGATED_REPEATED_COMMAND_SUFFIX_PREFIX_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s,;:])(?:(?:but|and|then|please)[\s,]+)*"
-        r"(?:do\s+not|don't|dont|never|not)\s+"
-        rf"(?:(?:{_COMMAND_RUN_VERBS_RE_SOURCE})\s+)?"
-        r"(?:the\s+)?[`'\"]*$",
-        re.IGNORECASE,
-    )
-    _REPEATED_COMMAND_EXACT_TAIL_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:command|please|now)(?:[\s,.;:!?)]{1,}(?:command|please|now))*"
-        r"[\s,.;:!?)]*$",
-        re.IGNORECASE,
-    )
-    _COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s;:,])(?:what\s+(?:does|would|will|is|are)|what's|"
-        r"explain|describe|tell\s+me\s+about|meaning\s+of|"
-        r"how\s+(?:does|would|will))\b",
-        re.IGNORECASE,
-    )
-    _FENCED_COMMAND_MENTION_ONLY_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:^|[\s.;,!?])(?:"
-        r"what\s+(?:does|would|will|is|are)\s+"
-        r"(?:this|that|these|those|it|the\s+\w+|this\s+\w+|that\s+\w+)"
-        r".*|"
-        r"what's\s+(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+).*|"
-        r"(?:explain|describe)\b.*|"
-        r"tell\s+me\s+about\b.*|"
-        r"meaning\s+of\b.*|"
-        r"how\s+(?:does|would|will)\s+"
-        r"(?:this|that|it|the\s+\w+|this\s+\w+|that\s+\w+)"
-        r".*"
-        r")\s*[.?!:]*\s*$",
-        re.IGNORECASE,
-    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -278,7 +177,6 @@ class ActionMonitor:
 
             if tool == "shell.exec":
                 if self._is_explicit_read_only_diagnostic_shell_command(
-                    goal_text=goal_text,
                     arguments=getattr(action, "arguments", {}),
                 ):
                     continue
@@ -439,159 +337,6 @@ class ActionMonitor:
     def _normalize_shell_command_text(text: str) -> str:
         return " ".join(text.lower().split())
 
-    @staticmethod
-    def _local_command_prefix_context(prefix: str) -> str:
-        return re.split(r"[.!?]", prefix[-96:])[-1]
-
-    @staticmethod
-    def _command_prefix_is_delimited(prefix: str) -> bool:
-        return not prefix or prefix[-1].isspace() or prefix[-1] in "`'\"([{:"
-
-    @staticmethod
-    def _command_suffix_is_delimited(suffix: str) -> bool:
-        if not suffix:
-            return True
-        index = 0
-        consumed_closer = False
-        while index < len(suffix) and suffix[index] in "`'\"":
-            consumed_closer = True
-            index += 1
-        if index >= len(suffix):
-            return True
-        if suffix[index] in ".,;!?)]}":
-            return True
-        if suffix[index].isspace():
-            return consumed_closer
-        return False
-
-    @staticmethod
-    def _command_suffix_has_trailing_text(suffix: str) -> bool:
-        return bool(suffix.strip(" `'\t\n\r\".,;:!?)]}"))
-
-    @classmethod
-    def _command_prefix_has_run_intent(cls, prefix: str) -> bool:
-        context = cls._local_command_prefix_context(prefix)
-        return not cls._SHOW_COMMAND_DISPLAY_PREFIX_RE.search(context) and bool(
-            cls._COMMAND_RUN_INTENT_RE.search(context)
-        )
-
-    @classmethod
-    def _command_suffix_has_run_intent(cls, suffix: str) -> bool:
-        return not cls._SHOW_COMMAND_DISPLAY_SUFFIX_RE.search(suffix) and bool(
-            cls._COMMAND_SUFFIX_RUN_INTENT_RE.search(suffix)
-        )
-
-    @staticmethod
-    def _command_repeated_suffix_match_is_exact(suffix_after_candidate: str) -> bool:
-        tail = suffix_after_candidate.lstrip(" `'\t\n\r\"")
-        if not tail or tail[0] in ".,;:!?)]}":
-            return True
-        return bool(ActionMonitor._REPEATED_COMMAND_EXACT_TAIL_RE.fullmatch(tail))
-
-    @classmethod
-    def _command_suffix_has_negated_reference(cls, suffix: str, command: list[str]) -> bool:
-        if cls._NEGATED_COMMAND_SUFFIX_RE.search(suffix):
-            return True
-        normalized_suffix = cls._normalize_shell_command_text(suffix)
-        candidates = {
-            cls._normalize_shell_command_text(" ".join(command)),
-            cls._normalize_shell_command_text(shlex.join(command)),
-        }
-        for candidate in candidates:
-            if not candidate:
-                continue
-            start = 0
-            while True:
-                index = normalized_suffix.find(candidate, start)
-                if index < 0:
-                    break
-                prefix = normalized_suffix[:index]
-                suffix_after_candidate = normalized_suffix[index + len(candidate) :]
-                if cls._NEGATED_REPEATED_COMMAND_SUFFIX_PREFIX_RE.search(
-                    prefix
-                ) and cls._command_repeated_suffix_match_is_exact(suffix_after_candidate):
-                    return True
-                start = index + len(candidate)
-        return False
-
-    @classmethod
-    def _command_prefix_has_negated_reference(cls, prefix: str) -> bool:
-        context = cls._local_command_prefix_context(prefix).strip(" `'\")")
-        return bool(
-            cls._NEGATED_COMMAND_REFERENCE_RE.search(context)
-            or cls._SCOPED_NEGATED_COMMAND_REFERENCE_RE.search(context)
-        )
-
-    @classmethod
-    def _command_prefix_has_non_imperative_reference(cls, prefix: str) -> bool:
-        context = cls._local_command_prefix_context(prefix).strip(" `'\")")
-        return bool(cls._NON_IMPERATIVE_COMMAND_REFERENCE_RE.search(context))
-
-    @classmethod
-    def _command_reference_is_mention_only(cls, prefix: str) -> bool:
-        context = cls._local_command_prefix_context(prefix).strip(" `'\")")
-        return bool(cls._COMMAND_MENTION_ONLY_RE.search(context))
-
-    @classmethod
-    def _fenced_command_reference_is_mention_only(cls, prefix: str) -> bool:
-        context = prefix.removesuffix("```").strip(" `'\")")
-        return bool(cls._FENCED_COMMAND_MENTION_ONLY_RE.search(context[-160:]))
-
-    @staticmethod
-    def _command_span_is_fenced(prefix: str, suffix: str) -> bool:
-        return prefix.endswith("```") and suffix.startswith("```")
-
-    @staticmethod
-    def _command_span_is_bare_goal(prefix: str) -> bool:
-        return prefix.strip(" `'\t\n\r\"") == ""
-
-    @classmethod
-    def _command_text_matches_current_goal(cls, *, goal_text: str, command: list[str]) -> bool:
-        normalized_goal = cls._normalize_shell_command_text(goal_text)
-        if not normalized_goal:
-            return False
-        candidates = {
-            cls._normalize_shell_command_text(" ".join(command)),
-            cls._normalize_shell_command_text(shlex.join(command)),
-        }
-        for candidate in candidates:
-            if not candidate:
-                continue
-            start = 0
-            while True:
-                index = normalized_goal.find(candidate, start)
-                if index < 0:
-                    break
-                prefix = normalized_goal[:index]
-                suffix = normalized_goal[index + len(candidate) :]
-                fenced_span = cls._command_span_is_fenced(prefix, suffix)
-                run_intent = cls._command_prefix_has_run_intent(
-                    prefix
-                ) or cls._command_suffix_has_run_intent(suffix)
-                negated_reference = cls._command_prefix_has_negated_reference(prefix)
-                negated_suffix_reference = cls._command_suffix_has_negated_reference(
-                    suffix, command
-                )
-                non_imperative_reference = cls._command_prefix_has_non_imperative_reference(prefix)
-                mention_only = cls._command_reference_is_mention_only(prefix) or (
-                    fenced_span and cls._fenced_command_reference_is_mention_only(prefix)
-                )
-                if run_intent and not non_imperative_reference:
-                    mention_only = False
-                if (
-                    cls._command_prefix_is_delimited(prefix)
-                    and cls._command_suffix_is_delimited(suffix)
-                    and not negated_reference
-                    and not negated_suffix_reference
-                    and not non_imperative_reference
-                    and not mention_only
-                    and (run_intent or not cls._command_suffix_has_trailing_text(suffix))
-                    and (run_intent or fenced_span or cls._command_span_is_bare_goal(prefix))
-                ):
-                    return True
-                start = index + len(candidate)
-        return False
-
     @classmethod
     def _diagnostic_command_prefix(cls, command: list[str]) -> tuple[tuple[str, ...], int] | None:
         if len(command) < 2:
@@ -664,7 +409,6 @@ class ActionMonitor:
     def _is_explicit_read_only_diagnostic_shell_command(
         cls,
         *,
-        goal_text: str,
         arguments: Any,
     ) -> bool:
         if not isinstance(arguments, dict):
@@ -678,6 +422,8 @@ class ActionMonitor:
                 (),
             ):
                 return False
+        if arguments.get("command_intent") != cls._LOCAL_DIAGNOSTIC_COMMAND_INTENT:
+            return False
         command_raw = arguments.get("command")
         if not isinstance(command_raw, list) or not command_raw:
             return False
@@ -689,8 +435,6 @@ class ActionMonitor:
             if not stripped:
                 return False
             command.append(stripped)
-        if not cls._command_text_matches_current_goal(goal_text=goal_text, command=command):
-            return False
         prefix_match = cls._diagnostic_command_prefix(command)
         if prefix_match is None:
             return False

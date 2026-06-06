@@ -773,7 +773,7 @@ async def _stub_complete(
         if diagnostic_audit_command:
             diagnostic_audit_command_call = _tool_call(
                 "shell.exec",
-                {"command": diagnostic_audit_command},
+                {"command": diagnostic_audit_command, "command_intent": "execute"},
                 call_id="t-diagnostic-audit-query",
             )
     fs_write_call = (

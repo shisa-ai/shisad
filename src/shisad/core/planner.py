@@ -45,6 +45,9 @@ BASE_SYSTEM_PROMPT = (
     "asks to run a shell command or no structured runtime tool covers the task; "
     "do not use shell.exec for ordinary filesystem discovery, listing, or file "
     "reads when fs.list or fs.read can do it. "
+    "When calling shell.exec to run a command, set command_intent to execute. "
+    "If the user is asking what a command means, what would happen, or wants the "
+    "command displayed or explained, do not call shell.exec. "
     'For natural file-read requests such as "read <path>", "open <path>", '
     '"review <path>", or follow-ups like "look for the file", use fs.read first '
     "for exact paths and fs.list for discovery or similar-file recovery. "

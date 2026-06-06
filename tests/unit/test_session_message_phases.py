@@ -1904,7 +1904,7 @@ async def test_gh55_command_chat_diagnostic_shell_command_queues_confirmation() 
     proposal = ActionProposal(
         action_id="a-1",
         tool_name=ToolName("shell.exec"),
-        arguments={"command": command},
+        arguments={"command": command, "command_intent": "execute"},
         reasoning="Run the user-provided local diagnostic command.",
         data_sources=[],
     )
