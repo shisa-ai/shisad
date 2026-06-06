@@ -39,6 +39,7 @@ _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS: frozenset[str] = frozenset(
         "skill_name",
         "arguments",
         "command",
+        "command_intent",
         "read_paths",
         "write_paths",
         "network_urls",
@@ -80,6 +81,8 @@ def _tool_execute_runtime_arguments(
         ):
             continue
         payload[name] = arguments[name]
+    if canonical_tool_name(str(getattr(tool_definition, "name", ""))) == "shell.exec":
+        payload["command_intent"] = "execute"
     return payload
 
 

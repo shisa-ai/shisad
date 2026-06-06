@@ -190,6 +190,8 @@ async def test_u3_local_planner_tool_calls_report_missing_model() -> None:
         if isinstance(item, dict)
     ]
     assert tool_names == ["shell.exec"]
+    shell_arguments = json.loads(response.message.tool_calls[0]["function"]["arguments"])
+    assert shell_arguments["command_intent"] == "execute"
     assert response.finish_reason == "tool_calls"
     assert response.trusted_origin == "local-fallback"
 

@@ -201,6 +201,7 @@ async def test_lus_shell_file_discovery_routes_to_confirmation_without_lockdown(
                                         "-iname",
                                         "*todo*log*",
                                     ],
+                                    "command_intent": "execute",
                                     "read_paths": ["."],
                                 },
                                 call_id="t-lus-shell-find",

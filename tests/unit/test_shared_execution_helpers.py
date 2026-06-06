@@ -8,9 +8,12 @@ import os
 import pytest
 
 from shisad.core.events import ToolExecuted
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
+from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.types import SessionId, TaintLabel, ToolName
 from shisad.daemon.handlers._impl import HandlerImplementation
+from shisad.daemon.handlers._impl_tool_execution import _tool_execute_runtime_arguments
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
@@ -87,6 +90,17 @@ def test_m4_rf353_build_merged_policy_matches_direct_policy_merge() -> None:
     expected = PolicyMerge.merge(server=floor, caller=normalize_patch(arguments))
     assert merged.model_dump(mode="json") == expected.model_dump(mode="json")
     assert calls == [("shell.exec", True)]
+
+
+def test_gh55_tool_execute_runtime_arguments_synthesizes_shell_command_intent() -> None:
+    tool = ShellExecTool.tool_definition()
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    arguments = _tool_execute_runtime_arguments(tool, {"command": ["echo", "ok"]})
+
+    assert arguments["command_intent"] == "execute"
+    assert registry.validate_call(ToolName("shell.exec"), arguments) == []
 
 
 def test_m4_rf353_build_sandbox_config_keeps_runtime_parity_fields() -> None:
