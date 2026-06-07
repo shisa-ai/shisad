@@ -2529,6 +2529,89 @@ def test_gh49_current_turn_reminder_grounding_rejects_when_inside_message() -> N
     )
 
 
+def test_gh49_current_turn_reminder_grounding_rejects_truncated_message_internal_when() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": (
+                "set a reminder in 5 minutes to check the last 2 minutes of logs"
+            ),
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-truncated-message-internal-when",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "check the last",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Pair a truncated message with an internal message duration.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
+def test_gh49_current_turn_reminder_grounding_allows_single_clause_comma() -> None:
+    when_first = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "set a reminder: in 5 minutes, check email",
+        }
+    )
+    when_first.operator_owned_cli_input = True
+    when_first_proposal = ActionProposal(
+        action_id="a-gh49-comma-when-first",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "check email",
+            "when": "in 5 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Ground a single reminder clause with ordinary comma punctuation.",
+        data_sources=[],
+    )
+
+    message_first = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "set a reminder to check email, in 5 minutes",
+        }
+    )
+    message_first.operator_owned_cli_input = True
+    message_first_proposal = ActionProposal(
+        action_id="a-gh49-comma-message-first",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "check email",
+            "when": "in 5 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Ground a single reminder clause with ordinary comma punctuation.",
+        data_sources=[],
+    )
+
+    assert impl_session._has_current_turn_reminder_create_intent(
+        tool_name=when_first_proposal.tool_name,
+        arguments=when_first_proposal.arguments,
+        proposal=when_first_proposal,
+        validated=when_first,
+    )
+    assert impl_session._has_current_turn_reminder_create_intent(
+        tool_name=message_first_proposal.tool_name,
+        arguments=message_first_proposal.arguments,
+        proposal=message_first_proposal,
+        validated=message_first,
+    )
+
+
 def test_gh49_current_turn_reminder_grounding_rejects_mixed_name_pair() -> None:
     validated = _validation_result(
         params={

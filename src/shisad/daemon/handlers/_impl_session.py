@@ -190,10 +190,23 @@ _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
 _CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS = 5
 _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER = "<clause-boundary>"
+_CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER = "<comma-boundary>"
 _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS = frozenset(
     {"and", "then", "also", _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER}
 )
-_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIXES = frozenset({".", ",", ";", "!", "?"})
+_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIX_MARKERS = {
+    ".": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
+    ";": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
+    "!": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
+    "?": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
+    ",": _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER,
+}
+_CURRENT_TURN_REMINDER_PAIR_SOFT_CONNECTOR_TOKENS = frozenset(
+    {"please", "say", "saying", "to"}
+)
+_CURRENT_TURN_REMINDER_UNPREFIXED_WHEN_LEFT_CUES = frozenset(
+    {"after", "at", "for", "in", "within"}
+)
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
@@ -2044,10 +2057,10 @@ def _normalized_current_turn_tokens(value: Any) -> list[str]:
         stripped = token.strip(" .;,\"'")
         if stripped:
             tokens.append(stripped)
-        if token.rstrip("\"'").endswith(
-            tuple(_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIXES)
-        ):
-            tokens.append(_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER)
+        suffix = token.rstrip("\"'")[-1:]
+        marker = _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIX_MARKERS.get(suffix)
+        if marker:
+            tokens.append(marker)
     return tokens
 
 
@@ -2076,10 +2089,46 @@ def _current_turn_reminder_when_spans(
     when: Any,
 ) -> list[tuple[int, int]]:
     when_tokens = _normalized_current_turn_tokens(when)
-    spans = _token_spans(current_turn_tokens, when_tokens)
+    spans = set(_token_spans(current_turn_tokens, when_tokens))
     if when_tokens[:1] in (["in"], ["at"]):
-        spans.extend(_token_spans(current_turn_tokens, when_tokens[1:]))
-    return sorted(set(spans))
+        spans.update(
+            span
+            for span in _token_spans(current_turn_tokens, when_tokens[1:])
+            if _unprefixed_reminder_when_span_has_schedule_cue(
+                current_turn_tokens=current_turn_tokens,
+                span=span,
+            )
+        )
+    return sorted(spans)
+
+
+def _unprefixed_reminder_when_span_has_schedule_cue(
+    *,
+    current_turn_tokens: list[str],
+    span: tuple[int, int],
+) -> bool:
+    if span[0] > 0:
+        left_token = current_turn_tokens[span[0] - 1]
+        if left_token in _CURRENT_TURN_REMINDER_UNPREFIXED_WHEN_LEFT_CUES:
+            return True
+    right_tokens = current_turn_tokens[span[1] : span[1] + 2]
+    return right_tokens[:2] == ["from", "now"] or right_tokens[:1] == ["later"]
+
+
+def _tokens_until_reminder_pair_boundary(
+    *,
+    current_turn_tokens: list[str],
+    start: int,
+) -> list[str]:
+    tokens: list[str] = []
+    for token in current_turn_tokens[start:]:
+        if (
+            token in _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS
+            or token == _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER
+        ):
+            break
+        tokens.append(token)
+    return tokens
 
 
 def _spans_are_paired(
@@ -2098,6 +2147,27 @@ def _spans_are_paired(
         return False
     if any(token in _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS for token in between_tokens):
         return False
+    if _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER in between_tokens:
+        non_boundary_tokens = [
+            token
+            for token in between_tokens
+            if token != _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER
+        ]
+        if any(
+            token not in _CURRENT_TURN_REMINDER_PAIR_SOFT_CONNECTOR_TOKENS
+            for token in non_boundary_tokens
+        ):
+            return False
+        later_span = left if left[0] > right[0] else right
+        trailing_tokens = _tokens_until_reminder_pair_boundary(
+            current_turn_tokens=current_turn_tokens,
+            start=later_span[1],
+        )
+        if any(
+            token not in _CURRENT_TURN_REMINDER_PAIR_SOFT_CONNECTOR_TOKENS
+            for token in trailing_tokens
+        ):
+            return False
     return gap <= _CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS
 
 
