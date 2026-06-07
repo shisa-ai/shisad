@@ -1846,7 +1846,9 @@ async def test_gh49_action_monitor_keeps_comma_inside_set_reminder_message() -> 
     "raw_user_text",
     [
         'please set a reminder for 3pm to say "timer done"; list my reminders',
+        'please set a reminder for 3pm to say "timer done";list my reminders',
         'please set a reminder for 3pm to say "timer done". list my reminders',
+        'please set a reminder for 3pm to say "timer done".list my reminders',
     ],
 )
 async def test_gh49_action_monitor_rejects_follow_on_after_quoted_set_reminder(

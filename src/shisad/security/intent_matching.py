@@ -52,7 +52,8 @@ def has_follow_on_command(text: str) -> bool:
         re.search(
             (
                 rf"\b(?:and|then|also)\s+(?:{_FOLLOW_ON_COMMAND_FRAGMENT})"
-                rf"|[.;,]\s+(?:{_FOLLOW_ON_COMMAND_FRAGMENT}|{_PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT})"
+                rf"|(?:[.;,]\s+|(?<![A-Za-z0-9])[.;,]\s*)"
+                rf"(?:{_FOLLOW_ON_COMMAND_FRAGMENT}|{_PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT})"
             ),
             normalized,
             flags=re.IGNORECASE,

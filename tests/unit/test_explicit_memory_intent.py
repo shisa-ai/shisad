@@ -657,7 +657,9 @@ def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command(
             'for 1 minute from now to say "timer done"'
         ),
         'please set a reminder for 3pm to say "timer done"; list my reminders',
+        'please set a reminder for 3pm to say "timer done";list my reminders',
         'please set a reminder for 3pm to say "timer done". list my reminders',
+        'please set a reminder for 3pm to say "timer done".list my reminders',
         "remind me to check email on 2026-03-30T12:00:00Z",
     ],
 )
