@@ -2384,6 +2384,125 @@ def test_gh49_daemon_owned_explicit_reminder_marker_counts_as_current_turn() -> 
     )
 
 
+def test_gh49_current_turn_reminder_grounding_rejects_overlapping_duration_tokens() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": 'set a reminder for 12 minutes from now to say "timer done"',
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-overlap",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Create a reminder with an overlapping but unrequested duration.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
+def test_gh49_current_turn_reminder_grounding_rejects_mixed_message_time_pair() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": (
+                "remind me to say timer done in 1 minute and "
+                "remind me to check email in 2 minutes"
+            ),
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-mixed-pair",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Mix message and schedule from separate reminder requests.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
+def test_gh49_current_turn_reminder_grounding_rejects_adjacent_clause_mix() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "set reminders: timer done in 1 minute and in 2 minutes check email",
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-adjacent-mix",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Mix a message with the next adjacent reminder clause.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
+def test_gh49_current_turn_reminder_grounding_rejects_mixed_name_pair() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": (
+                "remind me to say timer done in 1 minute named first timer "
+                "and after that remind me to check email in 2 minutes"
+            ),
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-mixed-name",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "check email",
+            "name": "first timer",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Mix title from one reminder with another reminder request.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
 def test_gh51_filesystem_continuation_repeat_guard_keeps_fs_list_options_distinct() -> None:
     repeated_proposal = ActionProposal(
         action_id="a-repeat-list",

@@ -188,6 +188,8 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+_CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS = 5
+_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS = frozenset({"and", "then", "also"})
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
@@ -2031,31 +2033,114 @@ def _has_current_turn_local_filesystem_read_intent(
     return proposal is not None and "user_text:explicit_file_intent" in proposal.data_sources
 
 
-def _normalized_current_turn_value(value: Any) -> str:
-    return normalize_intent_text(str(value or "")).casefold().strip(" .;,")
+def _normalized_current_turn_tokens(value: Any) -> list[str]:
+    normalized = normalize_intent_text(str(value or "")).casefold().strip(" .;,")
+    tokens: list[str] = []
+    for token in normalized.split():
+        stripped = token.strip(" .;,\"'")
+        if stripped:
+            tokens.append(stripped)
+    return tokens
 
 
-def _current_turn_contains_value(*, current_turn: str, value: Any) -> bool:
-    normalized_value = _normalized_current_turn_value(value)
-    if not normalized_value:
+def _token_spans(tokens: list[str], needle: list[str]) -> list[tuple[int, int]]:
+    if not tokens or not needle or len(needle) > len(tokens):
+        return []
+    needle_length = len(needle)
+    return [
+        (index, index + needle_length)
+        for index in range(0, len(tokens) - needle_length + 1)
+        if tokens[index : index + needle_length] == needle
+    ]
+
+
+def _current_turn_value_spans(
+    *,
+    current_turn_tokens: list[str],
+    value: Any,
+) -> list[tuple[int, int]]:
+    return _token_spans(current_turn_tokens, _normalized_current_turn_tokens(value))
+
+
+def _current_turn_reminder_when_spans(
+    *,
+    current_turn_tokens: list[str],
+    when: Any,
+) -> list[tuple[int, int]]:
+    when_tokens = _normalized_current_turn_tokens(when)
+    spans = _token_spans(current_turn_tokens, when_tokens)
+    if when_tokens[:1] in (["in"], ["at"]):
+        spans.extend(_token_spans(current_turn_tokens, when_tokens[1:]))
+    return sorted(set(spans))
+
+
+def _spans_are_paired(
+    *,
+    current_turn_tokens: list[str],
+    left: tuple[int, int],
+    right: tuple[int, int],
+) -> bool:
+    if left[1] <= right[0]:
+        gap = right[0] - left[1]
+        between_tokens = current_turn_tokens[left[1] : right[0]]
+    elif right[1] <= left[0]:
+        gap = left[0] - right[1]
+        between_tokens = current_turn_tokens[right[1] : left[0]]
+    else:
+        gap = 0
+        between_tokens = []
+    if any(token in _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS for token in between_tokens):
         return False
-    normalized_current_turn = normalize_intent_text(current_turn).casefold()
-    return normalized_value in normalized_current_turn
+    return gap <= _CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS
 
 
-def _current_turn_contains_reminder_when(*, current_turn: str, when: Any) -> bool:
-    normalized_when = _normalized_current_turn_value(when)
-    if not normalized_when:
+def _current_turn_reminder_arguments_are_grounded(
+    *,
+    current_turn: str,
+    arguments: Mapping[str, Any],
+) -> bool:
+    current_turn_tokens = _normalized_current_turn_tokens(current_turn)
+    message_spans = _current_turn_value_spans(
+        current_turn_tokens=current_turn_tokens,
+        value=arguments.get("message"),
+    )
+    when_spans = _current_turn_reminder_when_spans(
+        current_turn_tokens=current_turn_tokens,
+        when=arguments.get("when"),
+    )
+    paired_spans = [
+        (message_span, when_span)
+        for message_span in message_spans
+        for when_span in when_spans
+        if _spans_are_paired(
+            current_turn_tokens=current_turn_tokens,
+            left=message_span,
+            right=when_span,
+        )
+    ]
+    if not paired_spans:
         return False
-    normalized_current_turn = normalize_intent_text(current_turn).casefold()
-    if normalized_when in normalized_current_turn:
+    name = str(arguments.get("name") or "").strip()
+    if not name:
         return True
-    for prefix in ("in ", "at "):
-        if normalized_when.startswith(prefix):
-            unprefixed = normalized_when[len(prefix) :].strip()
-            if unprefixed and unprefixed in normalized_current_turn:
-                return True
-    return False
+    name_spans = _current_turn_value_spans(
+        current_turn_tokens=current_turn_tokens,
+        value=name,
+    )
+    return any(
+        _spans_are_paired(
+            current_turn_tokens=current_turn_tokens,
+            left=name_span,
+            right=message_span,
+        )
+        or _spans_are_paired(
+            current_turn_tokens=current_turn_tokens,
+            left=name_span,
+            right=when_span,
+        )
+        for message_span, when_span in paired_spans
+        for name_span in name_spans
+    )
 
 
 def _has_current_turn_reminder_create_intent(
@@ -2076,21 +2161,9 @@ def _has_current_turn_reminder_create_intent(
         str(arguments.get("reminder_intent", "")).strip()
         == _CURRENT_TURN_REMINDER_CREATE_INTENT
     ):
-        current_turn = str(validated.firewall_result.sanitized_text or "")
-        name = str(arguments.get("name") or "").strip()
-        return (
-            _current_turn_contains_value(
-                current_turn=current_turn,
-                value=arguments.get("message"),
-            )
-            and _current_turn_contains_reminder_when(
-                current_turn=current_turn,
-                when=arguments.get("when"),
-            )
-            and (
-                not name
-                or _current_turn_contains_value(current_turn=current_turn, value=name)
-            )
+        return _current_turn_reminder_arguments_are_grounded(
+            current_turn=str(validated.firewall_result.sanitized_text or ""),
+            arguments=arguments,
         )
     return False
 
