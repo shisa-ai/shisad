@@ -242,6 +242,8 @@ async def test_signer_confirmation_executes_and_records_l3_audit(
             assert action["selected_backend_method"] == "kms"
             assert str(action["approval_envelope"]["intent_envelope_hash"]).startswith("sha256:")
             assert action["intent_envelope"]["schema_version"] == "shisad.intent.v1"
+            assert "command_intent" not in action["arguments"]
+            assert "command_intent" not in action["intent_envelope"]["action"]["parameters"]
 
             confirmed = await client.call(
                 "action.confirm",

@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from shisad.core.approval import (
+    ConfirmationLevel,
+    IntentAction,
+    IntentEnvelope,
+    IntentPolicyContext,
+)
 from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.ui.confirmation import (
@@ -102,6 +108,26 @@ def test_gh55_shell_exec_pending_payload_hides_command_intent() -> None:
                 },
             )
         ),
+        intent_envelope=IntentEnvelope(
+            intent_id="c-1",
+            agent_id="daemon-1",
+            workspace_id="w-1",
+            session_id="s-1",
+            created_at=datetime.now(UTC),
+            action=IntentAction(
+                tool="shell.exec",
+                display_summary="shell.exec: command=echo ok",
+                parameters=dict(arguments),
+                destinations=[],
+            ),
+            policy_context=IntentPolicyContext(
+                required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+                confirmation_reason="requires_confirmation",
+                matched_rule="shell.exec",
+                action_digest="sha256:test",
+            ),
+            nonce="nonce-2",
+        ),
     )
 
     payload = HandlerImplementation._pending_to_dict(pending, public=True)
@@ -111,10 +137,12 @@ def test_gh55_shell_exec_pending_payload_hides_command_intent() -> None:
         "read_paths": ["."],
     }
     assert "command_intent" not in payload["safe_preview"]
+    assert "command_intent" not in payload["intent_envelope"]["action"]["parameters"]
     assert "command_intent" not in str(payload)
 
     durable_payload = HandlerImplementation._pending_to_dict(pending)
     assert durable_payload["arguments"]["command_intent"] == "execute"
+    assert durable_payload["intent_envelope"]["action"]["parameters"]["command_intent"] == "execute"
 
 
 def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:

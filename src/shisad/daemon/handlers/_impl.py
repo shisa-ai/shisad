@@ -260,6 +260,23 @@ def _redact_sensitive_pending_arguments(
     return payload
 
 
+def _redact_public_intent_envelope_payload(
+    tool_name: ToolName | str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    action = payload.get("action")
+    if not isinstance(action, dict):
+        return payload
+    parameters = action.get("parameters")
+    if isinstance(parameters, Mapping):
+        action["parameters"] = _redact_sensitive_pending_arguments(
+            tool_name,
+            parameters,
+            hide_internal=True,
+        )
+    return payload
+
+
 def _is_high_risk_confirmation_arguments(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
@@ -2731,7 +2748,13 @@ class HandlerImplementation(
             if sensitive_pending:
                 payload["intent_envelope_redacted"] = True
             else:
-                payload["intent_envelope"] = pending.intent_envelope.model_dump(mode="json")
+                intent_envelope_payload = pending.intent_envelope.model_dump(mode="json")
+                if public:
+                    intent_envelope_payload = _redact_public_intent_envelope_payload(
+                        pending.tool_name,
+                        intent_envelope_payload,
+                    )
+                payload["intent_envelope"] = intent_envelope_payload
         if pending.confirmation_evidence is not None:
             if sensitive_pending:
                 payload["confirmation_evidence_redacted"] = True
@@ -2818,6 +2841,7 @@ class HandlerImplementation(
         confirmation_arguments = _redact_sensitive_pending_arguments(
             tool_name,
             public_argument_source,
+            hide_internal=True,
         )
         summary = safe_summary(
             action=str(tool_name),
