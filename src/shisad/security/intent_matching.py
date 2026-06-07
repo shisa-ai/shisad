@@ -23,6 +23,7 @@ _PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT = (
     r"execute|edit|update|modify|delete|remove|wipe|install|download|upload|"
     r"exfiltrate|reveal|summarize|explain)\b)"
 )
+_QUOTED_TEXT_RE = re.compile(r"([\"'])(?:\\.|(?!\1).)*\1")
 
 
 def normalize_intent_text(text: str) -> str:
@@ -41,8 +42,12 @@ def strip_optional_greeting_prefix(text: str) -> str:
     return match.group(1).strip()
 
 
+def _mask_quoted_text(text: str) -> str:
+    return _QUOTED_TEXT_RE.sub(lambda match: " " * len(match.group(0)), text)
+
+
 def has_follow_on_command(text: str) -> bool:
-    normalized = normalize_intent_text(text)
+    normalized = normalize_intent_text(_mask_quoted_text(text))
     return (
         re.search(
             (

@@ -436,6 +436,14 @@ class ActionMonitorVoter:
         )
         return rf"(?=$|[.;,]|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
 
+    @staticmethod
+    def _terminal_message_stop_pattern() -> str:
+        command_verbs = (
+            r"read|list|show|search|find|fetch|open|create|add|save|remember|"
+            r"mark|complete|finish|resume|reopen|close|resolve|remind"
+        )
+        return rf"(?=$|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
+
     @classmethod
     def _iter_intent_values(cls, normalized_text: str, pattern: str) -> list[str]:
         values: list[str] = []
@@ -483,6 +491,7 @@ class ActionMonitorVoter:
             return False
         boundary = cls._command_boundary_pattern()
         stop = cls._command_stop_pattern()
+        terminal_message_stop = cls._terminal_message_stop_pattern()
         if tool_name == "note.create":
             return cls._any_expected_matches(
                 normalized_text=normalized,
@@ -561,7 +570,7 @@ class ActionMonitorVoter:
                 rf"(?:set|create|add)\s+(?:a\s+)?reminder"
                 rf"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
                 rf"(?:(?:to\s+)?say|saying|with\s+(?:message|text))"
-                rf"\s+(?P<message>.+?){stop}"
+                rf"\s+(?P<message>.+?){terminal_message_stop}"
             )
             for match in re.finditer(set_pattern, normalized, flags=re.IGNORECASE):
                 message = cls._normalize_intent_text(match.group("message")).strip(" .;,\"'")

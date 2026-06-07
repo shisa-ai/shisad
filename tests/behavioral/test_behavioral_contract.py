@@ -255,6 +255,10 @@ def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
             ("timer done", "at 3pm"),
         ),
         (
+            'please set a reminder for 3pm to say "timer done, check oven"',
+            ("timer done, check oven", "at 3pm"),
+        ),
+        (
             'can you set a reminder for 1 minute from now to say "timer done"',
             ("timer done", "in 1 minute"),
         ),

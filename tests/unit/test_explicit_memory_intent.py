@@ -656,6 +656,7 @@ def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command(
             "add todo: review PRs and can you please set a reminder "
             'for 1 minute from now to say "timer done"'
         ),
+        'please set a reminder for 3pm to say "timer done"; list my reminders',
         "remind me to check email on 2026-03-30T12:00:00Z",
     ],
 )
@@ -728,6 +729,21 @@ def test_gh49_explicit_reminder_create_parser_normalizes_for_clock_time() -> Non
     assert proposal.tool_name == ToolName("reminder.create")
     assert proposal.arguments == {
         "message": "timer done",
+        "when": "at 3pm",
+        "reminder_intent": "current_turn_reminder_create",
+    }
+    assert "user_text:explicit_reminder_intent" in proposal.data_sources
+
+
+def test_gh49_explicit_reminder_create_parser_keeps_comma_message() -> None:
+    proposal = _build_explicit_memory_intent_proposal(
+        'please set a reminder for 3pm to say "timer done, check oven"'
+    )
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("reminder.create")
+    assert proposal.arguments == {
+        "message": "timer done, check oven",
         "when": "at 3pm",
         "reminder_intent": "current_turn_reminder_create",
     }
