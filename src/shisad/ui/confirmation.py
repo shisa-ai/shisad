@@ -12,6 +12,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 HIGH_VALUE_ACTION_TOKENS = ("send", "share", "delete", "egress", "upload")
+_INTERNAL_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
+    "shell.exec": frozenset({"command_intent"}),
+}
 
 
 def _utc_now() -> datetime:
@@ -80,7 +83,10 @@ def safe_summary(
     """Generate a safe, metadata-first summary for confirmation dialogs."""
     params: list[tuple[str, str]] = []
     hidden: list[str] = []
+    internal_keys = _INTERNAL_ARGUMENT_KEYS_BY_ACTION.get(action.strip().lower(), frozenset())
     for key in sorted(arguments.keys()):
+        if key in internal_keys:
+            continue
         value = arguments[key]
         if isinstance(value, dict):
             params.append((key, f"{{{len(value)} keys}}"))

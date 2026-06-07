@@ -248,6 +248,8 @@ def _redact_sensitive_pending_arguments(
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
     payload = dict(arguments)
+    if str(tool_name).strip().lower() == "shell.exec":
+        payload.pop("command_intent", None)
     if _has_sensitive_pending_text(tool_name, payload):
         if "text" in payload:
             payload["text"] = _SENSITIVE_PENDING_TEXT_REDACTION
@@ -2254,8 +2256,7 @@ class HandlerImplementation(
             reason=(
                 ""
                 if success
-                else HandlerImplementation._structured_tool_reason(tool_output)
-                or execution.error
+                else HandlerImplementation._structured_tool_reason(tool_output) or execution.error
             ),
             checkpoint_id=execution.checkpoint_id or "",
             origin=origin.model_dump(mode="json"),

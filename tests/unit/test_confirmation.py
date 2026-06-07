@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
+from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.ui.confirmation import (
     ConfirmationAnalytics,
     ConfirmationWarningGenerator,
@@ -53,6 +55,86 @@ def test_gh12_shell_exec_confirmation_preview_includes_literal_command() -> None
 
     assert "command: find . -maxdepth 2 -iname '*install*log*'" in rendered
     assert "command: [6 items]" not in rendered
+
+
+def test_gh55_shell_exec_confirmation_preview_hides_command_intent() -> None:
+    summary = safe_summary(
+        action="shell.exec",
+        risk_level="medium",
+        arguments={
+            "command": ["echo", "ok"],
+            "command_intent": "execute",
+            "read_paths": ["."],
+        },
+    )
+    rendered = render_structured_confirmation(summary)
+
+    assert "command: echo ok" in rendered
+    assert "command_intent" not in dict(summary.parameters)
+    assert "command_intent" not in rendered
+
+
+def test_gh55_shell_exec_pending_payload_hides_command_intent() -> None:
+    arguments = {
+        "command": ["echo", "ok"],
+        "command_intent": "execute",
+        "read_paths": ["."],
+    }
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("s-1"),
+        user_id=UserId("u-1"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("shell.exec"),
+        arguments=arguments,
+        reason="requires_confirmation",
+        capabilities={Capability.SHELL_EXEC},
+        created_at=datetime.now(UTC),
+        safe_preview=render_structured_confirmation(
+            safe_summary(
+                action="shell.exec",
+                risk_level="medium",
+                arguments={
+                    "command": ["echo", "ok"],
+                    "command_intent": "execute",
+                    "read_paths": ["."],
+                },
+            )
+        ),
+    )
+
+    payload = HandlerImplementation._pending_to_dict(pending)
+
+    assert payload["arguments"] == {
+        "command": ["echo", "ok"],
+        "read_paths": ["."],
+    }
+    assert "command_intent" not in payload["safe_preview"]
+    assert "command_intent" not in str(payload)
+
+
+def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("s-1"),
+        user_id=UserId("u-1"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("custom.tool"),
+        arguments={
+            "command": ["echo", "ok"],
+            "command_intent": "execute",
+        },
+        reason="requires_confirmation",
+        capabilities=set(),
+        created_at=datetime.now(UTC),
+        safe_preview="preview",
+    )
+
+    payload = HandlerImplementation._pending_to_dict(pending)
+
+    assert payload["arguments"]["command_intent"] == "execute"
 
 
 def test_m6_t3_warning_generator_detects_first_time_recipient() -> None:
