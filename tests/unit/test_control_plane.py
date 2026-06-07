@@ -1761,6 +1761,44 @@ async def test_gh49_action_monitor_allows_bounded_set_reminder_intent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh49_action_monitor_keeps_set_inside_reminder_message() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="reminder.create",
+        arguments={
+            "message": "check the service and set DEBUG=1",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        origin=_origin("s-action-monitor-cli-set-content"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": (
+                    "can you set a reminder for 1 minute from now to say "
+                    "check the service and set DEBUG=1"
+                ),
+                "action_arguments": {
+                    "message": "check the service and set DEBUG=1",
+                    "when": "in 1 minute",
+                    "reminder_intent": "current_turn_reminder_create",
+                },
+            },
+        )
+    )
+
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_gh51_trace_voter_allows_typed_current_turn_filesystem_read_intent() -> None:
     action = build_action(
         tool_name="fs.list",

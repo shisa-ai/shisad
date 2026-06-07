@@ -431,7 +431,7 @@ class ActionMonitorVoter:
     def _command_stop_pattern() -> str:
         command_verbs = (
             r"read|list|show|search|find|fetch|open|create|add|save|remember|"
-            r"mark|complete|finish|resume|reopen|close|resolve|remind|set"
+            r"mark|complete|finish|resume|reopen|close|resolve|remind"
         )
         return rf"(?=$|[.;,]|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
 

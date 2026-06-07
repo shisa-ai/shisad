@@ -651,6 +651,7 @@ def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command(
         "add todo: review PRs; read README.md",
         "add todo: review PRs, read README.md",
         'add todo: review PRs and set a reminder for 1 minute from now to say "timer done"',
+        'add todo: review PRs and please set a reminder for 1 minute from now to say "timer done"',
         "remind me to check email on 2026-03-30T12:00:00Z",
     ],
 )
