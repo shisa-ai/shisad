@@ -2042,6 +2042,41 @@ async def test_m1_rr2_action_monitor_allows_at_iso_reminder_datetime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh49_action_monitor_allows_typed_current_turn_reminder_intent() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="reminder.create",
+        arguments={
+            "message": "timer done",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        origin=_origin("s-gh49-reminder-typed-intent"),
+    )
+
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "action_arguments": {
+                    "message": "timer done",
+                    "when": "in 1 minute",
+                    "reminder_intent": "current_turn_reminder_create",
+                },
+            },
+        )
+    )
+
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:trusted_current_turn_reminder_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc7_action_monitor_voter_flags_untrusted_clean_side_effect() -> None:
     voter = ActionMonitorVoter()
     action = build_action(

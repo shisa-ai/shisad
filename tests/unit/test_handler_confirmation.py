@@ -65,8 +65,10 @@ from shisad.security.credentials import (
     InMemoryCredentialStore,
     RecoveryCodeRecord,
 )
+from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
+from shisad.ui.confirmation import ConfirmationWarningGenerator
 
 
 class _StubImpl:
@@ -394,6 +396,40 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         }
 
 
+class _QueuePendingHarness(HandlerImplementation):
+    def __init__(self, tmp_path: Path) -> None:
+        self._pending_actions: dict[str, PendingAction] = {}
+        self._pending_by_session: dict[SessionId, list[str]] = {}
+        self._pending_actions_file = tmp_path / "pending_actions.json"
+        self._confirmation_warning_generator = ConfirmationWarningGenerator()
+        self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
+        self._transcript_store = TranscriptStore(tmp_path / "sessions")
+        self._leak_detector = CrossThreadLeakDetector()
+        self._daemon_id = "test-daemon"
+        self._session_manager = SimpleNamespace(get=lambda _sid: SimpleNamespace(metadata={}))
+        registry = _registry_for_confirmation()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("reminder.create"),
+                description="create a reminder",
+                parameters=[
+                    ToolParameter(name="message", type="string", required=True),
+                    ToolParameter(name="when", type="string", required=True),
+                    ToolParameter(name="name", type="string", required=False),
+                    ToolParameter(
+                        name="reminder_intent",
+                        type="string",
+                        required=False,
+                        enum=["current_turn_reminder_create"],
+                    ),
+                ],
+                capabilities_required=[Capability.MEMORY_WRITE, Capability.MESSAGE_SEND],
+            )
+        )
+        self._registry = registry
+
+
 def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> PendingAction:
     envelope = _software_approval_envelope(tool_name=ToolName("web.search"))
     return PendingAction(
@@ -413,6 +449,49 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         selected_backend_id="software.default",
         selected_backend_method="software",
     )
+
+
+def test_gh49_current_turn_reminder_confirmation_drops_false_provenance_warnings(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    sid = SessionId("s-gh49")
+    user_id = UserId("alice")
+    workspace_id = WorkspaceId("w-1")
+    harness._transcript_store.append(
+        sid,
+        role="user",
+        content='can you set a reminder for 1 minute from now to say "timer done"',
+    )
+    harness._confirmation_warning_generator.generate(
+        user_id=str(user_id),
+        tool_name="note.create",
+        arguments={"content": "previous safe note"},
+        taint_labels=[],
+    )
+
+    pending = harness._queue_pending_action(
+        session_id=sid,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "name": "Timer",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reason="requires_confirmation",
+        capabilities={Capability.MEMORY_WRITE, Capability.MESSAGE_SEND},
+        taint_labels=[TaintLabel.UNTRUSTED],
+        trusted_current_turn_reminder_create=True,
+    )
+
+    assert "Contains tainted data" not in pending.warnings
+    assert "Cross-thread overlap detected" not in pending.warnings
+    assert "Unusual action for this user" not in pending.warnings
+    assert pending.leak_check.get("detected") is False
+    assert "reminder_intent" not in pending.safe_preview
 
 
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:

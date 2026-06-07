@@ -16,6 +16,7 @@ from shisad.core.tools.names import canonical_tool_name
 HIGH_VALUE_ACTION_TOKENS = ("send", "share", "delete", "egress", "upload")
 _INTERNAL_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
+    "reminder.create": frozenset({"reminder_intent"}),
 }
 
 

@@ -177,6 +177,11 @@ _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _GH12_READ_ONLY_SHELL_COMMANDS = frozenset({"fd", "find", "grep", "ls", "rg"})
 _SENSITIVE_PENDING_TEXT_REDACTION = "[sensitive text redacted]"
+_CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+_INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
+    "shell.exec": frozenset({"command_intent"}),
+    "reminder.create": frozenset({"reminder_intent"}),
+}
 
 
 def _has_sensitive_pending_text(tool_name: ToolName | str, arguments: Mapping[str, Any]) -> bool:
@@ -250,8 +255,10 @@ def _redact_sensitive_pending_arguments(
     hide_internal: bool = False,
 ) -> dict[str, Any]:
     payload = dict(arguments)
-    if hide_internal and canonical_tool_name(str(tool_name), warn_on_alias=False) == "shell.exec":
-        payload.pop("command_intent", None)
+    if hide_internal:
+        canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
+        for key in _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION.get(canonical_name, frozenset()):
+            payload.pop(key, None)
     if _has_sensitive_pending_text(tool_name, payload):
         if "text" in payload:
             payload["text"] = _SENSITIVE_PENDING_TEXT_REDACTION
@@ -2842,6 +2849,7 @@ class HandlerImplementation(
         pep_elevation: PendingPepElevationRequest | None = None,
         confirmation_requirement: ConfirmationRequirement | None = None,
         strip_direct_tool_execute_envelope_keys: bool = False,
+        trusted_current_turn_reminder_create: bool = False,
         continuation_user_goal: str = "",
         continuation_mode: str = "",
     ) -> PendingAction:
@@ -2869,6 +2877,12 @@ class HandlerImplementation(
             public_argument_source = {}
         else:
             public_argument_source = arguments
+        trusted_current_turn_reminder_create = bool(
+            trusted_current_turn_reminder_create
+            and canonical_tool_name(str(tool_name), warn_on_alias=False) == "reminder.create"
+            and str(arguments.get("reminder_intent", "")).strip()
+            == _CURRENT_TURN_REMINDER_CREATE_INTENT
+        )
         confirmation_arguments = _redact_sensitive_pending_arguments(
             tool_name,
             public_argument_source,
@@ -2887,6 +2901,16 @@ class HandlerImplementation(
             arguments=confirmation_arguments,
             taint_labels=[label.value for label in taint_labels or []],
         )
+        if trusted_current_turn_reminder_create:
+            warnings = [
+                warning
+                for warning in warnings
+                if warning
+                not in {
+                    "Contains tainted data",
+                    "Unusual action for this user",
+                }
+            ]
         elevation_warning = pending_pep_elevation_warning(pep_elevation)
         if elevation_warning:
             warnings.append(elevation_warning)
@@ -2901,7 +2925,16 @@ class HandlerImplementation(
             warnings.extend(str(item).strip() for item in extra_warnings if str(item).strip())
         leak_result_payload: dict[str, Any] = {}
         outbound_text = self._extract_outbound_text(arguments)
-        if outbound_text:
+        if outbound_text and trusted_current_turn_reminder_create:
+            leak_result_payload = {
+                "detected": False,
+                "overlap_score": 0.0,
+                "matched_source_ids": [],
+                "reason_codes": ["leakcheck:trusted_current_turn_reminder_create"],
+                "requires_confirmation": False,
+                "detector_version": "m6-leakcheck-v1",
+            }
+        elif outbound_text:
             leak_result = self._leak_detector.evaluate(
                 outbound_text=outbound_text,
                 source_text_by_id=self._session_source_text_by_id(session_id),

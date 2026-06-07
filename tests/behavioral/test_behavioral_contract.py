@@ -680,7 +680,11 @@ async def _stub_complete(
     reminder_create_call = (
         _tool_call(
             "reminder.create",
-            {"message": reminder_args[0], "when": reminder_args[1]},
+            {
+                "message": reminder_args[0],
+                "when": reminder_args[1],
+                "reminder_intent": "current_turn_reminder_create",
+            },
             call_id="t-reminder-create",
         )
         if reminder_args is not None

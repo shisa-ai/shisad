@@ -187,6 +187,7 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
     )
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
+_CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
@@ -2030,6 +2031,26 @@ def _has_current_turn_local_filesystem_read_intent(
     return proposal is not None and "user_text:explicit_file_intent" in proposal.data_sources
 
 
+def _has_current_turn_reminder_create_intent(
+    *,
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+    proposal: ActionProposal | None,
+    validated: SessionMessageValidationResult,
+) -> bool:
+    canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
+    if canonical_name != "reminder.create":
+        return False
+    if not _has_clean_trusted_turn_privileges(validated):
+        return False
+    if (
+        str(arguments.get("reminder_intent", "")).strip()
+        == _CURRENT_TURN_REMINDER_CREATE_INTENT
+    ):
+        return True
+    return proposal is not None and "user_text:explicit_reminder_intent" in proposal.data_sources
+
+
 def _filesystem_read_continuation_goal(
     *,
     tool_name: ToolName | str,
@@ -3169,9 +3190,16 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             return ActionProposal(
                 action_id="explicit-reminder-create",
                 tool_name=ToolName("reminder.create"),
-                arguments={"message": message, "when": when},
+                arguments={
+                    "message": message,
+                    "when": when,
+                    "reminder_intent": _CURRENT_TURN_REMINDER_CREATE_INTENT,
+                },
                 reasoning="Execute the user's explicit reminder-creation request.",
-                data_sources=["user_text:explicit_memory_intent"],
+                data_sources=[
+                    "user_text:explicit_memory_intent",
+                    "user_text:explicit_reminder_intent",
+                ],
             )
 
     if re.fullmatch(
@@ -10541,9 +10569,15 @@ class SessionImplMixin(HandlerMixinBase):
                         validated=validated,
                     )
                 )
+                current_turn_reminder_create_intent = _has_current_turn_reminder_create_intent(
+                    tool_name=proposal.tool_name,
+                    arguments=proposal_arguments,
+                    proposal=proposal,
+                    validated=validated,
+                )
                 pending_taint_labels = (
                     []
-                    if current_turn_filesystem_read_intent
+                    if current_turn_filesystem_read_intent or current_turn_reminder_create_intent
                     else list(planner_context.context.taint_labels)
                 )
                 continuation_user_goal = _filesystem_read_continuation_goal(
@@ -10568,6 +10602,9 @@ class SessionImplMixin(HandlerMixinBase):
                         merged_policy=merged_policy,
                         taint_labels=pending_taint_labels,
                         extra_warnings=extra_warnings,
+                        trusted_current_turn_reminder_create=(
+                            current_turn_reminder_create_intent
+                        ),
                         continuation_user_goal=continuation_user_goal,
                         continuation_mode="planner" if continuation_user_goal else "",
                         pep_context=(
