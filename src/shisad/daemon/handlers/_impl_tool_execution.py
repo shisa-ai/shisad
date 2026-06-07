@@ -206,6 +206,13 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             params,
             strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
         )
+        if (
+            tool_name_value == "shell.exec"
+            and validation_arguments.get("command_intent") == "execute"
+            and params.get("command_intent") != "execute"
+        ):
+            params = dict(params)
+            params["command_intent"] = "execute"
         validation_errors = self._registry.validate_call(tool_name, validation_arguments)
         if validation_errors:
             validation_error = f"schema validation failed: {'; '.join(validation_errors)}"

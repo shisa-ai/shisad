@@ -72,6 +72,7 @@ from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import ActionMonitor, MonitorDecisionType
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
+from shisad.ui.confirmation import render_structured_confirmation, safe_summary
 from shisad.ui.evidence import render_evidence_refs_for_terminal
 from tests.helpers.artifact_kms import StubArtifactKmsService
 
@@ -3004,6 +3005,29 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
 
     async def _noop_publish(self, _event: object) -> None:
         return None
+
+    @staticmethod
+    def _pending_to_dict(pending: Any, *, public: bool = False) -> dict[str, Any]:
+        preview = str(getattr(pending, "safe_preview", "") or "")
+        if (
+            public
+            and impl_session.canonical_tool_name(
+                str(getattr(pending, "tool_name", "")),
+                warn_on_alias=False,
+            )
+            == "shell.exec"
+        ):
+            raw_arguments = getattr(pending, "arguments", {})
+            arguments = dict(raw_arguments) if isinstance(raw_arguments, Mapping) else {}
+            arguments.pop("command_intent", None)
+            preview = render_structured_confirmation(
+                safe_summary(
+                    action=str(getattr(pending, "tool_name", "shell.exec")),
+                    risk_level="medium",
+                    arguments=arguments,
+                )
+            )
+        return {"safe_preview": preview or str(getattr(pending, "reason", "") or "")}
 
     async def _send_chat_approval_link_notifications(self, **kwargs: object) -> None:
         self.approval_link_notifications.append(dict(kwargs))
@@ -6165,6 +6189,41 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
     assert "shisad action list" in text
     assert "nonce-1" not in text
     assert "nonce-2" not in text
+
+
+@pytest.mark.asyncio
+async def test_gh55_finalize_response_uses_public_pending_preview_for_shell_intent() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            tool_name=ToolName("shell.exec"),
+            arguments={
+                "command": ["echo", "ok"],
+                "command_intent": "execute",
+            },
+            safe_preview="ACTION CONFIRMATION\nPARAMETERS:\n  command_intent: execute",
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Queued it.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "command: echo ok" in text
+    assert "command_intent" not in text
 
 
 @pytest.mark.asyncio

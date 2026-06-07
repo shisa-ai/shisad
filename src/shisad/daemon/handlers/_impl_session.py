@@ -4637,6 +4637,7 @@ def _daemon_pending_confirmation_response_text(
     pending_confirmation_ids: Sequence[str],
     pending_actions: Mapping[str, Any] | None,
     pending_index_by_id: Mapping[str, int] | None = None,
+    pending_public_preview_by_id: Mapping[str, str] | None = None,
     binding_pending_rows: Sequence[Any] | None = None,
     totp_guidance_confirmation_ids: Sequence[str] | None = None,
 ) -> str:
@@ -4695,8 +4696,11 @@ def _daemon_pending_confirmation_response_text(
             )
             lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
         preview = ""
+        if pending_public_preview_by_id is not None:
+            preview = str(pending_public_preview_by_id.get(confirmation_id) or "").strip()
         if pending is not None:
-            preview = str(getattr(pending, "safe_preview", "") or "").strip()
+            if not preview:
+                preview = str(getattr(pending, "safe_preview", "") or "").strip()
             if not preview:
                 preview = str(getattr(pending, "reason", "") or "").strip()
         if preview:
@@ -11665,10 +11669,22 @@ class SessionImplMixin(HandlerMixinBase):
                 for index, pending in enumerate(visible_pending_rows, start=1)
                 if str(getattr(pending, "confirmation_id", "")).strip()
             }
+            pending_public_preview_by_id: dict[str, str] = {}
+            pending_to_dict = self._pending_to_dict
+            for pending in visible_pending_rows:
+                confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+                if not confirmation_id:
+                    continue
+                public_pending = pending_to_dict(pending, public=True)
+                public_preview = str(
+                    public_pending.get("safe_preview") or getattr(pending, "reason", "") or ""
+                ).strip()
+                pending_public_preview_by_id[confirmation_id] = public_preview
             response_text = _daemon_pending_confirmation_response_text(
                 pending_confirmation_ids=visible_pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
                 pending_index_by_id=pending_index_by_id,
+                pending_public_preview_by_id=pending_public_preview_by_id,
                 binding_pending_rows=visible_pending_rows,
                 totp_guidance_confirmation_ids=execution.pending_confirmation_ids,
             )

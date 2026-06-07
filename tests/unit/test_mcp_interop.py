@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from shisad.core.config import DaemonConfig, McpHttpServerConfig, McpStdioServerConfig
 from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
 from shisad.core.session import Session, SessionManager
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter, openai_function_name
@@ -97,6 +98,7 @@ class _ControlPlaneStub:
         self._decision = decision
         self._reason_codes = list(reason_codes or [])
         self.results: list[bool] = []
+        self.evaluations: list[dict[str, object]] = []
 
     async def active_plan_hash(self, _sid: str) -> str:
         return ""
@@ -105,6 +107,7 @@ class _ControlPlaneStub:
         return "plan-1"
 
     async def evaluate_action(self, **_kwargs: object) -> object:
+        self.evaluations.append(dict(_kwargs))
         # MCP-L2: use ActionKind.UNKNOWN to match what production's
         # `infer_action_kind` returns for unmapped MCP tool names
         # (`mcp.docs.lookup-doc` is not in `_TOOL_KIND_MAP` and has no
@@ -1591,6 +1594,36 @@ async def test_i1_tool_execute_confirmation_queue_preserves_direct_mcp_strip_int
 
 
 @pytest.mark.asyncio
+async def test_gh55_tool_execute_shell_confirmation_queue_preserves_command_intent() -> None:
+    harness = _McpHarness(
+        payload={},
+        register_tool=False,
+        control_decision=ControlDecision.REQUIRE_CONFIRMATION,
+        control_reason_codes=["trace:operator_gate"],
+    )
+    harness._registry.register(ShellExecTool.tool_definition())
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "shell.exec",
+            "command": ["echo", "ok"],
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is False
+    assert result["confirmation_required"] is True
+    evaluated_args = harness._control_plane.evaluations[0]["arguments"]
+    assert isinstance(evaluated_args, dict)
+    assert evaluated_args["command_intent"] == "execute"
+    queued_args = harness.queued_pending_actions[0]["arguments"]
+    assert queued_args["command_intent"] == "execute"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "requested_tool_name",
     [
@@ -1662,9 +1695,8 @@ async def test_gh47_tool_execute_reports_suppressed_browser_runtime_reason() -> 
     assert any(
         isinstance(event, ToolRejected)
         and event.tool_name == ToolName("browser.click")
-        and event.reason == (
-            "browser_runtime_unavailable:misconfigured:browser_command_unconfigured"
-        )
+        and event.reason
+        == ("browser_runtime_unavailable:misconfigured:browser_command_unconfigured")
         for event in harness._event_bus.events
     )
 
