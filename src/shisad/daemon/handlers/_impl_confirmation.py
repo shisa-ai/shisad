@@ -119,6 +119,14 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
         url = str(raw_arguments.get("url", "")).strip()
         if url:
             arguments["url"] = url
+    elif canonical_name == "fs.list" and isinstance(raw_arguments, Mapping):
+        for key in ("path", "recursive", "limit", "filesystem_intent"):
+            if key in raw_arguments:
+                arguments[key] = raw_arguments[key]
+    elif canonical_name == "fs.read" and isinstance(raw_arguments, Mapping):
+        for key in ("path", "max_bytes", "filesystem_intent"):
+            if key in raw_arguments:
+                arguments[key] = raw_arguments[key]
     return {
         "tool_name": tool_name,
         "success": bool(getattr(record, "success", False)),
@@ -128,6 +136,24 @@ def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
         **({"content_digest": content_digest} if content_digest else {}),
         **({"arguments": arguments} if arguments else {}),
     }
+
+
+def _safe_confirmed_tool_output_arguments(
+    *,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    canonical_name = canonical_tool_name(tool_name, warn_on_alias=False)
+    safe_arguments: dict[str, Any] = {}
+    if canonical_name == "fs.list":
+        for key in ("path", "recursive", "limit", "filesystem_intent"):
+            if key in arguments:
+                safe_arguments[key] = arguments[key]
+    elif canonical_name == "fs.read":
+        for key in ("path", "max_bytes", "filesystem_intent"):
+            if key in arguments:
+                safe_arguments[key] = arguments[key]
+    return safe_arguments
 
 
 def _confirmed_execution_failure_reason(record: Any) -> str:
@@ -1702,9 +1728,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)
+        pending_tool_name = canonical_tool_name(str(pending.tool_name), warn_on_alias=False)
         serialized_tool_outputs = (
             [_serialize_confirmed_tool_output(tool_output)] if tool_output is not None else []
         )
+        if serialized_tool_outputs and not serialized_tool_outputs[0].get("arguments"):
+            safe_arguments = _safe_confirmed_tool_output_arguments(
+                tool_name=pending_tool_name,
+                arguments=pending.arguments,
+            )
+            if safe_arguments:
+                serialized_tool_outputs[0]["arguments"] = safe_arguments
         if tool_output is not None:
             self._append_confirmed_tool_output_transcript(
                 pending=pending,
@@ -1712,7 +1746,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 decision_timestamp=decision_timestamp,
             )
         promote_followup_reason = ""
-        pending_tool_name = canonical_tool_name(str(pending.tool_name), warn_on_alias=False)
         if success and tool_output is not None and pending_tool_name == "evidence.promote":
             try:
                 payload = json.loads(str(getattr(tool_output, "content", "")))
@@ -1836,6 +1869,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 else None
             ),
             "tool_outputs": serialized_tool_outputs,
+            "continuation_user_goal": str(
+                getattr(pending, "continuation_user_goal", "")
+            ).strip(),
+            "continuation_mode": str(getattr(pending, "continuation_mode", "")).strip(),
         }
 
     async def do_action_reject(self, params: Mapping[str, Any]) -> dict[str, Any]:

@@ -1560,6 +1560,7 @@ class FsListParams(_StrictParams):
     path: str = "."
     recursive: bool = False
     limit: int = 200
+    filesystem_intent: str = ""
 
 
 class FsListResult(BaseModel):
@@ -1573,6 +1574,7 @@ class FsListResult(BaseModel):
 class FsReadParams(_StrictParams):
     path: str
     max_bytes: int | None = None
+    filesystem_intent: str = ""
 
 
 class FsReadResult(BaseModel):

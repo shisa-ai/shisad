@@ -37,6 +37,8 @@ from shisad.security.intent_matching import (
 )
 
 TRACE_VOTER_NAME = "ExecutionTraceVerifier"
+_CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
+_READ_ONLY_FILESYSTEM_ACTION_KINDS = frozenset({ActionKind.FS_READ, ActionKind.FS_LIST})
 
 
 class VoteKind(StrEnum):
@@ -235,12 +237,42 @@ class TraceVoter:
                 risk_tier=RiskTier.LOW,
                 reason_codes=[data.trace_result.reason_code],
             )
+        if self._allows_current_turn_filesystem_read_intent(data):
+            return VoterDecision(
+                voter=TRACE_VOTER_NAME,
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.LOW,
+                reason_codes=[
+                    data.trace_result.reason_code,
+                    "trace:current_turn_local_filesystem_read_intent",
+                ],
+            )
         return VoterDecision(
             voter=TRACE_VOTER_NAME,
             decision=VoteKind.BLOCK,
             risk_tier=data.trace_result.risk_tier,
             reason_codes=[data.trace_result.reason_code],
         )
+
+    @staticmethod
+    def _allows_current_turn_filesystem_read_intent(data: ConsensusInput) -> bool:
+        if data.trace_result.reason_code != "trace:tdg_confirmation_required":
+            return False
+        if data.action.action_kind not in _READ_ONLY_FILESYSTEM_ACTION_KINDS:
+            return False
+        if not _strict_metadata_bool(data.metadata_payload.get("trusted_input"), default=False):
+            return False
+        if not _strict_metadata_bool(
+            data.metadata_payload.get("operator_owned_cli_input"),
+            default=False,
+        ):
+            return False
+        intent = str(data.metadata_payload.get("filesystem_intent", "")).strip()
+        if not intent:
+            action_arguments = data.metadata_payload.get("action_arguments")
+            if isinstance(action_arguments, dict):
+                intent = str(action_arguments.get("filesystem_intent", "")).strip()
+        return intent == _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT
 
 
 class NetworkVoter:

@@ -1303,6 +1303,8 @@ class PendingAction:
     selected_backend_method: str = ""
     fallback_used: bool = False
     strip_direct_tool_execute_envelope_keys: bool = False
+    continuation_user_goal: str = ""
+    continuation_mode: str = ""
     status: str = "pending"
     status_reason: str = ""
 
@@ -2742,6 +2744,8 @@ class HandlerImplementation(
             "strip_direct_tool_execute_envelope_keys": bool(
                 pending.strip_direct_tool_execute_envelope_keys
             ),
+            "continuation_user_goal": pending.continuation_user_goal,
+            "continuation_mode": pending.continuation_mode,
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -2838,6 +2842,8 @@ class HandlerImplementation(
         pep_elevation: PendingPepElevationRequest | None = None,
         confirmation_requirement: ConfirmationRequirement | None = None,
         strip_direct_tool_execute_envelope_keys: bool = False,
+        continuation_user_goal: str = "",
+        continuation_mode: str = "",
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
@@ -3083,6 +3089,8 @@ class HandlerImplementation(
             selected_backend_method=str(backend_resolution.backend.method),
             fallback_used=bool(backend_resolution.fallback_used),
             strip_direct_tool_execute_envelope_keys=bool(strip_direct_tool_execute_envelope_keys),
+            continuation_user_goal=str(continuation_user_goal).strip(),
+            continuation_mode=str(continuation_mode).strip(),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -3288,6 +3296,8 @@ class HandlerImplementation(
                     strip_direct_tool_execute_envelope_keys=bool(
                         item.get("strip_direct_tool_execute_envelope_keys", False)
                     ),
+                    continuation_user_goal=str(item.get("continuation_user_goal", "")).strip(),
+                    continuation_mode=str(item.get("continuation_mode", "")).strip(),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )

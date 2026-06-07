@@ -1588,6 +1588,135 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
 
 
 @pytest.mark.asyncio
+async def test_gh51_confirmed_local_doc_discovery_continues_original_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        workspace_root = config.assistant_fs_roots[0]
+        docs = workspace_root / "docs"
+        docs.mkdir()
+        (docs / "open-claw-use-cases.md").write_text(
+            "\n".join(
+                [
+                    "# Open Claw Use Cases",
+                    "",
+                    "- Computer-use regression review",
+                    "- Browser automation debugging",
+                    "- Local project documentation triage",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    async def _gh51_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        if (
+            messages
+            and messages[0].role == "system"
+            and _SUMMARIZER_SYSTEM_MARKER in messages[0].content
+        ):
+            return await _stub_complete(self, messages, tools)
+        planner_input = messages[-1].content if messages else ""
+        normalized_planner_input = planner_input.replace("^", "")
+        if "POST-TOOL SYNTHESIS PASS" in normalized_planner_input:
+            assert "Computer-use regression review" in normalized_planner_input
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=(
+                        "The top open claw use cases are computer-use regression review, "
+                        "browser automation debugging, and local project documentation triage."
+                    ),
+                ),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        goal = _extract_user_goal(planner_input)
+        if "open claw use cases" in goal.lower():
+            if "open-claw-use-cases.md" in normalized_planner_input:
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content="",
+                        tool_calls=[
+                            _tool_call(
+                                "fs.read",
+                                {
+                                    "path": "docs/open-claw-use-cases.md",
+                                    "max_bytes": 4096,
+                                    "filesystem_intent": "current_turn_local_read",
+                                },
+                                call_id="t-gh51-read-use-cases",
+                            )
+                        ],
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[
+                        _tool_call(
+                            "fs.list",
+                            {"path": "docs", "recursive": False, "limit": 25},
+                            call_id="t-gh51-list-docs",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return await _stub_complete(self, messages, tools)
+
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        prestart=_seed,
+    ) as harness:
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _gh51_complete, raising=True)
+        sid = await _create_session(harness.client)
+        proposed = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "we have a list of open claw use cases in our docs. "
+                    "what are the top use cases?"
+                ),
+            },
+        )
+        assert proposed.get("lockdown_level") == "normal"
+        assert int(proposed.get("executed_actions", 0)) == 0
+        assert int(proposed.get("confirmation_required_actions", 0)) == 1
+        assert proposed.get("pending_confirmation_ids")
+
+        confirmed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "confirm 1"},
+        )
+
+    assert confirmed.get("lockdown_level") == "normal"
+    assert int(confirmed.get("blocked_actions", 0)) == 0
+    assert int(confirmed.get("confirmation_required_actions", 0)) == 0
+    assert int(confirmed.get("executed_actions", 0)) == 2
+    outputs = _extract_tool_outputs(confirmed)
+    assert "fs.list" in outputs
+    assert "fs.read" in outputs
+    response_text = str(confirmed.get("response", ""))
+    assert "computer-use regression review" in response_text.lower()
+    assert "Confirmed action result:" not in response_text
+
+
+@pytest.mark.asyncio
 async def test_contract_direct_diagnostic_audit_command_executes_or_confirms_without_monitor_reject(
     contract_harness: ContractHarness,
 ) -> None:

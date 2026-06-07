@@ -2182,6 +2182,98 @@ async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_taint_warning() -> (
+    None
+):
+    harness = _TraceConfirmationRoutingHarness()
+    sid = SessionId("sess-g1")
+    validated = _validation_result(
+        params={
+            "session_id": str(sid),
+            "content": "what are the top open claw use cases in our docs?",
+        }
+    )
+    validated.operator_owned_cli_input = True
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints={TaintLabel.UNTRUSTED},
+        effective_caps={Capability.FILE_READ},
+        memory_query="",
+        memory_context="",
+        memory_context_taints={TaintLabel.UNTRUSTED},
+        memory_context_tainted_for_amv=True,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(
+            capabilities={Capability.FILE_READ},
+            taint_labels={TaintLabel.UNTRUSTED},
+            session_id=sid,
+        ),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-gh51",
+        tool_name=ToolName("fs.list"),
+        arguments={
+            "path": "docs",
+            "recursive": True,
+            "limit": 25,
+            "filesystem_intent": "current_turn_local_read",
+        },
+        reasoning="Discover the docs needed for the user's current local-doc question.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need to inspect docs.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.pending_confirmation == 1
+    assert harness.pending_action_calls
+    pending_call = harness.pending_action_calls[-1]
+    assert pending_call["taint_labels"] == []
+    assert pending_call["continuation_user_goal"] == (
+        "what are the top open claw use cases in our docs?"
+    )
+    assert pending_call["continuation_mode"] == "planner"
+
+
+@pytest.mark.asyncio
 async def test_m9_trace_confirmation_keeps_pep_reject_precedence() -> None:
     harness = _TraceConfirmationRoutingHarness(
         monitor_kind=MonitorDecisionType.REJECT,

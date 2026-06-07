@@ -1890,6 +1890,17 @@ def _build_tool_registry(
                 ),
                 ToolParameter(name="recursive", type="boolean", required=False),
                 ToolParameter(name="limit", type="integer", required=False),
+                ToolParameter(
+                    name="filesystem_intent",
+                    type="string",
+                    required=False,
+                    enum=["current_turn_local_read"],
+                    description=(
+                        "Set to current_turn_local_read only when this read-only "
+                        "filesystem discovery is directly needed for the authenticated "
+                        "current user request to inspect or summarize local project files."
+                    ),
+                ),
             ],
             capabilities_required=[Capability.FILE_READ],
             require_confirmation=False,
@@ -1912,6 +1923,17 @@ def _build_tool_registry(
                     semantic_type="workspace_path",
                 ),
                 ToolParameter(name="max_bytes", type="integer", required=False),
+                ToolParameter(
+                    name="filesystem_intent",
+                    type="string",
+                    required=False,
+                    enum=["current_turn_local_read"],
+                    description=(
+                        "Set to current_turn_local_read only when this file read is "
+                        "directly needed for the authenticated current user request to "
+                        "inspect or summarize local project files."
+                    ),
+                ),
             ],
             capabilities_required=[Capability.FILE_READ],
             require_confirmation=False,

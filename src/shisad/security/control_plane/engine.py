@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from shisad.core.types import Capability
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.control_plane.consensus import (
+    TRACE_VOTER_NAME,
     ActionMonitorVoter,
     ConsensusDecision,
     ConsensusInput,
@@ -58,6 +59,7 @@ class ControlPlaneEvaluation(BaseModel, frozen=True):
 
 
 _AMV_METADATA_TEXT_MAX_CHARS = 256
+_CURRENT_TURN_LOCAL_READ_TRACE_ALLOW_REASON = "trace:current_turn_local_filesystem_read_intent"
 _INTENT_DIGEST_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
     "note.create": ("content",),
     "todo.create": ("title",),
@@ -66,6 +68,21 @@ _INTENT_DIGEST_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
     "thread.close": ("thread_id", "reason"),
     "reminder.create": ("message", "when"),
 }
+
+
+def _consensus_allows_current_turn_filesystem_read_trace_miss(
+    consensus: ConsensusDecision,
+) -> bool:
+    for vote in consensus.votes:
+        if str(getattr(vote, "voter", "")).strip() != TRACE_VOTER_NAME:
+            continue
+        decision = str(getattr(getattr(vote, "decision", ""), "value", vote.decision)).strip()
+        if decision != "ALLOW":
+            continue
+        reason_codes = [str(item).strip() for item in getattr(vote, "reason_codes", [])]
+        if _CURRENT_TURN_LOCAL_READ_TRACE_ALLOW_REASON in reason_codes:
+            return True
+    return False
 
 
 def _normalize_voter_text(value: str) -> str:
@@ -294,6 +311,7 @@ class ControlPlaneEngine:
         normalized_payload = _normalize_voter_payload(sanitize_metadata_payload(monitor_payload))
         metadata_arguments = normalized_payload if isinstance(normalized_payload, dict) else {}
         raw_user_text_for_voter = _normalize_voter_text(str(raw_user_text))
+        filesystem_intent = str(metadata_arguments.get("filesystem_intent", "")).strip()
         action = build_action(
             tool_name=tool_name,
             arguments=action_arguments,
@@ -331,6 +349,7 @@ class ControlPlaneEngine:
                     "session_tainted": session_tainted,
                     "trusted_input": trusted_input,
                     "operator_owned_cli_input": operator_owned_cli_input,
+                    "filesystem_intent": filesystem_intent,
                     "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
                     "action_argument_digests": _argument_intent_digests(
@@ -347,7 +366,10 @@ class ControlPlaneEngine:
 
         final_decision = consensus.decision
         reason_codes = list(consensus.reason_codes)
-        if not trace_result.allowed:
+        if (
+            not trace_result.allowed
+            and not _consensus_allows_current_turn_filesystem_read_trace_miss(consensus)
+        ):
             final_decision = ControlDecision.BLOCK
             if trace_result.reason_code not in reason_codes:
                 reason_codes.append(trace_result.reason_code)

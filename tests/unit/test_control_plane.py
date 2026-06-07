@@ -26,6 +26,7 @@ from shisad.security.control_plane.consensus import (
     ConsensusVotingSystem,
     ResourceVoter,
     SequenceVoter,
+    TraceVoter,
     VoteKind,
     VoterDecision,
 )
@@ -39,6 +40,7 @@ from shisad.security.control_plane.network import (
 from shisad.security.control_plane.resource import ResourceAccessMonitor
 from shisad.security.control_plane.schema import (
     ActionKind,
+    ControlDecision,
     ControlPlaneAction,
     Origin,
     RiskTier,
@@ -1719,6 +1721,86 @@ async def test_action_monitor_allows_trusted_cli_search_intent_on_tainted_contex
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
     assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_gh51_trace_voter_allows_typed_current_turn_filesystem_read_intent() -> None:
+    action = build_action(
+        tool_name="fs.list",
+        arguments={"path": "docs", "filesystem_intent": "current_turn_local_read"},
+        origin=_origin("s-gh51-typed-fs-intent"),
+    )
+
+    decision = await TraceVoter().cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(
+                allowed=False,
+                reason_code="trace:tdg_confirmation_required",
+                risk_tier=RiskTier.MEDIUM,
+            ),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "filesystem_intent": "current_turn_local_read",
+                "action_arguments": {
+                    "path": "docs",
+                    "filesystem_intent": "current_turn_local_read",
+                },
+            },
+        )
+    )
+
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "trace:current_turn_local_filesystem_read_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_gh51_engine_honors_typed_current_turn_filesystem_read_trace_allowance(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / "cp-gh51-typed-fs-intent",
+        workspace_roots=[tmp_path],
+    )
+    origin = _origin("s-gh51-engine-typed-fs-intent")
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="list the files in the docs folder",
+        origin=origin,
+        ttl_seconds=1800,
+        max_actions=10,
+        capabilities={Capability.FILE_READ},
+    )
+
+    evaluation = await engine.evaluate_action(
+        tool_name="fs.read",
+        arguments={
+            "path": "docs/open-claw-use-cases.md",
+            "max_bytes": 4096,
+            "filesystem_intent": "current_turn_local_read",
+        },
+        origin=origin,
+        risk_tier=RiskTier.LOW,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        operator_owned_cli_input=True,
+    )
+
+    assert evaluation.trace_result.allowed is False
+    assert evaluation.trace_result.reason_code == "trace:tdg_confirmation_required"
+    assert evaluation.decision == ControlDecision.ALLOW
+    assert "trace:tdg_confirmation_required" not in evaluation.reason_codes
+    trace_votes = [
+        vote
+        for vote in evaluation.consensus.votes
+        if vote.voter == "ExecutionTraceVerifier"
+    ]
+    assert trace_votes
+    assert "trace:current_turn_local_filesystem_read_intent" in trace_votes[0].reason_codes
 
 
 @pytest.mark.asyncio
