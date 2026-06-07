@@ -189,7 +189,11 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
 _CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS = 5
-_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS = frozenset({"and", "then", "also"})
+_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER = "<clause-boundary>"
+_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS = frozenset(
+    {"and", "then", "also", _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER}
+)
+_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIXES = frozenset({".", ",", ";", "!", "?"})
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
@@ -2040,6 +2044,10 @@ def _normalized_current_turn_tokens(value: Any) -> list[str]:
         stripped = token.strip(" .;,\"'")
         if stripped:
             tokens.append(stripped)
+        if token.rstrip("\"'").endswith(
+            tuple(_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIXES)
+        ):
+            tokens.append(_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER)
     return tokens
 
 
@@ -2087,8 +2095,7 @@ def _spans_are_paired(
         gap = left[0] - right[1]
         between_tokens = current_turn_tokens[right[1] : left[0]]
     else:
-        gap = 0
-        between_tokens = []
+        return False
     if any(token in _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS for token in between_tokens):
         return False
     return gap <= _CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS

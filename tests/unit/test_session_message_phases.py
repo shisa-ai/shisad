@@ -2471,6 +2471,64 @@ def test_gh49_current_turn_reminder_grounding_rejects_adjacent_clause_mix() -> N
     )
 
 
+def test_gh49_current_turn_reminder_grounding_rejects_punctuation_clause_mix() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "set reminders: timer done in 1 minute; in 2 minutes check email",
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-punctuation-mix",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Mix a message across a punctuation-separated reminder clause.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
+def test_gh49_current_turn_reminder_grounding_rejects_when_inside_message() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": (
+                "set a reminder in 5 minutes to check the last 2 minutes of logs"
+            ),
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-when-inside-message",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "check the last 2 minutes of logs",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Use a duration inside the reminder message as the schedule.",
+        data_sources=[],
+    )
+
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
 def test_gh49_current_turn_reminder_grounding_rejects_mixed_name_pair() -> None:
     validated = _validation_result(
         params={
