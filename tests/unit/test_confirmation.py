@@ -145,6 +145,53 @@ def test_gh55_shell_exec_pending_payload_hides_command_intent() -> None:
     assert durable_payload["intent_envelope"]["action"]["parameters"]["command_intent"] == "execute"
 
 
+def test_gh55_legacy_shell_alias_pending_payload_hides_command_intent() -> None:
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("s-1"),
+        user_id=UserId("u-1"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("shell_exec"),
+        arguments={
+            "command": ["echo", "ok"],
+            "command_intent": "execute",
+        },
+        reason="requires_confirmation",
+        capabilities={Capability.SHELL_EXEC},
+        created_at=datetime.now(UTC),
+        safe_preview="preview",
+        intent_envelope=IntentEnvelope(
+            intent_id="c-1",
+            agent_id="daemon-1",
+            workspace_id="w-1",
+            session_id="s-1",
+            created_at=datetime.now(UTC),
+            action=IntentAction(
+                tool="shell_exec",
+                display_summary="shell_exec: command=echo ok",
+                parameters={
+                    "command": ["echo", "ok"],
+                    "command_intent": "execute",
+                },
+                destinations=[],
+            ),
+            policy_context=IntentPolicyContext(
+                required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+                confirmation_reason="requires_confirmation",
+                matched_rule="shell_exec",
+                action_digest="sha256:test",
+            ),
+            nonce="nonce-2",
+        ),
+    )
+
+    payload = HandlerImplementation._pending_to_dict(pending, public=True)
+
+    assert "command_intent" not in payload["arguments"]
+    assert "command_intent" not in payload["intent_envelope"]["action"]["parameters"]
+
+
 def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
     pending = PendingAction(
         confirmation_id="c-1",

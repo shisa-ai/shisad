@@ -250,7 +250,7 @@ def _redact_sensitive_pending_arguments(
     hide_internal: bool = False,
 ) -> dict[str, Any]:
     payload = dict(arguments)
-    if hide_internal and str(tool_name).strip().lower() == "shell.exec":
+    if hide_internal and canonical_tool_name(str(tool_name), warn_on_alias=False) == "shell.exec":
         payload.pop("command_intent", None)
     if _has_sensitive_pending_text(tool_name, payload):
         if "text" in payload:
