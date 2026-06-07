@@ -104,7 +104,7 @@ def test_gh55_shell_exec_pending_payload_hides_command_intent() -> None:
         ),
     )
 
-    payload = HandlerImplementation._pending_to_dict(pending)
+    payload = HandlerImplementation._pending_to_dict(pending, public=True)
 
     assert payload["arguments"] == {
         "command": ["echo", "ok"],
@@ -112,6 +112,9 @@ def test_gh55_shell_exec_pending_payload_hides_command_intent() -> None:
     }
     assert "command_intent" not in payload["safe_preview"]
     assert "command_intent" not in str(payload)
+
+    durable_payload = HandlerImplementation._pending_to_dict(pending)
+    assert durable_payload["arguments"]["command_intent"] == "execute"
 
 
 def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
@@ -132,7 +135,7 @@ def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
         safe_preview="preview",
     )
 
-    payload = HandlerImplementation._pending_to_dict(pending)
+    payload = HandlerImplementation._pending_to_dict(pending, public=True)
 
     assert payload["arguments"]["command_intent"] == "execute"
 

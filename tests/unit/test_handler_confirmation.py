@@ -368,7 +368,8 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         )
 
     @staticmethod
-    def _pending_to_dict(pending: PendingAction) -> dict[str, object]:
+    def _pending_to_dict(pending: PendingAction, *, public: bool = False) -> dict[str, object]:
+        _ = public
         return {
             "confirmation_id": pending.confirmation_id,
             "decision_nonce": pending.decision_nonce,

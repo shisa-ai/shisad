@@ -246,9 +246,11 @@ def _value_contains_sensitive_leaf(candidate: Any, values: frozenset[str]) -> bo
 def _redact_sensitive_pending_arguments(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],
+    *,
+    hide_internal: bool = False,
 ) -> dict[str, Any]:
     payload = dict(arguments)
-    if str(tool_name).strip().lower() == "shell.exec":
+    if hide_internal and str(tool_name).strip().lower() == "shell.exec":
         payload.pop("command_intent", None)
     if _has_sensitive_pending_text(tool_name, payload):
         if "text" in payload:
@@ -2626,7 +2628,7 @@ class HandlerImplementation(
         )
 
     @staticmethod
-    def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
+    def _pending_to_dict(pending: PendingAction, *, public: bool = False) -> dict[str, Any]:
         browser_sensitive_pending = _has_sensitive_pending_text(
             pending.tool_name,
             pending.arguments,
@@ -2641,6 +2643,7 @@ class HandlerImplementation(
         arguments = _redact_sensitive_pending_arguments(
             pending.tool_name,
             public_argument_source,
+            hide_internal=public,
         )
         sensitive_summary = None
         if browser_sensitive_pending:

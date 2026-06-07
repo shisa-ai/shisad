@@ -1029,7 +1029,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 continue
             if status_filter and item.status.lower() != status_filter:
                 continue
-            payload = self._pending_to_dict(item)
+            payload = self._pending_to_dict(item, public=True)
             if (
                 getattr(self, "_approval_web", None) is not None
                 and self._approval_web.enabled
