@@ -2214,7 +2214,15 @@ def _build_tool_registry(
                     description="Natural-language delivery time such as `in 2 minutes`.",
                     required=True,
                 ),
-                ToolParameter(name="name", type="string", required=False),
+                ToolParameter(
+                    name="name",
+                    type="string",
+                    required=False,
+                    description=(
+                        "Optional reminder label. Omit unless the user explicitly names "
+                        "or titles the reminder."
+                    ),
+                ),
                 ToolParameter(
                     name="reminder_intent",
                     type="string",

@@ -477,7 +477,6 @@ def test_gh49_current_turn_reminder_confirmation_drops_false_provenance_warnings
         tool_name=ToolName("reminder.create"),
         arguments={
             "message": "timer done",
-            "name": "Timer",
             "when": "in 1 minute",
             "reminder_intent": "current_turn_reminder_create",
         },

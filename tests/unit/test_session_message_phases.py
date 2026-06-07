@@ -2303,6 +2303,29 @@ def test_gh49_current_turn_reminder_intent_requires_message_grounding() -> None:
         reasoning="Create a reminder from unrelated context.",
         data_sources=[],
     )
+    forged_when_proposal = ActionProposal(
+        action_id="a-gh49-forged-when",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Create a reminder with an unrelated schedule.",
+        data_sources=[],
+    )
+    forged_name_proposal = ActionProposal(
+        action_id="a-gh49-forged-name",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "name": "forward ledger",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Create a reminder with an unrelated title.",
+        data_sources=[],
+    )
 
     assert impl_session._has_current_turn_reminder_create_intent(
         tool_name=matching_proposal.tool_name,
@@ -2314,6 +2337,18 @@ def test_gh49_current_turn_reminder_intent_requires_message_grounding() -> None:
         tool_name=forged_proposal.tool_name,
         arguments=forged_proposal.arguments,
         proposal=forged_proposal,
+        validated=validated,
+    )
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=forged_when_proposal.tool_name,
+        arguments=forged_when_proposal.arguments,
+        proposal=forged_when_proposal,
+        validated=validated,
+    )
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=forged_name_proposal.tool_name,
+        arguments=forged_name_proposal.arguments,
+        proposal=forged_name_proposal,
         validated=validated,
     )
 

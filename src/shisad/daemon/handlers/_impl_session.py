@@ -2031,6 +2031,33 @@ def _has_current_turn_local_filesystem_read_intent(
     return proposal is not None and "user_text:explicit_file_intent" in proposal.data_sources
 
 
+def _normalized_current_turn_value(value: Any) -> str:
+    return normalize_intent_text(str(value or "")).casefold().strip(" .;,")
+
+
+def _current_turn_contains_value(*, current_turn: str, value: Any) -> bool:
+    normalized_value = _normalized_current_turn_value(value)
+    if not normalized_value:
+        return False
+    normalized_current_turn = normalize_intent_text(current_turn).casefold()
+    return normalized_value in normalized_current_turn
+
+
+def _current_turn_contains_reminder_when(*, current_turn: str, when: Any) -> bool:
+    normalized_when = _normalized_current_turn_value(when)
+    if not normalized_when:
+        return False
+    normalized_current_turn = normalize_intent_text(current_turn).casefold()
+    if normalized_when in normalized_current_turn:
+        return True
+    for prefix in ("in ", "at "):
+        if normalized_when.startswith(prefix):
+            unprefixed = normalized_when[len(prefix) :].strip()
+            if unprefixed and unprefixed in normalized_current_turn:
+                return True
+    return False
+
+
 def _has_current_turn_reminder_create_intent(
     *,
     tool_name: ToolName | str,
@@ -2049,11 +2076,22 @@ def _has_current_turn_reminder_create_intent(
         str(arguments.get("reminder_intent", "")).strip()
         == _CURRENT_TURN_REMINDER_CREATE_INTENT
     ):
-        reminder_message = normalize_intent_text(str(arguments.get("message", ""))).casefold()
-        current_turn = normalize_intent_text(
-            str(validated.firewall_result.sanitized_text or "")
-        ).casefold()
-        return bool(reminder_message and reminder_message in current_turn)
+        current_turn = str(validated.firewall_result.sanitized_text or "")
+        name = str(arguments.get("name") or "").strip()
+        return (
+            _current_turn_contains_value(
+                current_turn=current_turn,
+                value=arguments.get("message"),
+            )
+            and _current_turn_contains_reminder_when(
+                current_turn=current_turn,
+                when=arguments.get("when"),
+            )
+            and (
+                not name
+                or _current_turn_contains_value(current_turn=current_turn, value=name)
+            )
+        )
     return False
 
 
