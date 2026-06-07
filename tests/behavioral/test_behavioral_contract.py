@@ -58,6 +58,7 @@ from shisad.memory.trust import (
     TrustGateViolation,
     derive_trust_band,
 )
+from shisad.security.intent_matching import OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT
 from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import daemon_harness, ingest_memory_via_ingress
 
@@ -189,18 +190,37 @@ def _extract_todo_complete_selector(goal: str) -> str:
     return goal.strip()
 
 
+def _normalize_stub_reminder_when(prefix: str, when: str) -> str:
+    normalized = re.sub(r"\s+", " ", when).strip().strip("\"'")
+    if not normalized:
+        return ""
+    if normalized.lower().startswith(("in ", "at ")):
+        return normalized
+    if prefix.lower() == "at":
+        return f"at {normalized}"
+    relative = re.fullmatch(
+        r"(?P<value>\d+)\s+(?P<unit>seconds?|minutes?|hours?)(?:\s+from\s+now)?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if relative is not None:
+        return f"in {relative.group('value')} {relative.group('unit')}"
+    return f"at {normalized}"
+
+
 def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
-    match = re.search(
-        r"(?:set|create|add) a? ?reminder for "
-        r"(?P<value>\d+) (?P<unit>seconds?|minutes?|hours?)(?: from now)? "
-        r"(?:to )?say (?P<message>.+)$",
-        goal,
+    match = re.match(
+        rf"{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
+        r"(?:set|create|add)\s+(?:a\s+)?reminder\s+"
+        r"(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
+        r"(?:(?:to\s+)?say|saying|with\s+(?:message|text))\s+(?P<message>.+)$",
+        goal.strip(),
         flags=re.IGNORECASE,
     )
     if match:
         return (
             match.group("message").strip().strip("\"'"),
-            f"in {match.group('value')} {match.group('unit')}",
+            _normalize_stub_reminder_when(match.group("prefix"), match.group("when")),
         )
     match = re.search(
         r"remind me to (?P<message>.+?) (?P<when>in \d+ (?:seconds?|minutes?|hours?))$",
@@ -6977,6 +6997,29 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
     assert any(
         str(item.get("id", "")) == task_id for item in reminder_list_payload.get("tasks", [])
     )
+
+
+@pytest.mark.asyncio
+async def test_contract_polite_set_reminder_clock_time_executes_without_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    created = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": 'please set a reminder for 3pm to say "timer done"'},
+    )
+
+    assert created.get("lockdown_level") == "normal"
+    assert int(created.get("blocked_actions", 0)) == 0
+    assert int(created.get("confirmation_required_actions", 0)) == 0
+    assert int(created.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(created)
+    assert "reminder.create" in outputs
+    payload = outputs["reminder.create"][0]
+    assert payload.get("ok") is True
+    reminder = payload.get("task") or {}
+    assert str(reminder.get("id", "")).strip()
 
 
 @pytest.mark.asyncio
