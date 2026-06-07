@@ -148,10 +148,11 @@ def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_execute_in
     [
         {"command": ["echo", "ok"]},
         {"command": ["echo", "ok"], "command_intent": "informational"},
+        None,
     ],
 )
 def test_gh55_action_monitor_rejects_generic_shell_command_without_execute_intent(
-    arguments: dict[str, object],
+    arguments: object,
 ) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
