@@ -1727,6 +1727,7 @@ async def test_action_monitor_allows_trusted_cli_search_intent_on_tainted_contex
 @pytest.mark.parametrize(
     "raw_user_text",
     [
+        'hello, please set a reminder for 1 minute from now to say "timer done"',
         'please set a reminder for 1 minute from now to say "timer done"',
         'can you set a reminder for 1 minute from now to say "timer done"',
         'can you please set a reminder for 1 minute from now to say "timer done"',

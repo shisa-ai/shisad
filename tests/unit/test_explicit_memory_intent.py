@@ -698,6 +698,7 @@ def test_gh49_explicit_reminder_create_proposal_sets_structured_current_turn_int
 @pytest.mark.parametrize(
     "user_text",
     [
+        'hello, please set a reminder for 1 minute from now to say "timer done"',
         'please set a reminder for 1 minute from now to say "timer done"',
         'can you set a reminder for 1 minute from now to say "timer done"',
         'can you please set a reminder for 1 minute from now to say "timer done"',

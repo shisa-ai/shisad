@@ -58,7 +58,10 @@ from shisad.memory.trust import (
     TrustGateViolation,
     derive_trust_band,
 )
-from shisad.security.intent_matching import OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT
+from shisad.security.intent_matching import (
+    OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT,
+    strip_optional_greeting_prefix,
+)
 from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import daemon_harness, ingest_memory_via_ingress
 
@@ -209,12 +212,13 @@ def _normalize_stub_reminder_when(prefix: str, when: str) -> str:
 
 
 def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
+    normalized_goal = strip_optional_greeting_prefix(goal)
     match = re.match(
         rf"{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
         r"(?:set|create|add)\s+(?:a\s+)?reminder\s+"
         r"(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
         r"(?:(?:to\s+)?say|saying|with\s+(?:message|text))\s+(?P<message>.+)$",
-        goal.strip(),
+        normalized_goal,
         flags=re.IGNORECASE,
     )
     if match:
@@ -237,6 +241,30 @@ def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
     if match:
         return match.group("message").strip(), f"at {match.group('when').strip()}"
     return None
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected"),
+    [
+        (
+            'please set a reminder for 3pm to say "timer done"',
+            ("timer done", "at 3pm"),
+        ),
+        (
+            'hello, please set a reminder for 3pm to say "timer done"',
+            ("timer done", "at 3pm"),
+        ),
+        (
+            'can you set a reminder for 1 minute from now to say "timer done"',
+            ("timer done", "in 1 minute"),
+        ),
+    ],
+)
+def test_gh49_behavioral_fake_reminder_extractor_matches_bounded_parser(
+    goal: str,
+    expected: tuple[str, str],
+) -> None:
+    assert _extract_reminder_arguments(goal) == expected
 
 
 def _extract_browser_url(goal: str) -> str:
