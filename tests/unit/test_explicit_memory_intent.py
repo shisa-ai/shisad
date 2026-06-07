@@ -718,6 +718,21 @@ def test_gh49_explicit_reminder_create_parser_handles_set_reminder_time_first(
     assert "user_text:explicit_reminder_intent" in proposal.data_sources
 
 
+def test_gh49_explicit_reminder_create_parser_normalizes_for_clock_time() -> None:
+    proposal = _build_explicit_memory_intent_proposal(
+        'please set a reminder for 3pm to say "timer done"'
+    )
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("reminder.create")
+    assert proposal.arguments == {
+        "message": "timer done",
+        "when": "at 3pm",
+        "reminder_intent": "current_turn_reminder_create",
+    }
+    assert "user_text:explicit_reminder_intent" in proposal.data_sources
+
+
 def test_m1_explicit_memory_intent_parser_keeps_comma_separated_note_content() -> None:
     proposal = _build_explicit_memory_intent_proposal("add a note: buy milk, eggs, bread")
 

@@ -422,7 +422,7 @@ class ActionMonitorVoter:
         )
         if relative is not None:
             return f"in {relative.group('value')} {relative.group('unit')}"
-        return normalized
+        return f"at {normalized}" if prefix.lower() == "for" else normalized
 
     @staticmethod
     def _command_boundary_pattern() -> str:

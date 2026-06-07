@@ -1769,6 +1769,41 @@ async def test_gh49_action_monitor_allows_bounded_set_reminder_intent(
 
 
 @pytest.mark.asyncio
+async def test_gh49_action_monitor_allows_for_clock_time_reminder_intent() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="reminder.create",
+        arguments={
+            "message": "timer done",
+            "when": "at 3pm",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        origin=_origin("s-action-monitor-cli-set-reminder-clock"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": 'please set a reminder for 3pm to say "timer done"',
+                "action_arguments": {
+                    "message": "timer done",
+                    "when": "at 3pm",
+                    "reminder_intent": "current_turn_reminder_create",
+                },
+            },
+        )
+    )
+
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_gh49_action_monitor_keeps_set_inside_reminder_message() -> None:
     voter = ActionMonitorVoter()
     action = build_action(

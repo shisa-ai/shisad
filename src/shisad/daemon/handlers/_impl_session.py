@@ -2757,7 +2757,7 @@ def _normalize_explicit_reminder_when(prefix: str, when: str) -> str:
     )
     if relative is not None:
         return f"in {relative.group('value')} {relative.group('unit')}"
-    return normalized
+    return f"at {normalized}" if prefix.lower() == "for" else normalized
 
 
 def _has_explicit_memory_follow_on_command(text: str) -> bool:
