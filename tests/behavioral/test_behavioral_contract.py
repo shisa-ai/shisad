@@ -60,6 +60,7 @@ from shisad.memory.trust import (
 )
 from shisad.security.intent_matching import (
     OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT,
+    has_follow_on_command,
     strip_optional_greeting_prefix,
 )
 from tests.helpers.behavioral import extract_tool_outputs
@@ -213,6 +214,8 @@ def _normalize_stub_reminder_when(prefix: str, when: str) -> str:
 
 def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
     normalized_goal = strip_optional_greeting_prefix(goal)
+    if has_follow_on_command(normalized_goal):
+        return None
     match = re.match(
         rf"{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
         r"(?:set|create|add)\s+(?:a\s+)?reminder\s+"
@@ -269,6 +272,15 @@ def test_gh49_behavioral_fake_reminder_extractor_matches_bounded_parser(
     expected: tuple[str, str],
 ) -> None:
     assert _extract_reminder_arguments(goal) == expected
+
+
+def test_gh49_behavioral_fake_reminder_extractor_rejects_follow_on_command() -> None:
+    assert (
+        _extract_reminder_arguments(
+            "please set a reminder for 3pm to say timer done;list my reminders"
+        )
+        is None
+    )
 
 
 def _extract_browser_url(goal: str) -> str:

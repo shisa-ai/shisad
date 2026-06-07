@@ -1843,22 +1843,39 @@ async def test_gh49_action_monitor_keeps_comma_inside_set_reminder_message() -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "raw_user_text",
+    ("raw_user_text", "message"),
     [
-        'please set a reminder for 3pm to say "timer done"; list my reminders',
-        'please set a reminder for 3pm to say "timer done";list my reminders',
-        'please set a reminder for 3pm to say "timer done". list my reminders',
-        'please set a reminder for 3pm to say "timer done".list my reminders',
+        (
+            'please set a reminder for 3pm to say "timer done"; list my reminders',
+            'timer done"; list my reminders',
+        ),
+        (
+            'please set a reminder for 3pm to say "timer done";list my reminders',
+            'timer done";list my reminders',
+        ),
+        (
+            'please set a reminder for 3pm to say "timer done". list my reminders',
+            'timer done". list my reminders',
+        ),
+        (
+            'please set a reminder for 3pm to say "timer done".list my reminders',
+            'timer done".list my reminders',
+        ),
+        (
+            "please set a reminder for 3pm to say timer done;list my reminders",
+            "timer done;list my reminders",
+        ),
     ],
 )
-async def test_gh49_action_monitor_rejects_follow_on_after_quoted_set_reminder(
+async def test_gh49_action_monitor_rejects_follow_on_after_set_reminder(
     raw_user_text: str,
+    message: str,
 ) -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
         arguments={
-            "message": 'timer done"; list my reminders',
+            "message": message,
             "when": "at 3pm",
             "reminder_intent": "current_turn_reminder_create",
         },
@@ -1874,7 +1891,7 @@ async def test_gh49_action_monitor_rejects_follow_on_after_quoted_set_reminder(
                 "operator_owned_cli_input": True,
                 "raw_user_text": raw_user_text,
                 "action_arguments": {
-                    "message": 'timer done"; list my reminders',
+                    "message": message,
                     "when": "at 3pm",
                     "reminder_intent": "current_turn_reminder_create",
                 },
