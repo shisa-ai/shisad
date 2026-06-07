@@ -10,7 +10,8 @@ _FOLLOW_ON_COMMAND_FRAGMENT = (
     r"|(?:add|save)\s+(?:a\s+)?note:"
     r"|(?:add|create)\s+(?:a\s+)?(?:todo|task):"
     r"|(?:mark|complete|finish)\b"
-    r"|remind me\b)"
+    r"|remind me\b"
+    r"|(?:can you\s+)?(?:set|create|add)\s+(?:a\s+)?reminder\b)"
 )
 _PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT = (
     r"(?:(?:please\s+)?(?:add|create|read|open|view|list|show|check|inspect|search|"

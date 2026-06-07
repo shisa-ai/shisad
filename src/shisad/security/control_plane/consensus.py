@@ -405,6 +405,24 @@ class ActionMonitorVoter:
             expected=expected,
         )
 
+    @classmethod
+    def _normalize_explicit_reminder_when(cls, prefix: str, when: str) -> str:
+        normalized = cls._normalize_intent_text(when).strip().strip("\"'")
+        if not normalized:
+            return ""
+        if normalized.lower().startswith(("in ", "at ")):
+            return normalized
+        if prefix.lower() == "at":
+            return f"at {normalized}"
+        relative = re.fullmatch(
+            r"(?P<value>\d+)\s+(?P<unit>seconds?|minutes?|hours?)(?:\s+from\s+now)?",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if relative is not None:
+            return f"in {relative.group('value')} {relative.group('unit')}"
+        return normalized
+
     @staticmethod
     def _command_boundary_pattern() -> str:
         return r"(?:^|[.;,]\s*|\b(?:and|then|also)\s+)(?:please\s+)?"
@@ -413,7 +431,7 @@ class ActionMonitorVoter:
     def _command_stop_pattern() -> str:
         command_verbs = (
             r"read|list|show|search|find|fetch|open|create|add|save|remember|"
-            r"mark|complete|finish|resume|reopen|close|resolve|remind"
+            r"mark|complete|finish|resume|reopen|close|resolve|remind|set"
         )
         return rf"(?=$|[.;,]|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
 
@@ -525,6 +543,30 @@ class ActionMonitorVoter:
             for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
                 message = cls._normalize_intent_text(match.group(1)).strip(" .;,")
                 when = cls._normalize_intent_text(match.group(2)).strip(" .;,")
+                if cls._matches_argument_or_digest(
+                    action_arguments=action_arguments,
+                    action_argument_digests=argument_digests,
+                    field="message",
+                    expected=message,
+                ) and cls._matches_argument_or_digest(
+                    action_arguments=action_arguments,
+                    action_argument_digests=argument_digests,
+                    field="when",
+                    expected=when,
+                ):
+                    return True
+            set_pattern = (
+                rf"{boundary}(?:can you\s+)?(?:set|create|add)\s+(?:a\s+)?reminder"
+                rf"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
+                rf"(?:(?:to\s+)?say|saying|with\s+(?:message|text))"
+                rf"\s+(?P<message>.+?){stop}"
+            )
+            for match in re.finditer(set_pattern, normalized, flags=re.IGNORECASE):
+                message = cls._normalize_intent_text(match.group("message")).strip(" .;,\"'")
+                when = cls._normalize_explicit_reminder_when(
+                    match.group("prefix"),
+                    match.group("when"),
+                )
                 if cls._matches_argument_or_digest(
                     action_arguments=action_arguments,
                     action_argument_digests=argument_digests,

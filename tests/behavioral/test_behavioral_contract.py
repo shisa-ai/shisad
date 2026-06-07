@@ -191,6 +191,18 @@ def _extract_todo_complete_selector(goal: str) -> str:
 
 def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
     match = re.search(
+        r"(?:set|create|add) a? ?reminder for "
+        r"(?P<value>\d+) (?P<unit>seconds?|minutes?|hours?)(?: from now)? "
+        r"(?:to )?say (?P<message>.+)$",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return (
+            match.group("message").strip().strip("\"'"),
+            f"in {match.group('value')} {match.group('unit')}",
+        )
+    match = re.search(
         r"remind me to (?P<message>.+?) (?P<when>in \d+ (?:seconds?|minutes?|hours?))$",
         goal,
         flags=re.IGNORECASE,
