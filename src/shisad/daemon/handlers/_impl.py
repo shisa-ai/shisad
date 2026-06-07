@@ -274,7 +274,23 @@ def _redact_public_intent_envelope_payload(
             parameters,
             hide_internal=True,
         )
+        action["display_summary"] = _confirmation_action_summary(tool_name, action["parameters"])
     return payload
+
+
+def _confirmation_action_summary(
+    tool_name: ToolName | str,
+    arguments: Mapping[str, Any],
+) -> str:
+    summary = safe_summary(
+        action=str(tool_name),
+        risk_level=(
+            "high" if _is_high_risk_confirmation_arguments(tool_name, arguments) else "medium"
+        ),
+        arguments=dict(arguments),
+    )
+    details = ", ".join(f"{key}={value}" for key, value in summary.parameters[:6])
+    return f"{summary.action}: {details}".strip()
 
 
 def _is_high_risk_confirmation_arguments(
@@ -2663,12 +2679,16 @@ class HandlerImplementation(
             hide_internal=public,
         )
         sensitive_summary = None
+        regenerate_public_summary = pending.sensitive_public_payload or (
+            public
+            and canonical_tool_name(str(pending.tool_name), warn_on_alias=False) == "shell.exec"
+        )
         if browser_sensitive_pending:
             sensitive_summary = _redacted_sensitive_confirmation_summary(
                 pending.tool_name,
                 pending.arguments,
             )[0]
-        elif pending.sensitive_public_payload:
+        elif regenerate_public_summary:
             sensitive_summary = safe_summary(
                 action=str(pending.tool_name),
                 risk_level=(
@@ -2743,6 +2763,11 @@ class HandlerImplementation(
                 payload["approval_envelope_redacted"] = True
             else:
                 approval_envelope_payload = pending.approval_envelope.model_dump(mode="json")
+                if public:
+                    approval_envelope_payload["action_summary"] = _confirmation_action_summary(
+                        pending.tool_name,
+                        arguments,
+                    )
                 payload["approval_envelope"] = approval_envelope_payload
         if pending.intent_envelope is not None:
             if sensitive_pending:

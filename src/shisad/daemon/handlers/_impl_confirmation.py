@@ -575,10 +575,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": exc.reason,
                 "message": "This approval request cannot be completed with WebAuthn.",
             }
+        public_pending = self._pending_to_dict(pending, public=True)
         return {
             "ok": True,
             "status": "pending",
-            "summary": pending.safe_preview or pending.reason,
+            "summary": str(public_pending.get("safe_preview") or pending.reason),
             "public_key": public_key,
             "expires_at": (
                 pending.expires_at.isoformat().replace("+00:00", "Z")
@@ -627,9 +628,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if not approval_url:
                 continue
             qr_ascii = approval_web.qr_ascii(approval_url)
+            public_pending = self._pending_to_dict(pending, public=True)
             lines = [
                 "Approval required",
-                pending.safe_preview or pending.reason,
+                str(public_pending.get("safe_preview") or pending.reason),
                 f"Level: {pending.required_level.value}",
                 "Open this link in a system browser:",
                 approval_url,

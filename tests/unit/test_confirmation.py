@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from shisad.core.approval import (
+    ApprovalEnvelope,
     ConfirmationLevel,
     IntentAction,
     IntentEnvelope,
@@ -160,7 +161,20 @@ def test_gh55_legacy_shell_alias_pending_payload_hides_command_intent() -> None:
         reason="requires_confirmation",
         capabilities={Capability.SHELL_EXEC},
         created_at=datetime.now(UTC),
-        safe_preview="preview",
+        safe_preview="ACTION CONFIRMATION\nPARAMETERS:\n  command_intent: execute",
+        approval_envelope=ApprovalEnvelope(
+            approval_id="c-1",
+            pending_action_id="c-1",
+            workspace_id="w-1",
+            daemon_id="daemon-1",
+            session_id="s-1",
+            required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            policy_reason="requires_confirmation",
+            action_digest="sha256:test",
+            nonce="nonce-3",
+            intent_envelope_hash="sha256:intent",
+            action_summary="shell_exec: command_intent=execute",
+        ),
         intent_envelope=IntentEnvelope(
             intent_id="c-1",
             agent_id="daemon-1",
@@ -169,7 +183,7 @@ def test_gh55_legacy_shell_alias_pending_payload_hides_command_intent() -> None:
             created_at=datetime.now(UTC),
             action=IntentAction(
                 tool="shell_exec",
-                display_summary="shell_exec: command=echo ok",
+                display_summary="shell_exec: command_intent=execute",
                 parameters={
                     "command": ["echo", "ok"],
                     "command_intent": "execute",
@@ -190,6 +204,10 @@ def test_gh55_legacy_shell_alias_pending_payload_hides_command_intent() -> None:
 
     assert "command_intent" not in payload["arguments"]
     assert "command_intent" not in payload["intent_envelope"]["action"]["parameters"]
+    assert "command_intent" not in payload["safe_preview"]
+    assert "command_intent" not in payload["approval_envelope"]["action_summary"]
+    assert "command_intent" not in payload["intent_envelope"]["action"]["display_summary"]
+    assert "command_intent" not in str(payload)
 
 
 def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:
