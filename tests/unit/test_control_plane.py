@@ -1724,7 +1724,16 @@ async def test_action_monitor_allows_trusted_cli_search_intent_on_tainted_contex
 
 
 @pytest.mark.asyncio
-async def test_gh49_action_monitor_allows_bounded_set_reminder_intent() -> None:
+@pytest.mark.parametrize(
+    "raw_user_text",
+    [
+        'can you set a reminder for 1 minute from now to say "timer done"',
+        'can you please set a reminder for 1 minute from now to say "timer done"',
+    ],
+)
+async def test_gh49_action_monitor_allows_bounded_set_reminder_intent(
+    raw_user_text: str,
+) -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
@@ -1743,9 +1752,7 @@ async def test_gh49_action_monitor_allows_bounded_set_reminder_intent() -> None:
                 "session_tainted": True,
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
-                "raw_user_text": (
-                    'can you set a reminder for 1 minute from now to say "timer done"'
-                ),
+                "raw_user_text": raw_user_text,
                 "action_arguments": {
                     "message": "timer done",
                     "when": "in 1 minute",

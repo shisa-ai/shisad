@@ -31,6 +31,7 @@ from shisad.security.control_plane.schema import (
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
 from shisad.security.control_plane.trace import PlanVerificationResult
 from shisad.security.intent_matching import (
+    OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT,
     has_follow_on_command,
     normalize_intent_text,
     strip_optional_greeting_prefix,
@@ -556,7 +557,8 @@ class ActionMonitorVoter:
                 ):
                     return True
             set_pattern = (
-                rf"{boundary}(?:can you\s+)?(?:set|create|add)\s+(?:a\s+)?reminder"
+                rf"{boundary}{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
+                rf"(?:set|create|add)\s+(?:a\s+)?reminder"
                 rf"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
                 rf"(?:(?:to\s+)?say|saying|with\s+(?:message|text))"
                 rf"\s+(?P<message>.+?){stop}"

@@ -652,6 +652,10 @@ def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command(
         "add todo: review PRs, read README.md",
         'add todo: review PRs and set a reminder for 1 minute from now to say "timer done"',
         'add todo: review PRs and please set a reminder for 1 minute from now to say "timer done"',
+        (
+            "add todo: review PRs and can you please set a reminder "
+            'for 1 minute from now to say "timer done"'
+        ),
         "remind me to check email on 2026-03-30T12:00:00Z",
     ],
 )
@@ -691,10 +695,17 @@ def test_gh49_explicit_reminder_create_proposal_sets_structured_current_turn_int
     assert "user_text:explicit_reminder_intent" in proposal.data_sources
 
 
-def test_gh49_explicit_reminder_create_parser_handles_set_reminder_time_first() -> None:
-    proposal = _build_explicit_memory_intent_proposal(
-        'can you set a reminder for 1 minute from now to say "timer done"'
-    )
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        'can you set a reminder for 1 minute from now to say "timer done"',
+        'can you please set a reminder for 1 minute from now to say "timer done"',
+    ],
+)
+def test_gh49_explicit_reminder_create_parser_handles_set_reminder_time_first(
+    user_text: str,
+) -> None:
+    proposal = _build_explicit_memory_intent_proposal(user_text)
 
     assert proposal is not None
     assert proposal.tool_name == ToolName("reminder.create")

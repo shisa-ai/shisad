@@ -144,6 +144,7 @@ from shisad.security.control_plane.trace import trace_reason_requires_confirmati
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 from shisad.security.intent_matching import (
+    OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT,
     has_follow_on_command,
     has_follow_on_command_verb,
     normalize_intent_text,
@@ -3196,7 +3197,8 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             )
 
     set_reminder_match = re.match(
-        r"^(?:please\s+)?(?:can you\s+)?(?:set|create|add)\s+(?:a\s+)?reminder"
+        rf"^{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
+        r"(?:set|create|add)\s+(?:a\s+)?reminder"
         r"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
         r"(?:(?:to\s+)?say|saying|with\s+(?:message|text))\s+(?P<message>.+)$",
         normalized,
