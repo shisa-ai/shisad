@@ -89,6 +89,7 @@ def _memory_registry() -> ToolRegistry:
             parameters=[
                 ToolParameter(name="path", type="string", required=True),
                 ToolParameter(name="max_bytes", type="integer", required=False),
+                ToolParameter(name="filesystem_intent", type="string", required=False),
             ],
             capabilities_required=[Capability.FILE_READ],
         )
@@ -198,22 +199,40 @@ def _memory_registry() -> ToolRegistry:
         (
             "read README.md",
             "fs.read",
-            {"path": "README.md", "max_bytes": 1048576},
+            {
+                "path": "README.md",
+                "max_bytes": 1048576,
+                "filesystem_intent": "current_turn_local_read",
+            },
         ),
         (
             "Please read /root/INSTALL.LOG and tell me what it says.",
             "fs.read",
-            {"path": "/root/INSTALL.LOG", "max_bytes": 1048576},
+            {
+                "path": "/root/INSTALL.LOG",
+                "max_bytes": 1048576,
+                "filesystem_intent": "current_turn_local_read",
+            },
         ),
         (
             "can you find the similar file?",
             "fs.list",
-            {"path": ".", "recursive": True, "limit": 25},
+            {
+                "path": ".",
+                "recursive": True,
+                "limit": 25,
+                "filesystem_intent": "current_turn_local_read",
+            },
         ),
         (
             "can you look for the file?",
             "fs.list",
-            {"path": ".", "recursive": True, "limit": 25},
+            {
+                "path": ".",
+                "recursive": True,
+                "limit": 25,
+                "filesystem_intent": "current_turn_local_read",
+            },
         ),
         (
             "What is my favorite snack?",
@@ -240,7 +259,14 @@ def test_rc_lus_explicit_multi_intent_parser_covers_read_and_search() -> None:
     )
 
     assert [(proposal.tool_name, proposal.arguments) for proposal in proposals] == [
-        (ToolName("fs.read"), {"path": "README.md", "max_bytes": 1048576}),
+        (
+            ToolName("fs.read"),
+            {
+                "path": "README.md",
+                "max_bytes": 1048576,
+                "filesystem_intent": "current_turn_local_read",
+            },
+        ),
         (ToolName("web.search"), {"query": "related projects", "limit": 5}),
     ]
 
@@ -315,6 +341,7 @@ def test_rc_lus_explicit_file_intent_rewrite_replaces_tool_choice_prose() -> Non
     assert rewritten.evaluated[0].proposal.arguments == {
         "path": "README.md",
         "max_bytes": 1048576,
+        "filesystem_intent": "current_turn_local_read",
     }
     assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
 

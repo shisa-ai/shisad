@@ -2051,9 +2051,15 @@ def _read_only_filesystem_action_key(
     canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
     if canonical_name == "fs.list":
         path = str(arguments.get("path", ".")).strip() or "."
+        recursive = str(bool(arguments.get("recursive", False))).lower()
+        limit = str(arguments.get("limit", "")).strip()
         return (
             canonical_name,
-            (("path", path),),
+            (
+                ("limit", limit),
+                ("path", path),
+                ("recursive", recursive),
+            ),
         )
     if canonical_name == "fs.read":
         path = str(arguments.get("path", "")).strip()
@@ -3195,7 +3201,11 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             return ActionProposal(
                 action_id="explicit-fs-read",
                 tool_name=ToolName("fs.read"),
-                arguments={"path": path, "max_bytes": 1048576},
+                arguments={
+                    "path": path,
+                    "max_bytes": 1048576,
+                    "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
+                },
                 reasoning="Execute the user's explicit file-read request.",
                 data_sources=["user_text:explicit_file_intent"],
             )
@@ -3211,7 +3221,12 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
         return ActionProposal(
             action_id="explicit-fs-similar-file-list",
             tool_name=ToolName("fs.list"),
-            arguments={"path": ".", "recursive": True, "limit": 25},
+            arguments={
+                "path": ".",
+                "recursive": True,
+                "limit": 25,
+                "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
+            },
             reasoning="List the configured workspace to recover from a likely filename typo.",
             data_sources=["user_text:explicit_file_intent"],
         )
@@ -3380,7 +3395,11 @@ def _build_explicit_multi_intent_proposals(user_text: str) -> list[ActionProposa
         ActionProposal(
             action_id="explicit-fs-read",
             tool_name=ToolName("fs.read"),
-            arguments={"path": path, "max_bytes": 1048576},
+            arguments={
+                "path": path,
+                "max_bytes": 1048576,
+                "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
+            },
             reasoning="Execute the user's explicit file-read request.",
             data_sources=["user_text:explicit_file_intent"],
         ),

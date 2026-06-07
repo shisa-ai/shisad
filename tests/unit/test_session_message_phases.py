@@ -2273,6 +2273,64 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
     assert pending_call["continuation_mode"] == "planner"
 
 
+def test_gh51_filesystem_continuation_repeat_guard_keeps_fs_list_options_distinct() -> None:
+    repeated_proposal = ActionProposal(
+        action_id="a-repeat-list",
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "docs", "recursive": False, "limit": 25},
+        reasoning="Repeat the already confirmed listing.",
+        data_sources=[],
+    )
+    widened_proposal = ActionProposal(
+        action_id="a-widen-list",
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "docs", "recursive": True, "limit": 25},
+        reasoning="Widen the confirmed listing to include nested docs.",
+        data_sources=[],
+    )
+    confirmed = [
+        {
+            "tool_name": "fs.list",
+            "arguments": {"path": "docs", "recursive": False, "limit": 25},
+        }
+    ]
+
+    assert impl_session._planner_only_repeats_confirmed_read_only_filesystem_actions(
+        planner_result=PlannerResult(
+            output=PlannerOutput(actions=[repeated_proposal], assistant_response=""),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=repeated_proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=repeated_proposal.tool_name,
+                    ),
+                )
+            ],
+            attempts=1,
+        ),
+        confirmed_tool_outputs=confirmed,
+    )
+    assert not impl_session._planner_only_repeats_confirmed_read_only_filesystem_actions(
+        planner_result=PlannerResult(
+            output=PlannerOutput(actions=[widened_proposal], assistant_response=""),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=widened_proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=widened_proposal.tool_name,
+                    ),
+                )
+            ],
+            attempts=1,
+        ),
+        confirmed_tool_outputs=confirmed,
+    )
+
+
 @pytest.mark.asyncio
 async def test_m9_trace_confirmation_keeps_pep_reject_precedence() -> None:
     harness = _TraceConfirmationRoutingHarness(
