@@ -18,6 +18,10 @@ from shisad.security.ratelimit import RateLimitConfig, RateLimiter
 from shisad.security.risk import RiskCalibrator, RiskObservation
 
 
+def _shell_execute_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    return {**arguments, "command_intent": "execute"}
+
+
 def test_m2_t9_action_monitor_rejects_goal_misaligned_proposals() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
@@ -40,7 +44,7 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={"command": ["cat", "/etc/passwd"]},
+                arguments=_shell_execute_arguments({"command": ["cat", "/etc/passwd"]}),
                 reasoning="run a command",
             )
         ],
@@ -55,7 +59,7 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={"command": ["echo", "browser"]},
+                arguments=_shell_execute_arguments({"command": ["echo", "browser"]}),
                 reasoning="A browser mention is not a shell side-effect request.",
             )
         ],
@@ -139,6 +143,32 @@ def test_gh55_action_monitor_rejects_diagnostic_shell_command_without_execute_in
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"command": ["echo", "ok"]},
+        {"command": ["echo", "ok"], "command_intent": "informational"},
+    ],
+)
+def test_gh55_action_monitor_rejects_generic_shell_command_without_execute_intent(
+    arguments: dict[str, object],
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="run echo ok",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments=arguments,
+                reasoning="Informational shell mentions must not execute.",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+    assert "shell.exec:shell_command_intent_not_execute" in decision.flags
+
+
 def test_gh55_action_monitor_rejects_diagnostic_execute_intent_without_trusted_cli() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
@@ -219,10 +249,12 @@ def test_gh12_action_monitor_confirms_read_only_shell_file_discovery() -> None:
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="search filenames after the exact read failed",
             )
         ],
@@ -249,10 +281,12 @@ def test_gh12_action_monitor_confirms_common_file_discovery_phrasing(
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="search filenames after the exact read failed",
             )
         ],
@@ -269,11 +303,13 @@ def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() ->
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["rm", "-rf", "."],
-                    "read_paths": ["."],
-                    "write_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["rm", "-rf", "."],
+                        "read_paths": ["."],
+                        "write_paths": ["."],
+                    }
+                ),
                 reasoning="destructive command is not file discovery",
             )
         ],
@@ -289,11 +325,13 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["rm", "-rf", "."],
-                    "read_paths": ["."],
-                    "write_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["rm", "-rf", "."],
+                        "read_paths": ["."],
+                        "write_paths": ["."],
+                    }
+                ),
                 reasoning="destructive command is not file discovery",
             )
         ],
@@ -321,11 +359,13 @@ def test_gh12_action_monitor_rejects_destructive_shell_repo_search_wording(
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["rm", "-rf", "."],
-                    "read_paths": ["."],
-                    "write_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["rm", "-rf", "."],
+                        "read_paths": ["."],
+                        "write_paths": ["."],
+                    }
+                ),
                 reasoning="destructive command is not content search",
             )
         ],
@@ -352,10 +392,12 @@ def test_gh12_action_monitor_allows_read_only_shell_content_search(
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": command,
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": command,
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="search file contents in workspace logs",
             )
         ],
@@ -397,10 +439,12 @@ def test_gh12_action_monitor_rejects_unsafe_shell_content_search(
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": command,
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": command,
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="unsafe content search must not bypass file-discovery reject",
             )
         ],
@@ -473,7 +517,7 @@ def test_gh12_action_monitor_rejects_off_workspace_shell_file_discovery(
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments=arguments,
+                arguments=_shell_execute_arguments(arguments),
                 reasoning="file discovery must stay within the workspace",
             )
         ],
@@ -490,10 +534,12 @@ def test_gh12_action_monitor_rejects_find_file_output_flags(flag: str) -> None:
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["find", ".", "-iname", "*install*log*", flag, "/tmp/out"],
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["find", ".", "-iname", "*install*log*", flag, "/tmp/out"],
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="find file-output flags can write files",
             )
         ],
@@ -513,10 +559,12 @@ def test_gh12_action_monitor_rejects_fd_exec_flags(flag: str) -> None:
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["fd", "install", ".", flag, "rm", "{}"],
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["fd", "install", ".", flag, "rm", "{}"],
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="fd exec flags can run arbitrary commands",
             )
         ],
@@ -532,10 +580,12 @@ def test_gh12_action_monitor_does_not_match_file_discovery_substrings() -> None:
         actions=[
             SimpleNamespace(
                 tool_name="shell.exec",
-                arguments={
-                    "command": ["find", ".", "-iname", "*install*log*"],
-                    "read_paths": ["."],
-                },
+                arguments=_shell_execute_arguments(
+                    {
+                        "command": ["find", ".", "-iname", "*install*log*"],
+                        "read_paths": ["."],
+                    }
+                ),
                 reasoning="substring-only cues must not widen shell confirmation",
             )
         ],

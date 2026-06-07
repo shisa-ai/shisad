@@ -61,7 +61,7 @@ class ActionMonitor:
     _LOCAL_DIAGNOSTIC_ARGUMENT_KEYS: ClassVar[frozenset[str]] = frozenset(
         {"command", "command_intent"}
     )
-    _LOCAL_DIAGNOSTIC_COMMAND_INTENT: ClassVar[str] = "execute"
+    _SHELL_EXECUTE_COMMAND_INTENT: ClassVar[str] = "execute"
     _LOCAL_DIAGNOSTIC_FLAG_OPTIONS: ClassVar[dict[tuple[str, ...], frozenset[str]]] = {
         ("action", "list"): frozenset({"--json", "--raw"}),
         ("action", "pending"): frozenset({"--raw"}),
@@ -188,8 +188,15 @@ class ActionMonitor:
                 continue
 
             if tool == "shell.exec":
+                arguments = getattr(action, "arguments", {})
+                if (
+                    not isinstance(arguments, dict)
+                    or arguments.get("command_intent") != self._SHELL_EXECUTE_COMMAND_INTENT
+                ):
+                    reject_flags.append(f"{tool}:shell_command_intent_not_execute")
+                    continue
                 diagnostic_decision = self._local_diagnostic_shell_command_decision(
-                    arguments=getattr(action, "arguments", {}),
+                    arguments=arguments,
                     operator_owned_cli_input=operator_owned_cli_input,
                 )
                 if diagnostic_decision == _DiagnosticShellCommandDecision.ALLOW:
@@ -199,13 +206,13 @@ class ActionMonitor:
                     continue
                 if self._is_read_only_shell_file_discovery(
                     goal_text=goal_text,
-                    arguments=getattr(action, "arguments", {}),
+                    arguments=arguments,
                 ):
                     suspicious_flags.append("read_only_file_discovery")
                     continue
                 if self._goal_mentions_file_discovery(
                     goal_text
-                ) and not self._is_read_only_shell_content_search(getattr(action, "arguments", {})):
+                ) and not self._is_read_only_shell_content_search(arguments):
                     reject_flags.append(f"{tool}:file_discovery_not_read_only")
                     continue
 
@@ -459,7 +466,7 @@ class ActionMonitor:
                 return _DiagnosticShellCommandDecision.REJECT
         if not operator_owned_cli_input:
             return _DiagnosticShellCommandDecision.REJECT
-        if arguments.get("command_intent") != cls._LOCAL_DIAGNOSTIC_COMMAND_INTENT:
+        if arguments.get("command_intent") != cls._SHELL_EXECUTE_COMMAND_INTENT:
             return _DiagnosticShellCommandDecision.REJECT
         prefix, start_index = prefix_match
         if not cls._diagnostic_options_are_read_only(
