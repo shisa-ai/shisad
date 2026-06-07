@@ -312,7 +312,6 @@ class ControlPlaneEngine:
         metadata_arguments = normalized_payload if isinstance(normalized_payload, dict) else {}
         raw_user_text_for_voter = _normalize_voter_text(str(raw_user_text))
         filesystem_intent = str(metadata_arguments.get("filesystem_intent", "")).strip()
-        reminder_intent = str(metadata_arguments.get("reminder_intent", "")).strip()
         action = build_action(
             tool_name=tool_name,
             arguments=action_arguments,
@@ -351,7 +350,6 @@ class ControlPlaneEngine:
                     "trusted_input": trusted_input,
                     "operator_owned_cli_input": operator_owned_cli_input,
                     "filesystem_intent": filesystem_intent,
-                    "reminder_intent": reminder_intent,
                     "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
                     "action_argument_digests": _argument_intent_digests(

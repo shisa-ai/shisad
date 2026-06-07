@@ -2043,12 +2043,18 @@ def _has_current_turn_reminder_create_intent(
         return False
     if not _has_clean_trusted_turn_privileges(validated):
         return False
+    if proposal is not None and "user_text:explicit_reminder_intent" in proposal.data_sources:
+        return True
     if (
         str(arguments.get("reminder_intent", "")).strip()
         == _CURRENT_TURN_REMINDER_CREATE_INTENT
     ):
-        return True
-    return proposal is not None and "user_text:explicit_reminder_intent" in proposal.data_sources
+        reminder_message = normalize_intent_text(str(arguments.get("message", ""))).casefold()
+        current_turn = normalize_intent_text(
+            str(validated.firewall_result.sanitized_text or "")
+        ).casefold()
+        return bool(reminder_message and reminder_message in current_turn)
+    return False
 
 
 def _filesystem_read_continuation_goal(

@@ -38,7 +38,6 @@ from shisad.security.intent_matching import (
 
 TRACE_VOTER_NAME = "ExecutionTraceVerifier"
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
-_CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
 _READ_ONLY_FILESYSTEM_ACTION_KINDS = frozenset({ActionKind.FS_READ, ActionKind.FS_LIST})
 
 
@@ -627,26 +626,6 @@ class ActionMonitorVoter:
         explanation = str(payload.get("explanation", "")).strip()
         return decision, explanation
 
-    @staticmethod
-    def _allows_current_turn_reminder_create_intent(data: ConsensusInput) -> bool:
-        if str(data.action.tool_name).strip() != "reminder.create":
-            return False
-        if data.action.action_kind != ActionKind.MEMORY_WRITE:
-            return False
-        if not _strict_metadata_bool(data.metadata_payload.get("trusted_input"), default=False):
-            return False
-        if not _strict_metadata_bool(
-            data.metadata_payload.get("operator_owned_cli_input"),
-            default=False,
-        ):
-            return False
-        intent = str(data.metadata_payload.get("reminder_intent", "")).strip()
-        if not intent:
-            action_arguments = data.metadata_payload.get("action_arguments")
-            if isinstance(action_arguments, dict):
-                intent = str(action_arguments.get("reminder_intent", "")).strip()
-        return intent == _CURRENT_TURN_REMINDER_CREATE_INTENT
-
     async def cast_vote(self, data: ConsensusInput) -> VoterDecision:
         session_tainted = _strict_metadata_bool(
             data.metadata_payload.get("session_tainted"),
@@ -687,18 +666,6 @@ class ActionMonitorVoter:
                 decision=VoteKind.ALLOW,
                 risk_tier=RiskTier.LOW,
                 reason_codes=["action_monitor:clean_operator_cli_intent"],
-            )
-
-        if (
-            action.action_kind in self._SIDE_EFFECT_KINDS
-            and session_tainted
-            and self._allows_current_turn_reminder_create_intent(data)
-        ):
-            return VoterDecision(
-                voter="ActionMonitorVoter",
-                decision=VoteKind.ALLOW,
-                risk_tier=RiskTier.LOW,
-                reason_codes=["action_monitor:trusted_current_turn_reminder_intent"],
             )
 
         if action.action_kind in self._SIDE_EFFECT_KINDS and session_tainted:

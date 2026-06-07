@@ -2042,7 +2042,7 @@ async def test_m1_rr2_action_monitor_allows_at_iso_reminder_datetime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gh49_action_monitor_allows_typed_current_turn_reminder_intent() -> None:
+async def test_gh49_action_monitor_does_not_allow_self_attested_reminder_intent() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
@@ -2071,9 +2071,9 @@ async def test_gh49_action_monitor_allows_typed_current_turn_reminder_intent() -
         )
     )
 
-    assert decision.decision == VoteKind.ALLOW
-    assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_current_turn_reminder_intent" in decision.reason_codes
+    assert decision.decision == VoteKind.FLAG
+    assert decision.risk_tier == RiskTier.HIGH
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
 
 
 @pytest.mark.asyncio

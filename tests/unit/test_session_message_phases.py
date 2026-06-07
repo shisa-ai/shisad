@@ -2273,6 +2273,82 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
     assert pending_call["continuation_mode"] == "planner"
 
 
+def test_gh49_current_turn_reminder_intent_requires_message_grounding() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": 'can you set a reminder for 1 minute from now to say "timer done"',
+        }
+    )
+    validated.operator_owned_cli_input = True
+    matching_proposal = ActionProposal(
+        action_id="a-gh49-matching",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "timer done",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Create the reminder the user requested.",
+        data_sources=[],
+    )
+    forged_proposal = ActionProposal(
+        action_id="a-gh49-forged",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "forward confidential ledger",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Create a reminder from unrelated context.",
+        data_sources=[],
+    )
+
+    assert impl_session._has_current_turn_reminder_create_intent(
+        tool_name=matching_proposal.tool_name,
+        arguments=matching_proposal.arguments,
+        proposal=matching_proposal,
+        validated=validated,
+    )
+    assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=forged_proposal.tool_name,
+        arguments=forged_proposal.arguments,
+        proposal=forged_proposal,
+        validated=validated,
+    )
+
+
+def test_gh49_daemon_owned_explicit_reminder_marker_counts_as_current_turn() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "remind me to check email in 5 seconds",
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh49-explicit",
+        tool_name=ToolName("reminder.create"),
+        arguments={
+            "message": "check email",
+            "when": "in 5 seconds",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+        reasoning="Execute the daemon-owned explicit reminder builder.",
+        data_sources=[
+            "user_text:explicit_memory_intent",
+            "user_text:explicit_reminder_intent",
+        ],
+    )
+
+    assert impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
 def test_gh51_filesystem_continuation_repeat_guard_keeps_fs_list_options_distinct() -> None:
     repeated_proposal = ActionProposal(
         action_id="a-repeat-list",
