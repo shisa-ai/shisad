@@ -549,6 +549,8 @@ class ActionMonitorVoter:
                 field="thread_id",
             )
         if tool_name == "reminder.create":
+            if cls._has_follow_on_command(normalized):
+                return False
             pattern = rf"{boundary}remind me(?:\s+to)?\s+(.+?)\s+((?:in|at)\s+.+?){stop}"
             for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
                 message = cls._normalize_intent_text(match.group(1)).strip(" .;,")
