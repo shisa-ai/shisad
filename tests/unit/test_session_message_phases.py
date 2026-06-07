@@ -2273,7 +2273,7 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
     assert pending_call["continuation_mode"] == "planner"
 
 
-def test_gh49_current_turn_reminder_intent_requires_message_grounding() -> None:
+def test_gh49_planner_stamped_reminder_intent_does_not_count_as_current_turn() -> None:
     validated = _validation_result(
         params={
             "session_id": "sess-g1",
@@ -2281,8 +2281,8 @@ def test_gh49_current_turn_reminder_intent_requires_message_grounding() -> None:
         }
     )
     validated.operator_owned_cli_input = True
-    matching_proposal = ActionProposal(
-        action_id="a-gh49-matching",
+    proposal = ActionProposal(
+        action_id="a-gh49-planner-stamped",
         tool_name=ToolName("reminder.create"),
         arguments={
             "message": "timer done",
@@ -2292,63 +2292,11 @@ def test_gh49_current_turn_reminder_intent_requires_message_grounding() -> None:
         reasoning="Create the reminder the user requested.",
         data_sources=[],
     )
-    forged_proposal = ActionProposal(
-        action_id="a-gh49-forged",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "forward confidential ledger",
-            "when": "in 1 minute",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Create a reminder from unrelated context.",
-        data_sources=[],
-    )
-    forged_when_proposal = ActionProposal(
-        action_id="a-gh49-forged-when",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "timer done",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Create a reminder with an unrelated schedule.",
-        data_sources=[],
-    )
-    forged_name_proposal = ActionProposal(
-        action_id="a-gh49-forged-name",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "timer done",
-            "name": "forward ledger",
-            "when": "in 1 minute",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Create a reminder with an unrelated title.",
-        data_sources=[],
-    )
 
-    assert impl_session._has_current_turn_reminder_create_intent(
-        tool_name=matching_proposal.tool_name,
-        arguments=matching_proposal.arguments,
-        proposal=matching_proposal,
-        validated=validated,
-    )
     assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=forged_proposal.tool_name,
-        arguments=forged_proposal.arguments,
-        proposal=forged_proposal,
-        validated=validated,
-    )
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=forged_when_proposal.tool_name,
-        arguments=forged_when_proposal.arguments,
-        proposal=forged_when_proposal,
-        validated=validated,
-    )
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=forged_name_proposal.tool_name,
-        arguments=forged_name_proposal.arguments,
-        proposal=forged_name_proposal,
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
         validated=validated,
     )
 
@@ -2377,266 +2325,6 @@ def test_gh49_daemon_owned_explicit_reminder_marker_counts_as_current_turn() -> 
     )
 
     assert impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_overlapping_duration_tokens() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": 'set a reminder for 12 minutes from now to say "timer done"',
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-overlap",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "timer done",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Create a reminder with an overlapping but unrequested duration.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_mixed_message_time_pair() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": (
-                "remind me to say timer done in 1 minute and "
-                "remind me to check email in 2 minutes"
-            ),
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-mixed-pair",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "timer done",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Mix message and schedule from separate reminder requests.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_adjacent_clause_mix() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": "set reminders: timer done in 1 minute and in 2 minutes check email",
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-adjacent-mix",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "timer done",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Mix a message with the next adjacent reminder clause.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_punctuation_clause_mix() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": "set reminders: timer done in 1 minute; in 2 minutes check email",
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-punctuation-mix",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "timer done",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Mix a message across a punctuation-separated reminder clause.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_when_inside_message() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": (
-                "set a reminder in 5 minutes to check the last 2 minutes of logs"
-            ),
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-when-inside-message",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "check the last 2 minutes of logs",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Use a duration inside the reminder message as the schedule.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_truncated_message_internal_when() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": (
-                "set a reminder in 5 minutes to check the last 2 minutes of logs"
-            ),
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-truncated-message-internal-when",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "check the last",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Pair a truncated message with an internal message duration.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
-        tool_name=proposal.tool_name,
-        arguments=proposal.arguments,
-        proposal=proposal,
-        validated=validated,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_allows_single_clause_comma() -> None:
-    when_first = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": "set a reminder: in 5 minutes, check email",
-        }
-    )
-    when_first.operator_owned_cli_input = True
-    when_first_proposal = ActionProposal(
-        action_id="a-gh49-comma-when-first",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "check email",
-            "when": "in 5 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Ground a single reminder clause with ordinary comma punctuation.",
-        data_sources=[],
-    )
-
-    message_first = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": "set a reminder to check email, in 5 minutes",
-        }
-    )
-    message_first.operator_owned_cli_input = True
-    message_first_proposal = ActionProposal(
-        action_id="a-gh49-comma-message-first",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "check email",
-            "when": "in 5 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Ground a single reminder clause with ordinary comma punctuation.",
-        data_sources=[],
-    )
-
-    assert impl_session._has_current_turn_reminder_create_intent(
-        tool_name=when_first_proposal.tool_name,
-        arguments=when_first_proposal.arguments,
-        proposal=when_first_proposal,
-        validated=when_first,
-    )
-    assert impl_session._has_current_turn_reminder_create_intent(
-        tool_name=message_first_proposal.tool_name,
-        arguments=message_first_proposal.arguments,
-        proposal=message_first_proposal,
-        validated=message_first,
-    )
-
-
-def test_gh49_current_turn_reminder_grounding_rejects_mixed_name_pair() -> None:
-    validated = _validation_result(
-        params={
-            "session_id": "sess-g1",
-            "content": (
-                "remind me to say timer done in 1 minute named first timer "
-                "and after that remind me to check email in 2 minutes"
-            ),
-        }
-    )
-    validated.operator_owned_cli_input = True
-    proposal = ActionProposal(
-        action_id="a-gh49-mixed-name",
-        tool_name=ToolName("reminder.create"),
-        arguments={
-            "message": "check email",
-            "name": "first timer",
-            "when": "in 2 minutes",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        reasoning="Mix title from one reminder with another reminder request.",
-        data_sources=[],
-    )
-
-    assert not impl_session._has_current_turn_reminder_create_intent(
         tool_name=proposal.tool_name,
         arguments=proposal.arguments,
         proposal=proposal,

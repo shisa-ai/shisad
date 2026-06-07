@@ -1001,6 +1001,19 @@ def test_gh34_pep_arguments_canonicalizes_browser_type_text_alias() -> None:
     }
 
 
+def test_gh49_pep_arguments_strip_internal_reminder_intent() -> None:
+    payload = pep_arguments_for_policy_evaluation(
+        "reminder.create",
+        {
+            "message": "timer done",
+            "when": "in 1 minute",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+    )
+
+    assert payload == {"message": "timer done", "when": "in 1 minute"}
+
+
 def test_m3_task_resource_authorizer_preserves_semantic_ids_and_exact_paths(
     tmp_path: Path,
     monkeypatch: Any,

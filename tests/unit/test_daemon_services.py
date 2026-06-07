@@ -1503,7 +1503,7 @@ def test_gh12_tool_registry_steers_file_discovery_to_structured_fs_tools() -> No
     assert "fs.read" in shell_description
 
 
-def test_gh49_reminder_create_schema_exposes_current_turn_intent() -> None:
+def test_gh49_reminder_create_schema_hides_current_turn_intent() -> None:
     registry, _alarm = _build_tool_registry(
         EventBus(),
         realitycheck_surface_enabled=False,
@@ -1514,9 +1514,7 @@ def test_gh49_reminder_create_schema_exposes_current_turn_intent() -> None:
     assert reminder_create is not None
     schema = reminder_create.json_schema()
     assert "reminder_intent" not in schema["required"]
-    assert schema["properties"]["reminder_intent"]["enum"] == [
-        "current_turn_reminder_create"
-    ]
+    assert "reminder_intent" not in schema["properties"]
 
 
 def test_m3_tool_registry_registers_realitycheck_tools_with_endpoint_caps() -> None:

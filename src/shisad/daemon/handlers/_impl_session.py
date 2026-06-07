@@ -188,25 +188,6 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
-_CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS = 5
-_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER = "<clause-boundary>"
-_CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER = "<comma-boundary>"
-_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS = frozenset(
-    {"and", "then", "also", _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER}
-)
-_CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIX_MARKERS = {
-    ".": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
-    ";": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
-    "!": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
-    "?": _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_MARKER,
-    ",": _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER,
-}
-_CURRENT_TURN_REMINDER_PAIR_SOFT_CONNECTOR_TOKENS = frozenset(
-    {"please", "say", "saying", "to"}
-)
-_CURRENT_TURN_REMINDER_UNPREFIXED_WHEN_LEFT_CUES = frozenset(
-    {"after", "at", "for", "in", "within"}
-)
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
@@ -2050,176 +2031,6 @@ def _has_current_turn_local_filesystem_read_intent(
     return proposal is not None and "user_text:explicit_file_intent" in proposal.data_sources
 
 
-def _normalized_current_turn_tokens(value: Any) -> list[str]:
-    normalized = normalize_intent_text(str(value or "")).casefold().strip(" .;,")
-    tokens: list[str] = []
-    for token in normalized.split():
-        stripped = token.strip(" .;,\"'")
-        if stripped:
-            tokens.append(stripped)
-        suffix = token.rstrip("\"'")[-1:]
-        marker = _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_SUFFIX_MARKERS.get(suffix)
-        if marker:
-            tokens.append(marker)
-    return tokens
-
-
-def _token_spans(tokens: list[str], needle: list[str]) -> list[tuple[int, int]]:
-    if not tokens or not needle or len(needle) > len(tokens):
-        return []
-    needle_length = len(needle)
-    return [
-        (index, index + needle_length)
-        for index in range(0, len(tokens) - needle_length + 1)
-        if tokens[index : index + needle_length] == needle
-    ]
-
-
-def _current_turn_value_spans(
-    *,
-    current_turn_tokens: list[str],
-    value: Any,
-) -> list[tuple[int, int]]:
-    return _token_spans(current_turn_tokens, _normalized_current_turn_tokens(value))
-
-
-def _current_turn_reminder_when_spans(
-    *,
-    current_turn_tokens: list[str],
-    when: Any,
-) -> list[tuple[int, int]]:
-    when_tokens = _normalized_current_turn_tokens(when)
-    spans = set(_token_spans(current_turn_tokens, when_tokens))
-    if when_tokens[:1] in (["in"], ["at"]):
-        spans.update(
-            span
-            for span in _token_spans(current_turn_tokens, when_tokens[1:])
-            if _unprefixed_reminder_when_span_has_schedule_cue(
-                current_turn_tokens=current_turn_tokens,
-                span=span,
-            )
-        )
-    return sorted(spans)
-
-
-def _unprefixed_reminder_when_span_has_schedule_cue(
-    *,
-    current_turn_tokens: list[str],
-    span: tuple[int, int],
-) -> bool:
-    if span[0] > 0:
-        left_token = current_turn_tokens[span[0] - 1]
-        if left_token in _CURRENT_TURN_REMINDER_UNPREFIXED_WHEN_LEFT_CUES:
-            return True
-    right_tokens = current_turn_tokens[span[1] : span[1] + 2]
-    return right_tokens[:2] == ["from", "now"] or right_tokens[:1] == ["later"]
-
-
-def _tokens_until_reminder_pair_boundary(
-    *,
-    current_turn_tokens: list[str],
-    start: int,
-) -> list[str]:
-    tokens: list[str] = []
-    for token in current_turn_tokens[start:]:
-        if (
-            token in _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS
-            or token == _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER
-        ):
-            break
-        tokens.append(token)
-    return tokens
-
-
-def _spans_are_paired(
-    *,
-    current_turn_tokens: list[str],
-    left: tuple[int, int],
-    right: tuple[int, int],
-) -> bool:
-    if left[1] <= right[0]:
-        gap = right[0] - left[1]
-        between_tokens = current_turn_tokens[left[1] : right[0]]
-    elif right[1] <= left[0]:
-        gap = left[0] - right[1]
-        between_tokens = current_turn_tokens[right[1] : left[0]]
-    else:
-        return False
-    if any(token in _CURRENT_TURN_REMINDER_PAIR_BOUNDARY_TOKENS for token in between_tokens):
-        return False
-    if _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER in between_tokens:
-        non_boundary_tokens = [
-            token
-            for token in between_tokens
-            if token != _CURRENT_TURN_REMINDER_PAIR_SOFT_BOUNDARY_MARKER
-        ]
-        if any(
-            token not in _CURRENT_TURN_REMINDER_PAIR_SOFT_CONNECTOR_TOKENS
-            for token in non_boundary_tokens
-        ):
-            return False
-        later_span = left if left[0] > right[0] else right
-        trailing_tokens = _tokens_until_reminder_pair_boundary(
-            current_turn_tokens=current_turn_tokens,
-            start=later_span[1],
-        )
-        if any(
-            token not in _CURRENT_TURN_REMINDER_PAIR_SOFT_CONNECTOR_TOKENS
-            for token in trailing_tokens
-        ):
-            return False
-    return gap <= _CURRENT_TURN_REMINDER_PAIR_MAX_GAP_TOKENS
-
-
-def _current_turn_reminder_arguments_are_grounded(
-    *,
-    current_turn: str,
-    arguments: Mapping[str, Any],
-) -> bool:
-    current_turn_tokens = _normalized_current_turn_tokens(current_turn)
-    message_spans = _current_turn_value_spans(
-        current_turn_tokens=current_turn_tokens,
-        value=arguments.get("message"),
-    )
-    when_spans = _current_turn_reminder_when_spans(
-        current_turn_tokens=current_turn_tokens,
-        when=arguments.get("when"),
-    )
-    paired_spans = [
-        (message_span, when_span)
-        for message_span in message_spans
-        for when_span in when_spans
-        if _spans_are_paired(
-            current_turn_tokens=current_turn_tokens,
-            left=message_span,
-            right=when_span,
-        )
-    ]
-    if not paired_spans:
-        return False
-    name = str(arguments.get("name") or "").strip()
-    if not name:
-        return True
-    name_spans = _current_turn_value_spans(
-        current_turn_tokens=current_turn_tokens,
-        value=name,
-    )
-    return any(
-        _spans_are_paired(
-            current_turn_tokens=current_turn_tokens,
-            left=name_span,
-            right=message_span,
-        )
-        or _spans_are_paired(
-            current_turn_tokens=current_turn_tokens,
-            left=name_span,
-            right=when_span,
-        )
-        for message_span, when_span in paired_spans
-        for name_span in name_spans
-    )
-
-
 def _has_current_turn_reminder_create_intent(
     *,
     tool_name: ToolName | str,
@@ -2232,17 +2043,10 @@ def _has_current_turn_reminder_create_intent(
         return False
     if not _has_clean_trusted_turn_privileges(validated):
         return False
-    if proposal is not None and "user_text:explicit_reminder_intent" in proposal.data_sources:
-        return True
-    if (
-        str(arguments.get("reminder_intent", "")).strip()
-        == _CURRENT_TURN_REMINDER_CREATE_INTENT
-    ):
-        return _current_turn_reminder_arguments_are_grounded(
-            current_turn=str(validated.firewall_result.sanitized_text or ""),
-            arguments=arguments,
-        )
-    return False
+    return (
+        proposal is not None
+        and "user_text:explicit_reminder_intent" in proposal.data_sources
+    )
 
 
 def _filesystem_read_continuation_goal(
@@ -2936,6 +2740,25 @@ def _strip_explicit_memory_intent_greeting_prefix(text: str) -> str:
     return strip_optional_greeting_prefix(text)
 
 
+def _normalize_explicit_reminder_when(prefix: str, when: str) -> str:
+    normalized = _normalize_explicit_memory_intent_text(when).strip()
+    normalized = normalized.strip("\"'")
+    if not normalized:
+        return ""
+    if normalized.lower().startswith(("in ", "at ")):
+        return normalized
+    if prefix.lower() == "at":
+        return f"at {normalized}"
+    relative = re.fullmatch(
+        r"(?P<value>\d+)\s+(?P<unit>seconds?|minutes?|hours?)(?:\s+from\s+now)?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if relative is not None:
+        return f"in {relative.group('value')} {relative.group('unit')}"
+    return normalized
+
+
 def _has_explicit_memory_follow_on_command(text: str) -> bool:
     return has_follow_on_command(text)
 
@@ -3370,6 +3193,35 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 arguments={"selector": selector},
                 reasoning="Execute the user's explicit todo-completion request.",
                 data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    set_reminder_match = re.match(
+        r"^(?:please\s+)?(?:can you\s+)?(?:set|create|add)\s+(?:a\s+)?reminder"
+        r"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
+        r"(?:(?:to\s+)?say|saying|with\s+(?:message|text))\s+(?P<message>.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if set_reminder_match is not None:
+        message = set_reminder_match.group("message").strip().strip("\"'")
+        when = _normalize_explicit_reminder_when(
+            set_reminder_match.group("prefix"),
+            set_reminder_match.group("when"),
+        )
+        if message and when:
+            return ActionProposal(
+                action_id="explicit-reminder-create",
+                tool_name=ToolName("reminder.create"),
+                arguments={
+                    "message": message,
+                    "when": when,
+                    "reminder_intent": _CURRENT_TURN_REMINDER_CREATE_INTENT,
+                },
+                reasoning="Execute the user's explicit reminder-creation request.",
+                data_sources=[
+                    "user_text:explicit_memory_intent",
+                    "user_text:explicit_reminder_intent",
+                ],
             )
 
     reminder_match = re.match(

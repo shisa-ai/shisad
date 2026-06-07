@@ -66,6 +66,8 @@ def pep_arguments_for_policy_evaluation(
         payload.pop("click_source_binding", None)
     if normalized_tool_name == "browser.type_text":
         payload.pop("description", None)
+    if normalized_tool_name == "reminder.create":
+        payload.pop("reminder_intent", None)
     return payload
 
 

@@ -71,12 +71,6 @@ def _memory_registry() -> ToolRegistry:
             parameters=[
                 ToolParameter(name="message", type="string", required=True),
                 ToolParameter(name="when", type="string", required=True),
-                ToolParameter(
-                    name="reminder_intent",
-                    type="string",
-                    required=False,
-                    enum=["current_turn_reminder_create"],
-                ),
             ],
             capabilities_required=[Capability.MEMORY_WRITE, Capability.MESSAGE_SEND],
         )
@@ -689,6 +683,21 @@ def test_gh49_explicit_reminder_create_proposal_sets_structured_current_turn_int
     assert proposal.tool_name == ToolName("reminder.create")
     assert proposal.arguments == {
         "message": "say timer done",
+        "when": "in 1 minute",
+        "reminder_intent": "current_turn_reminder_create",
+    }
+    assert "user_text:explicit_reminder_intent" in proposal.data_sources
+
+
+def test_gh49_explicit_reminder_create_parser_handles_set_reminder_time_first() -> None:
+    proposal = _build_explicit_memory_intent_proposal(
+        'can you set a reminder for 1 minute from now to say "timer done"'
+    )
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("reminder.create")
+    assert proposal.arguments == {
+        "message": "timer done",
         "when": "in 1 minute",
         "reminder_intent": "current_turn_reminder_create",
     }

@@ -2223,17 +2223,6 @@ def _build_tool_registry(
                         "or titles the reminder."
                     ),
                 ),
-                ToolParameter(
-                    name="reminder_intent",
-                    type="string",
-                    required=False,
-                    enum=["current_turn_reminder_create"],
-                    description=(
-                        "Set to current_turn_reminder_create only when this reminder "
-                        "message and time are directly requested by the authenticated "
-                        "current user turn."
-                    ),
-                ),
             ],
             capabilities_required=[Capability.MEMORY_WRITE, Capability.MESSAGE_SEND],
             require_confirmation=False,

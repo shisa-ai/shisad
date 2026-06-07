@@ -683,7 +683,6 @@ async def _stub_complete(
             {
                 "message": reminder_args[0],
                 "when": reminder_args[1],
-                "reminder_intent": "current_turn_reminder_create",
             },
             call_id="t-reminder-create",
         )

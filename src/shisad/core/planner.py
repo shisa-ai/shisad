@@ -64,8 +64,6 @@ BASE_SYSTEM_PROMPT = (
     "function call'. "
     "For note, todo, and reminder requests, call the corresponding tool instead of "
     "only acknowledging, paraphrasing, or answering from memory. "
-    "When the current authenticated user directly asks you to create a reminder, "
-    "set reminder_intent to current_turn_reminder_create on reminder.create. "
     "If no tool is needed, answer conversationally. "
     "Never describe planner internals or formatting mechanics to the user."
 )
