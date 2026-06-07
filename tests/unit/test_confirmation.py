@@ -208,6 +208,9 @@ def test_gh55_legacy_shell_alias_pending_payload_hides_command_intent() -> None:
     assert "command_intent" not in payload["approval_envelope"]["action_summary"]
     assert "command_intent" not in payload["intent_envelope"]["action"]["display_summary"]
     assert "command_intent" not in str(payload)
+    assert "command: echo ok" in payload["safe_preview"]
+    assert "command=echo ok" in payload["approval_envelope"]["action_summary"]
+    assert "command=echo ok" in payload["intent_envelope"]["action"]["display_summary"]
 
 
 def test_gh55_non_shell_pending_payload_keeps_command_intent_argument() -> None:

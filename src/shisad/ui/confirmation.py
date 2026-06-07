@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from shisad.core.tools.names import canonical_tool_name
+
 HIGH_VALUE_ACTION_TOKENS = ("send", "share", "delete", "egress", "upload")
 _INTERNAL_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
@@ -83,7 +85,8 @@ def safe_summary(
     """Generate a safe, metadata-first summary for confirmation dialogs."""
     params: list[tuple[str, str]] = []
     hidden: list[str] = []
-    internal_keys = _INTERNAL_ARGUMENT_KEYS_BY_ACTION.get(action.strip().lower(), frozenset())
+    normalized_action = canonical_tool_name(action, warn_on_alias=False)
+    internal_keys = _INTERNAL_ARGUMENT_KEYS_BY_ACTION.get(normalized_action, frozenset())
     for key in sorted(arguments.keys()):
         if key in internal_keys:
             continue
@@ -93,7 +96,7 @@ def safe_summary(
             hidden.append(key)
             continue
         if isinstance(value, list):
-            if action == "shell.exec" and key == "command":
+            if normalized_action == "shell.exec" and key == "command":
                 command_summary = _summarize_shell_command(value)
                 if command_summary is not None:
                     params.append((key, command_summary))
