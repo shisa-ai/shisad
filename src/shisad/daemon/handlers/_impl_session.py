@@ -9660,12 +9660,20 @@ class SessionImplMixin(HandlerMixinBase):
                     goal = str(result.get("continuation_user_goal", "")).strip()
                     if goal and not continuation_user_goal:
                         continuation_user_goal = goal
-                status = str(
-                    result.get("status")
-                    or result.get("status_reason")
-                    or result.get("reason")
-                    or ("confirmed" if confirmed else "failed")
-                ).strip()
+                if confirmed:
+                    status = str(
+                        result.get("status")
+                        or result.get("status_reason")
+                        or result.get("reason")
+                        or "confirmed"
+                    ).strip()
+                else:
+                    status = str(
+                        result.get("status_reason")
+                        or result.get("reason")
+                        or result.get("status")
+                        or "failed"
+                    ).strip()
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
             else:
                 result = await self.do_action_reject(payload)
@@ -9677,12 +9685,20 @@ class SessionImplMixin(HandlerMixinBase):
                     rejection_reasons.append(
                         str(result.get("reason") or result.get("status_reason") or "failed")
                     )
-                status = str(
-                    result.get("status")
-                    or result.get("status_reason")
-                    or result.get("reason")
-                    or ("rejected" if resolved else "failed")
-                ).strip()
+                if resolved:
+                    status = str(
+                        result.get("status")
+                        or result.get("status_reason")
+                        or result.get("reason")
+                        or "rejected"
+                    ).strip()
+                else:
+                    status = str(
+                        result.get("status_reason")
+                        or result.get("reason")
+                        or result.get("status")
+                        or "failed"
+                    ).strip()
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
 
         return PlannerActionResolveResult(

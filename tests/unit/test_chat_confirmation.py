@@ -2917,6 +2917,7 @@ async def test_gh42_action_resolve_delegates_expired_totp_confirm_to_locked_hand
     assert result.executed == 0
     assert result.rejected == 1
     assert result.rejection_reasons == ["approval_expired"]
+    assert "approval_expired" in result.summary
     assert "totp_code_required" not in result.summary
     assert harness.confirm_calls == [
         {
