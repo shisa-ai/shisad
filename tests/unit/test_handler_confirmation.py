@@ -1907,6 +1907,39 @@ async def test_gh42_direct_confirmation_serializes_same_cid_cooldown_wait(
 
 
 @pytest.mark.asyncio
+async def test_gh42_direct_confirmation_reject_can_cancel_during_short_cooldown(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(
+        nonce="expected",
+        execute_after=datetime.now(UTC) + timedelta(seconds=0.08),
+    )
+    harness._pending_actions["c-1"] = pending
+
+    confirm_task = asyncio.create_task(
+        harness.do_action_confirm({"confirmation_id": "c-1", "decision_nonce": "expected"})
+    )
+    await asyncio.sleep(0)
+    rejected = await harness.do_action_reject(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "reason": "operator_changed_mind",
+        }
+    )
+    confirmed = await confirm_task
+
+    assert rejected["rejected"] is True
+    assert rejected["status"] == "rejected"
+    assert rejected["status_reason"] == "operator_changed_mind"
+    assert confirmed["confirmed"] is False
+    assert confirmed["reason"] == "already_rejected"
+    assert pending.status == "rejected"
+    assert len(harness.execution_kwargs) == 0
+
+
+@pytest.mark.asyncio
 async def test_gh42_direct_confirmation_serializes_reject_during_confirm_execution(
     tmp_path,
 ) -> None:

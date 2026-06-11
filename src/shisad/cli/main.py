@@ -2166,14 +2166,17 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
 
 def _render_action_confirm_result(result: ActionConfirmResult) -> str:
     confirmation_id = sanitize_terminal_field(result.confirmation_id)
-    status = sanitize_terminal_field(
-        str(result.status or result.status_reason or result.reason or "").strip()
-    )
     if result.confirmed:
+        status = sanitize_terminal_field(
+            str(result.status or result.status_reason or result.reason or "").strip()
+        )
         first = f"Confirmed {confirmation_id}"
         if status:
             first = f"{first}: {status}"
     else:
+        status = sanitize_terminal_field(
+            str(result.status_reason or result.reason or result.status or "").strip()
+        )
         first = f"Confirmation failed for {confirmation_id}"
         if status:
             first = f"{first}: {status}"

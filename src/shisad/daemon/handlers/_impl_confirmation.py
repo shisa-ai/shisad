@@ -58,6 +58,7 @@ from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord
 logger = logging.getLogger(__name__)
 _CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS = 3.5
 _CONFIRMATION_COOLDOWN_WAKE_MARGIN_SECONDS = 0.05
+_CONFIRMATION_INTERNAL_SHORT_WAIT_KEY = "_shisad_internal_short_cooldown_wait_seconds"
 _STALE_PENDING_APPROVAL_REASONS = frozenset(
     {
         "approval_envelope_missing",
@@ -1230,15 +1231,24 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise ValueError("confirmation_id is required")
         if self._pending_actions.get(confirmation_id) is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
-        lock = self._action_confirmation_lock(confirmation_id)
-        try:
-            async with lock:
-                return await self._do_action_confirm_locked(
-                    params,
-                    confirmation_id=confirmation_id,
-                )
-        finally:
-            self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
+        waited_for_short_cooldown = False
+        while True:
+            lock = self._action_confirmation_lock(confirmation_id)
+            try:
+                async with lock:
+                    result = await self._do_action_confirm_locked(
+                        params,
+                        confirmation_id=confirmation_id,
+                        allow_short_cooldown_wait=not waited_for_short_cooldown,
+                    )
+            finally:
+                self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
+            wait_seconds_raw = result.pop(_CONFIRMATION_INTERNAL_SHORT_WAIT_KEY, None)
+            if wait_seconds_raw is None:
+                return result
+            waited_for_short_cooldown = True
+            wait_seconds = max(0.0, float(wait_seconds_raw))
+            await asyncio.sleep(wait_seconds + _CONFIRMATION_COOLDOWN_WAKE_MARGIN_SECONDS)
 
     def _action_confirmation_lock(self, confirmation_id: str) -> asyncio.Lock:
         locks: dict[str, asyncio.Lock] | None = getattr(
@@ -1325,6 +1335,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         params: Mapping[str, Any],
         *,
         confirmation_id: str,
+        allow_short_cooldown_wait: bool,
     ) -> dict[str, Any]:
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
@@ -1372,28 +1383,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if pending.execute_after is not None:
             remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
             if remaining > 0:
-                if remaining <= _CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS:
-                    await asyncio.sleep(remaining + _CONFIRMATION_COOLDOWN_WAKE_MARGIN_SECONDS)
-                    if pending.status != "pending":
-                        return {
-                            "confirmed": False,
-                            "confirmation_id": confirmation_id,
-                            "reason": f"already_{pending.status}",
-                        }
-                    expired = self._expired_action_confirm_response(
-                        pending,
-                        confirmation_id=confirmation_id,
-                    )
-                    if expired is not None:
-                        return expired
-                    lockout = self._confirmation_method_lockout_response(
-                        pending,
-                        confirmation_id=confirmation_id,
-                        confirmation_method=confirmation_method,
-                    )
-                    if lockout is not None:
-                        return lockout
-                    remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
+                if (
+                    allow_short_cooldown_wait
+                    and remaining <= _CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS
+                ):
+                    return {_CONFIRMATION_INTERNAL_SHORT_WAIT_KEY: remaining}
                 if remaining > 0:
                     return {
                         "confirmed": False,

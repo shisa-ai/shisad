@@ -4317,6 +4317,22 @@ def test_gh42_action_confirm_renderer_includes_cooldown_retry_hint() -> None:
     )
 
 
+def test_gh42_action_confirm_renderer_prefers_specific_failure_reason() -> None:
+    result = cli_main.ActionConfirmResult.model_validate(
+        {
+            "confirmed": False,
+            "confirmation_id": "c-1",
+            "reason": "approval_expired",
+            "status": "failed",
+            "status_reason": "approval_expired",
+        }
+    )
+
+    assert cli_main._render_action_confirm_result(result) == (
+        "Confirmation failed for c-1: approval_expired"
+    )
+
+
 def test_action_confirm_json_flag_preserves_machine_readable_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
