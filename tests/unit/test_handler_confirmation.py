@@ -1989,6 +1989,48 @@ async def test_gh42_action_confirmation_lock_cleanup_keeps_woken_waiter(
 
 
 @pytest.mark.asyncio
+async def test_gh42_action_purge_waits_for_inflight_confirmation(tmp_path) -> None:
+    class _SlowExecutionHarness(_ConfirmationImplHarness):
+        def __init__(self, tmp_path: Path) -> None:
+            super().__init__(tmp_path)
+            self.execution_started = asyncio.Event()
+            self.release_execution = asyncio.Event()
+
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            self.execution_started.set()
+            await self.release_execution.wait()
+            return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+    harness = _SlowExecutionHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.created_at = datetime.now(UTC) - timedelta(days=10)
+    harness._pending_actions["c-1"] = pending
+    harness._pending_by_session[pending.session_id] = ["c-1"]
+
+    confirm_task = asyncio.create_task(
+        harness.do_action_confirm({"confirmation_id": "c-1", "decision_nonce": "expected"})
+    )
+    await harness.execution_started.wait()
+
+    purge_task = asyncio.create_task(
+        harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
+    )
+    await asyncio.sleep(0)
+    purge_completed_before_confirmation = purge_task.done()
+
+    harness.release_execution.set()
+    confirmed, purged = await asyncio.gather(confirm_task, purge_task)
+
+    assert purge_completed_before_confirmation is False
+    assert confirmed["confirmed"] is True
+    assert purged["purged"] == 0
+    assert "c-1" in harness._pending_actions
+    assert harness._pending_actions["c-1"].status == "approved"
+    assert harness._pending_by_session[pending.session_id] == ["c-1"]
+    assert len(harness.execution_kwargs) == 1
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
     pending = _pending_action(nonce="expected")

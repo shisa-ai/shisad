@@ -1133,50 +1133,68 @@ class ConfirmationImplMixin(HandlerMixinBase):
         for item in candidates:
             if len(purge_ids) >= limit:
                 break
-            if session_filter and str(item.session_id) != session_filter:
-                continue
-            item_status = str(item.status).strip().lower()
-            if status_filter == "terminal":
-                if item_status not in _TERMINAL_PENDING_ACTION_STATUSES:
-                    continue
-            elif status_filter != "all" and item_status != status_filter:
-                continue
-            if cutoff is not None and item.created_at > cutoff:
+            if not self._action_purge_item_matches(
+                item,
+                session_filter=session_filter,
+                status_filter=status_filter,
+                cutoff=cutoff,
+            ):
                 continue
             purge_ids.append(item.confirmation_id)
 
         if not dry_run and purge_ids:
-            purge_id_set = set(purge_ids)
-            purge_items = [
-                self._pending_actions[confirmation_id]
-                for confirmation_id in purge_ids
-                if confirmation_id in self._pending_actions
-            ]
-            for item in purge_items:
-                item_status = str(getattr(item, "status", "")).strip().lower()
-                if item_status == "pending":
-                    self._mark_stale_pending_action(
+            locks: list[tuple[str, asyncio.Lock]] = []
+            try:
+                for confirmation_id in sorted(set(purge_ids)):
+                    lock = self._action_confirmation_lock(confirmation_id)
+                    await lock.acquire()
+                    locks.append((confirmation_id, lock))
+                purge_items: list[Any] = []
+                for confirmation_id in purge_ids:
+                    item = self._pending_actions.get(confirmation_id)
+                    if item is None:
+                        continue
+                    if not self._action_purge_item_matches(
                         item,
-                        reason=_PURGED_STALE_PENDING_ACTION_REASON,
-                        persist=False,
-                    )
-                else:
-                    self._sync_task_confirmation_status(item)
-            for confirmation_id in purge_ids:
-                self._pending_actions.pop(confirmation_id, None)
-            pending_by_session = getattr(self, "_pending_by_session", {})
-            if isinstance(pending_by_session, dict):
-                for session_id, confirmation_ids in list(pending_by_session.items()):
-                    remaining = [
-                        confirmation_id
-                        for confirmation_id in confirmation_ids
-                        if confirmation_id not in purge_id_set
-                    ]
-                    if remaining:
-                        pending_by_session[session_id] = remaining
-                    else:
-                        pending_by_session.pop(session_id, None)
-            self._persist_pending_actions()
+                        session_filter=session_filter,
+                        status_filter=status_filter,
+                        cutoff=cutoff,
+                    ):
+                        continue
+                    purge_items.append(item)
+                purge_ids = [item.confirmation_id for item in purge_items]
+                if purge_items:
+                    purge_id_set = set(purge_ids)
+                    for item in purge_items:
+                        item_status = str(getattr(item, "status", "")).strip().lower()
+                        if item_status == "pending":
+                            self._mark_stale_pending_action(
+                                item,
+                                reason=_PURGED_STALE_PENDING_ACTION_REASON,
+                                persist=False,
+                            )
+                        else:
+                            self._sync_task_confirmation_status(item)
+                    for confirmation_id in purge_ids:
+                        self._pending_actions.pop(confirmation_id, None)
+                    pending_by_session = getattr(self, "_pending_by_session", {})
+                    if isinstance(pending_by_session, dict):
+                        for session_id, confirmation_ids in list(pending_by_session.items()):
+                            remaining = [
+                                confirmation_id
+                                for confirmation_id in confirmation_ids
+                                if confirmation_id not in purge_id_set
+                            ]
+                            if remaining:
+                                pending_by_session[session_id] = remaining
+                            else:
+                                pending_by_session.pop(session_id, None)
+                    self._persist_pending_actions()
+            finally:
+                for confirmation_id, lock in reversed(locks):
+                    if lock.locked():
+                        lock.release()
+                    self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
 
         return {
             "purged": len(purge_ids),
@@ -1184,6 +1202,24 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "remaining": len(self._pending_actions),
             "dry_run": dry_run,
         }
+
+    def _action_purge_item_matches(
+        self,
+        item: Any,
+        *,
+        session_filter: str,
+        status_filter: str,
+        cutoff: datetime | None,
+    ) -> bool:
+        if session_filter and str(item.session_id) != session_filter:
+            return False
+        item_status = str(item.status).strip().lower()
+        if status_filter == "terminal":
+            if item_status not in _TERMINAL_PENDING_ACTION_STATUSES:
+                return False
+        elif status_filter != "all" and item_status != status_filter:
+            return False
+        return not (cutoff is not None and item.created_at > cutoff)
 
     async def do_action_confirm(self, params: Mapping[str, Any]) -> dict[str, Any]:
         batch_ids = params.get("confirmation_ids")
