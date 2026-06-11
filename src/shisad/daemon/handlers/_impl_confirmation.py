@@ -1192,6 +1192,82 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
+        lock = self._action_confirmation_lock(confirmation_id)
+        async with lock:
+            return await self._do_action_confirm_locked(
+                params,
+                confirmation_id=confirmation_id,
+            )
+
+    def _action_confirmation_lock(self, confirmation_id: str) -> asyncio.Lock:
+        locks: dict[str, asyncio.Lock] | None = getattr(
+            self,
+            "_action_confirmation_locks",
+            None,
+        )
+        if locks is None:
+            locks = {}
+            self._action_confirmation_locks = locks
+        lock = locks.get(confirmation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[confirmation_id] = lock
+        return lock
+
+    def _expired_action_confirm_response(
+        self,
+        pending: Any,
+        *,
+        confirmation_id: str,
+    ) -> dict[str, Any] | None:
+        expires_at = getattr(pending, "expires_at", None)
+        if expires_at is None or expires_at > datetime.now(UTC):
+            return None
+        pending.status = "failed"
+        pending.status_reason = "approval_expired"
+        self._sync_task_confirmation_status(pending)
+        self._record_task_confirmation_outcome(pending, success=False)
+        self._persist_pending_actions()
+        return {
+            "confirmed": False,
+            "confirmation_id": confirmation_id,
+            "reason": "approval_expired",
+            "status": pending.status,
+            "status_reason": pending.status_reason,
+        }
+
+    def _confirmation_method_lockout_response(
+        self,
+        pending: Any,
+        *,
+        confirmation_id: str,
+        confirmation_method: str,
+    ) -> dict[str, Any] | None:
+        retry_after = self._confirmation_failure_tracker.status(
+            user_id=str(pending.user_id),
+            method=confirmation_method,
+        )
+        if retry_after is None:
+            return None
+        self._mark_stale_pending_action(
+            pending,
+            reason="confirmation_method_locked_out",
+        )
+        return {
+            "confirmed": False,
+            "confirmation_id": confirmation_id,
+            "reason": "confirmation_method_locked_out",
+            "retry_after_seconds": round(retry_after, 3),
+            "status": pending.status,
+            "status_reason": pending.status_reason,
+        }
+
+    async def _do_action_confirm_locked(
+        self,
+        params: Mapping[str, Any],
+        *,
+        confirmation_id: str,
+    ) -> dict[str, Any]:
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
@@ -1201,41 +1277,22 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": f"already_{pending.status}",
             }
-        if pending.expires_at is not None:
-            expires_at = pending.expires_at
-            if expires_at is not None and expires_at <= datetime.now(UTC):
-                pending.status = "failed"
-                pending.status_reason = "approval_expired"
-                self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_outcome(pending, success=False)
-                self._persist_pending_actions()
-                return {
-                    "confirmed": False,
-                    "confirmation_id": confirmation_id,
-                    "reason": "approval_expired",
-                    "status": pending.status,
-                    "status_reason": pending.status_reason,
-                }
+        expired = self._expired_action_confirm_response(
+            pending,
+            confirmation_id=confirmation_id,
+        )
+        if expired is not None:
+            return expired
         confirmation_method = (
             str(getattr(pending, "selected_backend_method", "") or "software").strip() or "software"
         )
-        retry_after = self._confirmation_failure_tracker.status(
-            user_id=str(pending.user_id),
-            method=confirmation_method,
+        lockout = self._confirmation_method_lockout_response(
+            pending,
+            confirmation_id=confirmation_id,
+            confirmation_method=confirmation_method,
         )
-        if retry_after is not None:
-            self._mark_stale_pending_action(
-                pending,
-                reason="confirmation_method_locked_out",
-            )
-            return {
-                "confirmed": False,
-                "confirmation_id": confirmation_id,
-                "reason": "confirmation_method_locked_out",
-                "retry_after_seconds": round(retry_after, 3),
-                "status": pending.status,
-                "status_reason": pending.status_reason,
-            }
+        if lockout is not None:
+            return lockout
         raw_nonce = params.get("decision_nonce", "")
         provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
         if not provided_nonce:
@@ -1265,6 +1322,19 @@ class ConfirmationImplMixin(HandlerMixinBase):
                             "confirmation_id": confirmation_id,
                             "reason": f"already_{pending.status}",
                         }
+                    expired = self._expired_action_confirm_response(
+                        pending,
+                        confirmation_id=confirmation_id,
+                    )
+                    if expired is not None:
+                        return expired
+                    lockout = self._confirmation_method_lockout_response(
+                        pending,
+                        confirmation_id=confirmation_id,
+                        confirmation_method=confirmation_method,
+                    )
+                    if lockout is not None:
+                        return lockout
                     remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
                 if remaining > 0:
                     return {

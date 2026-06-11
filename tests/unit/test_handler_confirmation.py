@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1848,6 +1849,61 @@ async def test_gh42_direct_confirmation_waits_short_cross_session_cooldown(
         "c-a",
         "c-b",
     ]
+
+
+@pytest.mark.asyncio
+async def test_gh42_direct_confirmation_rechecks_expiry_after_short_cooldown(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    now = datetime.now(UTC)
+    pending = _pending_action(
+        nonce="expected",
+        execute_after=now + timedelta(seconds=0.08),
+    )
+    pending.expires_at = now + timedelta(seconds=0.04)
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "approval_expired"
+    assert result["status"] == "failed"
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_expired"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_gh42_direct_confirmation_serializes_same_cid_cooldown_wait(
+    tmp_path,
+) -> None:
+    class _SlowExecutionHarness(_ConfirmationImplHarness):
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            await asyncio.sleep(0.02)
+            return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+    harness = _SlowExecutionHarness(tmp_path)
+    pending = _pending_action(
+        nonce="expected",
+        execute_after=datetime.now(UTC) + timedelta(seconds=0.05),
+    )
+    harness._pending_actions["c-1"] = pending
+
+    results = await asyncio.gather(
+        harness.do_action_confirm({"confirmation_id": "c-1", "decision_nonce": "expected"}),
+        harness.do_action_confirm({"confirmation_id": "c-1", "decision_nonce": "expected"}),
+        return_exceptions=True,
+    )
+
+    assert all(not isinstance(result, Exception) for result in results)
+    payloads = [result for result in results if isinstance(result, dict)]
+    assert len([result for result in payloads if result.get("confirmed") is True]) == 1
+    assert len([result for result in payloads if result.get("reason") == "already_approved"]) == 1
+    assert len(harness.execution_kwargs) == 1
+    assert harness.execution_kwargs[0]["approval_confirmation_id"] == "c-1"
 
 
 @pytest.mark.asyncio
