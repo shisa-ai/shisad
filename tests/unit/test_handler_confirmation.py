@@ -1967,6 +1967,28 @@ async def test_gh42_action_confirmation_locks_do_not_leak_for_not_found_or_termi
 
 
 @pytest.mark.asyncio
+async def test_gh42_action_confirmation_lock_cleanup_keeps_woken_waiter(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    lock = harness._action_confirmation_lock("c-1")
+    await lock.acquire()
+    waiter = asyncio.create_task(lock.acquire())
+    await asyncio.sleep(0)
+
+    lock.release()
+    harness._discard_action_confirmation_lock_if_idle("c-1", lock)
+
+    assert getattr(harness, "_action_confirmation_locks", {})["c-1"] is lock
+
+    await waiter
+    lock.release()
+    harness._discard_action_confirmation_lock_if_idle("c-1", lock)
+
+    assert getattr(harness, "_action_confirmation_locks", {}) == {}
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
     pending = _pending_action(nonce="expected")

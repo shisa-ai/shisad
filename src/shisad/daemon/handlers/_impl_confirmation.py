@@ -1225,7 +1225,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         lock: asyncio.Lock,
     ) -> None:
         waiters = getattr(lock, "_waiters", None)
-        has_waiters = any(not waiter.done() for waiter in waiters or ())
+        has_waiters = bool(waiters)
         if lock.locked() or has_waiters:
             return
         locks: dict[str, asyncio.Lock] | None = getattr(
