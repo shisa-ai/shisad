@@ -1907,6 +1907,66 @@ async def test_gh42_direct_confirmation_serializes_same_cid_cooldown_wait(
 
 
 @pytest.mark.asyncio
+async def test_gh42_direct_confirmation_serializes_reject_during_confirm_execution(
+    tmp_path,
+) -> None:
+    class _SlowExecutionHarness(_ConfirmationImplHarness):
+        def __init__(self, tmp_path: Path) -> None:
+            super().__init__(tmp_path)
+            self.execution_started = asyncio.Event()
+
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            self.execution_started.set()
+            await asyncio.sleep(0.02)
+            return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+    harness = _SlowExecutionHarness(tmp_path)
+    harness._pending_actions["c-1"] = _pending_action(nonce="expected")
+
+    confirm_task = asyncio.create_task(
+        harness.do_action_confirm({"confirmation_id": "c-1", "decision_nonce": "expected"})
+    )
+    await harness.execution_started.wait()
+    rejected = await harness.do_action_reject(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "reason": "operator_changed_mind",
+        }
+    )
+    confirmed = await confirm_task
+
+    assert confirmed["confirmed"] is True
+    assert rejected["rejected"] is False
+    assert rejected["reason"] == "already_approved"
+    assert len(harness.execution_kwargs) == 1
+    assert harness._pending_actions["c-1"].status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_gh42_action_confirmation_locks_do_not_leak_for_not_found_or_terminal(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    for index in range(3):
+        missing = await harness.do_action_confirm(
+            {"confirmation_id": f"missing-{index}", "decision_nonce": "unused"}
+        )
+        assert missing["reason"] == "not_found"
+
+    assert getattr(harness, "_action_confirmation_locks", {}) == {}
+
+    harness._pending_actions["c-1"] = _pending_action(nonce="expected")
+    confirmed = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert confirmed["confirmed"] is True
+    assert getattr(harness, "_action_confirmation_locks", {}) == {}
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
     pending = _pending_action(nonce="expected")

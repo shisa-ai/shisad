@@ -1192,12 +1192,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
+        if self._pending_actions.get(confirmation_id) is None:
+            return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
         lock = self._action_confirmation_lock(confirmation_id)
-        async with lock:
-            return await self._do_action_confirm_locked(
-                params,
-                confirmation_id=confirmation_id,
-            )
+        try:
+            async with lock:
+                return await self._do_action_confirm_locked(
+                    params,
+                    confirmation_id=confirmation_id,
+                )
+        finally:
+            self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
 
     def _action_confirmation_lock(self, confirmation_id: str) -> asyncio.Lock:
         locks: dict[str, asyncio.Lock] | None = getattr(
@@ -1213,6 +1218,23 @@ class ConfirmationImplMixin(HandlerMixinBase):
             lock = asyncio.Lock()
             locks[confirmation_id] = lock
         return lock
+
+    def _discard_action_confirmation_lock_if_idle(
+        self,
+        confirmation_id: str,
+        lock: asyncio.Lock,
+    ) -> None:
+        waiters = getattr(lock, "_waiters", None)
+        has_waiters = any(not waiter.done() for waiter in waiters or ())
+        if lock.locked() or has_waiters:
+            return
+        locks: dict[str, asyncio.Lock] | None = getattr(
+            self,
+            "_action_confirmation_locks",
+            None,
+        )
+        if locks is not None and locks.get(confirmation_id) is lock:
+            locks.pop(confirmation_id, None)
 
     def _expired_action_confirm_response(
         self,
@@ -1964,6 +1986,24 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
+        if self._pending_actions.get(confirmation_id) is None:
+            return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        lock = self._action_confirmation_lock(confirmation_id)
+        try:
+            async with lock:
+                return await self._do_action_reject_locked(
+                    params,
+                    confirmation_id=confirmation_id,
+                )
+        finally:
+            self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
+
+    async def _do_action_reject_locked(
+        self,
+        params: Mapping[str, Any],
+        *,
+        confirmation_id: str,
+    ) -> dict[str, Any]:
         reason = str(params.get("reason", "manual_reject")).strip() or "manual_reject"
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
