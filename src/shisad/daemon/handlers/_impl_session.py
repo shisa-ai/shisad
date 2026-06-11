@@ -1544,6 +1544,11 @@ def _pending_uses_totp(pending: Any) -> bool:
     return str(getattr(pending, "selected_backend_method", "")).strip() == "totp"
 
 
+def _pending_confirmation_is_expired(pending: Any) -> bool:
+    expires_at = getattr(pending, "expires_at", None)
+    return expires_at is not None and expires_at <= datetime.now(UTC)
+
+
 def _totp_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
     return [pending for pending in pending_rows if _pending_uses_totp(pending)]
 
@@ -8220,7 +8225,11 @@ class SessionImplMixin(HandlerMixinBase):
                 skipped_totp_confirmation = False
                 for index in indexes:
                     pending = displayed_pending_rows[index]
-                    if intent.action == "confirm" and _pending_uses_totp(pending):
+                    if (
+                        intent.action == "confirm"
+                        and _pending_uses_totp(pending)
+                        and not _pending_confirmation_is_expired(pending)
+                    ):
                         skipped_totp_confirmation = True
                         continue
                     payload = {
@@ -9592,7 +9601,11 @@ class SessionImplMixin(HandlerMixinBase):
         for pending in selected_rows:
             confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
             tool_name = str(getattr(pending, "tool_name", "")).strip() or "unknown"
-            if decision == "confirm" and _pending_uses_totp(pending):
+            if (
+                decision == "confirm"
+                and _pending_uses_totp(pending)
+                and not _pending_confirmation_is_expired(pending)
+            ):
                 rejected += 1
                 rejection_reasons.append("totp_code_required")
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): totp_code_required")
