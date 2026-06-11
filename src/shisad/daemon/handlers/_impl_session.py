@@ -9588,18 +9588,10 @@ class SessionImplMixin(HandlerMixinBase):
         serialized_tool_outputs: list[dict[str, Any]] = []
         continuation_user_goal = ""
         outcome_lines: list[str] = []
-        now = datetime.now(UTC)
 
         for pending in selected_rows:
             confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
             tool_name = str(getattr(pending, "tool_name", "")).strip() or "unknown"
-            expires_at = getattr(pending, "expires_at", None)
-            if expires_at is not None and expires_at <= now:
-                self._mark_stale_pending_action(pending, reason="approval_expired")
-                rejected += 1
-                rejection_reasons.append("approval_expired")
-                outcome_lines.append(f"{confirmation_id} ({tool_name}): approval_expired")
-                continue
             if decision == "confirm" and _pending_uses_totp(pending):
                 rejected += 1
                 rejection_reasons.append("totp_code_required")
