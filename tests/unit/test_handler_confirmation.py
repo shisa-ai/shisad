@@ -1811,6 +1811,46 @@ async def test_m1_pf11_confirmation_cooldown_active_and_expired(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_gh42_direct_confirmation_waits_short_cross_session_cooldown(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    first = _pending_action(nonce="nonce-a")
+    first.confirmation_id = "c-a"
+    first.session_id = SessionId("session-a")
+    first.user_id = UserId("alice")
+    first.workspace_id = WorkspaceId("workspace-a")
+    second = _pending_action(
+        nonce="nonce-b",
+        execute_after=datetime.now(UTC) + timedelta(seconds=0.01),
+    )
+    second.confirmation_id = "c-b"
+    second.session_id = SessionId("session-b")
+    second.user_id = UserId("bob")
+    second.workspace_id = WorkspaceId("workspace-b")
+    second.tool_name = ToolName("web.fetch")
+    second.arguments = {"url": "https://example.com/"}
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    confirmed_first = await harness.do_action_confirm(
+        {"confirmation_id": "c-a", "decision_nonce": "nonce-a"}
+    )
+    confirmed_second = await harness.do_action_confirm(
+        {"confirmation_id": "c-b", "decision_nonce": "nonce-b"}
+    )
+
+    assert confirmed_first["confirmed"] is True
+    assert confirmed_second["confirmed"] is True
+    assert confirmed_second["status"] == "approved"
+    assert "retry_after_seconds" not in confirmed_second
+    assert [call["approval_confirmation_id"] for call in harness.execution_kwargs] == [
+        "c-a",
+        "c-b",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
     pending = _pending_action(nonce="expected")

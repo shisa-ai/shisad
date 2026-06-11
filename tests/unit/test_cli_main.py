@@ -4301,6 +4301,22 @@ def test_action_confirm_renderer_includes_browser_failure_detail() -> None:
     ]
 
 
+def test_gh42_action_confirm_renderer_includes_cooldown_retry_hint() -> None:
+    result = cli_main.ActionConfirmResult.model_validate(
+        {
+            "confirmed": False,
+            "confirmation_id": "c-1",
+            "reason": "cooldown_active",
+            "retry_after_seconds": 12.25,
+        }
+    )
+
+    assert cli_main._render_action_confirm_result(result) == (
+        "Confirmation failed for c-1: cooldown_active\n"
+        "retry_after_seconds=12.25"
+    )
+
+
 def test_action_confirm_json_flag_preserves_machine_readable_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

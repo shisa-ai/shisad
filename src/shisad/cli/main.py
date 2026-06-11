@@ -2178,6 +2178,9 @@ def _render_action_confirm_result(result: ActionConfirmResult) -> str:
         if status:
             first = f"{first}: {status}"
     lines = [first]
+    if not result.confirmed and result.retry_after_seconds is not None:
+        retry_after = sanitize_terminal_field(str(result.retry_after_seconds))
+        lines.append(f"retry_after_seconds={retry_after}")
     if result.checkpoint_id:
         lines.append(f"checkpoint={sanitize_terminal_field(result.checkpoint_id)}")
     for record in result.tool_outputs:

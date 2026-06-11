@@ -56,6 +56,8 @@ from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord, SignerKeyRecord
 
 logger = logging.getLogger(__name__)
+_CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS = 3.5
+_CONFIRMATION_COOLDOWN_WAKE_MARGIN_SECONDS = 0.05
 _STALE_PENDING_APPROVAL_REASONS = frozenset(
     {
         "approval_envelope_missing",
@@ -1255,12 +1257,25 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if pending.execute_after is not None:
             remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
             if remaining > 0:
-                return {
-                    "confirmed": False,
-                    "confirmation_id": confirmation_id,
-                    "reason": "cooldown_active",
-                    "retry_after_seconds": round(remaining, 3),
-                }
+                if remaining <= _CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS:
+                    await asyncio.sleep(remaining + _CONFIRMATION_COOLDOWN_WAKE_MARGIN_SECONDS)
+                    if pending.status != "pending":
+                        return {
+                            "confirmed": False,
+                            "confirmation_id": confirmation_id,
+                            "reason": f"already_{pending.status}",
+                        }
+                    remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
+                if remaining > 0:
+                    return {
+                        "confirmed": False,
+                        "confirmation_id": confirmation_id,
+                        "reason": "cooldown_active",
+                        "retry_after_seconds": round(remaining, 3),
+                    }
+                pending.execute_after = None
+            else:
+                pending.execute_after = None
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"
