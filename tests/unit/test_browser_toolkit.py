@@ -389,6 +389,45 @@ async def test_gh33_browser_toolkit_doctor_rejects_wrapper_missing_playwright(
 
 
 @pytest.mark.asyncio
+async def test_gh44_browser_toolkit_doctor_reports_node_version_too_old(
+    tmp_path: Path,
+) -> None:
+    command = tmp_path / "old-node-shisad-wrapper"
+    command.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "if '--shisad-browser-wrapper-version' in sys.argv:",
+                "    print('shisad-browser-wrapper 2')",
+                "    raise SystemExit(0)",
+                "if '--shisad-browser-wrapper-doctor' in sys.argv:",
+                "    print(",
+                "        'browser_node_version_too_old: Node.js 18.19.1 is unsupported; ',",
+                "        'require Node.js 22 or newer',",
+                "        file=sys.stderr,",
+                "    )",
+                "    raise SystemExit(1)",
+                "raise SystemExit(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner, command=[str(command)])
+
+    status = await toolkit.doctor_status()
+
+    assert status["status"] == "misconfigured"
+    assert "browser_node_version_too_old" in status["problems"]
+    assert status["protocol"]["supported"] is False
+    assert status["protocol"]["probe"] == "sentinel,readiness"
+    assert status["protocol"]["reason"] == "browser_node_version_too_old"
+
+
+@pytest.mark.asyncio
 async def test_gh33_browser_toolkit_doctor_rejects_old_wrapper_without_readiness_probe(
     tmp_path: Path,
 ) -> None:
@@ -5916,6 +5955,48 @@ async def test_gh26_browser_toolkit_subprocess_failure_sanitizes_details(
     assert str(leaked_cache) not in serialized
     assert secret_value not in serialized
     assert len(runner.configs) == 1
+
+
+@pytest.mark.asyncio
+async def test_gh44_browser_toolkit_subprocess_node_version_failure_classified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    runner = _ConfiguredFailureRunner(
+        SandboxResult(
+            allowed=True,
+            exit_code=1,
+            stderr=(
+                "browser_node_version_too_old: Node.js 18.19.1 is unsupported; "
+                "require Node.js 22 or newer"
+            ),
+            reason="browser_command_failed",
+        )
+    )
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit._run_cli(
+        session=_session(),
+        tool_name="browser.navigate",
+        args=["goto", _UNREACHABLE_LOOPBACK_URL],
+        network_urls=[_UNREACHABLE_LOOPBACK_URL],
+        allow_network=True,
+    )
+
+    assert result["error"] == "browser_node_version_too_old"
+    assert result["details"] == {
+        "reason": "browser_node_version_too_old",
+        "stage": "subprocess",
+        "sandbox_reason": "browser_command_failed",
+        "exit_code": 1,
+        "stderr": (
+            "browser_node_version_too_old: Node.js 18.19.1 is unsupported; "
+            "require Node.js 22 or newer"
+        ),
+    }
 
 
 @pytest.mark.asyncio

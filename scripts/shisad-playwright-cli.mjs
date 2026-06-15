@@ -15,6 +15,8 @@ const VERSION = "shisad-browser-wrapper 2";
 const DOCTOR_OK = "shisad-browser-wrapper doctor ok";
 const STATE_DIR = ".shisad-playwright";
 const DEFAULT_TIMEOUT_MS = 15000;
+const MIN_NODE_MAJOR = 22;
+const NODE_VERSION_TOO_OLD_REASON = "browser_node_version_too_old";
 const PNG_1X1_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -130,6 +132,30 @@ function loadPlaywright() {
     throw new Error(
       `@playwright/test is not available. Install with: npm install @playwright/test; ${message}`,
     );
+  }
+}
+
+function nodeMajorVersion(version) {
+  const major = Number.parseInt(String(version || "").split(".")[0], 10);
+  return Number.isFinite(major) ? major : 0;
+}
+
+function nodeVersionProblem() {
+  const version = String(process.versions?.node || "");
+  const major = nodeMajorVersion(version);
+  if (major > 0 && major < MIN_NODE_MAJOR) {
+    return (
+      `${NODE_VERSION_TOO_OLD_REASON}: Node.js ${version} is unsupported; ` +
+      `require Node.js ${MIN_NODE_MAJOR} or newer for shisad browser wrapper`
+    );
+  }
+  return "";
+}
+
+function requireSupportedNode() {
+  const problem = nodeVersionProblem();
+  if (problem) {
+    throw new Error(problem);
   }
 }
 
@@ -886,6 +912,7 @@ async function main() {
     return 0;
   }
   if (parsed.probe === "doctor") {
+    requireSupportedNode();
     const { chromium } = loadPlaywright();
     if (!chromium || typeof chromium.launchPersistentContext !== "function") {
       throw new Error("@playwright/test did not expose chromium.launchPersistentContext");
@@ -897,6 +924,7 @@ async function main() {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }
+  requireSupportedNode();
   const cwd = process.cwd();
   const state = await loadState(cwd, parsed.session);
   const args = [...parsed.args];

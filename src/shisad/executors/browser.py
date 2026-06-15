@@ -52,6 +52,7 @@ _PLAYWRIGHT_BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
 _SHISAD_BROWSER_WRAPPER_VERSION = "shisad-browser-wrapper 2"
 _SHISAD_BROWSER_WRAPPER_SENTINEL = "--shisad-browser-wrapper-version"
 _SHISAD_BROWSER_WRAPPER_DOCTOR = "--shisad-browser-wrapper-doctor"
+_BROWSER_NODE_VERSION_TOO_OLD = "browser_node_version_too_old"
 _PATHLIKE_COMMAND_ARG_SUFFIXES = {
     ".cjs",
     ".js",
@@ -1167,6 +1168,8 @@ class BrowserToolkit:
         if probe.get("timed_out"):
             return "browser_command_protocol_probe_timeout"
         text = self._probe_text(probe).lower()
+        if _BROWSER_NODE_VERSION_TOO_OLD in text:
+            return _BROWSER_NODE_VERSION_TOO_OLD
         if (
             "@playwright/test is not available" in text
             or "did not expose chromium.launchpersistentcontext" in text
@@ -1913,6 +1916,8 @@ class BrowserToolkit:
         detail = " ".join(
             part for part in [result.reason, result.stderr, result.stdout] if part
         ).lower()
+        if _BROWSER_NODE_VERSION_TOO_OLD in detail:
+            return _BROWSER_NODE_VERSION_TOO_OLD
         if "unknown option" in detail and ("-s=" in detail or "shisad-browser-wrapper" in detail):
             return "browser_command_protocol_incompatible"
         if (

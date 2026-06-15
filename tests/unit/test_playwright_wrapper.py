@@ -14,6 +14,40 @@ _WRAPPER = _REPO_ROOT / "scripts" / "shisad-playwright-cli.mjs"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for wrapper tests")
+def test_gh44_playwright_wrapper_doctor_reports_old_node_before_playwright_loads(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    wrapper = project / "shisad-playwright-cli.mjs"
+    shutil.copy2(_WRAPPER, wrapper)
+    script = """
+import { pathToFileURL } from "node:url";
+
+const wrapper = process.argv[1];
+Object.defineProperty(process.versions, "node", {
+  value: "18.19.1",
+  configurable: true,
+});
+process.argv = ["node", wrapper, "--shisad-browser-wrapper-doctor"];
+await import(pathToFileURL(wrapper).href);
+"""
+
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(wrapper)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "browser_node_version_too_old" in completed.stderr
+    assert "18.19.1" in completed.stderr
+    assert "@playwright/test is not available" not in completed.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for wrapper tests")
 def test_gh33_playwright_wrapper_supports_shisad_protocol_with_fake_playwright(
     tmp_path: Path,
 ) -> None:

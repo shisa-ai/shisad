@@ -321,12 +321,18 @@ def _browser_runtime_unavailable_planner_note(browser_status: dict[str, Any]) ->
         {
             "browser_cache_not_writable",
             "browser_dependency_unavailable",
+            "browser_node_version_too_old",
             "browser_node_modules_unavailable",
         }
     ):
         remediation_parts.append(
             "Ask the user to fix browser runtime dependencies or cache permissions, "
             "then run `shisad doctor check --component browser`."
+        )
+    if "browser_node_version_too_old" in problem_set:
+        remediation_parts.append(
+            "Ask the user to install Node.js 22 LTS or newer for the browser "
+            "wrapper, then run `shisad doctor check --component browser`."
         )
     if problem_set.intersection(
         {

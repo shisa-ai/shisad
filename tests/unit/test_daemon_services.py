@@ -1633,6 +1633,25 @@ def test_gh47_browser_runtime_note_keeps_mixed_remediation_paths() -> None:
     assert "browser sandbox/isolation settings" in note
 
 
+def test_gh44_browser_runtime_note_names_node_version_requirement() -> None:
+    note = _browser_runtime_unavailable_planner_note(
+        {
+            "enabled": True,
+            "status": "misconfigured",
+            "problems": ["browser_node_version_too_old"],
+            "protocol": {
+                "supported": False,
+                "probe": "sentinel,readiness",
+                "reason": "browser_node_version_too_old",
+            },
+        }
+    )
+
+    assert "browser_node_version_too_old" in note
+    assert "Node.js 22" in note
+    assert "web.search/web.fetch" in note
+
+
 async def _build_browser_registry_services(config: DaemonConfig) -> DaemonServices:
     return await DaemonServices.build(config)
 

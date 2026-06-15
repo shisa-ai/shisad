@@ -7,16 +7,25 @@ prerequisites for `browser.navigate`, `browser.read_page`,
 
 ## Setup
 
-Install the host sandbox and Playwright runtime prerequisites:
+Install the host sandbox and Playwright runtime prerequisites. The browser
+wrapper requires Node.js 22 LTS or newer; the default `nodejs` package on
+Ubuntu 24.04 is Node 18 and is not supported for this path.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y bubblewrap nodejs npm
+sudo apt-get install -y bubblewrap npm
+# Install Node.js 22 LTS or newer from your standard Node distribution.
+node --version
 cd /path/to/shisad
 npm install @playwright/test
 npx playwright install chromium
 sudo npx playwright install-deps chromium
 ```
+
+On Ubuntu 24.04, do not rely on `sudo apt-get install nodejs` from the default
+distribution repository for browser automation; that package currently provides
+Node 18. Use a NodeSource, `nvm`, prebuilt Node, or other operator-approved
+Node 22+ install instead.
 
 `npx playwright install chromium` installs the browser binary.
 `npx playwright install-deps chromium` installs the native shared libraries
@@ -107,6 +116,9 @@ actions still go through the daemon's confirmation and policy flow.
 - `browser_dependency_unavailable`: the wrapper is present but cannot load its
   Node/Playwright dependency. Run `npm install @playwright/test` from the
   checkout containing `scripts/shisad-playwright-cli.mjs`.
+- `browser_node_version_too_old`: the wrapper is running under an unsupported
+  Node.js release. Install Node.js 22 LTS or newer and verify `node --version`
+  before rerunning `shisad doctor check --component browser`.
 - `browser_browser_not_installed`: run `npx playwright install chromium`.
 - `browser_cache_not_writable`: make the Playwright browser cache directory
   writable by the daemon user, or set `PLAYWRIGHT_BROWSERS_PATH` to a writable
