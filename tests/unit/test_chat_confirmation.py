@@ -2350,7 +2350,12 @@ async def test_u9_chat_totp_internal_ingress_wrong_target_typos_do_not_reveal_pe
         firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
     )
 
-    assert result is None
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "not pending for this chat target" in response
+    assert "no action was taken" in response
+    assert "original approval thread/channel" in response
+    assert "c-2" not in response
     assert harness.confirm_calls == []
     assert harness.reject_calls == []
     assert harness._pending_actions["c-1"].status == "pending"

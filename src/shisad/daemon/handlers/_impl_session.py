@@ -1774,6 +1774,17 @@ def _wrong_target_totp_confirmation_text(*, action: str) -> str:
     )
 
 
+def _hidden_target_confirmation_command_text() -> str:
+    return "\n".join(
+        [
+            "This confirmation command is not pending for this chat target.",
+            "No action was taken.",
+            "Reply from the original approval thread/channel.",
+            "CLI fallback: run 'shisad action list' to inspect pending approvals.",
+        ]
+    )
+
+
 def _resolve_chat_confirmation_indexes(
     *,
     intent: ChatConfirmationIntent,
@@ -8060,17 +8071,28 @@ class SessionImplMixin(HandlerMixinBase):
                     content
                 ):
                     error_text = ""
-                if not error_text and (
-                    intent.action != "none"
-                    or (
+                if not error_text:
+                    command_error_should_block = (
+                        _internal_channel_confirmation_error_should_block_planner(content)
+                    )
+                    visible_command_error_text = (
                         _chat_confirmation_command_error_text(
                             content,
                             pending_confirmation_ids=visible_pending_confirmation_ids,
                         )
-                        and _internal_channel_confirmation_error_should_block_planner(content)
+                        if command_error_should_block
+                        else ""
                     )
-                ):
-                    error_text = _internal_ingress_confirmation_approval_not_allowed_text()
+                    if intent.action != "none" or visible_command_error_text:
+                        error_text = _internal_ingress_confirmation_approval_not_allowed_text()
+                    elif command_error_should_block and (
+                        visible_pending_confirmation_ids != pending_confirmation_ids
+                        and _chat_confirmation_command_error_text(
+                            content,
+                            pending_confirmation_ids=pending_confirmation_ids,
+                        )
+                    ):
+                        error_text = _hidden_target_confirmation_command_text()
                 if error_text:
                     return await _finalize_chat_confirmation_response(
                         response_text=error_text,
