@@ -578,6 +578,56 @@ async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planne
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        "no thanks",
+        "no i mean capabilities",
+        "reject that idea",
+        "reject all pending?",
+    ],
+)
+async def test_gh41_untrusted_channel_rejection_prose_falls_through_to_planner(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("note.create"),
+        arguments={"key": "memory_preference", "content": "remember by default"},
+        reason="manual",
+        capabilities={Capability.MEMORY_WRITE},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="slack",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="untrusted",
+        trusted_input=False,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_gh41_untrusted_channel_reject_resolves_same_target_pending_action(
     tmp_path,
 ) -> None:

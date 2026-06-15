@@ -1484,10 +1484,7 @@ def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool
     tokens = normalized.split()
     first = tokens[0]
     if first in _CRC_CONFIRMATION_VERB_ACTIONS:
-        if len(tokens) == 1:
-            return True
-        target = tokens[1]
-        return target.isdigit() or target == "all"
+        return False
     return _nearest_confirmation_action(first) is not None
 
 
@@ -8046,6 +8043,10 @@ class SessionImplMixin(HandlerMixinBase):
                     allowed_actions={"reject"},
                     pending_confirmation_ids=pending_confirmation_ids,
                 )
+                if error_text and not _internal_channel_confirmation_error_should_block_planner(
+                    content
+                ):
+                    error_text = ""
                 if not error_text and (
                     intent.action != "none"
                     or (
