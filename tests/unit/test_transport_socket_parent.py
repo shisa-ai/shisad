@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import shisad.core.api.transport as transport
-from shisad.core.api.transport import ControlServer
+from shisad.core.api.transport import ControlClient, ControlServer
 
 
 @pytest.mark.asyncio
@@ -61,3 +61,20 @@ async def test_gh50_control_server_rejects_symlinked_default_tmp_socket_parent(
 
     with pytest.raises(PermissionError, match="symlink"):
         await server.start()
+
+
+@pytest.mark.asyncio
+async def test_gh50_control_client_rejects_symlinked_default_tmp_socket_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "attacker-owned-target"
+    target.mkdir()
+    socket_parent = tmp_path / "shisad-default"
+    socket_parent.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(transport, "_default_tmp_socket_parent", lambda: socket_parent)
+
+    client = ControlClient(socket_parent / "control.sock")
+
+    with pytest.raises(PermissionError, match="symlink"):
+        await client.connect()

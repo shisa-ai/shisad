@@ -577,6 +577,7 @@ _cmd_logs() {
 
 _cmd_events() {
   _runner_env
+  _preflight_socket_parent false
   uv run shisad events subscribe "$@"
 }
 
@@ -587,6 +588,7 @@ _cmd_session() {
   case "${sub}" in
     new)
       _runner_env
+      _preflight_socket_parent false
       local out session_id
       out="$(uv run shisad session create "$@" 2>&1)"
       session_id=""
@@ -606,6 +608,7 @@ _cmd_session() {
       ;;
     say)
       _runner_env
+      _preflight_socket_parent false
       [[ $# -ge 2 ]] || _die "usage: session say <session_id> <text...>"
       local session_id="$1"
       shift

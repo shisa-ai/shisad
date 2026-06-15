@@ -265,6 +265,36 @@ def test_gh50_harness_rejects_symlinked_default_socket_dir(tmp_path: Path) -> No
     assert "symlink" in result.stderr
 
 
+def test_gh50_harness_direct_rpc_helpers_preflight_default_socket_dir(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    (runtime_dir / "shisad").symlink_to(target, target_is_directory=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SHISAD_")}
+    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+
+    commands = [
+        ["bash", "runner/harness.sh", "events"],
+        ["bash", "runner/harness.sh", "session", "new"],
+        ["bash", "runner/harness.sh", "session", "say", "session-1", "hello"],
+    ]
+    for command in commands:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            cwd=str(Path.cwd()),
+            env=env,
+        )
+
+        assert result.returncode != 0
+        assert "unsafe socket directory" in result.stderr
+        assert "symlink" in result.stderr
+
+
 def test_gh50_harness_ignores_relative_xdg_runtime_dir() -> None:
     result = _harness_env({"XDG_RUNTIME_DIR": "relative-runtime"})
 

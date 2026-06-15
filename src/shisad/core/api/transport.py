@@ -81,6 +81,17 @@ def _ensure_socket_parent(socket_path: Path) -> None:
         _ensure_private_socket_dir(directory)
 
 
+def _validate_socket_parent(socket_path: Path) -> None:
+    for directory in _private_socket_dirs_for(socket_path):
+        try:
+            directory_stat = os.lstat(directory)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise PermissionError(f"Unable to stat socket directory {directory}: {exc}") from exc
+        _validate_private_socket_dir(directory, directory_stat, repair=False)
+
+
 def _ensure_private_socket_dir(directory: Path) -> None:
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -93,7 +104,15 @@ def _ensure_private_socket_dir(directory: Path) -> None:
         directory_stat = os.lstat(directory)
     except OSError as exc:
         raise PermissionError(f"Unable to stat socket directory {directory}: {exc}") from exc
+    _validate_private_socket_dir(directory, directory_stat, repair=True)
 
+
+def _validate_private_socket_dir(
+    directory: Path,
+    directory_stat: os.stat_result,
+    *,
+    repair: bool,
+) -> None:
     if stat.S_ISLNK(directory_stat.st_mode):
         raise PermissionError(f"Refusing to use unsafe socket directory {directory}: symlink")
     if not stat.S_ISDIR(directory_stat.st_mode):
@@ -109,6 +128,11 @@ def _ensure_private_socket_dir(directory: Path) -> None:
         )
 
     if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+        if not repair:
+            raise PermissionError(
+                "Refusing to use unsafe socket directory "
+                f"{directory}: mode {stat.S_IMODE(directory_stat.st_mode):04o}"
+            )
         try:
             os.chmod(directory, 0o700)
         except OSError as exc:
@@ -648,6 +672,7 @@ class ControlClient:
 
     async def connect(self) -> None:
         """Connect to the daemon."""
+        _validate_socket_parent(self._socket_path)
         self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
 
     async def close(self) -> None:
