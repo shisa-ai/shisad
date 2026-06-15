@@ -55,14 +55,24 @@ def test_runner_harness_files_exist_and_are_documented() -> None:
 
 
 def test_gh50_manual_socket_docs_require_absolute_xdg_runtime_dir() -> None:
-    for path in [
+    snippet_paths = [
         Path("README.md"),
         Path("docs/DEPLOY.md"),
         Path("docs/ENV-VARS.md"),
         Path("docs/2FA.md"),
-    ]:
+    ]
+    for path in snippet_paths:
         text = path.read_text(encoding="utf-8")
         assert '[ "${XDG_RUNTIME_DIR}" = /* ]' in text
+
+    prose_paths = [
+        Path("docs/DEPLOY.md"),
+        Path("docs/ENV-VARS.md"),
+        Path("runner/SKILL.md"),
+    ]
+    for path in prose_paths:
+        text = path.read_text(encoding="utf-8")
+        assert "XDG_RUNTIME_DIR` is an absolute path" in text
 
 
 def test_runner_defaults_are_version_agnostic() -> None:

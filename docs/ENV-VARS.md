@@ -39,7 +39,7 @@ This surface is large. That is now documented, but it should be simplified in a 
 | Env var | Purpose |
 |---|---|
 | `SHISAD_DATA_DIR` | Root runtime data directory |
-| `SHISAD_SOCKET_PATH` | Unix control socket path; defaults to `$XDG_RUNTIME_DIR/shisad/control.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/shisad-<uid>/control.sock` |
+| `SHISAD_SOCKET_PATH` | Unix control socket path; defaults to `$XDG_RUNTIME_DIR/shisad/control.sock` when `XDG_RUNTIME_DIR` is an absolute path, otherwise `/tmp/shisad-<uid>/control.sock` |
 | `SHISAD_POLICY_PATH` | Trusted policy bundle path |
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |

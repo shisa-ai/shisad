@@ -159,7 +159,8 @@ Before starting the daemon:
 - [ ] At least one LLM provider credential available (see provider table below)
 - [ ] Data directory writable (default: `~/.local/share/shisad`)
 - [ ] Socket path writable (default: `$XDG_RUNTIME_DIR/shisad/control.sock`
-      when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/shisad-<uid>/control.sock`)
+      when `XDG_RUNTIME_DIR` is an absolute path, otherwise
+      `/tmp/shisad-<uid>/control.sock`)
 - [ ] Optional: at least one channel token (Discord, Telegram, or Slack)
 - [ ] Optional: policy file created (`runner/policy.default.yaml` is a starting point)
 
