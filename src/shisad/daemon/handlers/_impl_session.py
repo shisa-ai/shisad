@@ -1315,6 +1315,15 @@ def _starts_with_supported_cli_command(text: str) -> bool:
     return any(text == cli_name or text.startswith(f"{cli_name} ") for cli_name in _CRC_CLI_NAMES)
 
 
+def _confirmation_command_tokens_after_prefix(tokens: Sequence[str]) -> list[str]:
+    if not tokens:
+        return []
+    first = str(tokens[0]).strip(",:")
+    if first in {"please", "ok", "okay"}:
+        return list(tokens[1:])
+    return list(tokens)
+
+
 def _extract_cli_action_command_candidate(
     text: str,
     *,
@@ -1433,7 +1442,9 @@ def _chat_confirmation_command_error_text(
     normalized = " ".join(text.strip().lower().split())
     if not normalized:
         return ""
-    tokens = normalized.split()
+    tokens = _confirmation_command_tokens_after_prefix(normalized.split())
+    if not tokens:
+        return ""
     first = tokens[0]
     if _looks_like_cli_action_command_or_guidance(normalized):
         return (
@@ -1500,7 +1511,7 @@ def _chat_confirmation_typo_targets_id_like_token(
     normalized = " ".join(str(text or "").strip().lower().split())
     if not normalized:
         return False
-    tokens = normalized.split()
+    tokens = _confirmation_command_tokens_after_prefix(normalized.split())
     if len(tokens) < 2:
         return False
     if _nearest_confirmation_action(tokens[0], allowed_actions=allowed_actions) is None:
@@ -1519,7 +1530,9 @@ def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool
         return False
     if _looks_like_cli_action_command_or_guidance(normalized):
         return True
-    tokens = normalized.split()
+    tokens = _confirmation_command_tokens_after_prefix(normalized.split())
+    if not tokens:
+        return False
     first = tokens[0]
     if first in _CRC_CONFIRMATION_VERB_ACTIONS:
         return False
@@ -8083,6 +8096,22 @@ class SessionImplMixin(HandlerMixinBase):
             if pending_status_response:
                 return await _finalize_chat_confirmation_response(
                     response_text=pending_status_response,
+                    blocked_actions=0,
+                    executed_actions=0,
+                    checkpoint_ids=[],
+                )
+            if _chat_confirmation_typo_targets_id_like_token(content):
+                error_text = _chat_confirmation_command_error_text(
+                    content,
+                    pending_confirmation_ids=visible_pending_confirmation_ids,
+                )
+                if not error_text:
+                    error_text = (
+                        "Confirmation command not recognized. No action was taken. "
+                        f"{_confirmation_command_guidance()}"
+                    )
+                return await _finalize_chat_confirmation_response(
+                    response_text=error_text,
                     blocked_actions=0,
                     executed_actions=0,
                     checkpoint_ids=[],
