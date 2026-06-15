@@ -1467,6 +1467,22 @@ def _chat_confirmation_command_error_text(
     return f"Did you mean '{suggestion}'? No action was taken. {_confirmation_command_guidance()}"
 
 
+def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False
+    if _looks_like_cli_action_command_or_guidance(normalized):
+        return True
+    tokens = normalized.split()
+    first = tokens[0]
+    if first in _CRC_CONFIRMATION_VERB_ACTIONS:
+        if len(tokens) == 1:
+            return True
+        target = tokens[1]
+        return target.isdigit() or target == "all"
+    return _nearest_confirmation_action(first) is not None
+
+
 def _pending_confirmation_chat_status_response_text(
     *,
     text: str,
@@ -7833,7 +7849,7 @@ class SessionImplMixin(HandlerMixinBase):
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
         intent: ChatConfirmationIntent | None = None
         if is_internal_ingress and totp_submission is None:
-            intent = _classify_chat_confirmation_intent(content)
+            intent, _explicit_target_id = _classify_action_resolve_current_turn_intent(content)
 
         def _confirmation_result_status_text(
             result: Mapping[str, Any],
@@ -8021,9 +8037,12 @@ class SessionImplMixin(HandlerMixinBase):
                 )
                 if not error_text and (
                     intent.action != "none"
-                    or _chat_confirmation_command_error_text(
-                        content,
-                        pending_confirmation_ids=pending_confirmation_ids,
+                    or (
+                        _chat_confirmation_command_error_text(
+                            content,
+                            pending_confirmation_ids=pending_confirmation_ids,
+                        )
+                        and _internal_channel_confirmation_error_should_block_planner(content)
                     )
                 ):
                     error_text = _internal_ingress_confirmation_approval_not_allowed_text()
