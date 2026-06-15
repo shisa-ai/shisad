@@ -7857,6 +7857,11 @@ class SessionImplMixin(HandlerMixinBase):
         )
         totp_rows = _totp_pending_rows(pending_rows)
         visible_pending_rows = _visible_pending_rows(pending_rows)
+        visible_pending_confirmation_ids = {
+            str(getattr(pending, "confirmation_id", "")).strip().lower()
+            for pending in visible_pending_rows
+            if str(getattr(pending, "confirmation_id", "")).strip()
+        }
         displayed_pending_rows = visible_pending_rows
         visible_totp_rows = _totp_pending_rows(visible_pending_rows)
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
@@ -8049,7 +8054,7 @@ class SessionImplMixin(HandlerMixinBase):
                 error_text = _chat_confirmation_command_error_text(
                     content,
                     allowed_actions={"reject"},
-                    pending_confirmation_ids=pending_confirmation_ids,
+                    pending_confirmation_ids=visible_pending_confirmation_ids,
                 )
                 if error_text and not _internal_channel_confirmation_error_should_block_planner(
                     content
@@ -8060,7 +8065,7 @@ class SessionImplMixin(HandlerMixinBase):
                     or (
                         _chat_confirmation_command_error_text(
                             content,
-                            pending_confirmation_ids=pending_confirmation_ids,
+                            pending_confirmation_ids=visible_pending_confirmation_ids,
                         )
                         and _internal_channel_confirmation_error_should_block_planner(content)
                     )

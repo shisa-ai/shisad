@@ -2295,6 +2295,69 @@ async def test_u9_chat_totp_internal_ingress_scopes_targeted_confirmation_to_pen
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["rejct c-2", "comfirm c-2 123456"])
+async def test_u9_chat_totp_internal_ingress_wrong_target_typos_do_not_reveal_pending_id(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    second = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "world"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-2"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+    assert harness._pending_actions["c-2"].status == "pending"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("content", ["reject 1", "no to all"])
 async def test_u9_chat_totp_internal_ingress_scopes_rejects_to_visible_target(
     tmp_path,
