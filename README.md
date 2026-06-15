@@ -134,8 +134,11 @@ terminal can run `shisad status` or `shisad chat` without exporting
 
 ```bash
 export SHISAD_DATA_DIR="$HOME/.local/share/shisad"
-export SHISAD_SOCKET_PATH="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/shisad/control.sock}"
-export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-$(id -u)/control.sock}"
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ "${XDG_RUNTIME_DIR}" = /* ]; then
+  export SHISAD_SOCKET_PATH="$XDG_RUNTIME_DIR/shisad/control.sock"
+else
+  export SHISAD_SOCKET_PATH="/tmp/shisad-$(id -u)/control.sock"
+fi
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_LOG_LEVEL="INFO"
 ```

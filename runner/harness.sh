@@ -155,7 +155,14 @@ _ensure_private_dir() {
     _die "unsafe socket directory: ${dir} is owned by uid ${owner}, expected ${uid}"
   fi
 
-  chmod 700 "${dir}" || _die "unable to restrict socket directory permissions: ${dir}"
+  local mode
+  mode="$(stat -c '%a' "${dir}" 2>/dev/null || stat -f '%Lp' "${dir}")"
+  if [[ "${mode}" != "700" ]]; then
+    if [[ "${create}" != true ]]; then
+      _die "unsafe socket directory: ${dir} has mode ${mode}, expected 700"
+    fi
+    chmod 700 "${dir}" || _die "unable to restrict socket directory permissions: ${dir}"
+  fi
 }
 
 _preflight_socket_parent() {
@@ -421,6 +428,7 @@ _cmd_start() {
   done
 
   _runner_env
+  _preflight_socket_parent false
   _ensure_bootstrap_dirs
   _ensure_policy_file
   _preflight_planner_credential

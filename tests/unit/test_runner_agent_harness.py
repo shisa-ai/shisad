@@ -7,6 +7,7 @@ secret loading, policy bootstrapping, and daemon lifecycle.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -51,6 +52,17 @@ def test_runner_harness_files_exist_and_are_documented() -> None:
     assert "conda" in readme_text
     assert "mamba" in readme_text
     assert "bash runner/harness.sh shisad status" in readme_text
+
+
+def test_gh50_manual_socket_docs_require_absolute_xdg_runtime_dir() -> None:
+    for path in [
+        Path("README.md"),
+        Path("docs/DEPLOY.md"),
+        Path("docs/ENV-VARS.md"),
+        Path("docs/2FA.md"),
+    ]:
+        text = path.read_text(encoding="utf-8")
+        assert '[ "${XDG_RUNTIME_DIR}" = /* ]' in text
 
 
 def test_runner_defaults_are_version_agnostic() -> None:
@@ -246,6 +258,7 @@ def test_gh50_harness_socket_matches_xdg_daemon_default(tmp_path: Path) -> None:
 def test_gh50_harness_rejects_symlinked_default_socket_dir(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
+    runtime_dir.chmod(0o700)
     target = tmp_path / "target"
     target.mkdir()
     (runtime_dir / "shisad").symlink_to(target, target_is_directory=True)
@@ -270,6 +283,7 @@ def test_gh50_harness_direct_rpc_helpers_preflight_default_socket_dir(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
+    runtime_dir.chmod(0o700)
     target = tmp_path / "target"
     target.mkdir()
     (runtime_dir / "shisad").symlink_to(target, target_is_directory=True)
@@ -293,6 +307,37 @@ def test_gh50_harness_direct_rpc_helpers_preflight_default_socket_dir(
         assert result.returncode != 0
         assert "unsafe socket directory" in result.stderr
         assert "symlink" in result.stderr
+
+
+def test_gh50_harness_client_preflight_rejects_world_writable_socket_dir(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    runtime_dir.chmod(0o700)
+    socket_dir = runtime_dir / "shisad"
+    socket_dir.mkdir()
+    socket_dir.chmod(0o777)
+    (socket_dir / "control.sock").write_text("spoof", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SHISAD_")}
+    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+
+    for command in [
+        ["bash", "runner/harness.sh", "shisad", "status"],
+        ["bash", "runner/harness.sh", "start", "--no-debug"],
+    ]:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            cwd=str(Path.cwd()),
+            env=env,
+        )
+
+        assert result.returncode != 0
+        assert "unsafe socket directory" in result.stderr
+        assert "mode" in result.stderr
+        assert stat.S_IMODE(socket_dir.stat().st_mode) == 0o777
 
 
 def test_gh50_harness_ignores_relative_xdg_runtime_dir() -> None:

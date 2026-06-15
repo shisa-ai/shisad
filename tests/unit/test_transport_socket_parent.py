@@ -78,3 +78,21 @@ async def test_gh50_control_client_rejects_symlinked_default_tmp_socket_parent(
 
     with pytest.raises(PermissionError, match="symlink"):
         await client.connect()
+
+
+@pytest.mark.asyncio
+async def test_gh50_control_client_rejects_world_writable_default_tmp_socket_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket_parent = tmp_path / "shisad-default"
+    socket_parent.mkdir()
+    socket_parent.chmod(0o777)
+    (socket_parent / "control.sock").write_text("spoof", encoding="utf-8")
+    monkeypatch.setattr(transport, "_default_tmp_socket_parent", lambda: socket_parent)
+
+    client = ControlClient(socket_parent / "control.sock")
+
+    with pytest.raises(PermissionError, match="mode 0777"):
+        await client.connect()
+    assert stat.S_IMODE(socket_parent.lstat().st_mode) == 0o777
