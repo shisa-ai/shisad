@@ -1821,6 +1821,8 @@ async def test_channel_chat_confirmation_rejects_bare_pending_number_without_pro
     [
         ("comfirm 1", "confirm 1"),
         ("rejct 1", "reject 1"),
+        ("comfirm c-1 123456", "confirm c-1 123456"),
+        ("rejct c-1", "reject c-1"),
         ("comfirm", "confirm"),
         ("rejcet", "reject"),
     ],

@@ -1467,12 +1467,17 @@ def _chat_confirmation_command_error_text(
     else:
         target = tokens[1]
         tail = " ".join(tokens[2:])
-        if tail and not _action_resolve_command_tail_is_clear(tail):
+        tail_is_totp_code = len(tokens) == 3 and tokens[2].isdigit() and len(tokens[2]) == 6
+        if tail and not (tail_is_totp_code or _action_resolve_command_tail_is_clear(tail)):
             return ""
         if target.isdigit():
             suggestion = f"{suggested_action} {int(target)}"
         elif target == "all":
             suggestion = f"{suggested_action} all"
+        elif pending_confirmation_ids is not None and target in pending_confirmation_ids:
+            suggestion = f"{suggested_action} {target}"
+            if tail_is_totp_code:
+                suggestion = f"{suggestion} {tokens[2]}"
         else:
             return ""
     return f"Did you mean '{suggestion}'? No action was taken. {_confirmation_command_guidance()}"
