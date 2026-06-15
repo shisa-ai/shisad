@@ -1523,17 +1523,9 @@ def _confirmation_alias_target_is_confirmation_like(
     candidate = str(token or "").strip().strip(".,;:!")
     if pending_confirmation_ids is not None and candidate in pending_confirmation_ids:
         return True
-    if not candidate or candidate == "all" or candidate.isdigit() or "?" in candidate:
-        return False
-    if "." in candidate:
-        return False
-    if not all(char.isalnum() or char in {"-", "_"} for char in candidate):
-        return False
-    if not any(char.isdigit() for char in candidate):
-        return False
-    if "-" in candidate or "_" in candidate:
-        return True
-    return len(candidate) >= 6
+    return len(candidate) == 32 and all(
+        char in "0123456789abcdef" for char in candidate.casefold()
+    )
 
 
 def _chat_confirmation_typo_targets_id_like_token(
