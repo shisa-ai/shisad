@@ -1318,8 +1318,19 @@ def _starts_with_supported_cli_command(text: str) -> bool:
 def _confirmation_command_tokens_after_prefix(tokens: Sequence[str]) -> list[str]:
     if not tokens:
         return []
-    first = str(tokens[0]).strip(",:")
+    first_token = str(tokens[0])
+    first = first_token.strip(",:")
     if first in {"please", "ok", "okay"}:
+        return list(tokens[1:])
+    for prefix in ("please", "okay", "ok"):
+        if not first_token.startswith(prefix):
+            continue
+        tail = first_token[len(prefix) :]
+        if not tail or tail[0] not in {",", ":"}:
+            continue
+        first_without_prefix = tail.lstrip(",:")
+        if first_without_prefix:
+            return [first_without_prefix, *tokens[1:]]
         return list(tokens[1:])
     return list(tokens)
 

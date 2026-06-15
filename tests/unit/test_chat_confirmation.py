@@ -2301,9 +2301,11 @@ async def test_u9_chat_totp_internal_ingress_scopes_targeted_confirmation_to_pen
         "rejct c-2",
         "rejct c-999",
         "please rejct c-999",
+        "ok,rejct c-999",
         "comfirm c-2 123456",
         "comfirm c-999 123456",
         "ok, comfirm c-999 123456",
+        "please:comfirm c-999 123456",
     ],
 )
 async def test_u9_chat_totp_internal_ingress_unknown_target_typos_do_not_probe_ids(
@@ -2379,8 +2381,10 @@ async def test_u9_chat_totp_internal_ingress_unknown_target_typos_do_not_probe_i
     [
         "rejct c-999",
         "please rejct c-999",
+        "ok,rejct c-999",
         "comfirm c-999 123456",
         "ok, comfirm c-999 123456",
+        "please:comfirm c-999 123456",
     ],
 )
 async def test_command_chat_unknown_id_typos_do_not_fall_through_to_planner(
