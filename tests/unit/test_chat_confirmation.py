@@ -2295,8 +2295,11 @@ async def test_u9_chat_totp_internal_ingress_scopes_targeted_confirmation_to_pen
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content", ["rejct c-2", "comfirm c-2 123456"])
-async def test_u9_chat_totp_internal_ingress_wrong_target_typos_do_not_reveal_pending_id(
+@pytest.mark.parametrize(
+    "content",
+    ["rejct c-2", "rejct c-999", "comfirm c-2 123456", "comfirm c-999 123456"],
+)
+async def test_u9_chat_totp_internal_ingress_unknown_target_typos_do_not_probe_ids(
     tmp_path,
     content: str,
 ) -> None:
@@ -2356,10 +2359,56 @@ async def test_u9_chat_totp_internal_ingress_wrong_target_typos_do_not_reveal_pe
     assert "no action was taken" in response
     assert "original approval thread/channel" in response
     assert "c-2" not in response
+    assert "c-999" not in response
     assert harness.confirm_calls == []
     assert harness.reject_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
     assert harness._pending_actions["c-2"].status == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["rejct c-999", "comfirm c-999 123456"])
+async def test_chat_confirmation_unknown_id_typos_do_not_fall_through_to_planner(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "confirmation command not recognized" in response
+    assert "no action was taken" in response
+    assert "c-999" not in response
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
 
 
 @pytest.mark.asyncio

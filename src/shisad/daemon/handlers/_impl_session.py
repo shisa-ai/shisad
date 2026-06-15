@@ -1483,6 +1483,36 @@ def _chat_confirmation_command_error_text(
     return f"Did you mean '{suggestion}'? No action was taken. {_confirmation_command_guidance()}"
 
 
+def _confirmation_id_like_token(token: str) -> bool:
+    candidate = str(token or "").strip().strip(".,;:!")
+    if not candidate or candidate == "all" or candidate.isdigit() or "?" in candidate:
+        return False
+    if not all(char.isalnum() or char in {"-", "_", "."} for char in candidate):
+        return False
+    return any(char.isdigit() or char in {"-", "_", "."} for char in candidate)
+
+
+def _chat_confirmation_typo_targets_id_like_token(
+    text: str,
+    *,
+    allowed_actions: set[str] | None = None,
+) -> bool:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False
+    tokens = normalized.split()
+    if len(tokens) < 2:
+        return False
+    if _nearest_confirmation_action(tokens[0], allowed_actions=allowed_actions) is None:
+        return False
+    target = tokens[1]
+    tail = " ".join(tokens[2:])
+    tail_is_totp_code = len(tokens) == 3 and tokens[2].isdigit() and len(tokens[2]) == 6
+    if tail and not (tail_is_totp_code or _action_resolve_command_tail_is_clear(tail)):
+        return False
+    return _confirmation_id_like_token(target)
+
+
 def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool:
     normalized = " ".join(str(text or "").strip().lower().split())
     if not normalized:
@@ -8075,6 +8105,10 @@ class SessionImplMixin(HandlerMixinBase):
                     command_error_should_block = (
                         _internal_channel_confirmation_error_should_block_planner(content)
                     )
+                    command_error_targets_id_like_token = (
+                        command_error_should_block
+                        and _chat_confirmation_typo_targets_id_like_token(content)
+                    )
                     visible_command_error_text = (
                         _chat_confirmation_command_error_text(
                             content,
@@ -8085,8 +8119,9 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                     if intent.action != "none" or visible_command_error_text:
                         error_text = _internal_ingress_confirmation_approval_not_allowed_text()
-                    elif command_error_should_block and (
-                        visible_pending_confirmation_ids != pending_confirmation_ids
+                    elif command_error_targets_id_like_token or (
+                        command_error_should_block
+                        and visible_pending_confirmation_ids != pending_confirmation_ids
                         and _chat_confirmation_command_error_text(
                             content,
                             pending_confirmation_ids=pending_confirmation_ids,
@@ -8251,6 +8286,11 @@ class SessionImplMixin(HandlerMixinBase):
                     content,
                     pending_confirmation_ids=pending_confirmation_ids,
                 )
+                if not error_text and _chat_confirmation_typo_targets_id_like_token(content):
+                    error_text = (
+                        "Confirmation command not recognized. No action was taken. "
+                        f"{_confirmation_command_guidance()}"
+                    )
                 if error_text:
                     return await _finalize_chat_confirmation_response(
                         response_text=error_text,
