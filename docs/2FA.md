@@ -294,8 +294,10 @@ backends:
 ```bash
 REMOTE_SHISAD_SOCKET_PATH="$(
   ssh user@host 'socket="${SHISAD_SOCKET_PATH:-}";
-    if [ -z "$socket" ] && [ -n "${XDG_RUNTIME_DIR:-}" ] && [ "${XDG_RUNTIME_DIR}" = /* ]; then
-      socket="$XDG_RUNTIME_DIR/shisad/control.sock";
+    if [ -z "$socket" ]; then
+      case "${XDG_RUNTIME_DIR:-}" in
+        /*) socket="$XDG_RUNTIME_DIR/shisad/control.sock";;
+      esac;
     fi;
     if [ -z "$socket" ]; then
       socket="/tmp/shisad-$(id -u)/control.sock";

@@ -53,7 +53,7 @@ def _configured_xdg_runtime_dir() -> Path | None:
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
     if not runtime_dir:
         return None
-    path = Path(runtime_dir).expanduser()
+    path = Path(runtime_dir)
     if not path.is_absolute():
         return None
     return path

@@ -63,7 +63,8 @@ def test_gh50_manual_socket_docs_require_absolute_xdg_runtime_dir() -> None:
     ]
     for path in snippet_paths:
         text = path.read_text(encoding="utf-8")
-        assert '[ "${XDG_RUNTIME_DIR}" = /* ]' in text
+        assert 'case "${XDG_RUNTIME_DIR:-}" in' in text
+        assert '[ "${XDG_RUNTIME_DIR}" = /* ]' not in text
 
     prose_paths = [
         Path("docs/DEPLOY.md"),

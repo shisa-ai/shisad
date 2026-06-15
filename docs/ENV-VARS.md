@@ -539,11 +539,10 @@ automatically. If configuring manually, the core subset is:
 
 ```bash
 export SHISAD_DATA_DIR="$PWD/.local/shisad-dev"
-if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ "${XDG_RUNTIME_DIR}" = /* ]; then
-  export SHISAD_SOCKET_PATH="$XDG_RUNTIME_DIR/shisad/control.sock"
-else
-  export SHISAD_SOCKET_PATH="/tmp/shisad-$(id -u)/control.sock"
-fi
+case "${XDG_RUNTIME_DIR:-}" in
+  /*) export SHISAD_SOCKET_PATH="$XDG_RUNTIME_DIR/shisad/control.sock" ;;
+  *) export SHISAD_SOCKET_PATH="/tmp/shisad-$(id -u)/control.sock" ;;
+esac
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_CODING_REPO_ROOT="$PWD"
 export SHISAD_CODING_AGENT_DEFAULT_PREFERENCE='["codex","claude"]'

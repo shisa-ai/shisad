@@ -12,6 +12,14 @@ import shisad.core.api.transport as transport
 from shisad.core.api.transport import ControlClient, ControlServer
 
 
+def test_gh50_transport_ignores_tilde_xdg_runtime_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "~/runtime")
+
+    assert transport._configured_xdg_runtime_dir() is None
+
+
 @pytest.mark.asyncio
 async def test_gh50_control_server_hardens_default_tmp_socket_parent(
     tmp_path: Path,
