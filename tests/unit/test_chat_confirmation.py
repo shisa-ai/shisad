@@ -535,7 +535,10 @@ async def test_gh41_untrusted_channel_confirm_is_intercepted_without_planner(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content", ["confirm that the file exists", "yes re-open", "yes foo_bar"])
+@pytest.mark.parametrize(
+    "content",
+    ["confirm that the file exists", "yes re-open", "yes foo_bar", "yes v2"],
+)
 async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planner(
     tmp_path,
     content: str,
@@ -586,6 +589,7 @@ async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planne
         "no thanks",
         "no i mean capabilities",
         "no config.json",
+        "no config2.json",
         "reject that idea",
         "reject all pending?",
     ],
@@ -883,7 +887,9 @@ async def test_u5_chat_confirmation_ignores_clean_trusted_cli_default_session(tm
         "ok,reject c-1",
         "yes re-open",
         "no config.json",
+        "no config2.json",
         "yes foo_bar",
+        "yes v2",
     ],
 )
 async def test_command_chat_non_totp_text_falls_through_to_planner(
@@ -2443,7 +2449,14 @@ async def test_command_chat_unknown_id_typos_do_not_fall_through_to_planner(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "content",
-    ["yes c-1", "no c-1", "please yes c-1", "ok,no c-1"],
+    [
+        "yes c-1",
+        "no c-1",
+        "please yes c-1",
+        "ok,no c-1",
+        "yes c-999",
+        "no abc123",
+    ],
 )
 async def test_command_chat_unsupported_id_aliases_do_not_fall_through_to_planner(
     tmp_path,

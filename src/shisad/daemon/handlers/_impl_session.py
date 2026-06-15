@@ -1515,6 +1515,27 @@ def _confirmation_id_like_token(token: str) -> bool:
     return any(char.isdigit() or char in {"-", "_", "."} for char in candidate)
 
 
+def _confirmation_alias_target_is_confirmation_like(
+    token: str,
+    *,
+    pending_confirmation_ids: set[str] | None = None,
+) -> bool:
+    candidate = str(token or "").strip().strip(".,;:!")
+    if pending_confirmation_ids is not None and candidate in pending_confirmation_ids:
+        return True
+    if not candidate or candidate == "all" or candidate.isdigit() or "?" in candidate:
+        return False
+    if "." in candidate:
+        return False
+    if not all(char.isalnum() or char in {"-", "_"} for char in candidate):
+        return False
+    if not any(char.isdigit() for char in candidate):
+        return False
+    if "-" in candidate or "_" in candidate:
+        return True
+    return len(candidate) >= 6
+
+
 def _chat_confirmation_typo_targets_id_like_token(
     text: str,
     *,
@@ -1534,8 +1555,10 @@ def _chat_confirmation_typo_targets_id_like_token(
     if action is not None:
         if allowed_actions is not None and action not in allowed_actions:
             return False
-        target = tokens[1].strip(".,;:!")
-        if pending_confirmation_ids is None or target not in pending_confirmation_ids:
+        if not _confirmation_alias_target_is_confirmation_like(
+            tokens[1],
+            pending_confirmation_ids=pending_confirmation_ids,
+        ):
             return False
     elif _nearest_confirmation_action(first, allowed_actions=allowed_actions) is None:
         return False
@@ -1565,8 +1588,10 @@ def _internal_channel_confirmation_error_should_block_planner(
         if (
             first not in _CRC_EXPLICIT_ID_COMMAND_VERBS
             and len(tokens) >= 2
-            and pending_confirmation_ids is not None
-            and tokens[1].strip(".,;:!") in pending_confirmation_ids
+            and _confirmation_alias_target_is_confirmation_like(
+                tokens[1],
+                pending_confirmation_ids=pending_confirmation_ids,
+            )
         ):
             tail = " ".join(tokens[2:])
             tail_is_totp_code = (
