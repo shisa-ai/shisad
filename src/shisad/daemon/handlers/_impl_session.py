@@ -4836,6 +4836,7 @@ def _daemon_pending_confirmation_response_text(
     pending_public_preview_by_id: Mapping[str, str] | None = None,
     binding_pending_rows: Sequence[Any] | None = None,
     totp_guidance_confirmation_ids: Sequence[str] | None = None,
+    allow_chat_approval: bool = True,
 ) -> str:
     binding_rows = list(binding_pending_rows or ())
     totp_guidance_ids = {
@@ -4887,9 +4888,13 @@ def _daemon_pending_confirmation_response_text(
                 )
                 lines.append(f"   To approve: {_totp_cli_confirm_command(confirmation_id)}")
         else:
-            lines.append(
-                f"   In chat: reply with 'confirm {pending_number}' or 'reject {pending_number}'"
-            )
+            if allow_chat_approval:
+                lines.append(
+                    f"   In chat: reply with 'confirm {pending_number}' "
+                    f"or 'reject {pending_number}'"
+                )
+            else:
+                lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
             lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
         preview = ""
         if pending_public_preview_by_id is not None:
@@ -7613,6 +7618,7 @@ class SessionImplMixin(HandlerMixinBase):
         *,
         pending_rows: Sequence[Any],
         tainted_session: bool,
+        allow_chat_approval: bool = True,
     ) -> str:
         totp_rows = _totp_pending_rows(pending_rows)
         non_totp_rows = _non_totp_pending_rows(pending_rows)
@@ -7622,20 +7628,35 @@ class SessionImplMixin(HandlerMixinBase):
             lines = ["Pending confirmations."]
         if totp_rows:
             if non_totp_rows:
-                lines.append(
-                    "For non-TOTP items, reply with 'confirm N' or 'reject N'. "
-                    "Reply with 'no to all' to reject all pending items."
-                )
+                if allow_chat_approval:
+                    lines.append(
+                        "For non-TOTP items, reply with 'confirm N' or 'reject N'. "
+                        "Reply with 'no to all' to reject all pending items."
+                    )
+                else:
+                    lines.append(
+                        "For non-TOTP items, reply with 'reject N' or 'no to all' to reject; "
+                        "use the CLI confirmation command to approve."
+                    )
             else:
                 lines.append("Reply with 'reject N' or 'no to all' to deny pending items.")
             lines.extend(_chat_totp_guidance_lines(pending_rows=pending_rows))
         else:
-            if len(pending_rows) == 1:
-                lines.append(
-                    "Reply with 'confirm', 'confirm N', 'reject N', 'yes to all', or 'no to all'."
-                )
+            if allow_chat_approval:
+                if len(pending_rows) == 1:
+                    lines.append(
+                        "Reply with 'confirm', 'confirm N', 'reject N', "
+                        "'yes to all', or 'no to all'."
+                    )
+                else:
+                    lines.append(
+                        "Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'."
+                    )
             else:
-                lines.append("Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.")
+                lines.append(
+                    "Reply with 'reject N' or 'no to all' to reject; "
+                    "use the CLI confirmation command to approve."
+                )
         for idx, pending in enumerate(pending_rows, start=1):
             reason = str(pending.reason or "").strip()
             if not reason:
@@ -7773,9 +7794,13 @@ class SessionImplMixin(HandlerMixinBase):
             allow_direct_trusted_cli_confirmation = bool(
                 isinstance(metadata, Mapping) and metadata.get("operator_owned_cli") is True
             )
-        if not (trusted_input or allow_direct_trusted_cli_confirmation):
-            return None
         if is_internal_ingress and not allow_channel_ingress_confirmation:
+            return None
+        if not (
+            trusted_input
+            or allow_direct_trusted_cli_confirmation
+            or allow_channel_ingress_confirmation
+        ):
             return None
         pending_rows = self._pending_confirmations_for_binding(
             session_id=sid,
@@ -7974,6 +7999,7 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_summary=self._chat_pending_confirmation_summary(
                     pending_rows=displayed_pending_rows,
                     tainted_session=tainted_session,
+                    allow_chat_approval=not is_internal_ingress,
                 ),
             )
             if pending_status_response:
@@ -8148,6 +8174,7 @@ class SessionImplMixin(HandlerMixinBase):
                         + self._chat_pending_confirmation_summary(
                             pending_rows=visible_remaining,
                             tainted_session=tainted_session,
+                            allow_chat_approval=not is_internal_ingress,
                         )
                     )
         else:
@@ -8191,6 +8218,7 @@ class SessionImplMixin(HandlerMixinBase):
                     response_text = self._chat_pending_confirmation_summary(
                         pending_rows=displayed_pending_rows,
                         tainted_session=tainted_session,
+                        allow_chat_approval=not is_internal_ingress,
                     )
                     system_generated_pending_confirmation_response = True
                 executed_actions = 0
@@ -8289,6 +8317,7 @@ class SessionImplMixin(HandlerMixinBase):
                         + self._chat_pending_confirmation_summary(
                             pending_rows=visible_remaining,
                             tainted_session=tainted_session,
+                            allow_chat_approval=not is_internal_ingress,
                         )
                     )
 
@@ -12260,6 +12289,7 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_public_preview_by_id=pending_public_preview_by_id,
                 binding_pending_rows=visible_pending_rows,
                 totp_guidance_confirmation_ids=execution.pending_confirmation_ids,
+                allow_chat_approval=not validated.is_internal_ingress,
             )
             system_generated_pending_confirmation_response = True
             if fallback_notice:

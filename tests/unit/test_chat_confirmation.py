@@ -491,6 +491,103 @@ async def test_channel_chat_confirmation_rejects_proofless_batch_confirm(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_gh41_untrusted_channel_confirm_is_intercepted_without_planner(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("note.create"),
+        arguments={"key": "memory_preference", "content": "remember by default"},
+        reason="manual",
+        capabilities={Capability.MEMORY_WRITE},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="slack",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="untrusted",
+        trusted_input=False,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "not accepted without proof" in response
+    assert "reject n" in response
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+    assert result["pending_confirmation_ids"] == ["c-1"]
+
+
+@pytest.mark.asyncio
+async def test_gh41_untrusted_channel_reject_resolves_same_target_pending_action(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("note.create"),
+        arguments={"key": "memory_preference", "content": "remember by default"},
+        reason="manual",
+        capabilities={Capability.MEMORY_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel="slack",
+            recipient="D1",
+            workspace_hint="team-1",
+        ),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="slack",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="untrusted",
+        trusted_input=False,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
+        content="reject 1",
+        firewall_result=FirewallResult(sanitized_text="reject 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert "rejected 1 (note.create): rejected" in str(result["response"])
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "reason": "chat_confirmation",
+        }
+    ]
+    assert harness._pending_actions["c-1"].status == "rejected"
+    assert result["pending_confirmation_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_u5_chat_confirmation_ignores_clean_trusted_cli_default_session(tmp_path) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(

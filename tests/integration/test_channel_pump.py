@@ -225,6 +225,156 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
 
 
 @pytest.mark.asyncio
+async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target_file = workspace / "prefs.txt"
+    target_file.write_text("saved preference\n", encoding="utf-8")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: true",
+                "default_capabilities:",
+                "  - file.read",
+                "tools:",
+                "  fs.read:",
+                "    capabilities_required:",
+                "      - file.read",
+                "    confirmation:",
+                "      level: software",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    slack_channels: list[SlackChannel] = []
+    planner_requests: list[str] = []
+
+    async def _fake_connect(self: SlackChannel) -> None:
+        await InMemoryChannel.connect(self)
+        slack_channels.append(self)
+
+    async def _planner_queues_read_confirmation(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        **_kwargs: object,
+    ) -> PlannerResult:
+        _ = tools
+        planner_requests.append(user_content)
+        proposal = ActionProposal(
+            action_id=f"gh41-read-{len(planner_requests)}",
+            tool_name=ToolName("fs.read"),
+            arguments={
+                "path": str(target_file),
+                "max_bytes": 4096,
+            },
+            reasoning="exercise Slack pending-confirmation routing",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        return PlannerResult(
+            output=PlannerOutput(
+                actions=[proposal],
+                assistant_response="Queued a read for approval.",
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(SlackChannel, "connect", _fake_connect)
+    monkeypatch.setattr(Planner, "propose", _planner_queues_read_confirmation)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+        assistant_fs_roots=[workspace],
+        slack_enabled=True,
+        slack_bot_token="xoxb-token",
+        slack_app_token="xapp-token",
+        channel_identity_allowlist={"slack": ["slack-allow"]},
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        assert slack_channels
+        slack = slack_channels[0]
+
+        await slack.inject(
+            external_user_id="slack-allow",
+            content="please write my preference",
+            workspace_hint="team-1",
+            message_id="gh41-slack-1",
+            reply_target="D1",
+        )
+        first = await asyncio.wait_for(slack.pop_outgoing_delivery(), timeout=5)
+        assert first.target.channel == "slack"
+        assert first.target.recipient == "D1"
+        assert first.content.strip()
+        assert "[PENDING CONFIRMATIONS]" in first.content
+        first_content = first.content.lower()
+        assert "reply with 'reject 1'" in first_content
+        assert "reply with 'confirm 1'" not in first_content
+        assert "confirm 1' or" not in first_content
+        assert "shisad action confirm" in first_content
+        sessions = await client.call("session.list")
+        slack_sessions = [
+            item
+            for item in sessions.get("sessions", [])
+            if isinstance(item, dict)
+            and item.get("channel") == "slack"
+            and item.get("user_id") == "slack-allow"
+        ]
+        assert len(slack_sessions) == 1
+        sid = str(slack_sessions[0]["id"])
+        pending_before = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 10},
+        )
+        assert len(pending_before.get("actions", [])) == 1
+
+        await slack.inject(
+            external_user_id="slack-allow",
+            content="confirm 1",
+            workspace_hint="team-1",
+            message_id="gh41-slack-2",
+            reply_target="D1",
+        )
+        second = await asyncio.wait_for(slack.pop_outgoing_delivery(), timeout=5)
+        pending_after = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 10},
+        )
+
+        assert "not accepted without proof" in second.content.lower()
+        assert "pending confirmations" not in second.content.lower()
+        assert len(planner_requests) == 1
+        assert "please write my preference" in planner_requests[0]
+        assert "confirm 1" not in planner_requests[0]
+        assert len(pending_after.get("actions", [])) == 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m75_discord_public_channel_policy_allows_guest_without_pairing(
     model_env: None,
     tmp_path: Path,
