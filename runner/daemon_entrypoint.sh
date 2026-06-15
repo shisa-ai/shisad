@@ -34,13 +34,7 @@ mkdir -p "${SHISAD_DATA_DIR}"
 log_path="${SHISAD_DATA_DIR}/daemon.log"
 exec >>"${log_path}" 2>&1
 
-# Best-effort cleanup of stale sockets; the harness also does this.
-if [[ -n "${SHISAD_SOCKET_PATH:-}" ]] && [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
-  rm -f "${SHISAD_SOCKET_PATH}" || true
-fi
-
 if [[ "${debug}" == true ]]; then
   exec uv run shisad start --debug
 fi
 exec uv run shisad start --foreground
-

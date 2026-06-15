@@ -39,7 +39,9 @@ def _default_selfmod_allowed_signers_path() -> Path:
 def _default_socket_path() -> Path:
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
     if runtime_dir:
-        return Path(runtime_dir).expanduser() / "shisad" / "control.sock"
+        runtime_path = Path(runtime_dir).expanduser()
+        if runtime_path.is_absolute():
+            return runtime_path / "shisad" / "control.sock"
     uid = os.getuid() if hasattr(os, "getuid") else "user"
     return Path("/tmp") / f"shisad-{uid}" / "control.sock"
 

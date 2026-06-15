@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from shisad.core.config import DaemonConfig
@@ -44,6 +45,19 @@ def test_gh50_default_socket_uses_xdg_runtime_dir(
     config = DaemonConfig(data_dir=tmp_path / "data")
 
     assert config.socket_path == runtime_dir / "shisad" / "control.sock"
+
+
+def test_gh50_default_socket_ignores_relative_xdg_runtime_dir(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "relative-runtime")
+    monkeypatch.delenv("SHISAD_SOCKET_PATH", raising=False)
+
+    config = DaemonConfig()
+
+    assert config.socket_path == (
+        Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock"
+    )
 
 
 def test_gh50_default_socket_falls_back_to_user_tmp_dir(

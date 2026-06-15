@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import os
+import stat
 import struct
 import sys
 from collections.abc import Callable
@@ -37,6 +38,90 @@ from shisad.core.request_context import RequestContext
 logger = logging.getLogger(__name__)
 
 PERMISSION_DENIED = -32001
+
+
+def _current_euid() -> int:
+    return os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+
+
+def _default_tmp_socket_parent() -> Path:
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    return Path("/tmp") / f"shisad-{uid}"
+
+
+def _configured_xdg_runtime_dir() -> Path | None:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if not runtime_dir:
+        return None
+    path = Path(runtime_dir).expanduser()
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def _private_socket_dirs_for(socket_path: Path) -> tuple[Path, ...]:
+    parent = socket_path.parent
+    if parent == _default_tmp_socket_parent():
+        return (parent,)
+
+    runtime_dir = _configured_xdg_runtime_dir()
+    if runtime_dir is not None and parent == runtime_dir / "shisad":
+        return (runtime_dir, parent)
+
+    return ()
+
+
+def _ensure_socket_parent(socket_path: Path) -> None:
+    private_dirs = _private_socket_dirs_for(socket_path)
+    if not private_dirs:
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        return
+
+    for directory in private_dirs:
+        _ensure_private_socket_dir(directory)
+
+
+def _ensure_private_socket_dir(directory: Path) -> None:
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise PermissionError(
+            f"Unable to create private socket directory {directory}: {exc}"
+        ) from exc
+
+    try:
+        directory_stat = os.lstat(directory)
+    except OSError as exc:
+        raise PermissionError(f"Unable to stat socket directory {directory}: {exc}") from exc
+
+    if stat.S_ISLNK(directory_stat.st_mode):
+        raise PermissionError(f"Refusing to use unsafe socket directory {directory}: symlink")
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise PermissionError(
+            f"Refusing to use unsafe socket directory {directory}: not a directory"
+        )
+
+    expected_uid = _current_euid()
+    if directory_stat.st_uid != expected_uid:
+        raise PermissionError(
+            "Refusing to use unsafe socket directory "
+            f"{directory}: owned by uid {directory_stat.st_uid}, expected {expected_uid}"
+        )
+
+    if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+        try:
+            os.chmod(directory, 0o700)
+        except OSError as exc:
+            raise PermissionError(
+                f"Unable to restrict socket directory permissions for {directory}: {exc}"
+            ) from exc
+
+        directory_stat = os.lstat(directory)
+        if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+            raise PermissionError(
+                "Refusing to use unsafe socket directory "
+                f"{directory}: mode {stat.S_IMODE(directory_stat.st_mode):04o}"
+            )
 
 
 class _UntypedParams(BaseModel):
@@ -141,8 +226,7 @@ class ControlServer:
 
     async def start(self) -> None:
         """Start listening on the Unix socket."""
-        # Ensure parent directory exists
-        self._socket_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_socket_parent(self._socket_path)
 
         # Remove stale socket
         if self._socket_path.exists():

@@ -292,12 +292,20 @@ backends:
 ### Enroll a helper credential
 
 ```bash
-SHISAD_SOCKET_PATH="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/shisad/control.sock}"
-SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-$(id -u)/control.sock}"
+REMOTE_SHISAD_SOCKET_PATH="$(
+  ssh user@host 'socket="${SHISAD_SOCKET_PATH:-}";
+    if [ -z "$socket" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+      socket="$XDG_RUNTIME_DIR/shisad/control.sock";
+    fi;
+    if [ -z "$socket" ]; then
+      socket="/tmp/shisad-$(id -u)/control.sock";
+    fi;
+    printf "%s\n" "$socket"'
+)"
 
 shisad-approver register \
   --ssh-target user@host \
-  --remote-socket "$SHISAD_SOCKET_PATH" \
+  --remote-socket "$REMOTE_SHISAD_SOCKET_PATH" \
   --user alice \
   --name "laptop-yubikey"
 ```
@@ -307,12 +315,13 @@ shisad-approver register \
 ```bash
 shisad-approver run \
   --ssh-target user@host \
-  --remote-socket "$SHISAD_SOCKET_PATH"
+  --remote-socket "$REMOTE_SHISAD_SOCKET_PATH"
 ```
 
 - If the helper runs on the daemon host directly, use `--socket-path` instead
   of the SSH flags.
-- `--remote-socket` should match the daemon's `SHISAD_SOCKET_PATH`.
+- `--remote-socket` is the daemon host's socket path, not the helper machine's
+  local path.
 
 ### Credential compatibility
 

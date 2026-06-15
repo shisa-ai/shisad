@@ -97,7 +97,7 @@ _load_env_files() {
 }
 
 _default_user_socket_path() {
-  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]]; then
     printf '%s\n' "${XDG_RUNTIME_DIR}/shisad/control.sock"
     return 0
   fi
@@ -105,6 +105,77 @@ _default_user_socket_path() {
   local uid
   uid="$(id -u)"
   printf '%s\n' "/tmp/shisad-${uid}/control.sock"
+}
+
+_stat_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1"
+}
+
+_socket_dir_requires_private() {
+  local dir="$1"
+  local uid
+  uid="$(id -u)"
+
+  if [[ "${dir}" == "/tmp/shisad-${uid}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
+    && [[ "${dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+_ensure_private_dir() {
+  local dir="$1"
+  local create="${2:-false}"
+
+  if [[ "${create}" == true ]]; then
+    if [[ -L "${dir}" ]]; then
+      _die "unsafe socket directory: ${dir} is a symlink"
+    fi
+    mkdir -p -m 700 "${dir}"
+  elif [[ ! -e "${dir}" ]]; then
+    return 0
+  fi
+
+  if [[ -L "${dir}" ]]; then
+    _die "unsafe socket directory: ${dir} is a symlink"
+  fi
+  if [[ ! -d "${dir}" ]]; then
+    _die "unsafe socket directory: ${dir} is not a directory"
+  fi
+
+  local owner uid
+  owner="$(_stat_uid "${dir}")" || _die "unable to stat socket directory owner: ${dir}"
+  uid="$(id -u)"
+  if [[ "${owner}" != "${uid}" ]]; then
+    _die "unsafe socket directory: ${dir} is owned by uid ${owner}, expected ${uid}"
+  fi
+
+  chmod 700 "${dir}" || _die "unable to restrict socket directory permissions: ${dir}"
+}
+
+_preflight_socket_parent() {
+  local create="${1:-false}"
+  local socket_dir
+  socket_dir="$(dirname "${SHISAD_SOCKET_PATH}")"
+
+  if ! _socket_dir_requires_private "${socket_dir}"; then
+    if [[ "${create}" == true ]]; then
+      mkdir -p "${socket_dir}"
+    fi
+    return 0
+  fi
+
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
+    && [[ "${socket_dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
+    _ensure_private_dir "${XDG_RUNTIME_DIR}" "${create}"
+  fi
+
+  _ensure_private_dir "${socket_dir}" "${create}"
 }
 
 _clear_inherited_shisad_env() {
@@ -176,7 +247,7 @@ _daemon_pid_path() {
 _ensure_bootstrap_dirs() {
   mkdir -p "${SHISAD_DATA_DIR}"
   mkdir -p "$(dirname "${SHISAD_POLICY_PATH}")"
-  mkdir -p "$(dirname "${SHISAD_SOCKET_PATH}")"
+  _preflight_socket_parent true
 }
 
 _ensure_policy_file() {
@@ -288,6 +359,7 @@ _runner_env() {
 
 _shisad() {
   _runner_env
+  _preflight_socket_parent false
   uv run shisad "$@"
 }
 
@@ -425,6 +497,7 @@ _cmd_start() {
 
 _cmd_stop() {
   _runner_env
+  _preflight_socket_parent false
 
   local pid_path
   pid_path="$(_daemon_pid_path)"
