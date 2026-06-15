@@ -1466,12 +1466,15 @@ def _chat_confirmation_command_error_text(
         suggestion = suggested_action
     else:
         target = tokens[1]
+        tail = " ".join(tokens[2:])
+        if tail and not _action_resolve_command_tail_is_clear(tail):
+            return ""
         if target.isdigit():
             suggestion = f"{suggested_action} {int(target)}"
         elif target == "all":
             suggestion = f"{suggested_action} all"
         else:
-            suggestion = f"{suggested_action} N"
+            return ""
     return f"Did you mean '{suggestion}'? No action was taken. {_confirmation_command_guidance()}"
 
 
