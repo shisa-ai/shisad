@@ -1416,6 +1416,14 @@ def _unresolved_confirmation_index_text(index: int | None) -> str:
     )
 
 
+def _unresolved_confirmation_id_text(confirmation_id: str) -> str:
+    label = str(confirmation_id).strip() or "that"
+    return (
+        f"Confirmation ID {label} is not pending for this session. "
+        f"No action was taken. {_confirmation_command_guidance()}"
+    )
+
+
 def _chat_confirmation_command_error_text(
     text: str,
     *,
@@ -7848,8 +7856,11 @@ class SessionImplMixin(HandlerMixinBase):
         visible_totp_rows = _totp_pending_rows(visible_pending_rows)
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
         intent: ChatConfirmationIntent | None = None
+        intent_explicit_target_id = ""
         if is_internal_ingress and totp_submission is None:
-            intent, _explicit_target_id = _classify_action_resolve_current_turn_intent(content)
+            intent, intent_explicit_target_id = _classify_action_resolve_current_turn_intent(
+                content
+            )
 
         def _confirmation_result_status_text(
             result: Mapping[str, Any],
@@ -8225,13 +8236,28 @@ class SessionImplMixin(HandlerMixinBase):
                     checkpoint_ids=[],
                     response_pending_confirmation_ids=[],
                 )
-            indexes = _resolve_chat_confirmation_indexes(
-                intent=intent,
-                pending_count=len(displayed_pending_rows),
-                tainted_session=tainted_session,
-            )
+            if intent.target == "id":
+                target_id = intent_explicit_target_id.strip().lower()
+                visible_index_by_id = {
+                    str(getattr(pending, "confirmation_id", "")).strip().lower(): index
+                    for index, pending in enumerate(displayed_pending_rows)
+                    if str(getattr(pending, "confirmation_id", "")).strip()
+                }
+                indexes = (
+                    [visible_index_by_id[target_id]]
+                    if target_id in visible_index_by_id
+                    else []
+                )
+            else:
+                indexes = _resolve_chat_confirmation_indexes(
+                    intent=intent,
+                    pending_count=len(displayed_pending_rows),
+                    tainted_session=tainted_session,
+                )
             if not indexes:
-                if intent.target == "index":
+                if intent.target == "id":
+                    response_text = _unresolved_confirmation_id_text(intent_explicit_target_id)
+                elif intent.target == "index":
                     response_text = _unresolved_confirmation_index_text(intent.index)
                 else:
                     response_text = self._chat_pending_confirmation_summary(
