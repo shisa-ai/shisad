@@ -874,6 +874,10 @@ async def test_u5_chat_confirmation_ignores_clean_trusted_cli_default_session(tm
         "confirmed that the file exists",
         "rejected that idea",
         "confirm 1",
+        "confirm c-1",
+        "reject c-1",
+        "please confirm c-1",
+        "ok,reject c-1",
     ],
 )
 async def test_command_chat_non_totp_text_falls_through_to_planner(

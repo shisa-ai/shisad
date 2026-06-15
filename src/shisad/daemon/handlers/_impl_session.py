@@ -1525,7 +1525,10 @@ def _chat_confirmation_typo_targets_id_like_token(
     tokens = _confirmation_command_tokens_after_prefix(normalized.split())
     if len(tokens) < 2:
         return False
-    if _nearest_confirmation_action(tokens[0], allowed_actions=allowed_actions) is None:
+    first = tokens[0]
+    if first in _CRC_CONFIRMATION_VERB_ACTIONS:
+        return False
+    if _nearest_confirmation_action(first, allowed_actions=allowed_actions) is None:
         return False
     target = tokens[1]
     tail = " ".join(tokens[2:])
