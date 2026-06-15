@@ -535,8 +535,10 @@ async def test_gh41_untrusted_channel_confirm_is_intercepted_without_planner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["confirm that the file exists", "yes re-open", "yes foo_bar"])
 async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planner(
     tmp_path,
+    content: str,
 ) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(
@@ -564,9 +566,9 @@ async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planne
         trusted_input=False,
         is_internal_ingress=True,
         delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
-        content="confirm that the file exists",
+        content=content,
         firewall_result=FirewallResult(
-            sanitized_text="confirm that the file exists",
+            sanitized_text=content,
             original_hash="0" * 64,
         ),
     )
@@ -583,6 +585,7 @@ async def test_gh41_untrusted_channel_confirmation_prose_falls_through_to_planne
     [
         "no thanks",
         "no i mean capabilities",
+        "no config.json",
         "reject that idea",
         "reject all pending?",
     ],
@@ -878,6 +881,9 @@ async def test_u5_chat_confirmation_ignores_clean_trusted_cli_default_session(tm
         "reject c-1",
         "please confirm c-1",
         "ok,reject c-1",
+        "yes re-open",
+        "no config.json",
+        "yes foo_bar",
     ],
 )
 async def test_command_chat_non_totp_text_falls_through_to_planner(

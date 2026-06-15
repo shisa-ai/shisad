@@ -1519,6 +1519,7 @@ def _chat_confirmation_typo_targets_id_like_token(
     text: str,
     *,
     allowed_actions: set[str] | None = None,
+    pending_confirmation_ids: set[str] | None = None,
 ) -> bool:
     normalized = " ".join(str(text or "").strip().lower().split())
     if not normalized:
@@ -1533,6 +1534,9 @@ def _chat_confirmation_typo_targets_id_like_token(
     if action is not None:
         if allowed_actions is not None and action not in allowed_actions:
             return False
+        target = tokens[1].strip(".,;:!")
+        if pending_confirmation_ids is None or target not in pending_confirmation_ids:
+            return False
     elif _nearest_confirmation_action(first, allowed_actions=allowed_actions) is None:
         return False
     target = tokens[1]
@@ -1543,7 +1547,11 @@ def _chat_confirmation_typo_targets_id_like_token(
     return _confirmation_id_like_token(target)
 
 
-def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool:
+def _internal_channel_confirmation_error_should_block_planner(
+    text: str,
+    *,
+    pending_confirmation_ids: set[str] | None = None,
+) -> bool:
     normalized = " ".join(str(text or "").strip().lower().split())
     if not normalized:
         return False
@@ -1557,7 +1565,8 @@ def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool
         if (
             first not in _CRC_EXPLICIT_ID_COMMAND_VERBS
             and len(tokens) >= 2
-            and _confirmation_id_like_token(tokens[1])
+            and pending_confirmation_ids is not None
+            and tokens[1].strip(".,;:!") in pending_confirmation_ids
         ):
             tail = " ".join(tokens[2:])
             tail_is_totp_code = (
@@ -8131,7 +8140,10 @@ class SessionImplMixin(HandlerMixinBase):
                     executed_actions=0,
                     checkpoint_ids=[],
                 )
-            if _chat_confirmation_typo_targets_id_like_token(content):
+            if _chat_confirmation_typo_targets_id_like_token(
+                content,
+                pending_confirmation_ids=visible_pending_confirmation_ids,
+            ):
                 error_text = _chat_confirmation_command_error_text(
                     content,
                     pending_confirmation_ids=visible_pending_confirmation_ids,
@@ -8158,16 +8170,23 @@ class SessionImplMixin(HandlerMixinBase):
                     pending_confirmation_ids=visible_pending_confirmation_ids,
                 )
                 if error_text and not _internal_channel_confirmation_error_should_block_planner(
-                    content
+                    content,
+                    pending_confirmation_ids=visible_pending_confirmation_ids,
                 ):
                     error_text = ""
                 if not error_text:
                     command_error_should_block = (
-                        _internal_channel_confirmation_error_should_block_planner(content)
+                        _internal_channel_confirmation_error_should_block_planner(
+                            content,
+                            pending_confirmation_ids=visible_pending_confirmation_ids,
+                        )
                     )
                     command_error_targets_id_like_token = (
                         command_error_should_block
-                        and _chat_confirmation_typo_targets_id_like_token(content)
+                        and _chat_confirmation_typo_targets_id_like_token(
+                            content,
+                            pending_confirmation_ids=visible_pending_confirmation_ids,
+                        )
                     )
                     visible_command_error_text = (
                         _chat_confirmation_command_error_text(
@@ -8346,7 +8365,10 @@ class SessionImplMixin(HandlerMixinBase):
                     content,
                     pending_confirmation_ids=pending_confirmation_ids,
                 )
-                if not error_text and _chat_confirmation_typo_targets_id_like_token(content):
+                if not error_text and _chat_confirmation_typo_targets_id_like_token(
+                    content,
+                    pending_confirmation_ids=pending_confirmation_ids,
+                ):
                     error_text = (
                         "Confirmation command not recognized. No action was taken. "
                         f"{_confirmation_command_guidance()}"
