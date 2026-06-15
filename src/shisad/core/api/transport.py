@@ -50,7 +50,7 @@ def _default_tmp_socket_parent() -> Path:
 
 
 def _configured_xdg_runtime_dir() -> Path | None:
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
     if not runtime_dir:
         return None
     path = Path(runtime_dir)

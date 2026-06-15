@@ -73,6 +73,19 @@ def test_gh50_default_socket_ignores_tilde_xdg_runtime_dir(
     )
 
 
+def test_gh50_default_socket_ignores_leading_whitespace_xdg_runtime_dir(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", " /tmp/runtime")
+    monkeypatch.delenv("SHISAD_SOCKET_PATH", raising=False)
+
+    config = DaemonConfig()
+
+    assert config.socket_path == (
+        Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock"
+    )
+
+
 def test_gh50_default_socket_falls_back_to_user_tmp_dir(
     monkeypatch,
 ) -> None:
