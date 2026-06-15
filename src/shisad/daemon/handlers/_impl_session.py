@@ -835,6 +835,7 @@ _CRC_CONFIRMATION_VERB_ACTIONS = {
     "deny": "reject",
     "no": "reject",
 }
+_CRC_EXPLICIT_ID_COMMAND_VERBS = {"confirm", "approve", "reject", "deny"}
 _CRC_FUZZY_CONFIRMATION_VERBS = {
     "confirm": "confirm",
     "approve": "confirm",
@@ -1526,9 +1527,13 @@ def _chat_confirmation_typo_targets_id_like_token(
     if len(tokens) < 2:
         return False
     first = tokens[0]
-    if first in _CRC_CONFIRMATION_VERB_ACTIONS:
+    if first in _CRC_EXPLICIT_ID_COMMAND_VERBS:
         return False
-    if _nearest_confirmation_action(first, allowed_actions=allowed_actions) is None:
+    action = _CRC_CONFIRMATION_VERB_ACTIONS.get(first)
+    if action is not None:
+        if allowed_actions is not None and action not in allowed_actions:
+            return False
+    elif _nearest_confirmation_action(first, allowed_actions=allowed_actions) is None:
         return False
     target = tokens[1]
     tail = " ".join(tokens[2:])
@@ -1549,6 +1554,18 @@ def _internal_channel_confirmation_error_should_block_planner(text: str) -> bool
         return False
     first = tokens[0]
     if first in _CRC_CONFIRMATION_VERB_ACTIONS:
+        if (
+            first not in _CRC_EXPLICIT_ID_COMMAND_VERBS
+            and len(tokens) >= 2
+            and _confirmation_id_like_token(tokens[1])
+        ):
+            tail = " ".join(tokens[2:])
+            tail_is_totp_code = (
+                len(tokens) == 3 and tokens[2].isdigit() and len(tokens[2]) == 6
+            )
+            return not tail or tail_is_totp_code or _action_resolve_command_tail_is_clear(
+                tail
+            )
         return False
     return _nearest_confirmation_action(first) is not None
 
