@@ -87,7 +87,8 @@ bash runner/harness.sh shisad dev implement \
 The harness sets defaults if you do not provide them:
 
 - `SHISAD_DATA_DIR` (default: `.local/shisad-dev`)
-- `SHISAD_SOCKET_PATH` (default: `/tmp/shisad-dev.sock`)
+- `SHISAD_SOCKET_PATH` (default: `$XDG_RUNTIME_DIR/shisad/control.sock` when
+  `XDG_RUNTIME_DIR` is set, otherwise `/tmp/shisad-<uid>/control.sock`)
 - `SHISAD_POLICY_PATH` (default: `.local/policy.yaml`)
 - `SHISAD_CODING_REPO_ROOT` (default: repo root)
 

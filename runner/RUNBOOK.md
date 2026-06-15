@@ -14,7 +14,12 @@ For current public operator guidance, see:
 ## Preconditions
 
 - You are in the `shisad` repo root.
-- Python deps are installed (`uv sync --group dev --extra chat`).
+- Python deps are installed. The standard source-checkout path is
+  `uv sync --group dev --extra chat`, which uses the repo `.venv`.
+  For an existing conda/mamba env, install `uv` in that env, then run
+  `uv export --frozen --format requirements.txt --group dev --extra chat`
+  and `uv pip install --python "$CONDA_PREFIX/bin/python" -r <requirements>
+  --strict`, followed by an editable install of the checkout.
   For local PromptGuard/YARA runtime checks, use
   `uv sync --group security-runtime --group dev --extra chat`.
   `security-runtime` is a dependency group, not an extra; `chat` is the extra.
@@ -48,6 +53,7 @@ Planner preset → required key:
 # Background (requires tmux):
 bash runner/harness.sh start
 bash runner/harness.sh status
+bash runner/harness.sh shisad status
 bash runner/harness.sh logs --follow
 
 # Foreground (no tmux required):
@@ -56,6 +62,10 @@ bash runner/harness.sh start --fg
 # Or the thin shim:
 ./run.sh
 ```
+
+The harness and plain `shisad` use the same per-user default socket. After
+starting with `./run.sh` or `bash runner/harness.sh start`, another terminal
+can run `shisad status` or `shisad chat` without setting `SHISAD_SOCKET_PATH`.
 
 ## Health Checks
 

@@ -36,6 +36,18 @@ cd shisad
 uv sync --group dev --extra chat
 ```
 
+`uv sync` creates and uses the repo `.venv`. To install this checkout into an
+already-active conda/mamba env instead:
+
+```bash
+mamba install -y -c conda-forge uv
+uv export --frozen --format requirements.txt --group dev --extra chat \
+  --output-file /tmp/shisad-requirements.txt
+uv pip install --python "$CONDA_PREFIX/bin/python" \
+  -r /tmp/shisad-requirements.txt --strict
+uv pip install --python "$CONDA_PREFIX/bin/python" -e .
+```
+
 YARA-backed content scanning is included in the base install through
 `textguard[yara]`. If you want local PromptGuard runtime checks in the daemon
 from a source checkout, include the security runtime dependency group:
@@ -146,7 +158,8 @@ Before starting the daemon:
 - [ ] Python 3.12+ and `uv` installed
 - [ ] At least one LLM provider credential available (see provider table below)
 - [ ] Data directory writable (default: `~/.local/share/shisad`)
-- [ ] Socket path writable (default: `/tmp/shisad/control.sock`)
+- [ ] Socket path writable (default: `$XDG_RUNTIME_DIR/shisad/control.sock`
+      when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/shisad-<uid>/control.sock`)
 - [ ] Optional: at least one channel token (Discord, Telegram, or Slack)
 - [ ] Optional: policy file created (`runner/policy.default.yaml` is a starting point)
 
@@ -161,6 +174,7 @@ Quick start:
 bash runner/harness.sh start       # background; requires tmux
 bash runner/harness.sh start --fg  # foreground; no tmux required
 bash runner/harness.sh status
+bash runner/harness.sh shisad status
 bash runner/harness.sh logs --follow
 ```
 
@@ -238,7 +252,8 @@ If you do not want to use the runner harness, set a minimal baseline:
 
 ```bash
 export SHISAD_DATA_DIR="$HOME/.local/share/shisad"
-export SHISAD_SOCKET_PATH="/tmp/shisad/control.sock"
+export SHISAD_SOCKET_PATH="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/shisad/control.sock}"
+export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-$(id -u)/control.sock}"
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_LOG_LEVEL="INFO"
 ```
@@ -471,10 +486,9 @@ PY
 Then verify through shisad:
 
 ```bash
-export SHISAD_SOCKET_PATH=/tmp/shisad-dev.sock
 uv run shisad web search "latest Python release" --limit 3
 
-# Or use the runner wrapper, which targets the harness socket automatically:
+# Or use the runner wrapper, which also targets the shared default socket:
 bash runner/harness.sh shisad web search "latest Python release" --limit 3
 ```
 
@@ -534,7 +548,10 @@ build/export workflows.
 Verify bot/app tokens and channel auth configuration.
 
 **Daemon start fails with `PermissionError` on socket path:**
-The default socket path may require root. For non-root operation, set `SHISAD_SOCKET_PATH` to a user-writable path (e.g., `$HOME/.local/share/shisad/control.sock`). Ensure your shell is loading the env file before starting the daemon.
+The default socket path is per-user and should not require root. If you
+overrode `SHISAD_SOCKET_PATH`, set it to a user-writable directory or unset it
+and restart with the default. Use `bash runner/harness.sh env` to inspect the
+effective socket path.
 
 **`web fetch` fails with `CERTIFICATE_VERIFY_FAILED`:**
 Install or update the CA trust bundle: `sudo apt install ca-certificates`.

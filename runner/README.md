@@ -8,12 +8,31 @@ Quickstart (from repo root):
 bash runner/harness.sh start       # background; requires tmux
 bash runner/harness.sh start --fg  # foreground; no tmux required
 bash runner/harness.sh status
+bash runner/harness.sh shisad status
 bash runner/harness.sh logs --follow
 ```
 
 Background start uses `tmux` so the daemon survives across non-interactive shells.
 For long live drives after repo edits, prefer `bash runner/harness.sh start --no-debug`
 so autoreload does not restart the daemon mid-run.
+The harness uses the same per-user default socket as plain `shisad`, so a
+second terminal can run `shisad status` or `shisad chat` without exporting
+`SHISAD_SOCKET_PATH`.
+
+Dependency setup:
+
+```bash
+# Standard uv-managed repo .venv:
+uv sync --group dev --extra chat
+
+# Existing conda/mamba env:
+mamba install -y -c conda-forge uv
+uv export --frozen --format requirements.txt --group dev --extra chat \
+  --output-file /tmp/shisad-requirements.txt
+uv pip install --python "$CONDA_PREFIX/bin/python" \
+  -r /tmp/shisad-requirements.txt --strict
+uv pip install --python "$CONDA_PREFIX/bin/python" -e .
+```
 
 Talk to the daemon:
 

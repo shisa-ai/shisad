@@ -292,9 +292,12 @@ backends:
 ### Enroll a helper credential
 
 ```bash
+SHISAD_SOCKET_PATH="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/shisad/control.sock}"
+SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-$(id -u)/control.sock}"
+
 shisad-approver register \
   --ssh-target user@host \
-  --remote-socket /run/shisad/control.sock \
+  --remote-socket "$SHISAD_SOCKET_PATH" \
   --user alice \
   --name "laptop-yubikey"
 ```
@@ -304,7 +307,7 @@ shisad-approver register \
 ```bash
 shisad-approver run \
   --ssh-target user@host \
-  --remote-socket /run/shisad/control.sock
+  --remote-socket "$SHISAD_SOCKET_PATH"
 ```
 
 - If the helper runs on the daemon host directly, use `--socket-path` instead

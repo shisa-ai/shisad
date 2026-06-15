@@ -6,6 +6,7 @@ secret loading, policy bootstrapping, and daemon lifecycle.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -47,6 +48,9 @@ def test_runner_harness_files_exist_and_are_documented() -> None:
     assert "SHISAD_DISCORD_ENABLED" in harness_text
     assert "tmux" in harness_text
     assert "Operator Runbook" in runbook_text
+    assert "conda" in readme_text
+    assert "mamba" in readme_text
+    assert "bash runner/harness.sh shisad status" in readme_text
 
 
 def test_runner_defaults_are_version_agnostic() -> None:
@@ -230,3 +234,26 @@ def test_harness_tmux_socket_matches_session_default() -> None:
     result = _harness_env()
     assert result["RUNNER_TMUX_SOCKET_NAME"] == "shisad-dev"
     assert result["RUNNER_TMUX_SESSION_NAME"] == "shisad-dev"
+
+
+def test_gh50_harness_socket_matches_xdg_daemon_default(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    result = _harness_env({"XDG_RUNTIME_DIR": str(runtime_dir)})
+
+    assert result["SHISAD_SOCKET_PATH"] == str(runtime_dir / "shisad" / "control.sock")
+
+
+def test_gh50_harness_socket_falls_back_to_user_tmp_default() -> None:
+    env = {k: v for k, v in os.environ.items() if k != "XDG_RUNTIME_DIR"}
+    result = subprocess.run(
+        ["bash", "runner/harness.sh", "env"],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    output = result.stdout
+
+    assert f"SHISAD_SOCKET_PATH=/tmp/shisad-{os.getuid()}/control.sock" in output
+    assert "/run/shisad" not in output

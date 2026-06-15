@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -33,6 +34,14 @@ from shisad.interop.a2a_registry import (
 
 def _default_selfmod_allowed_signers_path() -> Path:
     return Path(__file__).resolve().parents[3] / "config" / "selfmod" / "allowed_signers"
+
+
+def _default_socket_path() -> Path:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if runtime_dir:
+        return Path(runtime_dir).expanduser() / "shisad" / "control.sock"
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    return Path("/tmp") / f"shisad-{uid}" / "control.sock"
 
 
 _WILDCARD_HOST_TOKENS = {"*", "?", "[", "]"}
@@ -231,7 +240,7 @@ class DaemonConfig(BaseSettings):
         description="Root directory for shisad data (audit logs, sessions, etc.)",
     )
     socket_path: Path = Field(
-        default=Path("/run/shisad/control.sock"),
+        default_factory=_default_socket_path,
         description="Unix domain socket path for the control API",
     )
     policy_path: Path = Field(

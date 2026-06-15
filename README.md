@@ -85,6 +85,19 @@ cd shisad
 uv sync --group dev --extra chat
 ```
 
+`uv sync` creates and uses the repo `.venv`. For an existing conda/mamba env,
+install `uv` into that env first, then install the frozen source dependencies
+into the active Python:
+
+```bash
+mamba install -y -c conda-forge uv
+uv export --frozen --format requirements.txt --group dev --extra chat \
+  --output-file /tmp/shisad-requirements.txt
+uv pip install --python "$CONDA_PREFIX/bin/python" \
+  -r /tmp/shisad-requirements.txt --strict
+uv pip install --python "$CONDA_PREFIX/bin/python" -e .
+```
+
 YARA-backed content scanning is included in the base install through
 `textguard[yara]`. For local PromptGuard runtime checks from a source checkout,
 add the security runtime dependency group:
@@ -109,15 +122,20 @@ Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`
 bash runner/harness.sh start       # background (requires tmux)
 bash runner/harness.sh start --fg  # foreground
 bash runner/harness.sh status
+bash runner/harness.sh shisad status
 ```
 
-See `runner/README.md` for details. Secrets go in `runner/.env` (gitignored) or `SHISAD_ENV_FILE`.
+The runner and plain `shisad` use the same per-user default socket, so another
+terminal can run `shisad status` or `shisad chat` without exporting
+`SHISAD_SOCKET_PATH`. See `runner/README.md` for details. Secrets go in
+`runner/.env` (gitignored) or `SHISAD_ENV_FILE`.
 
 ### Manual baseline
 
 ```bash
 export SHISAD_DATA_DIR="$HOME/.local/share/shisad"
-export SHISAD_SOCKET_PATH="/tmp/shisad/control.sock"
+export SHISAD_SOCKET_PATH="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/shisad/control.sock}"
+export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-$(id -u)/control.sock}"
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_LOG_LEVEL="INFO"
 ```

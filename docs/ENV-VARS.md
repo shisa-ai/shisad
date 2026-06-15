@@ -39,7 +39,7 @@ This surface is large. That is now documented, but it should be simplified in a 
 | Env var | Purpose |
 |---|---|
 | `SHISAD_DATA_DIR` | Root runtime data directory |
-| `SHISAD_SOCKET_PATH` | Unix control socket path |
+| `SHISAD_SOCKET_PATH` | Unix control socket path; defaults to `$XDG_RUNTIME_DIR/shisad/control.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/shisad-<uid>/control.sock` |
 | `SHISAD_POLICY_PATH` | Trusted policy bundle path |
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
@@ -539,7 +539,8 @@ automatically. If configuring manually, the core subset is:
 
 ```bash
 export SHISAD_DATA_DIR="$PWD/.local/shisad-dev"
-export SHISAD_SOCKET_PATH="/tmp/shisad-dev.sock"
+export SHISAD_SOCKET_PATH="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/shisad/control.sock}"
+export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-$(id -u)/control.sock}"
 export SHISAD_POLICY_PATH="$PWD/.local/policy.yaml"
 export SHISAD_CODING_REPO_ROOT="$PWD"
 export SHISAD_CODING_AGENT_DEFAULT_PREFERENCE='["codex","claude"]'

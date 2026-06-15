@@ -96,6 +96,17 @@ _load_env_files() {
   _parse_env_file "${DOTENV_PATH}" "runner/.env"
 }
 
+_default_user_socket_path() {
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    printf '%s\n' "${XDG_RUNTIME_DIR}/shisad/control.sock"
+    return 0
+  fi
+
+  local uid
+  uid="$(id -u)"
+  printf '%s\n' "/tmp/shisad-${uid}/control.sock"
+}
+
 _clear_inherited_shisad_env() {
   # The runner harness is intentionally deterministic: it should not pick up a
   # previously-configured operator daemon environment (channels, sockets, etc.)
@@ -128,7 +139,7 @@ _clear_inherited_shisad_env() {
 
 _export_defaults() {
   export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-dev}"
-  export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-dev.sock}"
+  export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-$(_default_user_socket_path)}"
   export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$REPO_ROOT/.local/policy.yaml}"
   export SHISAD_LOG_LEVEL="${SHISAD_LOG_LEVEL:-INFO}"
   export SHISAD_CODING_REPO_ROOT="${SHISAD_CODING_REPO_ROOT:-$REPO_ROOT}"
