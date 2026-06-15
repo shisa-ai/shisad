@@ -13,19 +13,22 @@ Ubuntu 24.04 is Node 18 and is not supported for this path.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y bubblewrap npm
-# Install Node.js 22 LTS or newer from your standard Node distribution.
+sudo apt-get install -y bubblewrap
+# Install Node.js 22 LTS or newer, including npm/npx, from your standard Node distribution.
 node --version
+npm --version
+npx --version
 cd /path/to/shisad
 npm install @playwright/test
 npx playwright install chromium
 sudo npx playwright install-deps chromium
 ```
 
-On Ubuntu 24.04, do not rely on `sudo apt-get install nodejs` from the default
-distribution repository for browser automation; that package currently provides
-Node 18. Use a NodeSource, `nvm`, prebuilt Node, or other operator-approved
-Node 22+ install instead.
+On Ubuntu 24.04, do not rely on `sudo apt-get install nodejs npm` from the
+default distribution repository for browser automation; those packages
+currently provide the unsupported Node 18 runtime. Use a NodeSource, `nvm`,
+prebuilt Node, or other operator-approved Node 22+ install instead, and make
+sure `node`, `npm`, and `npx` resolve to that installation before continuing.
 
 `npx playwright install chromium` installs the browser binary.
 `npx playwright install-deps chromium` installs the native shared libraries

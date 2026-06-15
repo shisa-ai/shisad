@@ -229,7 +229,10 @@ Browser notes:
 Browser host prerequisites:
 
 - `bubblewrap` must be installed for the default hardened container sandbox.
-- `nodejs` and `npm` must be installed to run the source-checkout wrapper.
+- Node.js 22 LTS or newer must be installed with matching `npm`/`npx` to run
+  the source-checkout wrapper. On Ubuntu 24.04, the default `nodejs` and `npm`
+  packages provide unsupported Node 18; use an operator-approved Node 22+
+  installation instead.
 - Install the wrapper dependency in the shisad checkout with `npm install @playwright/test`.
 - Install both the Chromium browser binary and native shared libraries: `npx playwright install chromium` and `npx playwright install-deps chromium`.
 - See `docs/runbooks/BROWSER.md` for a complete setup and protocol reference.
