@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from shisad.core.types import ToolName
 from shisad.daemon.handlers._impl_session import (
     _PAGE_TITLE_METADATA_HEADER,
@@ -36,6 +38,16 @@ def test_gh46_synthesizes_for_nonempty_prose_and_evidence_read() -> None:
     assert _should_synthesize_initial_evidence_tool_response(
         "I'll read the evidence now.",
         [_tool_output("evidence.read")],
+    )
+
+
+@pytest.mark.parametrize("tool_name", ["browser.read_page", "browser.screenshot"])
+def test_gh46_synthesizes_for_nonempty_prose_and_browser_evidence_tools(
+    tool_name: str,
+) -> None:
+    assert _should_synthesize_initial_evidence_tool_response(
+        "I'll inspect the current browser evidence.",
+        [_tool_output(tool_name)],
     )
 
 

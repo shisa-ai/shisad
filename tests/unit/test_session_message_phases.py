@@ -3739,6 +3739,65 @@ async def test_gh46_finalize_response_replaces_evidence_read_preliminary_prose()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "payload"),
+    [
+        (
+            "browser.read_page",
+            {
+                "ok": True,
+                "url": "https://example.test/browser-form",
+                "title": "Reserve Online | Venue",
+                "content": "Browser page body says Reserve Online is available.",
+            },
+        ),
+        (
+            "browser.screenshot",
+            {
+                "ok": True,
+                "screenshot_id": "shot-browser-reserve",
+                "title": "Reserve Online | Venue",
+                "ocr_text": "Screenshot OCR says Reserve Online is visible.",
+            },
+        ),
+    ],
+)
+async def test_gh46_finalize_response_replaces_browser_evidence_preliminary_prose(
+    tool_name: str,
+    payload: dict[str, Any],
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("The browser evidence shows Reserve Online.")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name=tool_name,
+                success=True,
+                content=json.dumps(payload),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="I'll inspect the current browser evidence before answering.",
+        sanitized_text=(
+            "Continue from the current browser session and tell me if reservations work."
+        ),
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text == "The browser evidence shows Reserve Online."
+    assert "I'll inspect" not in text
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    assert "Preliminary assistant prose" in synthesis_input
+    assert "Tool outputs from the same turn" in synthesis_input
+    assert "Reserve Online" in synthesis_input
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_preserves_non_web_preliminary_without_synthesis() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("Unexpected synthesis.")

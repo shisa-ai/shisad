@@ -3986,6 +3986,8 @@ def _should_synthesize_initial_evidence_tool_response(
     if not str(preliminary_prose or "").strip():
         return False
     evidence_tool_names = {
+        ToolName("browser.read_page"),
+        ToolName("browser.screenshot"),
         ToolName("web.search"),
         ToolName("web.fetch"),
         ToolName("evidence.read"),
