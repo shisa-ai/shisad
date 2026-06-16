@@ -3977,17 +3977,21 @@ def _intermediate_tool_summary_response(
     return f"{_INTERMEDIATE_TOOL_OUTPUT_HEADER}\n\n{summary}"
 
 
-def _should_synthesize_initial_web_tool_response(
+def _should_synthesize_initial_evidence_tool_response(
     preliminary_prose: str,
     executed_tool_outputs: Sequence[Any],
 ) -> bool:
-    # GH27 Contract B: web evidence makes same-turn pre-tool prose preliminary
-    # by structure, independent of what English phrase the prose contains.
+    # Evidence-producing tools make same-turn pre-tool prose preliminary by
+    # structure, independent of what English phrase the prose contains.
     if not str(preliminary_prose or "").strip():
         return False
-    web_evidence_tool_names = {ToolName("web.search"), ToolName("web.fetch")}
+    evidence_tool_names = {
+        ToolName("web.search"),
+        ToolName("web.fetch"),
+        ToolName("evidence.read"),
+    }
     return any(
-        getattr(tool_output, "tool_name", None) in web_evidence_tool_names
+        getattr(tool_output, "tool_name", None) in evidence_tool_names
         for tool_output in executed_tool_outputs
     )
 
@@ -12443,7 +12447,7 @@ class SessionImplMixin(HandlerMixinBase):
             if action_resolve_summary
             else ""
         )
-        should_synthesize_initial_tool_response = _should_synthesize_initial_web_tool_response(
+        should_synthesize_initial_tool_response = _should_synthesize_initial_evidence_tool_response(
             initial_planner_response_text,
             execution.executed_tool_outputs,
         )

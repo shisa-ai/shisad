@@ -3686,6 +3686,59 @@ async def test_gh24_finalize_response_synthesizes_evidence_read_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh46_finalize_response_replaces_evidence_read_preliminary_prose() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner(
+        "The page says online reservations are accepted via the Tabelog reservation flow."
+    )
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="evidence.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "ref_id": "ev-tabelog",
+                        "source": "web.fetch:tabelog.com",
+                        "content": (
+                            "Tabelog reservation details: online reservations are accepted "
+                            "for tomorrow through the reservation button. Phone: 03-0000-0000."
+                        ),
+                        "taint_labels": ["untrusted"],
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response=(
+            "I'll read the most relevant evidence reference from the prior web.fetch "
+            "of the Tabelog page to answer your question directly."
+        ),
+        sanitized_text=(
+            "From what you've already fetched, does the Tabelog page say online "
+            "reservations are accepted, yes or no?"
+        ),
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text == (
+        "The page says online reservations are accepted via the Tabelog reservation flow."
+    )
+    assert "I'll read" not in text
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    assert "initial_assistant_response_present=yes" in synthesis_input
+    assert "Preliminary assistant prose" in synthesis_input
+    assert "Tool outputs from the same turn" in synthesis_input
+    assert "online reservations are accepted for tomorrow" in synthesis_input
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_preserves_non_web_preliminary_without_synthesis() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("Unexpected synthesis.")

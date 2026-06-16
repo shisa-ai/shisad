@@ -98,6 +98,16 @@ async def _evidence_stub_complete(
     goal_lower = goal.lower()
 
     if "POST-TOOL SYNTHESIS PASS" in normalized_planner_input:
+        if '"tool_name": "evidence.read"' in normalized_planner_input and (
+            _UNIQUE_MARKER in normalized_planner_input
+        ):
+            response = "read-evidence-synthesized"
+            return ProviderResponse(
+                message=Message(role="assistant", content=response),
+                model="behavioral-evidence-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
         evidence_stub = _extract_evidence_stub(normalized_planner_input)
         response = f"Fetched evidence: {evidence_stub}" if evidence_stub else "No evidence ref."
         return ProviderResponse(
@@ -395,6 +405,8 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow(evidence_harness) -
         "session.message",
         {"session_id": sid, "content": f"read evidence {ref_id}"},
     )
+    assert reread["response"] == "read-evidence-synthesized"
+    assert "Reading the evidence." not in str(reread.get("response", ""))
     assert int(reread.get("executed_actions", 0)) == 1
     reread_outputs = _tool_outputs(reread)
     assert _UNIQUE_MARKER in reread_outputs["evidence.read"][0]["content"]

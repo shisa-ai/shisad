@@ -9,7 +9,7 @@ from shisad.daemon.handlers._impl_session import (
     _POST_TOOL_SYNTHESIS_PRELIMINARY_MAX_CHARS,
     _build_post_tool_synthesis_untrusted_content,
     _model_facing_serialized_tool_outputs,
-    _should_synthesize_initial_web_tool_response,
+    _should_synthesize_initial_evidence_tool_response,
     _summarize_tool_outputs_for_chat,
 )
 
@@ -19,53 +19,60 @@ def _tool_output(tool_name: str) -> SimpleNamespace:
 
 
 def test_contract_b_synthesizes_for_nonempty_prose_and_web_search() -> None:
-    assert _should_synthesize_initial_web_tool_response(
+    assert _should_synthesize_initial_evidence_tool_response(
         "preliminary",
         [_tool_output("web.search")],
     )
 
 
 def test_contract_b_synthesizes_for_nonempty_prose_and_web_fetch() -> None:
-    assert _should_synthesize_initial_web_tool_response(
+    assert _should_synthesize_initial_evidence_tool_response(
         "preliminary",
         [_tool_output("web.fetch")],
     )
 
 
+def test_gh46_synthesizes_for_nonempty_prose_and_evidence_read() -> None:
+    assert _should_synthesize_initial_evidence_tool_response(
+        "I'll read the evidence now.",
+        [_tool_output("evidence.read")],
+    )
+
+
 def test_contract_b_synthesizes_for_nonempty_prose_and_multiple_web_tools() -> None:
-    assert _should_synthesize_initial_web_tool_response(
+    assert _should_synthesize_initial_evidence_tool_response(
         "preliminary",
         [_tool_output("web.search"), _tool_output("web.fetch")],
     )
 
 
 def test_contract_b_does_not_synthesize_for_non_web_tools_only() -> None:
-    assert not _should_synthesize_initial_web_tool_response(
+    assert not _should_synthesize_initial_evidence_tool_response(
         "preliminary",
         [_tool_output("fs.read")],
     )
 
 
 def test_contract_b_does_not_synthesize_without_tools() -> None:
-    assert not _should_synthesize_initial_web_tool_response("preliminary", [])
+    assert not _should_synthesize_initial_evidence_tool_response("preliminary", [])
 
 
 def test_contract_b_does_not_synthesize_empty_prose_with_web_search() -> None:
-    assert not _should_synthesize_initial_web_tool_response(
+    assert not _should_synthesize_initial_evidence_tool_response(
         "",
         [_tool_output("web.search")],
     )
 
 
 def test_contract_b_does_not_synthesize_whitespace_prose_with_web_search() -> None:
-    assert not _should_synthesize_initial_web_tool_response(
+    assert not _should_synthesize_initial_evidence_tool_response(
         " \n\t ",
         [_tool_output("web.search")],
     )
 
 
 def test_contract_b_synthesizes_for_web_plus_non_web_tools() -> None:
-    assert _should_synthesize_initial_web_tool_response(
+    assert _should_synthesize_initial_evidence_tool_response(
         "preliminary",
         [_tool_output("fs.read"), _tool_output("web.search")],
     )
