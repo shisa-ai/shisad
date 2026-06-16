@@ -3429,6 +3429,41 @@ class _PostToolSynthesisPlanner:
         )
 
 
+class _RecoveryAwareSynthesisPlanner(_PostToolSynthesisPlanner):
+    async def propose(
+        self,
+        user_content: str,
+        context: PolicyContext,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        cleaned = user_content.replace("^", "")
+        recovery_policy = ""
+        if "SEARCH EVIDENCE RECOVERY POLICY:" in cleaned:
+            recovery_policy = cleaned.split("SEARCH EVIDENCE RECOVERY POLICY:", 1)[1].split(
+                "Do not call tools.",
+                1,
+            )[0]
+        if (
+            "realitycheck.search" in recovery_policy
+            and '"results": []' in cleaned
+            and "scan_capped" in cleaned
+        ):
+            self.response_text = (
+                "Current evidence is insufficient to determine whether reservations are "
+                "available; the Reality Check search returned no results and was capped."
+            )
+        else:
+            self.response_text = "No reservations were found."
+        return await super().propose(
+            user_content,
+            context,
+            tools=tools,
+            persona_tone_override=persona_tone_override,
+        )
+
+
 class _RecordingTraceRecorder:
     def __init__(self) -> None:
         self.turns: list[Any] = []
@@ -3879,6 +3914,58 @@ async def test_gh46_finalize_response_replaces_realitycheck_preliminary_prose(
     assert "Preliminary assistant prose" in synthesis_input
     assert "Tool outputs from the same turn" in synthesis_input
     assert expected_evidence in synthesis_input
+
+
+@pytest.mark.asyncio
+async def test_gh46_empty_realitycheck_search_uses_insufficiency_recovery_policy() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _RecoveryAwareSynthesisPlanner("No reservations were found.")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="realitycheck.search",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "query": "online reservations tomorrow",
+                        "mode": "local",
+                        "results": [],
+                        "taint_labels": ["untrusted"],
+                        "evidence": {
+                            "operation": "realitycheck.search",
+                            "searched_files": 5,
+                            "search_file_cap": 5,
+                            "scan_capped": True,
+                        },
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="I'll check Reality Check for reservation evidence.",
+        sanitized_text="Use Reality Check to see whether reservations are available tomorrow.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text == (
+        "Current evidence is insufficient to determine whether reservations are "
+        "available; the Reality Check search returned no results and was capped."
+    )
+    assert "No reservations were found" not in text
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    recovery_policy = synthesis_input.split("SEARCH EVIDENCE RECOVERY POLICY:", 1)[1].split(
+        "Do not call tools.",
+        1,
+    )[0]
+    assert "realitycheck.search" in recovery_policy
+    assert '"results": []' in synthesis_input
+    assert "scan_capped" in synthesis_input
 
 
 @pytest.mark.asyncio
