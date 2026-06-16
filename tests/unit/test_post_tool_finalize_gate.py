@@ -41,7 +41,10 @@ def test_gh46_synthesizes_for_nonempty_prose_and_evidence_read() -> None:
     )
 
 
-@pytest.mark.parametrize("tool_name", ["browser.read_page", "browser.screenshot"])
+@pytest.mark.parametrize(
+    "tool_name",
+    ["browser.navigate", "browser.read_page", "browser.screenshot"],
+)
 def test_gh46_synthesizes_for_nonempty_prose_and_browser_evidence_tools(
     tool_name: str,
 ) -> None:

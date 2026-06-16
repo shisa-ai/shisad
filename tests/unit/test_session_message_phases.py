@@ -3743,6 +3743,15 @@ async def test_gh46_finalize_response_replaces_evidence_read_preliminary_prose()
     ("tool_name", "payload"),
     [
         (
+            "browser.navigate",
+            {
+                "ok": True,
+                "url": "https://example.test/browser-form",
+                "title": "Reserve Online | Venue",
+                "content": "Navigated page body says Reserve Online is available.",
+            },
+        ),
+        (
             "browser.read_page",
             {
                 "ok": True,
