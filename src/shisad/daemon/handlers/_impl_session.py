@@ -3992,6 +3992,8 @@ def _should_synthesize_initial_evidence_tool_response(
         ToolName("web.search"),
         ToolName("web.fetch"),
         ToolName("evidence.read"),
+        ToolName("realitycheck.search"),
+        ToolName("realitycheck.read"),
     }
     return any(
         getattr(tool_output, "tool_name", None) in evidence_tool_names

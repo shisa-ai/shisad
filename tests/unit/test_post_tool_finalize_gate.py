@@ -54,6 +54,19 @@ def test_gh46_synthesizes_for_nonempty_prose_and_browser_evidence_tools(
     )
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    ["realitycheck.search", "realitycheck.read"],
+)
+def test_gh46_synthesizes_for_nonempty_prose_and_realitycheck_evidence_tools(
+    tool_name: str,
+) -> None:
+    assert _should_synthesize_initial_evidence_tool_response(
+        "I'll check the Reality Check evidence before answering.",
+        [_tool_output(tool_name)],
+    )
+
+
 def test_contract_b_synthesizes_for_nonempty_prose_and_multiple_web_tools() -> None:
     assert _should_synthesize_initial_evidence_tool_response(
         "preliminary",

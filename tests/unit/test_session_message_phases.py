@@ -3807,6 +3807,81 @@ async def test_gh46_finalize_response_replaces_browser_evidence_preliminary_pros
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "payload", "expected_evidence"),
+    [
+        (
+            "realitycheck.search",
+            {
+                "ok": True,
+                "query": "reservation policy",
+                "mode": "local",
+                "results": [
+                    {
+                        "title": "reservation-policy.md",
+                        "snippet": "Reservations are accepted online for tomorrow.",
+                        "citation": {
+                            "path": "/tmp/realitycheck/reservation-policy.md",
+                            "line": 12,
+                        },
+                    }
+                ],
+                "taint_labels": ["untrusted"],
+                "evidence": {"operation": "realitycheck.search"},
+            },
+            "Reservations are accepted online for tomorrow.",
+        ),
+        (
+            "realitycheck.read",
+            {
+                "ok": True,
+                "path": "/tmp/realitycheck/reservation-policy.md",
+                "content": "Reality Check source says reservations are accepted online.",
+                "truncated": False,
+                "taint_labels": ["untrusted"],
+                "evidence": {"operation": "realitycheck.read"},
+            },
+            "Reality Check source says reservations are accepted online.",
+        ),
+    ],
+)
+async def test_gh46_finalize_response_replaces_realitycheck_preliminary_prose(
+    tool_name: str,
+    payload: dict[str, Any],
+    expected_evidence: str,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner(
+        "The Reality Check evidence says reservations are accepted online."
+    )
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name=tool_name,
+                success=True,
+                content=json.dumps(payload),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="I'll check the Reality Check evidence before answering.",
+        sanitized_text="Use Reality Check evidence to answer whether reservations are online.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text == "The Reality Check evidence says reservations are accepted online."
+    assert "I'll check" not in text
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    assert "Preliminary assistant prose" in synthesis_input
+    assert "Tool outputs from the same turn" in synthesis_input
+    assert expected_evidence in synthesis_input
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_preserves_non_web_preliminary_without_synthesis() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("Unexpected synthesis.")
