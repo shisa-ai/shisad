@@ -275,7 +275,7 @@ class ChatApp(App[None]):
                 "Ctrl-C to quit."
             )
             self._append_history("")
-            self._poll_transcript_for_async_messages()
+            self._poll_transcript_for_async_messages_best_effort()
             self.sub_title = "connected"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(f"Could not connect to daemon: {exc}"))
@@ -338,7 +338,7 @@ class ChatApp(App[None]):
                     )
             finally:
                 await client.close()
-            self._poll_transcript_for_async_messages()
+            self._poll_transcript_for_async_messages_best_effort()
             self._append_assistant_message(
                 self._extract_response(result),
                 preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
@@ -509,10 +509,13 @@ class ChatApp(App[None]):
     async def _transcript_poll_loop(self) -> None:
         while True:
             await asyncio.sleep(0.5)
-            try:
-                self._poll_transcript_for_async_messages()
-            except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
-                continue
+            self._poll_transcript_for_async_messages_best_effort()
+
+    def _poll_transcript_for_async_messages_best_effort(self) -> None:
+        try:
+            self._poll_transcript_for_async_messages()
+        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+            return
 
     def _prime_transcript_display_state(self) -> None:
         for entry in self._read_transcript_entries():
@@ -666,7 +669,7 @@ class ChatApp(App[None]):
             self._prime_transcript_display_state()
             self._append_history("info: started a new session.")
             self._append_history("")
-            self._poll_transcript_for_async_messages()
+            self._poll_transcript_for_async_messages_best_effort()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._session_id = old_session_id
             self._append_history(_format_error(f"Could not start new session: {exc}"))

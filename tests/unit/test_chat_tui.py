@@ -607,6 +607,55 @@ async def test_chat_app_subtitle_shows_connected_after_mount() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_app_mount_treats_transcript_poll_errors_as_nonfatal() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    def fail_poll() -> None:
+        raise OSError("transcript temporarily unavailable")
+
+    app._poll_transcript_for_async_messages = fail_poll  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await asyncio.sleep(0)
+
+    assert app.sub_title == "connected"
+
+
+@pytest.mark.asyncio
+async def test_chat_app_new_session_keeps_created_session_when_poll_fails() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="old-session",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(return_value={"session_id": "new-session"})
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    def fail_poll() -> None:
+        raise OSError("transcript temporarily unavailable")
+
+    app._poll_transcript_for_async_messages = fail_poll  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_session()
+        await pilot.pause()
+
+    assert app._session_id == "new-session"
+
+
+@pytest.mark.asyncio
 async def test_chat_app_renders_assistant_turn_as_markdown_widget() -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
