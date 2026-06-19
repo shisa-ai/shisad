@@ -980,6 +980,55 @@ def test_m2_scheduler_interval_due_runs_once_per_interval() -> None:
     assert len(second) == 1
 
 
+def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tasks() -> None:
+    audit_events: list[tuple[str, dict[str, object]]] = []
+    scheduler = SchedulerManager(
+        audit_hook=lambda action, payload: audit_events.append((action, payload))
+    )
+    base = datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
+    bad_interval = ScheduledTask(
+        name="bad-interval",
+        goal="bad interval",
+        schedule=Schedule(kind="interval", expression="BAD_INTERVAL_NEVER_TRUSTED"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        created_at=base,
+    )
+    bad_cron = ScheduledTask(
+        name="bad-cron",
+        goal="bad cron",
+        schedule=Schedule(kind="cron", expression="x * * * *"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        created_at=base,
+    )
+    valid = scheduler.create_task(
+        name="valid-reminder",
+        goal="valid reminder",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    valid.created_at = base
+    scheduler._tasks = {
+        bad_interval.id: bad_interval,
+        bad_cron.id: bad_cron,
+        valid.id: valid,
+    }
+
+    due = scheduler.trigger_due(now=base + timedelta(seconds=61))
+
+    assert [item.task_id for item in due] == [valid.id]
+    invalid_events = [event for event in audit_events if event[0] == "task.invalid_schedule"]
+    assert {str(event[1].get("task_id", "")) for event in invalid_events} == {
+        bad_interval.id,
+        bad_cron.id,
+    }
+
+
 def test_m2_scheduler_cron_due_runs_once_per_matching_minute() -> None:
     scheduler = SchedulerManager()
     task = scheduler.create_task(

@@ -193,24 +193,39 @@ class SchedulerManager:
         for task in self._tasks.values():
             if not task.enabled:
                 continue
-            if task.schedule.kind == ScheduleKind.EVENT:
-                continue
-            if task.schedule.kind == ScheduleKind.INTERVAL:
-                interval_seconds = self._parse_interval_seconds(task.schedule.expression)
-                baseline = task.last_triggered_at or task.created_at
-                if (current - baseline).total_seconds() < interval_seconds:
+            try:
+                if task.schedule.kind == ScheduleKind.EVENT:
                     continue
-            elif task.schedule.kind == ScheduleKind.CRON:
-                if not self._cron_matches(task.schedule.expression, current):
+                if task.schedule.kind == ScheduleKind.INTERVAL:
+                    interval_seconds = self._parse_interval_seconds(task.schedule.expression)
+                    baseline = task.last_triggered_at or task.created_at
+                    if (current - baseline).total_seconds() < interval_seconds:
+                        continue
+                elif task.schedule.kind == ScheduleKind.CRON:
+                    if not self._cron_matches(task.schedule.expression, current):
+                        continue
+                    last_minute = (
+                        task.last_triggered_at.replace(second=0, microsecond=0)
+                        if task.last_triggered_at is not None
+                        else None
+                    )
+                    if last_minute == current_minute:
+                        continue
+                else:
                     continue
-                last_minute = (
-                    task.last_triggered_at.replace(second=0, microsecond=0)
-                    if task.last_triggered_at is not None
-                    else None
+            except ValueError as exc:
+                self._audit(
+                    "task.invalid_schedule",
+                    {
+                        "task_id": task.id,
+                        "schedule_kind": getattr(
+                            task.schedule.kind,
+                            "value",
+                            str(task.schedule.kind),
+                        ),
+                        "reason": str(exc),
+                    },
                 )
-                if last_minute == current_minute:
-                    continue
-            else:
                 continue
             task.last_triggered_at = current
             task.trigger_count += 1
