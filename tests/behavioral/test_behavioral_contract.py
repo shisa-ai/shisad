@@ -7038,9 +7038,21 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
     assert "reminder.list" in reminder_outputs
     reminder_list_payload = reminder_outputs["reminder.list"][0]
     assert reminder_list_payload.get("ok") is True
-    assert any(
-        str(item.get("id", "")) == task_id for item in reminder_list_payload.get("tasks", [])
+    listed_reminder = next(
+        (
+            item
+            for item in reminder_list_payload.get("tasks", [])
+            if str(item.get("id", "")) == task_id
+        ),
+        None,
     )
+    assert listed_reminder is not None
+    assert (
+        listed_reminder.get("schedule_summary")
+        == "one-shot, was due about 1 second after creation and has already fired"
+    )
+    assert listed_reminder.get("schedule_kind") == "one_shot_interval"
+    assert "every" not in str(listed_reminder.get("schedule_summary", "")).lower()
 
 
 @pytest.mark.asyncio

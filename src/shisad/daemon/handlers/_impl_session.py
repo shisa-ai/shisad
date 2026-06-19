@@ -6228,6 +6228,7 @@ def _build_session_frontmatter(
         for index, row in enumerate(task_rows, start=1):
             task_meta = (
                 f"id:{row.get('task_id', '')},status:{row.get('status', '')},"
+                f"schedule:{row.get('schedule_summary', '')},"
                 f"created_at:{row.get('created_at', '')},"
                 f"last_triggered_at:{row.get('last_triggered_at', '') or 'none'},"
                 f"confirmation_needed:{bool(row.get('confirmation_needed', False))}"
@@ -6866,6 +6867,7 @@ def _find_tool_entries_preview_text(payload: Mapping[str, Any]) -> str:
     for item in entries[:_TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_LINES]:
         if isinstance(item, Mapping):
             goal = str(item.get("goal", "")).strip()
+            schedule_summary = str(item.get("schedule_summary", "")).strip()
             value = (
                 goal
                 if goal.startswith("Reminder: ")
@@ -6874,6 +6876,8 @@ def _find_tool_entries_preview_text(payload: Mapping[str, Any]) -> str:
                 or str(item.get("title", "")).strip()
                 or goal
             )
+            if goal.startswith("Reminder: ") and schedule_summary:
+                value = f"{value} ({schedule_summary})"
             if not value and item.get("key") not in ("", None):
                 raw_memory_value = item.get("value")
                 if raw_memory_value in ("", None):
@@ -7719,6 +7723,8 @@ class SessionImplMixin(HandlerMixinBase):
                     "task_id": task_id,
                     "title": str(row.get("title", "")),
                     "status": str(row.get("status", "")),
+                    "schedule_kind": str(row.get("schedule_kind", "")),
+                    "schedule_summary": str(row.get("schedule_summary", "")),
                     "created_at": str(row.get("created_at", "")),
                     "last_triggered_at": str(row.get("last_triggered_at", "")),
                     "confirmation_needed": bool(row.get("confirmation_needed", False)),

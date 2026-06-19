@@ -1060,6 +1060,31 @@ def test_m4_task_status_snapshot_scopes_to_owner_and_workspace() -> None:
     assert rows[0]["workspace_id"] == "ws1"
 
 
+def test_gh59_task_status_snapshot_renders_one_shot_interval_without_recurring_wording() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="reminder:test-ledger",
+        goal="Reminder: test the ledger",
+        schedule=Schedule(kind="interval", expression="120s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        max_runs=1,
+    )
+
+    rows = scheduler.task_status_snapshot(
+        limit=8,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    assert rows[0]["task_id"] == task.id
+    assert rows[0]["schedule_summary"] == "one-shot, due about 2 minutes after creation"
+    assert rows[0]["schedule_kind"] == "one_shot_interval"
+    assert "every" not in rows[0]["schedule_summary"].lower()
+
+
 def test_m4_task_status_snapshot_excludes_blank_workspace_from_scoped_queries() -> None:
     scheduler = SchedulerManager()
     _blank_workspace = scheduler.create_task(

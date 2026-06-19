@@ -140,6 +140,7 @@ from shisad.memory.ingress import IngressContext
 from shisad.memory.remap import digest_memory_value
 from shisad.memory.summarizer import ConversationSummarizer
 from shisad.memory.trust import ChannelTrust, SourceOrigin
+from shisad.scheduler.rendering import task_schedule_rendering
 from shisad.security.control_plane.engine import ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
     ActionKind,
@@ -1208,7 +1209,9 @@ async def _structured_reminder_list(
             continue
         if not str(getattr(task, "goal", "")).startswith("Reminder: "):
             continue
-        rows.append(task.model_dump(mode="json"))
+        row = task.model_dump(mode="json")
+        row.update(task_schedule_rendering(task))
+        rows.append(row)
         if len(rows) >= limit:
             break
     return {"ok": True, "tasks": rows, "count": len(rows)}

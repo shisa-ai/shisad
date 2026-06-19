@@ -37,6 +37,7 @@ from shisad.memory.manager import MemoryManager
 from shisad.memory.remap import digest_memory_value
 from shisad.memory.schema import MemoryEntry, MemorySource
 from shisad.memory.surfaces.recall import build_recall_pack
+from shisad.scheduler.schema import Schedule, ScheduledTask
 from shisad.security.control_plane.schema import Origin
 
 
@@ -1557,6 +1558,62 @@ async def test_m1_structured_reminder_list_tolerates_null_limit() -> None:
     payload = await _structured_reminder_list(handler, {"limit": None}, context)
 
     assert payload == {"ok": True, "tasks": [], "count": 0}
+
+
+@pytest.mark.asyncio
+async def test_gh59_structured_reminder_list_renders_one_shot_interval() -> None:
+    session = Session(
+        id=SessionId("s-gh59-reminder-list"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    context = StructuredToolContext(
+        session_id=SessionId("s-gh59-reminder-list"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=session,
+    )
+    task = ScheduledTask(
+        id="task-gh59",
+        name="reminder:test-ledger",
+        goal="Reminder: test the ledger",
+        schedule=Schedule(kind="interval", expression="120s"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        max_runs=1,
+    )
+    fired_task = ScheduledTask(
+        id="task-gh59-fired",
+        name="reminder:test-ledger-fired",
+        goal="Reminder: test the ledger again",
+        schedule=Schedule(kind="interval", expression="120s"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        trigger_count=1,
+        success_count=1,
+        max_runs=1,
+        enabled=False,
+    )
+    handler = SimpleNamespace(_scheduler=SimpleNamespace(list_tasks=lambda: [task, fired_task]))
+
+    payload = await _structured_reminder_list(handler, {}, context)
+
+    assert payload["ok"] is True
+    reminder, fired_reminder = payload["tasks"]
+    assert reminder["schedule_summary"] == "one-shot, due about 2 minutes after creation"
+    assert reminder["schedule_kind"] == "one_shot_interval"
+    assert "every" not in reminder["schedule_summary"].lower()
+    assert (
+        fired_reminder["schedule_summary"]
+        == "one-shot, was due about 2 minutes after creation and has already fired"
+    )
+    assert fired_reminder["schedule_kind"] == "one_shot_interval"
+    assert "every" not in fired_reminder["schedule_summary"].lower()
 
 
 @pytest.mark.asyncio

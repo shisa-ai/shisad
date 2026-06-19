@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,6 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from shisad.core.types import Capability, UserId, WorkspaceId
+from shisad.scheduler.rendering import parse_interval_seconds, task_schedule_rendering
 from shisad.scheduler.schema import (
     Schedule,
     ScheduledTask,
@@ -328,11 +328,13 @@ class SchedulerManager:
         rows: list[dict[str, Any]] = []
         for task in tasks[: max(0, int(limit))]:
             pending = len(self.pending_confirmations(task.id))
+            schedule_rendering = task_schedule_rendering(task)
             rows.append(
                 {
                     "task_id": task.id,
                     "title": task.name,
                     "status": "enabled" if task.enabled else "disabled",
+                    **schedule_rendering,
                     "created_at": task.created_at.isoformat(),
                     "last_triggered_at": (
                         task.last_triggered_at.isoformat()
@@ -397,22 +399,7 @@ class SchedulerManager:
 
     @staticmethod
     def _parse_interval_seconds(expression: str) -> int:
-        value = expression.strip().lower()
-        if not value:
-            raise ValueError("interval expression is required")
-        if value.isdigit():
-            seconds = int(value)
-        else:
-            match = re.fullmatch(r"(\d+)([smhd])", value)
-            if match is None:
-                raise ValueError("interval expression must be integer seconds or Ns/Nm/Nh/Nd")
-            amount = int(match.group(1))
-            unit = match.group(2)
-            multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86_400}
-            seconds = amount * multipliers[unit]
-        if seconds <= 0:
-            raise ValueError("interval expression must be greater than zero")
-        return seconds
+        return parse_interval_seconds(expression)
 
     @staticmethod
     def _validate_cron_field(field: str, *, minimum: int, maximum: int) -> None:
