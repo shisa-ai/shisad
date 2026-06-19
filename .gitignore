@@ -58,6 +58,7 @@ Thumbs.db
 runner/.env
 
 # Ledger bridge local artifacts
+/pubkey.pem
 contrib/ledger-bridge/node_modules/
 contrib/ledger-bridge/demo/
 
