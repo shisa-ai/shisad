@@ -631,6 +631,59 @@ async def test_chat_app_renders_assistant_turn_as_markdown_widget() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_app_mount_renders_existing_async_delivery_after_priming(tmp_path) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "entry_id": "old-assistant",
+                        "role": "assistant",
+                        "content_preview": "previous normal answer",
+                        "metadata": {"channel": "cli"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "entry_id": "race-reminder",
+                        "role": "assistant",
+                        "content_preview": "Reminder: arrived during startup",
+                        "metadata": {
+                            "channel": "session",
+                            "delivered_by": "scheduler",
+                            "delivery_target": {"recipient": "sess-1"},
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == ["Reminder: arrived during startup"]
+    assert "old-assistant" in app._displayed_transcript_entry_ids
+    assert "race-reminder" in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
 async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_path) -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
@@ -811,6 +864,7 @@ async def test_chat_app_prompt_box_expands_and_collapses_after_submit() -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        transcript_polls.clear()
         prompt = app.query_one("#chat-input", TextArea)
         prompt.load_text("please summarize " + ("this long prompt " * 20))
         app._resize_prompt_input(prompt)

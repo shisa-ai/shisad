@@ -275,6 +275,7 @@ class ChatApp(App[None]):
                 "Ctrl-C to quit."
             )
             self._append_history("")
+            self._poll_transcript_for_async_messages()
             self.sub_title = "connected"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(f"Could not connect to daemon: {exc}"))
@@ -516,7 +517,7 @@ class ChatApp(App[None]):
     def _prime_transcript_display_state(self) -> None:
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
-            if entry_id:
+            if entry_id and not self._is_async_assistant_delivery(entry):
                 self._displayed_transcript_entry_ids.add(entry_id)
 
     def _poll_transcript_for_async_messages(self) -> None:
@@ -665,6 +666,7 @@ class ChatApp(App[None]):
             self._prime_transcript_display_state()
             self._append_history("info: started a new session.")
             self._append_history("")
+            self._poll_transcript_for_async_messages()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._session_id = old_session_id
             self._append_history(_format_error(f"Could not start new session: {exc}"))
