@@ -21,6 +21,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
+from shisad.core.transcript import derive_legacy_transcript_entry_id
 from shisad.ui.evidence import render_evidence_refs_for_terminal
 
 _INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
@@ -265,7 +266,7 @@ class ChatApp(App[None]):
                 await self._ensure_session(client)
             finally:
                 await client.close()
-            self._prime_transcript_display_state()
+            self._prime_transcript_display_state_best_effort()
             self._start_transcript_polling()
             self._append_history("Connected.")
             self._append_history(
@@ -434,7 +435,7 @@ class ChatApp(App[None]):
             if not self._session_id or self._session_id == old_session_id:
                 raise RuntimeError("Failed to recover session after unknown session error") from exc
             self._reconnected = True
-            self._prime_transcript_display_state()
+            self._prime_transcript_display_state_best_effort()
             try:
                 result = await self._do_session_message(client, content)
             except Exception as retry_exc:
@@ -517,6 +518,12 @@ class ChatApp(App[None]):
         except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
             return
 
+    def _prime_transcript_display_state_best_effort(self) -> None:
+        try:
+            self._prime_transcript_display_state()
+        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+            return
+
     def _prime_transcript_display_state(self) -> None:
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
@@ -543,7 +550,7 @@ class ChatApp(App[None]):
         if path is None or not path.exists():
             return []
         entries: list[Mapping[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
             try:
@@ -551,7 +558,14 @@ class ChatApp(App[None]):
             except json.JSONDecodeError:
                 continue
             if isinstance(payload, Mapping):
-                entries.append(payload)
+                entry = dict(payload)
+                if not str(entry.get("entry_id", "")).strip():
+                    entry["entry_id"] = derive_legacy_transcript_entry_id(
+                        session_id=str(self._session_id or ""),
+                        line_number=line_number,
+                        payload=entry,
+                    )
+                entries.append(entry)
         return entries
 
     def _transcript_path(self) -> Path | None:
@@ -666,7 +680,7 @@ class ChatApp(App[None]):
             finally:
                 await client.close()
             self._displayed_transcript_entry_ids.clear()
-            self._prime_transcript_display_state()
+            self._prime_transcript_display_state_best_effort()
             self._append_history("info: started a new session.")
             self._append_history("")
             self._poll_transcript_for_async_messages_best_effort()

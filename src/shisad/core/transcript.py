@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,32 @@ from pydantic import BaseModel, Field
 from shisad.core.types import SessionId, TaintLabel
 
 logger = logging.getLogger(__name__)
+
+
+def derive_legacy_transcript_entry_id(
+    *,
+    session_id: SessionId | str,
+    line_number: int,
+    payload: Mapping[str, Any],
+) -> str:
+    """Derive a stable entry id for legacy transcript rows missing entry_id."""
+    serialized_metadata = json.dumps(
+        payload.get("metadata", {}),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(
+        (
+            f"{session_id}:{line_number}:"
+            f"{payload.get('role', '')}:"
+            f"{payload.get('content_hash', '')}:"
+            f"{payload.get('timestamp', '')}:"
+            f"{serialized_metadata}"
+        ).encode()
+    ).hexdigest()
+    return f"tx-{digest[:32]}"
 
 
 class TranscriptEntry(BaseModel):
@@ -206,20 +232,8 @@ class TranscriptStore:
         line_number: int,
         payload: dict[str, Any],
     ) -> str:
-        serialized_metadata = json.dumps(
-            payload.get("metadata", {}),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
+        return derive_legacy_transcript_entry_id(
+            session_id=session_id,
+            line_number=line_number,
+            payload=payload,
         )
-        digest = hashlib.sha256(
-            (
-                f"{session_id}:{line_number}:"
-                f"{payload.get('role', '')}:"
-                f"{payload.get('content_hash', '')}:"
-                f"{payload.get('timestamp', '')}:"
-                f"{serialized_metadata}"
-            ).encode()
-        ).hexdigest()
-        return f"tx-{digest[:32]}"

@@ -504,6 +504,11 @@ async def test_chat_app_recovers_from_unknown_session() -> None:
         ]
     )
 
+    def fail_prime() -> None:
+        raise OSError("transcript temporarily unavailable")
+
+    app._prime_transcript_display_state = fail_prime  # type: ignore[method-assign]
+
     result = await app._send_message(mock_client, "hello")
 
     assert result == {"response": "Hello!"}
@@ -617,9 +622,13 @@ async def test_chat_app_mount_treats_transcript_poll_errors_as_nonfatal() -> Non
     app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
     app._ensure_session = AsyncMock()  # type: ignore[method-assign]
 
+    def fail_prime() -> None:
+        raise OSError("transcript temporarily unavailable")
+
     def fail_poll() -> None:
         raise OSError("transcript temporarily unavailable")
 
+    app._prime_transcript_display_state = fail_prime  # type: ignore[method-assign]
     app._poll_transcript_for_async_messages = fail_poll  # type: ignore[method-assign]
 
     async with app.run_test() as pilot:
@@ -642,9 +651,13 @@ async def test_chat_app_new_session_keeps_created_session_when_poll_fails() -> N
     app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
     app._ensure_session = AsyncMock()  # type: ignore[method-assign]
 
+    def fail_prime() -> None:
+        raise OSError("transcript temporarily unavailable")
+
     def fail_poll() -> None:
         raise OSError("transcript temporarily unavailable")
 
+    app._prime_transcript_display_state = fail_prime  # type: ignore[method-assign]
     app._poll_transcript_for_async_messages = fail_poll  # type: ignore[method-assign]
 
     async with app.run_test() as pilot:
@@ -699,16 +712,18 @@ async def test_chat_app_mount_renders_existing_async_delivery_after_priming(tmp_
             [
                 json.dumps(
                     {
-                        "entry_id": "old-assistant",
                         "role": "assistant",
+                        "content_hash": "old123",
+                        "timestamp": "2026-06-18T00:00:00+00:00",
                         "content_preview": "previous normal answer",
                         "metadata": {"channel": "cli"},
                     }
                 ),
                 json.dumps(
                     {
-                        "entry_id": "race-reminder",
                         "role": "assistant",
+                        "content_hash": "abc123",
+                        "timestamp": "2026-06-19T00:00:00+00:00",
                         "content_preview": "Reminder: arrived during startup",
                         "metadata": {
                             "channel": "session",
@@ -728,8 +743,12 @@ async def test_chat_app_mount_renders_existing_async_delivery_after_priming(tmp_
         rendered = [widget._markdown for widget in app.query(Markdown)]
 
     assert rendered == ["Reminder: arrived during startup"]
-    assert "old-assistant" in app._displayed_transcript_entry_ids
-    assert "race-reminder" in app._displayed_transcript_entry_ids
+    tx_entry_ids = {
+        entry_id
+        for entry_id in app._displayed_transcript_entry_ids
+        if entry_id.startswith("tx-")
+    }
+    assert len(tx_entry_ids) == 2
 
 
 @pytest.mark.asyncio
