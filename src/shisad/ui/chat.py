@@ -7,7 +7,9 @@ daemon-side channel — it runs as a separate CLI process.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -221,6 +223,7 @@ class ChatApp(App[None]):
         self,
         *,
         socket_path: Path,
+        data_dir: Path | None = None,
         user_id: str = "ops",
         workspace_id: str = "default",
         session_id: str | None = None,
@@ -228,6 +231,7 @@ class ChatApp(App[None]):
     ) -> None:
         super().__init__()
         self._socket_path = socket_path
+        self._transcript_root = None if data_dir is None else data_dir / "sessions"
         self._user_id = user_id
         self._workspace_id = workspace_id
         self._session_id = session_id
@@ -236,6 +240,8 @@ class ChatApp(App[None]):
         self._prompt_history: list[str] = []
         self._prompt_history_cursor: int | None = None
         self._prompt_draft = ""
+        self._displayed_transcript_entry_ids: set[str] = set()
+        self._transcript_poll_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -259,6 +265,8 @@ class ChatApp(App[None]):
                 await self._ensure_session(client)
             finally:
                 await client.close()
+            self._prime_transcript_display_state()
+            self._start_transcript_polling()
             self._append_history("Connected.")
             self._append_history(
                 "Type a message and press Enter. "
@@ -272,6 +280,13 @@ class ChatApp(App[None]):
             self._append_history(_format_error(f"Could not connect to daemon: {exc}"))
             self._append_history("Is the daemon running? Try: shisad start --foreground")
         self.query_one("#chat-input", TextArea).focus()
+
+    async def on_unmount(self) -> None:
+        if self._transcript_poll_task is not None:
+            self._transcript_poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._transcript_poll_task
+            self._transcript_poll_task = None
 
     async def on_key(self, event: events.Key) -> None:
         """Support readline-like history navigation on the input widget."""
@@ -322,6 +337,7 @@ class ChatApp(App[None]):
                     )
             finally:
                 await client.close()
+            self._poll_transcript_for_async_messages()
             self._append_assistant_message(
                 self._extract_response(result),
                 preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
@@ -403,6 +419,8 @@ class ChatApp(App[None]):
         If the session is unknown (daemon restarted), automatically creates
         a new session and retries once.
         """
+        if not self._session_id:
+            await self._ensure_session(client)
         try:
             result = await self._do_session_message(client, content)
         except Exception as exc:
@@ -415,6 +433,7 @@ class ChatApp(App[None]):
             if not self._session_id or self._session_id == old_session_id:
                 raise RuntimeError("Failed to recover session after unknown session error") from exc
             self._reconnected = True
+            self._prime_transcript_display_state()
             try:
                 result = await self._do_session_message(client, content)
             except Exception as retry_exc:
@@ -425,9 +444,12 @@ class ChatApp(App[None]):
 
     async def _do_session_message(self, client: Any, content: str) -> dict[str, Any]:
         """Call session.message RPC and return the raw result dict."""
+        session_id = str(self._session_id or "").strip()
+        if not session_id:
+            raise RuntimeError("No active session; could not send message")
         result = await client.call(
             "session.message",
-            params={"session_id": self._session_id, "content": content},
+            params={"session_id": session_id, "content": content},
         )
         if not isinstance(result, Mapping):
             raise RuntimeError(f"Invalid session.message response type: {type(result).__name__}")
@@ -477,6 +499,85 @@ class ChatApp(App[None]):
             Markdown(rendered, classes="assistant-message"),
             classes="assistant-turn",
         )
+
+    def _start_transcript_polling(self) -> None:
+        if self._transcript_root is None or self._transcript_poll_task is not None:
+            return
+        self._transcript_poll_task = asyncio.create_task(self._transcript_poll_loop())
+
+    async def _transcript_poll_loop(self) -> None:
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                self._poll_transcript_for_async_messages()
+            except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+
+    def _prime_transcript_display_state(self) -> None:
+        for entry in self._read_transcript_entries():
+            entry_id = str(entry.get("entry_id", "")).strip()
+            if entry_id:
+                self._displayed_transcript_entry_ids.add(entry_id)
+
+    def _poll_transcript_for_async_messages(self) -> None:
+        for entry in self._read_transcript_entries():
+            entry_id = str(entry.get("entry_id", "")).strip()
+            if not entry_id or entry_id in self._displayed_transcript_entry_ids:
+                continue
+            if not self._is_async_assistant_delivery(entry):
+                self._displayed_transcript_entry_ids.add(entry_id)
+                continue
+            content = self._transcript_entry_content(entry).strip()
+            if not content:
+                continue
+            self._displayed_transcript_entry_ids.add(entry_id)
+            self._append_assistant_message(content)
+            self._append_history("")
+
+    def _read_transcript_entries(self) -> list[Mapping[str, Any]]:
+        path = self._transcript_path()
+        if path is None or not path.exists():
+            return []
+        entries: list[Mapping[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, Mapping):
+                entries.append(payload)
+        return entries
+
+    def _transcript_path(self) -> Path | None:
+        if self._transcript_root is None or not self._session_id:
+            return None
+        return self._transcript_root / "transcripts" / f"{self._session_id}.jsonl"
+
+    def _is_async_assistant_delivery(self, entry: Mapping[str, Any]) -> bool:
+        if str(entry.get("role", "")).strip() != "assistant":
+            return False
+        metadata = entry.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            return False
+        delivery_target = metadata.get("delivery_target", {})
+        if not isinstance(delivery_target, Mapping):
+            delivery_target = {}
+        recipient = str(delivery_target.get("recipient", "")).strip()
+        if recipient and recipient != str(self._session_id or ""):
+            return False
+        delivered_by = str(metadata.get("delivered_by", "")).strip()
+        channel = str(metadata.get("channel", "")).strip()
+        return bool(delivered_by) or channel == "session"
+
+    def _transcript_entry_content(self, entry: Mapping[str, Any]) -> str:
+        blob_ref = str(entry.get("blob_ref", "") or "").strip()
+        if blob_ref and self._transcript_root is not None:
+            blob_path = self._transcript_root / "blobs" / f"{blob_ref}.txt"
+            if blob_path.exists():
+                return blob_path.read_text(encoding="utf-8")
+        return str(entry.get("content_preview", "") or "")
 
     def _append_turn(self, *widgets: Static | Markdown, classes: str) -> None:
         history = self.query_one("#chat-log", VerticalScroll)
@@ -557,6 +658,8 @@ class ChatApp(App[None]):
                 await self._create_new_session(client)
             finally:
                 await client.close()
+            self._displayed_transcript_entry_ids.clear()
+            self._prime_transcript_display_state()
             self._append_history("info: started a new session.")
             self._append_history("")
         except (OSError, RuntimeError, TypeError, ValueError) as exc:

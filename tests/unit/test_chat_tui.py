@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -355,6 +356,34 @@ async def test_chat_app_send_message_returns_response() -> None:
     assert result == {"response": "Hello from shisad!"}
 
 
+@pytest.mark.asyncio
+async def test_chat_app_send_message_creates_session_when_unbound() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        reuse_bound_session=False,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        side_effect=[
+            {"session_id": "fresh-sid"},
+            {"response": "Hello from shisad!"},
+        ]
+    )
+
+    result = await app._send_message(mock_client, "hello")
+
+    assert result == {"response": "Hello from shisad!"}
+    assert app._session_id == "fresh-sid"
+    assert mock_client.call.call_args_list[0].args == ("session.create",)
+    assert mock_client.call.call_args_list[1].args == ("session.message",)
+    assert mock_client.call.call_args_list[1].kwargs == {
+        "params": {"session_id": "fresh-sid", "content": "hello"}
+    }
+
+
 def test_chat_app_detects_pending_preview_preservation_from_raw_result() -> None:
     assert ChatApp._preserve_pending_preview_escapes({"pending_confirmation_ids": ["c-1"]}) is True
     assert ChatApp._preserve_pending_preview_escapes({"pending_confirmation_ids": []}) is False
@@ -602,6 +631,170 @@ async def test_chat_app_renders_assistant_turn_as_markdown_widget() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_path) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    old_rows = [
+        {
+            "entry_id": "u-1",
+            "role": "user",
+            "content_preview": "intervening question",
+            "metadata": {"channel": "cli"},
+        },
+        {
+            "entry_id": "a-1",
+            "role": "assistant",
+            "content_preview": "normal response",
+            "metadata": {"channel": "cli"},
+        },
+    ]
+    async_rows = [
+        {
+            "entry_id": "r-1",
+            "role": "assistant",
+            "content_preview": "Reminder: first",
+            "metadata": {
+                "channel": "session",
+                "delivered_by": "scheduler",
+                "delivery_target": {"recipient": "sess-1"},
+            },
+        },
+        {
+            "entry_id": "r-2",
+            "role": "assistant",
+            "content_preview": "Reminder: second",
+            "metadata": {
+                "channel": "session",
+                "delivered_by": "scheduler",
+                "delivery_target": {"recipient": "sess-1"},
+            },
+        },
+    ]
+    transcript_path.write_text(
+        "\n".join(json.dumps(row) for row in old_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with transcript_path.open("a", encoding="utf-8") as handle:
+            for row in async_rows:
+                handle.write(json.dumps(row) + "\n")
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == ["Reminder: first", "Reminder: second"]
+
+
+@pytest.mark.asyncio
+async def test_chat_app_transcript_poll_retries_async_blob_until_readable(tmp_path) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    blob_dir = tmp_path / "sessions" / "blobs"
+    transcript_dir.mkdir(parents=True)
+    blob_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript_path.write_text(
+            json.dumps(
+                {
+                    "entry_id": "r-blob",
+                    "role": "assistant",
+                    "blob_ref": "blob-1",
+                    "content_preview": "",
+                    "metadata": {
+                        "channel": "session",
+                        "delivered_by": "scheduler",
+                        "delivery_target": {"recipient": "sess-1"},
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        assert list(app.query(Markdown)) == []
+
+        (blob_dir / "blob-1.txt").write_text("Reminder: delayed blob", encoding="utf-8")
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == ["Reminder: delayed blob"]
+
+
+@pytest.mark.asyncio
+async def test_chat_app_transcript_poll_skips_partial_jsonl_rows(tmp_path) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text('{"entry_id": "partial", "role": "assistant"\n', encoding="utf-8")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with transcript_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "entry_id": "r-valid",
+                        "role": "assistant",
+                        "content_preview": "Reminder: valid row",
+                        "metadata": {
+                            "channel": "session",
+                            "delivered_by": "scheduler",
+                            "delivery_target": {"recipient": "sess-1"},
+                        },
+                    }
+                )
+                + "\n"
+            )
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == ["Reminder: valid row"]
+    assert "partial" not in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
 async def test_chat_app_prompt_box_expands_and_collapses_after_submit() -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
@@ -613,6 +806,8 @@ async def test_chat_app_prompt_box_expands_and_collapses_after_submit() -> None:
     app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
     app._ensure_session = AsyncMock()  # type: ignore[method-assign]
     app._send_message = AsyncMock(return_value={"response": "ok"})  # type: ignore[method-assign]
+    transcript_polls: list[str] = []
+    app._poll_transcript_for_async_messages = lambda: transcript_polls.append("poll")  # type: ignore[method-assign]
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -630,3 +825,4 @@ async def test_chat_app_prompt_box_expands_and_collapses_after_submit() -> None:
         assert prompt.styles.height.value == app.PROMPT_INPUT_MIN_HEIGHT
 
     app._send_message.assert_awaited_once()
+    assert transcript_polls == ["poll"]

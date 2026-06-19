@@ -584,6 +584,7 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
     config = _get_config()
     app = ChatApp(
         socket_path=config.socket_path,
+        data_dir=config.data_dir,
         user_id=user,
         workspace_id=workspace,
         session_id=session_id or None,
