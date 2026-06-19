@@ -1004,6 +1004,24 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
         created_by=UserId("alice"),
         created_at=base,
     )
+    bad_cron_short = ScheduledTask(
+        name="bad-cron-short",
+        goal="bad cron short",
+        schedule=Schedule(kind="cron", expression="* * * *"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        created_at=base,
+    )
+    bad_cron_step = ScheduledTask(
+        name="bad-cron-step",
+        goal="bad cron step",
+        schedule=Schedule(kind="cron", expression="*/0 * * * *"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        created_at=base,
+    )
     valid = scheduler.create_task(
         name="valid-reminder",
         goal="valid reminder",
@@ -1016,6 +1034,8 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
     scheduler._tasks = {
         bad_interval.id: bad_interval,
         bad_cron.id: bad_cron,
+        bad_cron_short.id: bad_cron_short,
+        bad_cron_step.id: bad_cron_step,
         valid.id: valid,
     }
 
@@ -1026,6 +1046,8 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
     assert {str(event[1].get("task_id", "")) for event in invalid_events} == {
         bad_interval.id,
         bad_cron.id,
+        bad_cron_short.id,
+        bad_cron_step.id,
     }
 
 

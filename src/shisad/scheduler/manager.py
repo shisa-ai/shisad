@@ -477,7 +477,7 @@ class SchedulerManager:
     def _cron_matches(expression: str, moment: datetime) -> bool:
         fields = expression.split()
         if len(fields) != 5:
-            return False
+            raise ValueError("cron schedule requires exactly 5 fields")
         values = [
             moment.minute,
             moment.hour,
@@ -487,6 +487,7 @@ class SchedulerManager:
         ]
         bounds = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)]
         for field, value, (minimum, maximum) in zip(fields, values, bounds, strict=True):
+            SchedulerManager._validate_cron_field(field, minimum=minimum, maximum=maximum)
             if not SchedulerManager._cron_field_matches(
                 field,
                 value=value,
