@@ -418,10 +418,7 @@ class SchedulerManager:
 
     @staticmethod
     def _validate_cron_field(field: str, *, minimum: int, maximum: int) -> None:
-        parts = [item.strip() for item in field.split(",") if item.strip()]
-        if not parts:
-            raise ValueError("cron field cannot be empty")
-        for part in parts:
+        for part in SchedulerManager._cron_field_parts(field):
             if part == "*":
                 continue
             if "/" in part:
@@ -450,6 +447,13 @@ class SchedulerManager:
             value = int(part)
             if value < minimum or value > maximum:
                 raise ValueError("cron field value out of bounds")
+
+    @staticmethod
+    def _cron_field_parts(field: str) -> list[str]:
+        parts = [item.strip() for item in field.split(",")]
+        if not parts or any(not part for part in parts):
+            raise ValueError("cron field cannot be empty")
+        return parts
 
     @staticmethod
     def _validate_cron_step_base(base: str, *, minimum: int, maximum: int) -> None:
@@ -505,7 +509,7 @@ class SchedulerManager:
         minimum: int,
         maximum: int,
     ) -> bool:
-        for part in [item.strip() for item in field.split(",") if item.strip()]:
+        for part in SchedulerManager._cron_field_parts(field):
             if part == "*":
                 return True
             if "/" in part:

@@ -1022,6 +1022,15 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
         created_by=UserId("alice"),
         created_at=base,
     )
+    bad_cron_empty_segment = ScheduledTask(
+        name="bad-cron-empty-segment",
+        goal="bad cron empty segment",
+        schedule=Schedule(kind="cron", expression="1,,2 * * * *"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        created_at=base,
+    )
     valid = scheduler.create_task(
         name="valid-reminder",
         goal="valid reminder",
@@ -1036,6 +1045,7 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
         bad_cron.id: bad_cron,
         bad_cron_short.id: bad_cron_short,
         bad_cron_step.id: bad_cron_step,
+        bad_cron_empty_segment.id: bad_cron_empty_segment,
         valid.id: valid,
     }
 
@@ -1048,6 +1058,7 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
         bad_cron.id,
         bad_cron_short.id,
         bad_cron_step.id,
+        bad_cron_empty_segment.id,
     }
 
 

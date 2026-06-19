@@ -87,3 +87,17 @@ def test_m4_cron_rejects_invalid_ranges_and_steps() -> None:
         _create_cron_task(scheduler, "0 0 1-40 * *")
     with pytest.raises(ValueError, match="cron step must be positive integer"):
         _create_cron_task(scheduler, "0 0 */0 * *")
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "1,,2 * * * *",
+        "1, * * * *",
+        "*, * * * *",
+    ],
+)
+def test_gh59_cron_rejects_empty_comma_segments(expression: str) -> None:
+    scheduler = SchedulerManager()
+    with pytest.raises(ValueError, match="cron field cannot be empty"):
+        _create_cron_task(scheduler, expression)
