@@ -573,10 +573,13 @@ class ChatApp(App[None]):
 
     def _transcript_entry_content(self, entry: Mapping[str, Any]) -> str:
         blob_ref = str(entry.get("blob_ref", "") or "").strip()
-        if blob_ref and self._transcript_root is not None:
+        if blob_ref:
+            if self._transcript_root is None:
+                return ""
             blob_path = self._transcript_root / "blobs" / f"{blob_ref}.txt"
-            if blob_path.exists():
-                return blob_path.read_text(encoding="utf-8")
+            if not blob_path.exists():
+                return ""
+            return blob_path.read_text(encoding="utf-8")
         return str(entry.get("content_preview", "") or "")
 
     def _append_turn(self, *widgets: Static | Markdown, classes: str) -> None:

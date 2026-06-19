@@ -728,7 +728,7 @@ async def test_chat_app_transcript_poll_retries_async_blob_until_readable(tmp_pa
                     "entry_id": "r-blob",
                     "role": "assistant",
                     "blob_ref": "blob-1",
-                    "content_preview": "",
+                    "content_preview": "Reminder: truncated preview",
                     "metadata": {
                         "channel": "session",
                         "delivered_by": "scheduler",
