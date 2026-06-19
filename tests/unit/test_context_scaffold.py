@@ -599,6 +599,51 @@ def test_gh59_task_schedule_summary_keeps_event_text_out_of_trusted_frontmatter(
     assert "schedule:event-triggered" not in scaffold.trusted_frontmatter
 
 
+def test_gh59_task_schedule_summary_rejects_malformed_one_shot_frontmatter() -> None:
+    session = Session(
+        id=SessionId("sess-gh59-one-shot-frontmatter"),
+        channel="cli",
+        mode=SessionMode.DEFAULT,
+        metadata={"trust_level": "trusted"},
+        created_at=datetime(2026, 3, 2, 10, 0, tzinfo=UTC),
+    )
+    marker = "ONE_SHOT_TEXT_NEVER_TRUSTED"
+    scaffold = _build_planner_context_scaffold(
+        session_id=SessionId("sess-gh59-one-shot-frontmatter"),
+        session=session,
+        trust_level="trusted",
+        capabilities={Capability.MEMORY_READ},
+        current_turn_text="hello",
+        incoming_taint_labels=set(),
+        conversation_context="",
+        memory_context="",
+        episode_snapshot=None,
+        task_ledger_snapshot={
+            "task_status_total": 1,
+            "task_confirmation_needed_total": 0,
+            "tasks": [
+                {
+                    "task_id": "one-shot-task",
+                    "title": "",
+                    "status": "enabled",
+                    "schedule_kind": "one_shot_interval",
+                    "schedule_summary": f"one-shot, due about {marker} after creation",
+                    "created_at": "2026-03-01T10:00:00+00:00",
+                    "last_triggered_at": "",
+                    "confirmation_needed": False,
+                    "trigger_count": 0,
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "pending_confirmation_count": 0,
+                }
+            ],
+        },
+    )
+
+    assert marker not in scaffold.trusted_frontmatter
+    assert "schedule:one-shot, due about" not in scaffold.trusted_frontmatter
+
+
 def test_m5_cs8_internal_summaries_remain_semi_trusted_and_not_frontmatter() -> None:
     session = Session(
         id=SessionId("sess-m5-internal"),

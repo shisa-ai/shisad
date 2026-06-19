@@ -6057,14 +6057,22 @@ def _normalized_task_rows(task_ledger_snapshot: dict[str, Any] | None) -> list[d
     return rows
 
 
+_TRUSTED_ONE_SHOT_SCHEDULE_SUMMARY_RE = re.compile(
+    r"^(?:"
+    r"one-shot, due about (?:unknown interval|\d+ (?:second|minute|hour|day)s?) "
+    r"after creation|"
+    r"one-shot, was due about (?:unknown interval|\d+ (?:second|minute|hour|day)s?) "
+    r"after creation and has already fired"
+    r")$"
+)
+
+
 def _trusted_task_schedule_summary(row: Mapping[str, Any]) -> str:
     kind = str(row.get("schedule_kind", "")).strip()
     summary = str(row.get("schedule_summary", "")).strip()
     if kind != "one_shot_interval":
         return ""
-    if summary.startswith("one-shot, due about ") or summary.startswith(
-        "one-shot, was due about "
-    ):
+    if _TRUSTED_ONE_SHOT_SCHEDULE_SUMMARY_RE.fullmatch(summary):
         return summary
     return ""
 

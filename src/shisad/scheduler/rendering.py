@@ -52,7 +52,7 @@ def task_schedule_rendering(task: Any) -> dict[str, str]:
         try:
             interval = _human_interval(parse_interval_seconds(expression))
         except ValueError:
-            interval = expression or "unknown interval"
+            interval = "unknown interval"
         if max_runs == 1:
             trigger_count = int(getattr(task, "trigger_count", 0) or 0)
             if trigger_count >= 1 or getattr(task, "last_triggered_at", None) is not None:

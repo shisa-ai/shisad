@@ -11,7 +11,7 @@ import pytest
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
-from shisad.scheduler.schema import Schedule
+from shisad.scheduler.schema import Schedule, ScheduledTask
 from shisad.security.lockdown import LockdownLevel, LockdownManager
 from shisad.security.monitor import ActionMonitor, MonitorDecisionType
 from shisad.security.ratelimit import RateLimitConfig, RateLimiter
@@ -1083,6 +1083,30 @@ def test_gh59_task_status_snapshot_renders_one_shot_interval_without_recurring_w
     assert rows[0]["schedule_summary"] == "one-shot, due about 2 minutes after creation"
     assert rows[0]["schedule_kind"] == "one_shot_interval"
     assert "every" not in rows[0]["schedule_summary"].lower()
+
+
+def test_gh59_task_status_snapshot_does_not_render_raw_invalid_interval_expression() -> None:
+    scheduler = SchedulerManager()
+    task = ScheduledTask(
+        name="reminder:bad-interval",
+        goal="Reminder: test the ledger",
+        schedule=Schedule(kind="interval", expression="BAD_INTERVAL_NEVER_TRUSTED"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        max_runs=1,
+    )
+    scheduler._tasks[task.id] = task
+
+    rows = scheduler.task_status_snapshot(
+        limit=8,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    assert "BAD_INTERVAL_NEVER_TRUSTED" not in rows[0]["schedule_summary"]
+    assert rows[0]["schedule_summary"] == "one-shot, due about unknown interval after creation"
 
 
 def test_m4_task_status_snapshot_excludes_blank_workspace_from_scoped_queries() -> None:
