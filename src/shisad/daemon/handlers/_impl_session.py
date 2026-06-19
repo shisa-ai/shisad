@@ -6057,6 +6057,18 @@ def _normalized_task_rows(task_ledger_snapshot: dict[str, Any] | None) -> list[d
     return rows
 
 
+def _trusted_task_schedule_summary(row: Mapping[str, Any]) -> str:
+    kind = str(row.get("schedule_kind", "")).strip()
+    summary = str(row.get("schedule_summary", "")).strip()
+    if kind != "one_shot_interval":
+        return ""
+    if summary.startswith("one-shot, due about ") or summary.startswith(
+        "one-shot, was due about "
+    ):
+        return summary
+    return ""
+
+
 def should_delegate_to_task(
     *,
     proposals: Sequence[Any],
@@ -6226,9 +6238,10 @@ def _build_session_frontmatter(
         lines.append(f"task_status_total={int(task_total_raw)}")
         lines.append(f"task_confirmation_needed_total={int(confirmation_total_raw)}")
         for index, row in enumerate(task_rows, start=1):
+            schedule_summary = _trusted_task_schedule_summary(row)
             task_meta = (
                 f"id:{row.get('task_id', '')},status:{row.get('status', '')},"
-                f"schedule:{row.get('schedule_summary', '')},"
+                f"schedule:{schedule_summary},"
                 f"created_at:{row.get('created_at', '')},"
                 f"last_triggered_at:{row.get('last_triggered_at', '') or 'none'},"
                 f"confirmation_needed:{bool(row.get('confirmation_needed', False))}"

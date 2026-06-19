@@ -54,8 +54,8 @@ def task_schedule_rendering(task: Any) -> dict[str, str]:
         except ValueError:
             interval = expression or "unknown interval"
         if max_runs == 1:
-            success_count = int(getattr(task, "success_count", 0) or 0)
-            if success_count >= 1:
+            trigger_count = int(getattr(task, "trigger_count", 0) or 0)
+            if trigger_count >= 1 or getattr(task, "last_triggered_at", None) is not None:
                 summary = f"one-shot, was due about {interval} after creation and has already fired"
             else:
                 summary = f"one-shot, due about {interval} after creation"

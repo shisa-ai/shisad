@@ -554,6 +554,51 @@ def test_m5_cs8_trusted_frontmatter_never_contains_user_or_tool_content() -> Non
     assert any(user_marker in entry.content for entry in scaffold.untrusted_entries)
 
 
+def test_gh59_task_schedule_summary_keeps_event_text_out_of_trusted_frontmatter() -> None:
+    session = Session(
+        id=SessionId("sess-gh59-event-frontmatter"),
+        channel="cli",
+        mode=SessionMode.DEFAULT,
+        metadata={"trust_level": "trusted"},
+        created_at=datetime(2026, 3, 2, 10, 0, tzinfo=UTC),
+    )
+    event_marker = "EVENT_TEXT_NEVER_TRUSTED"
+    scaffold = _build_planner_context_scaffold(
+        session_id=SessionId("sess-gh59-event-frontmatter"),
+        session=session,
+        trust_level="trusted",
+        capabilities={Capability.MEMORY_READ},
+        current_turn_text="hello",
+        incoming_taint_labels=set(),
+        conversation_context="",
+        memory_context="",
+        episode_snapshot=None,
+        task_ledger_snapshot={
+            "task_status_total": 1,
+            "task_confirmation_needed_total": 0,
+            "tasks": [
+                {
+                    "task_id": "event-task",
+                    "title": "",
+                    "status": "enabled",
+                    "schedule_kind": "event",
+                    "schedule_summary": f"event-triggered: {event_marker}",
+                    "created_at": "2026-03-01T10:00:00+00:00",
+                    "last_triggered_at": "",
+                    "confirmation_needed": False,
+                    "trigger_count": 0,
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "pending_confirmation_count": 0,
+                }
+            ],
+        },
+    )
+
+    assert event_marker not in scaffold.trusted_frontmatter
+    assert "schedule:event-triggered" not in scaffold.trusted_frontmatter
+
+
 def test_m5_cs8_internal_summaries_remain_semi_trusted_and_not_frontmatter() -> None:
     session = Session(
         id=SessionId("sess-m5-internal"),

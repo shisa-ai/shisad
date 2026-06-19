@@ -1599,12 +1599,27 @@ async def test_gh59_structured_reminder_list_renders_one_shot_interval() -> None
         max_runs=1,
         enabled=False,
     )
-    handler = SimpleNamespace(_scheduler=SimpleNamespace(list_tasks=lambda: [task, fired_task]))
+    triggered_task = ScheduledTask(
+        id="task-gh59-triggered",
+        name="reminder:test-ledger-triggered",
+        goal="Reminder: test the ledger after confirmation",
+        schedule=Schedule(kind="interval", expression="120s"),
+        capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        trigger_count=1,
+        success_count=0,
+        max_runs=1,
+    )
+    handler = SimpleNamespace(
+        _scheduler=SimpleNamespace(list_tasks=lambda: [task, fired_task, triggered_task])
+    )
 
     payload = await _structured_reminder_list(handler, {}, context)
 
     assert payload["ok"] is True
-    reminder, fired_reminder = payload["tasks"]
+    reminder, fired_reminder, triggered_reminder = payload["tasks"]
     assert reminder["schedule_summary"] == "one-shot, due about 2 minutes after creation"
     assert reminder["schedule_kind"] == "one_shot_interval"
     assert "every" not in reminder["schedule_summary"].lower()
@@ -1614,6 +1629,12 @@ async def test_gh59_structured_reminder_list_renders_one_shot_interval() -> None
     )
     assert fired_reminder["schedule_kind"] == "one_shot_interval"
     assert "every" not in fired_reminder["schedule_summary"].lower()
+    assert (
+        triggered_reminder["schedule_summary"]
+        == "one-shot, was due about 2 minutes after creation and has already fired"
+    )
+    assert triggered_reminder["schedule_kind"] == "one_shot_interval"
+    assert "every" not in triggered_reminder["schedule_summary"].lower()
 
 
 @pytest.mark.asyncio
