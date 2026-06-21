@@ -278,8 +278,14 @@ In another shell:
 ```bash
 uv run shisad status
 uv run shisad doctor check --component all
+uv run shisad doctor check --component storage
 uv run shisad tui --plain
 ```
+
+The storage doctor reports the Python `sqlite3` runtime, SQLite library
+version, and FTS5 availability. FTS5 is the preferred memory retrieval path;
+see [`docs/runbooks/SQLITE.md`](runbooks/SQLITE.md) if this check reports a
+degraded runtime.
 
 Create a session:
 

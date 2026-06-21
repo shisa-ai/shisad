@@ -138,6 +138,7 @@ from shisad.governance.merge import (
 from shisad.memory.context_defaults import resolve_active_attention_defaults
 from shisad.memory.ingress import IngressContext
 from shisad.memory.remap import digest_memory_value
+from shisad.memory.sqlite_diagnostics import sqlite_runtime_status
 from shisad.memory.summarizer import ConversationSummarizer
 from shisad.memory.trust import ChannelTrust, SourceOrigin
 from shisad.scheduler.rendering import task_schedule_rendering
@@ -2394,6 +2395,9 @@ class HandlerImplementation(
             "classifier_mode": self._classifier_mode,
             "channels": channel_rows,
         }
+
+    def _doctor_storage_status(self) -> dict[str, Any]:
+        return sqlite_runtime_status()
 
     def _doctor_provider_status(self) -> dict[str, Any]:
         payload = self._provider_diagnostics

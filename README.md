@@ -112,6 +112,11 @@ group, not a pip extra; use `--group security-runtime`, not
 `--extra security-runtime`. The `chat` and `promptguard` package sets are
 project optional extras and use `--extra chat` / `shisad[promptguard]`.
 
+Memory retrieval prefers Python's `sqlite3` runtime to have SQLite FTS5
+enabled. shisad falls back when FTS5 is unavailable, but you should verify the
+preferred path with `uv run shisad doctor check --component storage`; see
+[`docs/runbooks/SQLITE.md`](docs/runbooks/SQLITE.md) for install guidance.
+
 ### Configuration
 
 Environment variables use `SHISAD_` prefixes. Full reference: `docs/ENV-VARS.md`.
@@ -274,6 +279,7 @@ In another shell:
 ```bash
 uv run shisad status
 uv run shisad doctor check --component all
+uv run shisad doctor check --component storage
 uv run shisad tui --plain
 ```
 
