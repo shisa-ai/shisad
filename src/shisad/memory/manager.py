@@ -2107,12 +2107,15 @@ class MemoryManager:
 
     def reset_storage(self) -> None:
         """Clear persisted memory rows without deleting the shared SQLite file."""
-        self._entries.clear()
         with self._connect_db() as conn:
-            conn.execute("DELETE FROM memory_entries")
+            self._delete_entries_for_reset(conn)
         self._event_store.clear()
         for path in self._storage_dir.glob("*.json"):
             path.unlink(missing_ok=True)
+        self._entries.clear()
+
+    def _delete_entries_for_reset(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DELETE FROM memory_entries")
 
     def quarantine(
         self,

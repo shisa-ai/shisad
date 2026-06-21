@@ -315,6 +315,40 @@ def test_m2_memory_manager_skips_corrupt_utf8_entry_files(tmp_path: Path) -> Non
     assert restarted.list_entries(limit=10) == []
 
 
+def test_gh57_memory_manager_failed_reset_preserves_live_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write(
+        entry_type="fact",
+        key="reset.sibling",
+        value="live cache should survive failed reset",
+        source=MemorySource(origin="user", source_id="gh57-reset", extraction_method="manual"),
+        user_confirmed=True,
+    )
+    assert decision.entry is not None
+
+    def _fail_delete(
+        _self: MemoryManager,
+        _conn: sqlite3.Connection,
+    ) -> None:
+        raise sqlite3.OperationalError("simulated memory_entries delete failure")
+
+    monkeypatch.setattr(
+        MemoryManager,
+        "_delete_entries_for_reset",
+        _fail_delete,
+        raising=False,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated memory_entries"):
+        manager.reset_storage()
+
+    assert manager.get_entry(decision.entry.id) is not None
+    assert manager.list_entries(limit=10)[0].id == decision.entry.id
+
+
 def test_m2_memory_manager_list_entries_applies_type_filter_before_limit(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     for idx in range(3):
