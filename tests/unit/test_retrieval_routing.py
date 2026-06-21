@@ -376,6 +376,44 @@ def test_gh57_failed_reset_preserves_live_pipeline_key_state(
     assert "still encrypt and store" in original
 
 
+def test_gh57_ingestion_reset_fails_closed_when_legacy_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    stored = pipeline.ingest(
+        source_id="doc-gh57-legacy-cleanup",
+        source_type="external",
+        content="Legacy sanitized artifacts should not be silently retained on reset.",
+    )
+    sanitized_dir = storage / "sanitized"
+    sanitized_dir.mkdir()
+    (sanitized_dir / f"{stored.chunk_id}.json").write_text("{}", encoding="utf-8")
+
+    def _simulate_legacy_cleanup_failure(path: Path, *, ignore_errors: bool = False) -> None:
+        target = Path(path)
+        if target == sanitized_dir:
+            if ignore_errors:
+                return
+            raise OSError("simulated legacy sanitized cleanup failure")
+
+    monkeypatch.setattr(
+        "shisad.memory.ingestion.shutil.rmtree",
+        _simulate_legacy_cleanup_failure,
+    )
+
+    with pytest.raises(OSError, match="Failed to remove legacy retrieval reset artifact"):
+        pipeline.reset_storage()
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        row = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert pipeline.read_original(stored.chunk_id) is not None
+
+
 def test_gh57_upsert_clears_stale_inactive_search_index_for_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

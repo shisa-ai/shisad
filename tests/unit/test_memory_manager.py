@@ -349,6 +349,77 @@ def test_gh57_memory_manager_failed_reset_preserves_live_entries(
     assert manager.list_entries(limit=10)[0].id == decision.entry.id
 
 
+def test_gh57_memory_manager_failed_event_reset_preserves_durable_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    manager = MemoryManager(storage)
+    decision = manager.write(
+        entry_type="fact",
+        key="reset.event",
+        value="durable rows should survive event reset failure",
+        source=MemorySource(origin="user", source_id="gh57-event", extraction_method="manual"),
+        user_confirmed=True,
+    )
+    assert decision.entry is not None
+
+    def _fail_event_clear(_self: MemoryEventStore) -> int:
+        raise sqlite3.OperationalError("simulated event reset failure")
+
+    monkeypatch.setattr(
+        MemoryEventStore,
+        "clear",
+        _fail_event_clear,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated event reset"):
+        manager.reset_storage()
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        row = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert manager.get_entry(decision.entry.id) is not None
+
+
+def test_gh57_memory_manager_failed_legacy_cleanup_preserves_durable_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    manager = MemoryManager(storage)
+    decision = manager.write(
+        entry_type="fact",
+        key="reset.legacy",
+        value="durable rows should survive legacy cleanup failure",
+        source=MemorySource(origin="user", source_id="gh57-legacy", extraction_method="manual"),
+        user_confirmed=True,
+    )
+    assert decision.entry is not None
+    legacy_path = storage / "legacy-entry.json"
+    legacy_path.write_text(decision.entry.model_dump_json(), encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def _fail_legacy_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == legacy_path:
+            raise OSError("simulated legacy JSON cleanup failure")
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _fail_legacy_unlink)
+
+    with pytest.raises(OSError, match="Failed to remove legacy memory reset artifact"):
+        manager.reset_storage()
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        row = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert manager.get_entry(decision.entry.id) is not None
+
+
 def test_m2_memory_manager_list_entries_applies_type_filter_before_limit(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     for idx in range(3):

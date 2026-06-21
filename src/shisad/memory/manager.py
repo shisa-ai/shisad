@@ -2107,15 +2107,21 @@ class MemoryManager:
 
     def reset_storage(self) -> None:
         """Clear persisted memory rows without deleting the shared SQLite file."""
+        self._remove_legacy_entry_files_for_reset()
+        self._event_store.clear()
         with self._connect_db() as conn:
             self._delete_entries_for_reset(conn)
-        self._event_store.clear()
-        for path in self._storage_dir.glob("*.json"):
-            path.unlink(missing_ok=True)
         self._entries.clear()
 
     def _delete_entries_for_reset(self, conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM memory_entries")
+
+    def _remove_legacy_entry_files_for_reset(self) -> None:
+        for path in self._storage_dir.glob("*.json"):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise OSError(f"Failed to remove legacy memory reset artifact: {path}") from exc
 
     def quarantine(
         self,

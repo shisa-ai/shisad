@@ -1193,16 +1193,11 @@ class IngestionPipeline:
 
     def reset_storage(self) -> None:
         """Clear retrieval rows while preserving the shared SQLite substrate."""
+        self._remove_legacy_reset_artifacts()
         self._backend.clear_records()
         with self._connect_db() as conn:
             conn.execute("DELETE FROM retrieval_keys")
             conn.execute("DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'")
-        for root in self._legacy_storage_roots():
-            shutil.rmtree(root / "sanitized", ignore_errors=True)
-            shutil.rmtree(root / "original_encrypted", ignore_errors=True)
-            (root / "keys.json").unlink(missing_ok=True)
-            (root / "key.bin").unlink(missing_ok=True)
-            (root / "master_salt.bin").unlink(missing_ok=True)
         self._key_material_by_id.clear()
         self._key_metadata_by_id.clear()
         self._active_key_id = ""
@@ -1349,6 +1344,27 @@ class IngestionPipeline:
         # First-run key bootstrap.
         self._active_key_id = self._add_data_key()
         self._persist_key_manifest()
+
+    def _remove_legacy_reset_artifacts(self) -> None:
+        for root in self._legacy_storage_roots():
+            for directory_name in ("sanitized", "original_encrypted"):
+                path = root / directory_name
+                if not path.exists():
+                    continue
+                try:
+                    shutil.rmtree(path)
+                except OSError as exc:
+                    raise OSError(
+                        f"Failed to remove legacy retrieval reset artifact: {path}"
+                    ) from exc
+            for file_name in ("keys.json", "key.bin", "master_salt.bin"):
+                path = root / file_name
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise OSError(
+                        f"Failed to remove legacy retrieval reset artifact: {path}"
+                    ) from exc
 
     def _import_legacy_keys(self) -> bool:
         for root in self._legacy_storage_roots():
