@@ -1362,6 +1362,8 @@ class DaemonServices:
             path: path.read_bytes() if path.exists() else None for path in db_paths
         }
         memory_entries_snapshot = dict(self.memory_manager._entries)
+        memory_legacy_snapshot = self.memory_manager._snapshot_legacy_reset_artifacts()
+        ingestion_legacy_snapshot = self.ingestion._snapshot_legacy_reset_artifacts()
         ingestion_key_material_snapshot = dict(self.ingestion._key_material_by_id)
         ingestion_key_metadata_snapshot = {
             key_id: dict(metadata)
@@ -1385,6 +1387,8 @@ class DaemonServices:
                     continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(snapshot)
+            self.memory_manager._restore_legacy_reset_artifacts(memory_legacy_snapshot)
+            self.ingestion._restore_legacy_reset_artifacts(ingestion_legacy_snapshot)
             self.memory_manager._entries = memory_entries_snapshot
             self.ingestion._key_material_by_id = ingestion_key_material_snapshot
             self.ingestion._key_metadata_by_id = ingestion_key_metadata_snapshot

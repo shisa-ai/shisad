@@ -2107,22 +2107,45 @@ class MemoryManager:
 
     def reset_storage(self) -> None:
         """Clear persisted memory rows without deleting the shared SQLite file."""
-        self._remove_legacy_entry_files_for_reset()
-        self._event_store.remove_legacy_jsonl()
-        with self._connect_db() as conn:
-            self._delete_entries_for_reset(conn)
-            self._event_store.clear_in_connection(conn)
-        self._entries.clear()
+        legacy_snapshot = self._snapshot_legacy_reset_artifacts()
+        try:
+            self._remove_legacy_entry_files_for_reset()
+            self._event_store.remove_legacy_jsonl()
+            with self._connect_db() as conn:
+                self._delete_entries_for_reset(conn)
+                self._event_store.clear_in_connection(conn)
+            self._entries.clear()
+        except Exception:
+            self._restore_legacy_reset_artifacts(legacy_snapshot)
+            raise
 
     def _delete_entries_for_reset(self, conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM memory_entries")
 
     def _remove_legacy_entry_files_for_reset(self) -> None:
-        for path in self._storage_dir.glob("*.json"):
+        for path in self._legacy_entry_files_for_reset():
             try:
                 path.unlink(missing_ok=True)
             except OSError as exc:
                 raise OSError(f"Failed to remove legacy memory reset artifact: {path}") from exc
+
+    def _legacy_entry_files_for_reset(self) -> list[Path]:
+        return sorted(self._storage_dir.glob("*.json"))
+
+    def _snapshot_legacy_reset_artifacts(self) -> dict[Path, bytes]:
+        snapshots: dict[Path, bytes] = {}
+        for path in self._legacy_entry_files_for_reset():
+            if path.exists() and path.is_file():
+                snapshots[path] = path.read_bytes()
+        legacy_events_path = self._event_store._legacy_jsonl_path
+        if legacy_events_path.exists() and legacy_events_path.is_file():
+            snapshots[legacy_events_path] = legacy_events_path.read_bytes()
+        return snapshots
+
+    def _restore_legacy_reset_artifacts(self, snapshots: dict[Path, bytes]) -> None:
+        for path, payload in snapshots.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
 
     def quarantine(
         self,

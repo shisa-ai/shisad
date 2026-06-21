@@ -786,6 +786,8 @@ async def test_gh57_daemon_reset_preserves_memory_surfaces_when_ingestion_reset_
             user_confirmed=True,
         )
         assert decision.entry is not None
+        legacy_memory_path = services.memory_manager._storage_dir / "gh57-daemon-legacy.json"
+        legacy_memory_path.write_text(decision.entry.model_dump_json(), encoding="utf-8")
         stored = services.ingestion.ingest(
             source_id="doc-gh57-daemon-reset",
             source_type="external",
@@ -802,6 +804,7 @@ async def test_gh57_daemon_reset_preserves_memory_surfaces_when_ingestion_reset_
 
         assert services.memory_manager.get_entry(decision.entry.id) is not None
         assert services.memory_manager.count_events(entry_id=decision.entry.id) > 0
+        assert legacy_memory_path.exists()
         assert not services.ingestion.artifacts_empty()
         original = services.ingestion.read_original(stored.chunk_id)
         assert original is not None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -508,6 +509,48 @@ def test_gh57_ingestion_reset_fails_closed_when_legacy_cleanup_fails(
     assert row is not None
     assert int(row[0]) == 1
     assert pipeline.read_original(stored.chunk_id) is not None
+
+
+def test_gh57_ingestion_reset_restores_legacy_artifacts_when_later_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    stored = pipeline.ingest(
+        source_id="doc-gh57-legacy-restore",
+        source_type="external",
+        content="Legacy artifact snapshots should be restored on reset failure.",
+    )
+    sanitized_dir = storage / "sanitized"
+    original_dir = storage / "original_encrypted"
+    sanitized_dir.mkdir()
+    original_dir.mkdir()
+    sanitized_path = sanitized_dir / f"{stored.chunk_id}.json"
+    original_path = original_dir / f"{stored.chunk_id}.bin"
+    sanitized_path.write_text("{}", encoding="utf-8")
+    original_path.write_bytes(b"legacy-ciphertext")
+    original_rmtree = shutil.rmtree
+
+    def _fail_after_sanitized_cleanup(path: Path, *, ignore_errors: bool = False) -> None:
+        target = Path(path)
+        if target == sanitized_dir:
+            original_rmtree(target)
+            return
+        if target == original_dir:
+            raise OSError("simulated original cleanup failure")
+
+    monkeypatch.setattr(
+        "shisad.memory.ingestion.shutil.rmtree",
+        _fail_after_sanitized_cleanup,
+    )
+
+    with pytest.raises(OSError, match="Failed to remove legacy retrieval reset artifact"):
+        pipeline.reset_storage()
+
+    assert sanitized_path.read_text(encoding="utf-8") == "{}"
+    assert original_path.read_bytes() == b"legacy-ciphertext"
+    assert pipeline.persisted_artifact_count() == 1
 
 
 def test_gh57_upsert_clears_stale_inactive_search_index_for_chunk(

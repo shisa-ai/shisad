@@ -468,6 +468,52 @@ def test_gh57_memory_manager_failed_legacy_cleanup_preserves_durable_entries(
     assert manager.get_entry(decision.entry.id) is not None
 
 
+def test_gh57_memory_manager_failed_later_legacy_cleanup_restores_deleted_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    manager = MemoryManager(storage)
+    decision = manager.write(
+        entry_type="fact",
+        key="reset.legacy.restore",
+        value="legacy cleanup rollback should restore files",
+        source=MemorySource(
+            origin="user",
+            source_id="gh57-legacy-restore",
+            extraction_method="manual",
+        ),
+        user_confirmed=True,
+    )
+    assert decision.entry is not None
+    first_removed: list[Path] = []
+    legacy_a = storage / "a-legacy-entry.json"
+    legacy_b = storage / "b-legacy-entry.json"
+    legacy_a.write_text(decision.entry.model_dump_json(), encoding="utf-8")
+    legacy_b.write_text(decision.entry.model_dump_json(), encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def _fail_after_first_legacy_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.parent == storage and self.suffix == ".json":
+            if not first_removed:
+                first_removed.append(self)
+                original_unlink(self, missing_ok=missing_ok)
+                return
+            raise OSError("simulated later legacy JSON cleanup failure")
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _fail_after_first_legacy_unlink)
+
+    with pytest.raises(OSError, match="Failed to remove legacy memory reset artifact"):
+        manager.reset_storage()
+
+    assert first_removed
+    assert first_removed[0].exists()
+    assert legacy_a.exists()
+    assert legacy_b.exists()
+    assert manager.get_entry(decision.entry.id) is not None
+
+
 def test_m2_memory_manager_list_entries_applies_type_filter_before_limit(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     for idx in range(3):

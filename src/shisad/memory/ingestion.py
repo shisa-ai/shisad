@@ -1198,8 +1198,13 @@ class IngestionPipeline:
 
     def reset_storage(self) -> None:
         """Clear retrieval rows while preserving the shared SQLite substrate."""
-        self._remove_legacy_reset_artifacts()
-        self._replace_keys_after_reset()
+        legacy_snapshot = self._snapshot_legacy_reset_artifacts()
+        try:
+            self._remove_legacy_reset_artifacts()
+            self._replace_keys_after_reset()
+        except Exception:
+            self._restore_legacy_reset_artifacts(legacy_snapshot)
+            raise
 
     def collections_for_capabilities(
         self,
@@ -1363,6 +1368,47 @@ class IngestionPipeline:
                     raise OSError(
                         f"Failed to remove legacy retrieval reset artifact: {path}"
                     ) from exc
+
+    def _snapshot_legacy_reset_artifacts(self) -> dict[Path, bytes | None]:
+        snapshots: dict[Path, bytes | None] = {}
+        for root in self._legacy_storage_roots():
+            for directory_name in ("sanitized", "original_encrypted"):
+                self._snapshot_reset_artifact_path(root / directory_name, snapshots)
+            for file_name in ("keys.json", "key.bin", "master_salt.bin"):
+                self._snapshot_reset_artifact_path(root / file_name, snapshots)
+        return snapshots
+
+    def _snapshot_reset_artifact_path(
+        self,
+        path: Path,
+        snapshots: dict[Path, bytes | None],
+    ) -> None:
+        if not path.exists():
+            return
+        if path.is_dir():
+            snapshots[path] = None
+            for child in sorted(path.rglob("*")):
+                if child.is_dir():
+                    snapshots[child] = None
+                elif child.is_file():
+                    snapshots[child] = child.read_bytes()
+            return
+        if path.is_file():
+            snapshots[path] = path.read_bytes()
+
+    def _restore_legacy_reset_artifacts(
+        self,
+        snapshots: dict[Path, bytes | None],
+    ) -> None:
+        for path, payload in sorted(
+            snapshots.items(),
+            key=lambda item: (len(item[0].parts), str(item[0])),
+        ):
+            if payload is None:
+                path.mkdir(parents=True, exist_ok=True)
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
 
     def _import_legacy_keys(self) -> bool:
         for root in self._legacy_storage_roots():
