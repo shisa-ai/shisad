@@ -376,6 +376,100 @@ def test_gh57_failed_reset_preserves_live_pipeline_key_state(
     assert "still encrypt and store" in original
 
 
+def test_gh57_failed_reset_key_manifest_persist_preserves_durable_key_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    pipeline.ingest(
+        source_id="doc-gh57-key-manifest",
+        source_type="external",
+        content="Failed key manifest persistence should preserve the old key.",
+    )
+    active_key_before = pipeline.active_key_id
+    original_metadata_set = IngestionPipeline._metadata_set
+
+    def _fail_active_key_metadata(
+        self: IngestionPipeline,
+        key: str,
+        value: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if key == "active_key_id":
+            raise sqlite3.OperationalError("simulated active key metadata failure")
+        original_metadata_set(self, key, value, conn=conn)
+
+    monkeypatch.setattr(
+        IngestionPipeline,
+        "_metadata_set",
+        _fail_active_key_metadata,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated active key metadata"):
+        pipeline.reset_storage()
+
+    assert pipeline.active_key_id == active_key_before
+    stored = pipeline.ingest(
+        source_id="doc-gh57-after-key-reset-failure",
+        source_type="external",
+        content="Post-failure ingestion remains decryptable after restart.",
+    )
+    restarted = IngestionPipeline(storage)
+
+    original = restarted.read_original(stored.chunk_id)
+    assert original is not None
+    assert "decryptable after restart" in original
+
+
+def test_gh57_failed_key_rotation_manifest_persist_preserves_durable_key_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    pipeline.ingest(
+        source_id="doc-gh57-rotate-key",
+        source_type="external",
+        content="Failed key rotation persistence should preserve the old key.",
+    )
+    active_key_before = pipeline.active_key_id
+    original_metadata_set = IngestionPipeline._metadata_set
+
+    def _fail_active_key_metadata(
+        self: IngestionPipeline,
+        key: str,
+        value: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if key == "active_key_id":
+            raise sqlite3.OperationalError("simulated active key metadata failure")
+        original_metadata_set(self, key, value, conn=conn)
+
+    monkeypatch.setattr(
+        IngestionPipeline,
+        "_metadata_set",
+        _fail_active_key_metadata,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated active key metadata"):
+        pipeline.rotate_data_key()
+
+    assert pipeline.active_key_id == active_key_before
+    stored = pipeline.ingest(
+        source_id="doc-gh57-after-key-rotate-failure",
+        source_type="external",
+        content="Post-rotation-failure ingestion remains decryptable after restart.",
+    )
+    restarted = IngestionPipeline(storage)
+
+    original = restarted.read_original(stored.chunk_id)
+    assert original is not None
+    assert "decryptable after restart" in original
+
+
 def test_gh57_ingestion_reset_fails_closed_when_legacy_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

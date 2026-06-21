@@ -1139,9 +1139,14 @@ class IngestionPipeline:
 
     def rotate_data_key(self, *, reencrypt_existing: bool = True) -> str:
         """Rotate active data key; optionally re-encrypt existing original payloads."""
-        new_key_id = self._add_data_key()
+        key_material = os.urandom(32)
+        new_key_id, new_metadata = self._build_data_key_metadata(key_material)
+        next_metadata = dict(self._key_metadata_by_id)
+        next_metadata[new_key_id] = new_metadata
+        self._persist_key_manifest_snapshot(next_metadata, new_key_id)
+        self._key_material_by_id[new_key_id] = key_material
+        self._key_metadata_by_id[new_key_id] = new_metadata
         self._active_key_id = new_key_id
-        self._persist_key_manifest()
         if reencrypt_existing:
             for chunk_id, payload in self._backend.iter_original_payloads():
                 plaintext = self._decrypt_payload(payload, chunk_id=chunk_id)
@@ -1195,13 +1200,7 @@ class IngestionPipeline:
         """Clear retrieval rows while preserving the shared SQLite substrate."""
         self._remove_legacy_reset_artifacts()
         self._backend.clear_records()
-        with self._connect_db() as conn:
-            conn.execute("DELETE FROM retrieval_keys")
-            conn.execute("DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'")
-        self._key_material_by_id.clear()
-        self._key_metadata_by_id.clear()
-        self._active_key_id = ""
-        self._load_or_create_keys()
+        self._replace_keys_after_reset()
 
     def collections_for_capabilities(
         self,
@@ -1419,49 +1418,88 @@ class IngestionPipeline:
         key_id: str | None = None,
         created_at: str | None = None,
     ) -> str:
+        key_id, metadata = self._build_data_key_metadata(
+            key_material,
+            key_id=key_id,
+            created_at=created_at,
+        )
+        self._key_material_by_id[key_id] = key_material
+        self._key_metadata_by_id[key_id] = metadata
+        return key_id
+
+    def _build_data_key_metadata(
+        self,
+        key_material: bytes,
+        *,
+        key_id: str | None = None,
+        created_at: str | None = None,
+    ) -> tuple[str, dict[str, str]]:
         key_id = key_id or uuid.uuid4().hex
         salt_b64, nonce_b64, wrapped_key_b64 = self._wrap_data_key(key_material)
-        self._key_material_by_id[key_id] = key_material
-        self._key_metadata_by_id[key_id] = {
+        return key_id, {
             "key_id": key_id,
             "created_at": created_at or datetime.now(UTC).isoformat(),
             "salt_b64": salt_b64,
             "nonce_b64": nonce_b64,
             "wrapped_key_b64": wrapped_key_b64,
         }
-        return key_id
 
     def _add_data_key(self) -> str:
         return self._register_data_key(os.urandom(32))
 
     def _persist_key_manifest(self) -> None:
+        self._persist_key_manifest_snapshot(self._key_metadata_by_id, self._active_key_id)
+
+    def _persist_key_manifest_snapshot(
+        self,
+        key_metadata_by_id: dict[str, dict[str, str]],
+        active_key_id: str,
+    ) -> None:
         with self._connect_db() as conn:
-            conn.execute("DELETE FROM retrieval_keys")
-            conn.executemany(
-                """
-                INSERT INTO retrieval_keys (
-                    key_id,
-                    created_at,
-                    salt_b64,
-                    nonce_b64,
-                    wrapped_key_b64
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        metadata["key_id"],
-                        metadata["created_at"],
-                        metadata["salt_b64"],
-                        metadata["nonce_b64"],
-                        metadata["wrapped_key_b64"],
-                    )
-                    for metadata in (
-                        self._key_metadata_by_id[key_id]
-                        for key_id in sorted(self._key_metadata_by_id)
-                    )
-                ],
-            )
-            self._metadata_set("active_key_id", self._active_key_id, conn=conn)
+            self._replace_key_manifest(conn, key_metadata_by_id, active_key_id)
+
+    def _replace_key_manifest(
+        self,
+        conn: sqlite3.Connection,
+        key_metadata_by_id: dict[str, dict[str, str]],
+        active_key_id: str,
+    ) -> None:
+        conn.execute("DELETE FROM retrieval_keys")
+        conn.executemany(
+            """
+            INSERT INTO retrieval_keys (
+                key_id,
+                created_at,
+                salt_b64,
+                nonce_b64,
+                wrapped_key_b64
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    metadata["key_id"],
+                    metadata["created_at"],
+                    metadata["salt_b64"],
+                    metadata["nonce_b64"],
+                    metadata["wrapped_key_b64"],
+                )
+                for metadata in (
+                    key_metadata_by_id[key_id] for key_id in sorted(key_metadata_by_id)
+                )
+            ],
+        )
+        self._metadata_set("active_key_id", active_key_id, conn=conn)
+
+    def _replace_keys_after_reset(self) -> None:
+        key_material = os.urandom(32)
+        key_id, metadata = self._build_data_key_metadata(key_material)
+        next_metadata = {key_id: metadata}
+        with self._connect_db() as conn:
+            conn.execute("DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'")
+            self._replace_key_manifest(conn, next_metadata, key_id)
+        self._key_material_by_id = {key_id: key_material}
+        self._key_metadata_by_id = next_metadata
+        self._active_key_id = key_id
 
     def _import_legacy_records(self) -> None:
         with self._connect_db() as conn:
