@@ -97,6 +97,7 @@ class RetrievalBackend(Protocol):
 
 _FTS_TOKEN = re.compile(r"[A-Za-z0-9_]+")
 _SearchIndexMode = Literal["fts5", "like"]
+_MissingFts5Policy = Literal["warn", "raise"]
 _SEARCH_INDEX_TABLES = ("retrieval_fts", "retrieval_lexical")
 
 
@@ -401,8 +402,7 @@ class SQLiteRetrievalBackend:
                 ORDER BY created_at ASC, chunk_id ASC
                 """
             ).fetchall()
-            record_ids = {str(row["chunk_id"]) for row in record_rows}
-            self._remove_stale_search_index_rows(conn, valid_chunk_ids=record_ids)
+            self._remove_stale_search_index_rows(conn)
             rebuilt = self._rebuild_active_search_index(conn, record_rows)
             vector_ids = {
                 str(row["chunk_id"])
@@ -446,6 +446,7 @@ class SQLiteRetrievalBackend:
                 where_clause="chunk_id = ?",
                 params=(chunk_id,),
                 context=f"chunk {chunk_id}",
+                missing_fts5_policy="warn",
             )
 
     def _insert_search_index_row(
@@ -472,6 +473,7 @@ class SQLiteRetrievalBackend:
                 where_clause=None,
                 params=(),
                 context="all rows",
+                missing_fts5_policy="raise",
             )
 
     def _rebuild_active_search_index(
@@ -485,6 +487,7 @@ class SQLiteRetrievalBackend:
             where_clause=None,
             params=(),
             context="active index rebuild",
+            missing_fts5_policy="raise",
         )
         for row in record_rows:
             self._insert_search_index_row(
@@ -497,21 +500,15 @@ class SQLiteRetrievalBackend:
     def _remove_stale_search_index_rows(
         self,
         conn: sqlite3.Connection,
-        *,
-        valid_chunk_ids: set[str],
     ) -> None:
-        if not valid_chunk_ids:
-            self._clear_search_index_tables(conn)
-            return
-        placeholders = ", ".join("?" for _ in valid_chunk_ids)
-        params = tuple(sorted(valid_chunk_ids))
         for table_name in self._existing_search_index_tables(conn):
             self._delete_from_search_index_table(
                 conn,
                 table_name=table_name,
-                where_clause=f"chunk_id NOT IN ({placeholders})",
-                params=params,
+                where_clause="chunk_id NOT IN (SELECT chunk_id FROM retrieval_records)",
+                params=(),
                 context="stale rows",
+                missing_fts5_policy="warn",
             )
 
     def _delete_from_search_index_table(
@@ -522,14 +519,22 @@ class SQLiteRetrievalBackend:
         where_clause: str | None,
         params: tuple[object, ...],
         context: str,
+        missing_fts5_policy: _MissingFts5Policy,
     ) -> None:
         sql = f"DELETE FROM {table_name}"
         if where_clause is not None:
             sql += f" WHERE {where_clause}"
         try:
-            conn.execute(sql, params)
+            self._execute_search_index_delete(conn, sql, params)
         except sqlite3.OperationalError as exc:
             if table_name == "retrieval_fts" and self._is_missing_fts5_error(exc):
+                if missing_fts5_policy == "raise":
+                    raise sqlite3.OperationalError(
+                        "cannot purge inactive SQLite FTS5 search index table "
+                        f"{table_name} for {context} in {self._db_path}: current "
+                        "Python sqlite3 lacks FTS5; rerun with a Python sqlite3 "
+                        "build that has ENABLE_FTS5 to fully clear persisted memory"
+                    ) from exc
                 logger.warning(
                     "Unable to purge inactive SQLite FTS5 search index table %s "
                     "for %s in %s because FTS5 is unavailable; rerun with a "
@@ -540,6 +545,14 @@ class SQLiteRetrievalBackend:
                 )
                 return
             raise
+
+    def _execute_search_index_delete(
+        self,
+        conn: sqlite3.Connection,
+        sql: str,
+        params: tuple[object, ...],
+    ) -> None:
+        conn.execute(sql, params)
 
     @staticmethod
     def _existing_search_index_tables(conn: sqlite3.Connection) -> list[str]:

@@ -276,6 +276,54 @@ def test_gh57_reset_storage_clears_mixed_mode_search_indexes(
     assert int(fallback_count_after[0]) == 0
 
 
+def test_gh57_reset_storage_fails_closed_when_inactive_fts_cannot_be_purged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    fts_pipeline = IngestionPipeline(storage)
+    fts_pipeline.ingest(
+        source_id="doc-gh57-fts-mode-fail-closed",
+        source_type="external",
+        content="FTS text should not be silently retained after reset.",
+    )
+
+    def _missing_fts5(_conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    def _delete_without_fts5(
+        _self: SQLiteRetrievalBackend,
+        conn: sqlite3.Connection,
+        sql: str,
+        params: tuple[object, ...],
+    ) -> None:
+        if "retrieval_fts" in sql:
+            raise sqlite3.OperationalError("no such module: fts5")
+        conn.execute(sql, params)
+
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_create_fts_index",
+        staticmethod(_missing_fts5),
+    )
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_execute_search_index_delete",
+        _delete_without_fts5,
+        raising=False,
+    )
+    fallback_pipeline = IngestionPipeline(storage)
+
+    with pytest.raises(sqlite3.OperationalError, match="cannot purge inactive SQLite FTS5"):
+        fallback_pipeline.reset_storage()
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        record_count = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
+
+    assert record_count is not None
+    assert int(record_count[0]) >= 1
+
+
 def test_gh57_upsert_clears_stale_inactive_search_index_for_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -347,6 +395,44 @@ def test_gh57_startup_backfill_repairs_stale_active_search_index_rows(
     assert results[0].chunk_id == stored.chunk_id
     assert fts_row is not None
     assert str(fts_row[0]) == "New repaired text should be the indexed startup value."
+
+
+def test_gh57_startup_stale_purge_uses_bounded_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    first = IngestionPipeline(storage)
+    first.ingest(
+        source_id="doc-gh57-bounded-purge",
+        source_type="external",
+        content="Bounded stale purge should not bind every memory chunk id.",
+    )
+
+    observed_param_counts: list[int] = []
+    original_delete = SQLiteRetrievalBackend._delete_from_search_index_table
+
+    def _capture_delete(
+        self: SQLiteRetrievalBackend,
+        conn: sqlite3.Connection,
+        **kwargs: object,
+    ) -> None:
+        if kwargs.get("context") == "stale rows":
+            params = kwargs.get("params")
+            assert isinstance(params, tuple)
+            observed_param_counts.append(len(params))
+        original_delete(self, conn, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_delete_from_search_index_table",
+        _capture_delete,
+    )
+
+    IngestionPipeline(storage)
+
+    assert observed_param_counts
+    assert all(count == 0 for count in observed_param_counts)
 
 
 def test_m1_ingestion_pipeline_surfaces_backend_fts_failures(tmp_path: Path) -> None:
