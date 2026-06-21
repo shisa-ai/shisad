@@ -176,11 +176,20 @@ class MemoryEventStore:
     def clear(self) -> int:
         """Remove persisted events and any legacy JSONL source."""
         with self._connect() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()
-            cleared = int(row[0]) if row is not None else 0
-            conn.execute("DELETE FROM memory_events")
+            cleared = self.clear_in_connection(conn)
         self._legacy_jsonl_path.unlink(missing_ok=True)
         return cleared
+
+    def clear_in_connection(self, conn: sqlite3.Connection) -> int:
+        """Remove persisted events using the caller's transaction."""
+        row = conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()
+        cleared = int(row[0]) if row is not None else 0
+        conn.execute("DELETE FROM memory_events")
+        return cleared
+
+    def remove_legacy_jsonl(self) -> None:
+        """Remove the legacy JSONL event source."""
+        self._legacy_jsonl_path.unlink(missing_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)

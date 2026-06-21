@@ -363,13 +363,18 @@ def test_gh57_memory_manager_failed_event_reset_preserves_durable_entries(
         user_confirmed=True,
     )
     assert decision.entry is not None
+    event_count_before = manager.count_events(entry_id=decision.entry.id)
+    assert event_count_before > 0
 
-    def _fail_event_clear(_self: MemoryEventStore) -> int:
+    def _fail_event_clear(
+        _self: MemoryEventStore,
+        _conn: sqlite3.Connection,
+    ) -> int:
         raise sqlite3.OperationalError("simulated event reset failure")
 
     monkeypatch.setattr(
         MemoryEventStore,
-        "clear",
+        "clear_in_connection",
         _fail_event_clear,
     )
 
@@ -381,6 +386,49 @@ def test_gh57_memory_manager_failed_event_reset_preserves_durable_entries(
 
     assert row is not None
     assert int(row[0]) == 1
+    assert manager.count_events(entry_id=decision.entry.id) == event_count_before
+    assert manager.get_entry(decision.entry.id) is not None
+
+
+def test_gh57_memory_manager_failed_entry_delete_preserves_event_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    manager = MemoryManager(storage)
+    decision = manager.write(
+        entry_type="fact",
+        key="reset.delete",
+        value="event rows should survive entry delete failure",
+        source=MemorySource(origin="user", source_id="gh57-delete", extraction_method="manual"),
+        user_confirmed=True,
+    )
+    assert decision.entry is not None
+    event_count_before = manager.count_events(entry_id=decision.entry.id)
+    assert event_count_before > 0
+
+    def _fail_delete(
+        _self: MemoryManager,
+        _conn: sqlite3.Connection,
+    ) -> None:
+        raise sqlite3.OperationalError("simulated memory_entries delete failure")
+
+    monkeypatch.setattr(
+        MemoryManager,
+        "_delete_entries_for_reset",
+        _fail_delete,
+        raising=False,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated memory_entries"):
+        manager.reset_storage()
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        row = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert manager.count_events(entry_id=decision.entry.id) == event_count_before
     assert manager.get_entry(decision.entry.id) is not None
 
 

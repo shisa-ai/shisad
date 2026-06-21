@@ -2108,9 +2108,10 @@ class MemoryManager:
     def reset_storage(self) -> None:
         """Clear persisted memory rows without deleting the shared SQLite file."""
         self._remove_legacy_entry_files_for_reset()
-        self._event_store.clear()
+        self._event_store.remove_legacy_jsonl()
         with self._connect_db() as conn:
             self._delete_entries_for_reset(conn)
+            self._event_store.clear_in_connection(conn)
         self._entries.clear()
 
     def _delete_entries_for_reset(self, conn: sqlite3.Connection) -> None:
