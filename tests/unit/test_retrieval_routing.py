@@ -11,6 +11,7 @@ import pytest
 from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelComponent, ModelRouter
 from shisad.core.types import Capability
+from shisad.memory.backend import RetrievalBackendRow
 from shisad.memory.backend.sqlite import SQLiteRetrievalBackend
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 
@@ -217,6 +218,105 @@ def test_gh57_ingestion_pipeline_falls_back_when_sqlite_lacks_fts5(
     assert int(fallback_count[0]) == 1
 
 
+def test_gh57_reset_storage_clears_mixed_mode_search_indexes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    fts_pipeline = IngestionPipeline(storage)
+    fts_pipeline.ingest(
+        source_id="doc-gh57-fts-mode",
+        source_type="external",
+        content="Sensitive FTS mode memory should not survive reset.",
+    )
+
+    def _missing_fts5(_conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_create_fts_index",
+        staticmethod(_missing_fts5),
+    )
+    fallback_pipeline = IngestionPipeline(storage)
+    fallback_pipeline.ingest(
+        source_id="doc-gh57-fallback-mode",
+        source_type="external",
+        content="Sensitive fallback memory should not survive reset.",
+    )
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        fts_count_before = conn.execute("SELECT COUNT(*) FROM retrieval_fts").fetchone()
+        fallback_count_before = conn.execute(
+            "SELECT COUNT(*) FROM retrieval_lexical"
+        ).fetchone()
+
+    assert fts_count_before is not None
+    assert fallback_count_before is not None
+    assert int(fts_count_before[0]) >= 1
+    assert int(fallback_count_before[0]) >= 1
+
+    fallback_pipeline.reset_storage()
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        record_count = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
+        vector_count = conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()
+        fts_count_after = conn.execute("SELECT COUNT(*) FROM retrieval_fts").fetchone()
+        fallback_count_after = conn.execute(
+            "SELECT COUNT(*) FROM retrieval_lexical"
+        ).fetchone()
+
+    assert record_count is not None
+    assert vector_count is not None
+    assert fts_count_after is not None
+    assert fallback_count_after is not None
+    assert int(record_count[0]) == 0
+    assert int(vector_count[0]) == 0
+    assert int(fts_count_after[0]) == 0
+    assert int(fallback_count_after[0]) == 0
+
+
+def test_gh57_upsert_clears_stale_inactive_search_index_for_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "retrieval.sqlite3"
+    fts_backend = SQLiteRetrievalBackend(db_path)
+    fts_backend.upsert_record(
+        row=_gh57_backend_row("c-gh57", "old inactive FTS text"),
+        original_payload=b"old",
+    )
+
+    def _missing_fts5(_conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_create_fts_index",
+        staticmethod(_missing_fts5),
+    )
+    fallback_backend = SQLiteRetrievalBackend(db_path)
+    fallback_backend.upsert_record(
+        row=_gh57_backend_row("c-gh57", "new fallback text"),
+        original_payload=b"new",
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        fts_count = conn.execute(
+            "SELECT COUNT(*) FROM retrieval_fts WHERE chunk_id = ?",
+            ("c-gh57",),
+        ).fetchone()
+        fallback_row = conn.execute(
+            "SELECT content_sanitized FROM retrieval_lexical WHERE chunk_id = ?",
+            ("c-gh57",),
+        ).fetchone()
+
+    assert fts_count is not None
+    assert int(fts_count[0]) == 0
+    assert fallback_row is not None
+    assert str(fallback_row[0]) == "new fallback text"
+
+
 def test_m1_ingestion_pipeline_surfaces_backend_fts_failures(tmp_path: Path) -> None:
     storage = tmp_path / "memory"
     pipeline = IngestionPipeline(storage)
@@ -231,3 +331,26 @@ def test_m1_ingestion_pipeline_surfaces_backend_fts_failures(tmp_path: Path) -> 
 
     with pytest.raises(sqlite3.OperationalError, match="no such table: retrieval_fts"):
         pipeline.retrieve("retrieval infrastructure", limit=5)
+
+
+def _gh57_backend_row(chunk_id: str, content: str) -> RetrievalBackendRow:
+    return RetrievalBackendRow(
+        chunk_id=chunk_id,
+        source_id=f"source-{chunk_id}",
+        source_type="external",
+        collection="external_web",
+        created_at="2026-06-21T00:00:00+00:00",
+        content_sanitized=content,
+        extracted_facts_json="[]",
+        risk_score=0.0,
+        original_hash=f"hash-{chunk_id}",
+        source_origin="external_web",
+        channel_trust="tool_output",
+        confirmation_status="untrusted",
+        scope="user",
+        taint_labels_json="[]",
+        quarantined=False,
+        citation_count=0,
+        last_cited_at=None,
+        embedding=[0.1, 0.2, 0.3],
+    )

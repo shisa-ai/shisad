@@ -97,6 +97,7 @@ class RetrievalBackend(Protocol):
 
 _FTS_TOKEN = re.compile(r"[A-Za-z0-9_]+")
 _SearchIndexMode = Literal["fts5", "like"]
+_SEARCH_INDEX_TABLES = ("retrieval_fts", "retrieval_lexical")
 
 
 class SQLiteRetrievalBackend:
@@ -385,7 +386,7 @@ class SQLiteRetrievalBackend:
         with self._connect() as conn:
             conn.execute("DELETE FROM retrieval_records")
             conn.execute("DELETE FROM retrieval_vectors")
-            conn.execute(f"DELETE FROM {self._search_index_table}")
+            self._clear_search_index_tables(conn)
 
     def backfill_search_index(
         self,
@@ -400,6 +401,8 @@ class SQLiteRetrievalBackend:
                 ORDER BY created_at ASC, chunk_id ASC
                 """
             ).fetchall()
+            record_ids = {str(row["chunk_id"]) for row in record_rows}
+            self._remove_stale_search_index_rows(conn, valid_chunk_ids=record_ids)
             vector_ids = {
                 str(row["chunk_id"])
                 for row in conn.execute("SELECT chunk_id FROM retrieval_vectors").fetchall()
@@ -445,7 +448,14 @@ class SQLiteRetrievalBackend:
         return "retrieval_lexical"
 
     def _delete_search_index_row(self, conn: sqlite3.Connection, chunk_id: str) -> None:
-        conn.execute(f"DELETE FROM {self._search_index_table} WHERE chunk_id = ?", (chunk_id,))
+        for table_name in self._existing_search_index_tables(conn):
+            self._delete_from_search_index_table(
+                conn,
+                table_name=table_name,
+                where_clause="chunk_id = ?",
+                params=(chunk_id,),
+                context=f"chunk {chunk_id}",
+            )
 
     def _insert_search_index_row(
         self,
@@ -462,6 +472,76 @@ class SQLiteRetrievalBackend:
             """,
             (chunk_id, content_sanitized),
         )
+
+    def _clear_search_index_tables(self, conn: sqlite3.Connection) -> None:
+        for table_name in self._existing_search_index_tables(conn):
+            self._delete_from_search_index_table(
+                conn,
+                table_name=table_name,
+                where_clause=None,
+                params=(),
+                context="all rows",
+            )
+
+    def _remove_stale_search_index_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        valid_chunk_ids: set[str],
+    ) -> None:
+        if not valid_chunk_ids:
+            self._clear_search_index_tables(conn)
+            return
+        placeholders = ", ".join("?" for _ in valid_chunk_ids)
+        params = tuple(sorted(valid_chunk_ids))
+        for table_name in self._existing_search_index_tables(conn):
+            self._delete_from_search_index_table(
+                conn,
+                table_name=table_name,
+                where_clause=f"chunk_id NOT IN ({placeholders})",
+                params=params,
+                context="stale rows",
+            )
+
+    def _delete_from_search_index_table(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table_name: str,
+        where_clause: str | None,
+        params: tuple[object, ...],
+        context: str,
+    ) -> None:
+        sql = f"DELETE FROM {table_name}"
+        if where_clause is not None:
+            sql += f" WHERE {where_clause}"
+        try:
+            conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            if table_name == "retrieval_fts" and self._is_missing_fts5_error(exc):
+                logger.warning(
+                    "Unable to purge inactive SQLite FTS5 search index table %s "
+                    "for %s in %s because FTS5 is unavailable; rerun with a "
+                    "Python sqlite3 build that has ENABLE_FTS5 to purge it.",
+                    table_name,
+                    context,
+                    self._db_path,
+                )
+                return
+            raise
+
+    @staticmethod
+    def _existing_search_index_tables(conn: sqlite3.Connection) -> list[str]:
+        rows = conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('retrieval_fts', 'retrieval_lexical')
+            """
+        ).fetchall()
+        found = {str(row["name"]) for row in rows}
+        return [table_name for table_name in _SEARCH_INDEX_TABLES if table_name in found]
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> _SearchIndexMode:
         conn.execute(
