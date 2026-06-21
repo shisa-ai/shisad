@@ -382,7 +382,7 @@ def test_gh57_failed_reset_key_manifest_persist_preserves_durable_key_state(
 ) -> None:
     storage = tmp_path / "memory"
     pipeline = IngestionPipeline(storage)
-    pipeline.ingest(
+    existing = pipeline.ingest(
         source_id="doc-gh57-key-manifest",
         source_type="external",
         content="Failed key manifest persistence should preserve the old key.",
@@ -411,6 +411,8 @@ def test_gh57_failed_reset_key_manifest_persist_preserves_durable_key_state(
         pipeline.reset_storage()
 
     assert pipeline.active_key_id == active_key_before
+    assert pipeline.persisted_artifact_count() == 1
+    assert pipeline.read_original(existing.chunk_id) is not None
     stored = pipeline.ingest(
         source_id="doc-gh57-after-key-reset-failure",
         source_type="external",

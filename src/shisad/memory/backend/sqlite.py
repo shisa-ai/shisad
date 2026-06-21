@@ -385,9 +385,13 @@ class SQLiteRetrievalBackend:
 
     def clear_records(self) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM retrieval_records")
-            conn.execute("DELETE FROM retrieval_vectors")
-            self._clear_search_index_tables(conn)
+            self.clear_records_in_connection(conn)
+
+    def clear_records_in_connection(self, conn: sqlite3.Connection) -> None:
+        """Clear retrieval rows using the caller's transaction."""
+        conn.execute("DELETE FROM retrieval_records")
+        conn.execute("DELETE FROM retrieval_vectors")
+        self._clear_search_index_tables(conn)
 
     def backfill_search_index(
         self,

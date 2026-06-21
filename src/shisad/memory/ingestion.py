@@ -1199,7 +1199,6 @@ class IngestionPipeline:
     def reset_storage(self) -> None:
         """Clear retrieval rows while preserving the shared SQLite substrate."""
         self._remove_legacy_reset_artifacts()
-        self._backend.clear_records()
         self._replace_keys_after_reset()
 
     def collections_for_capabilities(
@@ -1495,6 +1494,7 @@ class IngestionPipeline:
         key_id, metadata = self._build_data_key_metadata(key_material)
         next_metadata = {key_id: metadata}
         with self._connect_db() as conn:
+            self._backend.clear_records_in_connection(conn)
             conn.execute("DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'")
             self._replace_key_manifest(conn, next_metadata, key_id)
         self._key_material_by_id = {key_id: key_material}
