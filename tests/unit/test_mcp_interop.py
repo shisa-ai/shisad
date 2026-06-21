@@ -1506,6 +1506,44 @@ async def test_i1_tool_execute_path_excludes_direct_envelope_keys_from_mcp_param
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "requested_tool_name",
+    [
+        "mcp.docs.lookup-doc",
+        "mcp_docs_lookup_doc",
+        "functions.mcp_docs_lookup_doc",
+    ],
+)
+async def test_gh82_tool_execute_mcp_aliases_use_canonical_control_plane_name(
+    requested_tool_name: str,
+) -> None:
+    harness = _McpHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"query": "roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        trusted_servers=["docs"],
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": requested_tool_name,
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is True
+    assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap"})]
+    assert harness._control_plane.evaluations[0]["tool_name"] == "mcp.docs.lookup-doc"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("parameters", "arguments", "expected_error"),
     [
         (

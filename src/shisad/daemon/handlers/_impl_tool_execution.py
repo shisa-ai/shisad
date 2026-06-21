@@ -365,7 +365,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             self,
             "begin_precontent_plan",
             session_id=str(sid),
-            goal=f"tool.execute:{tool_name_value}",
+            goal=f"tool.execute:{tool_name}",
             origin=operator_origin,
             ttl_seconds=int(trace_policy.ttl_seconds),
             max_actions=int(trace_policy.max_actions),
@@ -401,7 +401,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         cp_eval = await _call_control_plane(
             self,
             "evaluate_action",
-            tool_name=tool_name_value,
+            tool_name=str(tool_name),
             arguments=dict(params),
             origin=operator_origin,
             risk_tier=risk_tier,
