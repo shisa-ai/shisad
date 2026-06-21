@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -93,6 +96,7 @@ class RetrievalBackend(Protocol):
 
 
 _FTS_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+_SearchIndexMode = Literal["fts5", "like"]
 
 
 class SQLiteRetrievalBackend:
@@ -100,9 +104,10 @@ class SQLiteRetrievalBackend:
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
+        self._search_index_mode: _SearchIndexMode = "fts5"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            self._ensure_schema(conn)
+            self._search_index_mode = self._ensure_schema(conn)
 
     def upsert_record(
         self,
@@ -168,16 +173,8 @@ class SQLiteRetrievalBackend:
                 """,
                 (row.chunk_id, json.dumps(row.embedding, separators=(",", ":"))),
             )
-            conn.execute("DELETE FROM retrieval_fts WHERE chunk_id = ?", (row.chunk_id,))
-            conn.execute(
-                """
-                INSERT INTO retrieval_fts (
-                    chunk_id,
-                    content_sanitized
-                ) VALUES (?, ?)
-                """,
-                (row.chunk_id, row.content_sanitized),
-            )
+            self._delete_search_index_row(conn, row.chunk_id)
+            self._insert_search_index_row(conn, row.chunk_id, row.content_sanitized)
 
     def list_records(
         self,
@@ -283,14 +280,30 @@ class SQLiteRetrievalBackend:
         tokens = _FTS_TOKEN.findall(query)
         if not tokens:
             return set()
-        match_query = " OR ".join(f'"{token}"' for token in tokens)
-        sql = """
-            SELECT DISTINCT f.chunk_id
-            FROM retrieval_fts f
-            JOIN retrieval_records r ON r.chunk_id = f.chunk_id
-            WHERE retrieval_fts MATCH ?
-        """
-        params: list[object] = [match_query]
+        if self._search_index_mode == "fts5":
+            match_query = " OR ".join(f'"{token}"' for token in tokens)
+            sql = """
+                SELECT DISTINCT f.chunk_id
+                FROM retrieval_fts f
+                JOIN retrieval_records r ON r.chunk_id = f.chunk_id
+                WHERE retrieval_fts MATCH ?
+            """
+            params: list[object] = [match_query]
+        else:
+            predicates = [
+                "LOWER(f.content_sanitized) LIKE ? ESCAPE '\\'"
+                for _ in tokens
+            ]
+            sql = f"""
+                SELECT DISTINCT f.chunk_id
+                FROM retrieval_lexical f
+                JOIN retrieval_records r ON r.chunk_id = f.chunk_id
+                WHERE ({" OR ".join(predicates)})
+            """
+            params = [
+                f"%{self._escape_like_token(token.lower())}%"
+                for token in tokens
+            ]
         if collections:
             placeholders = ", ".join("?" for _ in collections)
             sql += f" AND r.collection IN ({placeholders})"
@@ -372,7 +385,7 @@ class SQLiteRetrievalBackend:
         with self._connect() as conn:
             conn.execute("DELETE FROM retrieval_records")
             conn.execute("DELETE FROM retrieval_vectors")
-            conn.execute("DELETE FROM retrieval_fts")
+            conn.execute(f"DELETE FROM {self._search_index_table}")
 
     def backfill_search_index(
         self,
@@ -393,7 +406,9 @@ class SQLiteRetrievalBackend:
             }
             fts_ids = {
                 str(row["chunk_id"])
-                for row in conn.execute("SELECT chunk_id FROM retrieval_fts").fetchall()
+                for row in conn.execute(
+                    f"SELECT chunk_id FROM {self._search_index_table}"
+                ).fetchall()
             }
             rebuilt = 0
             for row in record_rows:
@@ -414,15 +429,7 @@ class SQLiteRetrievalBackend:
                     )
                     rebuilt += 1
                 if chunk_id not in fts_ids:
-                    conn.execute(
-                        """
-                        INSERT INTO retrieval_fts (
-                            chunk_id,
-                            content_sanitized
-                        ) VALUES (?, ?)
-                        """,
-                        (chunk_id, content),
-                    )
+                    self._insert_search_index_row(conn, chunk_id, content)
                     rebuilt += 1
         return rebuilt
 
@@ -431,8 +438,32 @@ class SQLiteRetrievalBackend:
         conn.row_factory = sqlite3.Row
         return conn
 
-    @staticmethod
-    def _ensure_schema(conn: sqlite3.Connection) -> None:
+    @property
+    def _search_index_table(self) -> str:
+        if self._search_index_mode == "fts5":
+            return "retrieval_fts"
+        return "retrieval_lexical"
+
+    def _delete_search_index_row(self, conn: sqlite3.Connection, chunk_id: str) -> None:
+        conn.execute(f"DELETE FROM {self._search_index_table} WHERE chunk_id = ?", (chunk_id,))
+
+    def _insert_search_index_row(
+        self,
+        conn: sqlite3.Connection,
+        chunk_id: str,
+        content_sanitized: str,
+    ) -> None:
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO {self._search_index_table} (
+                chunk_id,
+                content_sanitized
+            ) VALUES (?, ?)
+            """,
+            (chunk_id, content_sanitized),
+        )
+
+    def _ensure_schema(self, conn: sqlite3.Connection) -> _SearchIndexMode:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS retrieval_records (
@@ -529,12 +560,7 @@ class SQLiteRetrievalBackend:
             )
             """
         )
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts
-            USING fts5(chunk_id UNINDEXED, content_sanitized)
-            """
-        )
+        search_index_mode = self._ensure_search_index(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_retrieval_records_collection_created
@@ -559,3 +585,50 @@ class SQLiteRetrievalBackend:
             ON retrieval_records (user_id, workspace_id, created_at)
             """
         )
+        return search_index_mode
+
+    def _ensure_search_index(self, conn: sqlite3.Connection) -> _SearchIndexMode:
+        try:
+            self._create_fts_index(conn)
+            return "fts5"
+        except sqlite3.OperationalError as exc:
+            if not self._is_missing_fts5_error(exc):
+                raise
+        logger.warning(
+            "SQLite FTS5 extension is unavailable for %s; memory retrieval is "
+            "running in degraded LIKE lexical-index mode. Use a Python sqlite3 "
+            "build with ENABLE_FTS5 for full FTS retrieval indexing.",
+            self._db_path,
+        )
+        self._create_fallback_lexical_index(conn)
+        return "like"
+
+    @staticmethod
+    def _create_fts_index(conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE VIRTUAL TABLE temp.__shisad_fts5_probe USING fts5(x)")
+        conn.execute("DROP TABLE temp.__shisad_fts5_probe")
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts
+            USING fts5(chunk_id UNINDEXED, content_sanitized)
+            """
+        )
+
+    @staticmethod
+    def _create_fallback_lexical_index(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS retrieval_lexical (
+                chunk_id TEXT PRIMARY KEY,
+                content_sanitized TEXT NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _is_missing_fts5_error(exc: sqlite3.OperationalError) -> bool:
+        return "no such module: fts5" in str(exc).lower()
+
+    @staticmethod
+    def _escape_like_token(token: str) -> str:
+        return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

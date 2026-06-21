@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelComponent, ModelRouter
 from shisad.core.types import Capability
+from shisad.memory.backend.sqlite import SQLiteRetrievalBackend
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 
 
@@ -172,6 +174,47 @@ def test_m1_ingestion_pipeline_escapes_fts_operator_tokens(tmp_path: Path) -> No
 
     assert results
     assert results[0].chunk_id == stored.chunk_id
+
+
+def test_gh57_ingestion_pipeline_falls_back_when_sqlite_lacks_fts5(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempted_fts_create = False
+
+    def _missing_fts5(_conn: sqlite3.Connection) -> None:
+        nonlocal attempted_fts_create
+        attempted_fts_create = True
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_create_fts_index",
+        staticmethod(_missing_fts5),
+        raising=False,
+    )
+    caplog.set_level(logging.WARNING, logger="shisad.memory.backend.sqlite")
+
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    stored = pipeline.ingest(
+        source_id="doc-gh57-no-fts5",
+        source_type="external",
+        content="Fallback lexical memory remains searchable without SQLite FTS5.",
+    )
+
+    results = pipeline.retrieve("fallback lexical", limit=5)
+
+    assert attempted_fts_create is True
+    assert results
+    assert results[0].chunk_id == stored.chunk_id
+    warning_messages = [record.getMessage() for record in caplog.records]
+    assert any("SQLite FTS5 extension is unavailable" in message for message in warning_messages)
+    assert any("degraded" in message for message in warning_messages)
+    with sqlite3.connect(tmp_path / "memory" / "memory.sqlite3") as conn:
+        fallback_count = conn.execute("SELECT COUNT(*) FROM retrieval_lexical").fetchone()
+    assert fallback_count is not None
+    assert int(fallback_count[0]) == 1
 
 
 def test_m1_ingestion_pipeline_surfaces_backend_fts_failures(tmp_path: Path) -> None:
