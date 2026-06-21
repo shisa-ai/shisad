@@ -30,11 +30,16 @@ class ActionKind(StrEnum):
     MEMORY_WRITE = "MEMORY_WRITE"
     MESSAGE_READ = "MESSAGE_READ"
     MESSAGE_SEND = "MESSAGE_SEND"
+    MCP_EXTERNAL = "MCP_EXTERNAL"
     UNKNOWN = "UNKNOWN"
 
 
 _CAPABILITY_TO_ACTION_KINDS: dict[Capability, set[ActionKind]] = {
-    Capability.HTTP_REQUEST: {ActionKind.EGRESS, ActionKind.BROWSER_READ},
+    Capability.HTTP_REQUEST: {
+        ActionKind.EGRESS,
+        ActionKind.BROWSER_READ,
+        ActionKind.MCP_EXTERNAL,
+    },
     Capability.FILE_WRITE: {ActionKind.FS_WRITE},
     Capability.FILE_READ: {ActionKind.FS_READ},
     Capability.MEMORY_WRITE: {ActionKind.MEMORY_WRITE},
@@ -318,6 +323,9 @@ def infer_action_kind(tool_name: str, arguments: dict[str, Any]) -> ActionKind:
             return ActionKind.EGRESS
         return kind
 
+    if tool_name.startswith("mcp."):
+        return ActionKind.MCP_EXTERNAL
+
     if extract_network_hosts(arguments):
         return ActionKind.EGRESS
 
@@ -410,6 +418,8 @@ def normalize_resource_ids(
             value = arguments.get(key)
             if isinstance(value, str) and value.strip():
                 resources.append(value.strip())
+    elif action_kind == ActionKind.MCP_EXTERNAL and tool_name:
+        resources.append(tool_name)
 
     deduped: list[str] = []
     seen: set[str] = set()

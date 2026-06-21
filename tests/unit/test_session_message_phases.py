@@ -51,6 +51,7 @@ from shisad.daemon.handlers._impl_session import (
     TaskDelegationRecommendation,
     TaskSessionHandoff,
     _active_attention_defaults_for_validated,
+    should_delegate_to_task,
 )
 from shisad.executors.sandbox import SandboxType
 from shisad.memory.consolidation import ConsolidationWorker
@@ -114,6 +115,22 @@ def _validation_result(
         user_transcript_entry=user_transcript_entry,
         early_response=early_response,
     )
+
+
+def test_gh82_mcp_tool_delegation_is_not_unknown_action_kind() -> None:
+    advisory = should_delegate_to_task(
+        proposals=[
+            SimpleNamespace(
+                tool_name="mcp.todoist.find-tasks-by-date",
+                arguments={"filter": "today", "limit": 10},
+            )
+        ]
+    )
+
+    assert advisory.delegate is True
+    assert "unknown_action_kind" not in advisory.reason_codes
+    assert "side_effect_action" in advisory.reason_codes
+    assert advisory.tools == ("mcp.todoist.find-tasks-by-date",)
 
 
 def _clear_validation_owner(validated: SessionMessageValidationResult) -> None:

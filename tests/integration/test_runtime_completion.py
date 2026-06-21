@@ -1674,8 +1674,6 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from shisad.daemon import services as daemon_services
-    from shisad.daemon.handlers import _impl_session as impl_session_module
-    from shisad.security.control_plane import schema as control_plane_schema
     from shisad.security.control_plane.engine import ControlPlaneEngine
 
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
@@ -1686,12 +1684,6 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
     observed_taints: list[set[TaintLabel]] = []
     planner_invocations = 0
     server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
-    original_infer_action_kind = control_plane_schema.infer_action_kind
-
-    def _infer_action_kind(tool_name: str, arguments: dict[str, Any]) -> object:
-        if canonical_tool_name(tool_name) == "mcp.docs.lookup-doc":
-            return control_plane_schema.ActionKind.MESSAGE_READ
-        return original_infer_action_kind(tool_name, arguments)
 
     class _InProcessControlPlaneClient:
         def __init__(self, engine: ControlPlaneEngine) -> None:
@@ -1808,8 +1800,6 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
         )
 
     monkeypatch.setattr(Planner, "propose", _planner)
-    monkeypatch.setattr(control_plane_schema, "infer_action_kind", _infer_action_kind)
-    monkeypatch.setattr(impl_session_module, "infer_action_kind", _infer_action_kind)
     monkeypatch.setattr(
         daemon_services, "start_control_plane_sidecar", _start_control_plane_sidecar
     )

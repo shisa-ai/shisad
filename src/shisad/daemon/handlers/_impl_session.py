@@ -490,6 +490,7 @@ _DELEGATE_SIDE_EFFECT_ACTION_KINDS: set[ActionKind] = {
     ActionKind.MESSAGE_SEND,
     ActionKind.SHELL_EXEC,
     ActionKind.ENV_ACCESS,
+    ActionKind.MCP_EXTERNAL,
 }
 
 

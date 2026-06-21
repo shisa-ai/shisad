@@ -267,6 +267,7 @@ class ExecutionTraceVerifier:
                 ActionKind.MEMORY_WRITE,
                 ActionKind.MESSAGE_SEND,
                 ActionKind.SHELL_EXEC,
+                ActionKind.MCP_EXTERNAL,
             }:
                 return PlanVerificationResult(
                     allowed=False,

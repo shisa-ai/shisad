@@ -947,6 +947,39 @@ def test_s9_infer_action_kind_treats_web_search_as_egress() -> None:
     assert infer_action_kind("web.search", {"query": "security updates"}) == ActionKind.EGRESS
 
 
+def test_gh82_infer_action_kind_treats_mcp_tools_as_external_actions() -> None:
+    assert (
+        infer_action_kind("mcp.todoist.find-tasks-by-date", {"filter": "today"})
+        == ActionKind.MCP_EXTERNAL
+    )
+    assert (
+        infer_action_kind("mcp.docs.lookup-doc", {"query": "roadmap"})
+        == ActionKind.MCP_EXTERNAL
+    )
+
+
+def test_gh82_trace_allows_known_mcp_external_action_to_reach_pep() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-gh82-mcp-trace")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="List my Todoist tasks due today using Todoist MCP.",
+        origin=origin,
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    action = build_action(
+        tool_name="mcp.todoist.find-tasks-by-date",
+        arguments={"filter": "today", "limit": 10},
+        origin=origin,
+    )
+
+    assert action.action_kind == ActionKind.MCP_EXTERNAL
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+
+    assert result.allowed is True
+    assert result.reason_code == "trace:allowed"
+
+
 def test_m6_infer_action_kind_treats_browser_tools_as_browser_read_write() -> None:
     assert infer_action_kind("browser.navigate", {"url": "https://example.com"}) == (
         ActionKind.BROWSER_READ

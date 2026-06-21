@@ -346,6 +346,7 @@ class ActionMonitorVoter:
             ActionKind.FS_WRITE,
             ActionKind.MEMORY_WRITE,
             ActionKind.MESSAGE_SEND,
+            ActionKind.MCP_EXTERNAL,
         }
     )
 

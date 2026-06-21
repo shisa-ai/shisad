@@ -108,11 +108,9 @@ class _ControlPlaneStub:
 
     async def evaluate_action(self, **_kwargs: object) -> object:
         self.evaluations.append(dict(_kwargs))
-        # MCP-L2: use ActionKind.UNKNOWN to match what production's
-        # `infer_action_kind` returns for unmapped MCP tool names
-        # (`mcp.docs.lookup-doc` is not in `_TOOL_KIND_MAP` and has no
-        # file/net/env arguments, so it falls through to UNKNOWN). Prior
-        # SHELL_EXEC was a latent risk if downstream code branched on kind.
+        # MCP-L2/GH82: use ActionKind.MCP_EXTERNAL to match production's
+        # dynamic MCP tool classification. Prior SHELL_EXEC/UNKNOWN fakes were
+        # latent risks if downstream code branched on kind.
         allowed = self._decision != ControlDecision.BLOCK
         primary_reason = self._reason_codes[0] if self._reason_codes else ""
         return SimpleNamespace(
@@ -125,7 +123,7 @@ class _ControlPlaneStub:
             ),
             consensus=SimpleNamespace(votes=[]),
             action=SimpleNamespace(
-                action_kind=ActionKind.UNKNOWN,
+                action_kind=ActionKind.MCP_EXTERNAL,
                 resource_id="mcp.docs.lookup-doc",
                 resource_ids=[],
                 origin=SimpleNamespace(model_dump=lambda mode="json": {}),
