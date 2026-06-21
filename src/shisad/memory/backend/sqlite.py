@@ -403,17 +403,11 @@ class SQLiteRetrievalBackend:
             ).fetchall()
             record_ids = {str(row["chunk_id"]) for row in record_rows}
             self._remove_stale_search_index_rows(conn, valid_chunk_ids=record_ids)
+            rebuilt = self._rebuild_active_search_index(conn, record_rows)
             vector_ids = {
                 str(row["chunk_id"])
                 for row in conn.execute("SELECT chunk_id FROM retrieval_vectors").fetchall()
             }
-            fts_ids = {
-                str(row["chunk_id"])
-                for row in conn.execute(
-                    f"SELECT chunk_id FROM {self._search_index_table}"
-                ).fetchall()
-            }
-            rebuilt = 0
             for row in record_rows:
                 chunk_id = str(row["chunk_id"])
                 content = str(row["content_sanitized"])
@@ -430,9 +424,6 @@ class SQLiteRetrievalBackend:
                             json.dumps(embed_text(content), separators=(",", ":")),
                         ),
                     )
-                    rebuilt += 1
-                if chunk_id not in fts_ids:
-                    self._insert_search_index_row(conn, chunk_id, content)
                     rebuilt += 1
         return rebuilt
 
@@ -482,6 +473,26 @@ class SQLiteRetrievalBackend:
                 params=(),
                 context="all rows",
             )
+
+    def _rebuild_active_search_index(
+        self,
+        conn: sqlite3.Connection,
+        record_rows: list[sqlite3.Row],
+    ) -> int:
+        self._delete_from_search_index_table(
+            conn,
+            table_name=self._search_index_table,
+            where_clause=None,
+            params=(),
+            context="active index rebuild",
+        )
+        for row in record_rows:
+            self._insert_search_index_row(
+                conn,
+                str(row["chunk_id"]),
+                str(row["content_sanitized"]),
+            )
+        return len(record_rows)
 
     def _remove_stale_search_index_rows(
         self,

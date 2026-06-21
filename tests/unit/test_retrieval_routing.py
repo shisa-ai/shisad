@@ -317,6 +317,38 @@ def test_gh57_upsert_clears_stale_inactive_search_index_for_chunk(
     assert str(fallback_row[0]) == "new fallback text"
 
 
+def test_gh57_startup_backfill_repairs_stale_active_search_index_rows(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "memory"
+    first = IngestionPipeline(storage)
+    stored = first.ingest(
+        source_id="doc-gh57-stale-active",
+        source_type="external",
+        content="Old FTS text should be replaced during startup repair.",
+    )
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        conn.execute(
+            "UPDATE retrieval_records SET content_sanitized = ? WHERE chunk_id = ?",
+            ("New repaired text should be the indexed startup value.", stored.chunk_id),
+        )
+
+    restarted = IngestionPipeline(storage)
+    results = restarted.retrieve("repaired startup value", limit=5)
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        fts_row = conn.execute(
+            "SELECT content_sanitized FROM retrieval_fts WHERE chunk_id = ?",
+            (stored.chunk_id,),
+        ).fetchone()
+
+    assert results
+    assert results[0].chunk_id == stored.chunk_id
+    assert fts_row is not None
+    assert str(fts_row[0]) == "New repaired text should be the indexed startup value."
+
+
 def test_m1_ingestion_pipeline_surfaces_backend_fts_failures(tmp_path: Path) -> None:
     storage = tmp_path / "memory"
     pipeline = IngestionPipeline(storage)
