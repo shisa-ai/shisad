@@ -324,6 +324,58 @@ def test_gh57_reset_storage_fails_closed_when_inactive_fts_cannot_be_purged(
     assert int(record_count[0]) >= 1
 
 
+def test_gh57_failed_reset_preserves_live_pipeline_key_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "memory"
+    fts_pipeline = IngestionPipeline(storage)
+    fts_pipeline.ingest(
+        source_id="doc-gh57-key-state",
+        source_type="external",
+        content="Failed reset should not poison the live ingestion pipeline.",
+    )
+
+    def _missing_fts5(_conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    def _delete_without_fts5(
+        _self: SQLiteRetrievalBackend,
+        conn: sqlite3.Connection,
+        sql: str,
+        params: tuple[object, ...],
+    ) -> None:
+        if "retrieval_fts" in sql:
+            raise sqlite3.OperationalError("no such module: fts5")
+        conn.execute(sql, params)
+
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_create_fts_index",
+        staticmethod(_missing_fts5),
+    )
+    monkeypatch.setattr(
+        SQLiteRetrievalBackend,
+        "_execute_search_index_delete",
+        _delete_without_fts5,
+        raising=False,
+    )
+    fallback_pipeline = IngestionPipeline(storage)
+
+    with pytest.raises(sqlite3.OperationalError, match="cannot purge inactive SQLite FTS5"):
+        fallback_pipeline.reset_storage()
+
+    stored = fallback_pipeline.ingest(
+        source_id="doc-gh57-after-failed-reset",
+        source_type="external",
+        content="The same live pipeline can still encrypt and store after reset failure.",
+    )
+
+    original = fallback_pipeline.read_original(stored.chunk_id)
+    assert original is not None
+    assert "still encrypt and store" in original
+
+
 def test_gh57_upsert_clears_stale_inactive_search_index_for_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

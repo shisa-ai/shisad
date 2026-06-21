@@ -1193,9 +1193,6 @@ class IngestionPipeline:
 
     def reset_storage(self) -> None:
         """Clear retrieval rows while preserving the shared SQLite substrate."""
-        self._key_material_by_id.clear()
-        self._key_metadata_by_id.clear()
-        self._active_key_id = ""
         self._backend.clear_records()
         with self._connect_db() as conn:
             conn.execute("DELETE FROM retrieval_keys")
@@ -1206,6 +1203,9 @@ class IngestionPipeline:
             (root / "keys.json").unlink(missing_ok=True)
             (root / "key.bin").unlink(missing_ok=True)
             (root / "master_salt.bin").unlink(missing_ok=True)
+        self._key_material_by_id.clear()
+        self._key_metadata_by_id.clear()
+        self._active_key_id = ""
         self._load_or_create_keys()
 
     def collections_for_capabilities(
