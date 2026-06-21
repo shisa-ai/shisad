@@ -1200,8 +1200,7 @@ class DaemonServices:
             _unlink_if_exists(self.scheduler._pending_file)
 
         # -- Memory --
-        cleared["memory_entries"] = len(self.memory_manager._entries)
-        self.memory_manager.reset_storage()
+        self._reset_memory_surfaces_for_test(cleared)
 
         # -- Lockdown --
         cleared["lockdown_states"] = len(self.lockdown_manager._states)
@@ -1261,13 +1260,6 @@ class DaemonServices:
         _wipe_dir_contents(self.evidence_store._blob_dir)
         _wipe_dir_contents(self.evidence_store._quarantine_dir)
         _unlink_if_exists(self.evidence_store._metadata_path)
-
-        # -- Ingestion --
-        cleared["ingestion_records"] = self.ingestion.persisted_artifact_count()
-        cleared["ingestion_vectors"] = self.ingestion.search_index_count()
-        cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
-        cleared["ingestion_artifacts"] = self.ingestion.persisted_artifact_count()
-        self.ingestion.reset_storage()
 
         # -- Self-modification --
         cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
@@ -1363,6 +1355,41 @@ class DaemonServices:
 
         logger.info("Test state reset: %s", cleared)
         return {"status": "reset", "cleared": cleared}
+
+    def _reset_memory_surfaces_for_test(self, cleared: dict[str, int]) -> None:
+        db_paths = {self.memory_manager._db_path, self.ingestion._db_path}
+        db_snapshots = {
+            path: path.read_bytes() if path.exists() else None for path in db_paths
+        }
+        memory_entries_snapshot = dict(self.memory_manager._entries)
+        ingestion_key_material_snapshot = dict(self.ingestion._key_material_by_id)
+        ingestion_key_metadata_snapshot = {
+            key_id: dict(metadata)
+            for key_id, metadata in self.ingestion._key_metadata_by_id.items()
+        }
+        ingestion_active_key_snapshot = self.ingestion._active_key_id
+
+        cleared["memory_entries"] = len(self.memory_manager._entries)
+        cleared["ingestion_records"] = self.ingestion.persisted_artifact_count()
+        cleared["ingestion_vectors"] = self.ingestion.search_index_count()
+        cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
+        cleared["ingestion_artifacts"] = self.ingestion.persisted_artifact_count()
+
+        try:
+            self.memory_manager.reset_storage()
+            self.ingestion.reset_storage()
+        except Exception:
+            for path, snapshot in db_snapshots.items():
+                if snapshot is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(snapshot)
+            self.memory_manager._entries = memory_entries_snapshot
+            self.ingestion._key_material_by_id = ingestion_key_material_snapshot
+            self.ingestion._key_metadata_by_id = ingestion_key_metadata_snapshot
+            self.ingestion._active_key_id = ingestion_active_key_snapshot
+            raise
 
     async def shutdown(self) -> None:
         """Close async/sync resources in reverse runtime order."""

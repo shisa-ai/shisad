@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -755,6 +756,108 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             content="fresh payload",
         )
         assert second_ingest.chunk_id
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh57_daemon_reset_preserves_memory_surfaces_when_ingestion_reset_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        decision = services.memory_manager.write(
+            entry_type="note",
+            key="gh57.daemon.reset",
+            value="daemon reset should preserve memory on ingestion failure",
+            source=MemorySource(
+                origin="user",
+                source_id="gh57-daemon-reset",
+                extraction_method="note.create",
+            ),
+            user_confirmed=True,
+        )
+        assert decision.entry is not None
+        stored = services.ingestion.ingest(
+            source_id="doc-gh57-daemon-reset",
+            source_type="external",
+            content="Daemon reset should preserve retrieval on ingestion failure.",
+        )
+
+        def _fail_ingestion_reset() -> None:
+            raise sqlite3.OperationalError("simulated ingestion reset failure")
+
+        monkeypatch.setattr(services.ingestion, "reset_storage", _fail_ingestion_reset)
+
+        with pytest.raises(sqlite3.OperationalError, match="simulated ingestion reset"):
+            await services.reset_test_state()
+
+        assert services.memory_manager.get_entry(decision.entry.id) is not None
+        assert services.memory_manager.count_events(entry_id=decision.entry.id) > 0
+        assert not services.ingestion.artifacts_empty()
+        original = services.ingestion.read_original(stored.chunk_id)
+        assert original is not None
+        assert "preserve retrieval" in original
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gh57_daemon_reset_preserves_memory_surfaces_when_memory_reset_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        decision = services.memory_manager.write(
+            entry_type="note",
+            key="gh57.daemon.memory.reset",
+            value="daemon reset should roll back memory reset failure",
+            source=MemorySource(
+                origin="user",
+                source_id="gh57-daemon-memory-reset",
+                extraction_method="note.create",
+            ),
+            user_confirmed=True,
+        )
+        assert decision.entry is not None
+        stored = services.ingestion.ingest(
+            source_id="doc-gh57-daemon-memory-reset",
+            source_type="external",
+            content="Daemon reset should preserve retrieval on memory failure.",
+        )
+        original_reset = services.memory_manager.reset_storage
+
+        def _fail_after_memory_reset() -> None:
+            original_reset()
+            raise sqlite3.OperationalError("simulated memory reset failure")
+
+        monkeypatch.setattr(services.memory_manager, "reset_storage", _fail_after_memory_reset)
+
+        with pytest.raises(sqlite3.OperationalError, match="simulated memory reset"):
+            await services.reset_test_state()
+
+        assert services.memory_manager.get_entry(decision.entry.id) is not None
+        assert services.memory_manager.count_events(entry_id=decision.entry.id) > 0
+        assert not services.ingestion.artifacts_empty()
+        original = services.ingestion.read_original(stored.chunk_id)
+        assert original is not None
+        assert "preserve retrieval" in original
     finally:
         await services.shutdown()
 
