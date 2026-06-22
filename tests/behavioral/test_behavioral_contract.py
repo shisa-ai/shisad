@@ -118,6 +118,12 @@ def _extract_trusted_context_before_request(planner_input: str) -> str:
     return normalized.split("=== USER REQUEST ===", 1)[0]
 
 
+def _extract_time_now_utc_from_planner_input(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    match = re.search(r'"utc_datetime":\s*"(?P<utc>[^"]+)"', normalized)
+    return match.group("utc") if match is not None else "the trusted runtime clock"
+
+
 def _extract_data_evidence_context(planner_input: str) -> str:
     normalized = planner_input.replace("^", "")
     marker = "=== DATA EVIDENCE (UNTRUSTED) ==="
@@ -311,6 +317,41 @@ async def _stub_complete(
     goal_lower = goal.lower()
     normalized_goal = " ".join(goal_lower.strip().split())
     normalized_input = planner_input.replace("^", "").lower()
+
+    if (
+        "post-tool synthesis pass" in normalized_input
+        and '"tool_name": "time.now"' in normalized_input
+    ):
+        utc_datetime = _extract_time_now_utc_from_planner_input(planner_input)
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content=f"The current time is {utc_datetime} (UTC).",
+            ),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if normalized_goal in {"what time is it?", "what is the current time?"}:
+        trusted_context = _extract_trusted_context_before_request(planner_input)
+        if "current_turn_started_at_utc=" not in trusted_context:
+            return ProviderResponse(
+                message=Message(role="assistant", content="missing-trusted-runtime-time"),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="",
+                tool_calls=[_tool_call("time.now", {}, call_id="t-time-now")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
 
     if "pending actions (trusted control state)" in normalized_input:
         if normalized_goal in {"confirm", "approve", "yes", "go ahead", "confirm 1"}:
@@ -1463,6 +1504,35 @@ async def test_contract_web_search_executes_and_returns_results(
     assert payload.get("ok") is True
     assert payload.get("results")
     assert str(payload.get("backend", "")).startswith(contract_harness.web_search_backend_url)
+
+
+@pytest.mark.asyncio
+async def test_gh60_current_time_request_uses_time_now_without_shell_exec(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "what time is it?",
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "time.now" in outputs
+    assert "shell.exec" not in outputs
+    payload = outputs["time.now"][0]
+    assert payload.get("ok") is True
+    assert payload.get("source") == "daemon_clock"
+    assert str(payload.get("utc_datetime", "")).endswith("+00:00")
+    response = str(reply.get("response", "")).lower()
+    assert "current time" in response
+    assert "utc" in response
 
 
 @pytest.mark.asyncio

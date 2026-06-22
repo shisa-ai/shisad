@@ -30,6 +30,7 @@ class ActionKind(StrEnum):
     MEMORY_WRITE = "MEMORY_WRITE"
     MESSAGE_READ = "MESSAGE_READ"
     MESSAGE_SEND = "MESSAGE_SEND"
+    RUNTIME_READ = "RUNTIME_READ"
     MCP_EXTERNAL = "MCP_EXTERNAL"
     UNKNOWN = "UNKNOWN"
 
@@ -136,6 +137,7 @@ _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "reminder.list": ActionKind.MEMORY_READ,
     "evidence.read": ActionKind.MEMORY_READ,
     "evidence.promote": ActionKind.MEMORY_READ,
+    "time.now": ActionKind.RUNTIME_READ,
     "fs.list": ActionKind.FS_LIST,
     "fs.read": ActionKind.FS_READ,
     "fs.write": ActionKind.FS_WRITE,

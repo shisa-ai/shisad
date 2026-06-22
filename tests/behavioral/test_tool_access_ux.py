@@ -292,8 +292,8 @@ async def test_strict_base_actions_always_present(
     cp_engine: ControlPlaneEngine,
     planner_origin: Origin,
 ) -> None:
-    """Even with no capabilities, FS_READ, FS_LIST, and MEMORY_READ are
-    always in the stage1 plan (strict base)."""
+    """Even with no capabilities, read-only local action kinds are always in
+    the stage1 plan (strict base)."""
     cp_engine.begin_precontent_plan(
         session_id="test-session",
         goal="something",
@@ -307,6 +307,7 @@ async def test_strict_base_actions_always_present(
     assert ActionKind.FS_READ in plan.allowed_actions
     assert ActionKind.FS_LIST in plan.allowed_actions
     assert ActionKind.MEMORY_READ in plan.allowed_actions
+    assert ActionKind.RUNTIME_READ in plan.allowed_actions
 
 
 # ---------------------------------------------------------------------------
@@ -335,4 +336,5 @@ async def test_no_capabilities_param_defaults_to_strict_base(
         ActionKind.FS_READ,
         ActionKind.FS_LIST,
         ActionKind.MEMORY_READ,
+        ActionKind.RUNTIME_READ,
     }

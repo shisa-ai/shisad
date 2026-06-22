@@ -947,6 +947,10 @@ def test_s9_infer_action_kind_treats_web_search_as_egress() -> None:
     assert infer_action_kind("web.search", {"query": "security updates"}) == ActionKind.EGRESS
 
 
+def test_gh60_infer_action_kind_treats_time_now_as_runtime_read() -> None:
+    assert infer_action_kind("time.now", {}) == ActionKind.RUNTIME_READ
+
+
 def test_gh82_infer_action_kind_treats_mcp_tools_as_external_actions() -> None:
     assert (
         infer_action_kind("mcp.todoist.find-tasks-by-date", {"filter": "today"})

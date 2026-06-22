@@ -1609,6 +1609,26 @@ def test_gh12_tool_registry_steers_file_discovery_to_structured_fs_tools() -> No
     assert "fs.read" in shell_description
 
 
+def test_gh60_tool_registry_exposes_time_now_without_shell_capability() -> None:
+    registry, _alarm = _build_tool_registry(
+        EventBus(),
+        realitycheck_surface_enabled=False,
+    )
+
+    time_now = registry.get_tool(ToolName("time.now"))
+
+    assert time_now is not None
+    assert time_now.capabilities_required == []
+    assert time_now.require_confirmation is False
+    description = time_now.planner_description().lower()
+    assert "current date" in description
+    assert "current time" in description
+    assert "shell.exec" in description
+    schema = time_now.json_schema()
+    assert schema["required"] == []
+    assert "timezone" in schema["properties"]
+
+
 def test_gh49_reminder_create_schema_hides_current_turn_intent() -> None:
     registry, _alarm = _build_tool_registry(
         EventBus(),

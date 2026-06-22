@@ -432,6 +432,7 @@ class ExecutionTraceVerifier:
             ActionKind.FS_READ,
             ActionKind.FS_LIST,
             ActionKind.MEMORY_READ,
+            ActionKind.RUNTIME_READ,
         }
 
     def _stage1_allowed_actions(

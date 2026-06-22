@@ -54,6 +54,7 @@ from shisad.core.approval import (
     resolve_confirmation_destinations,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
+from shisad.core.clock import current_time_payload
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -450,6 +451,14 @@ def _structured_web_fetch(
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
     )
+
+
+def _structured_time_now(
+    _handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    return current_time_payload(timezone=_argument_string(arguments, "timezone"))
 
 
 async def _structured_browser_navigate(
@@ -4135,6 +4144,7 @@ class HandlerImplementation(
         return {
             "web.search": (_structured_web_search, "web_search_failed"),
             "web.fetch": (_structured_web_fetch, "web_fetch_failed"),
+            "time.now": (_structured_time_now, "time_now_failed"),
             "browser.navigate": (_structured_browser_navigate, "browser_navigate_failed"),
             "browser.read_page": (_structured_browser_read_page, "browser_read_page_failed"),
             "browser.screenshot": (_structured_browser_screenshot, "browser_screenshot_failed"),

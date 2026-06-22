@@ -24,6 +24,7 @@ from shisad.channels.base import DeliveryTarget
 from shisad.coding.models import CodingAgentConfig
 from shisad.core import daemon_notices as _daemon_notices
 from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
+from shisad.core.clock import current_time_frontmatter_lines
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
     DEFAULT_INTERNAL_TIER_TOKEN_BUDGET,
@@ -481,6 +482,7 @@ _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_LIST,
     ActionKind.MEMORY_READ,
     ActionKind.MESSAGE_READ,
+    ActionKind.RUNTIME_READ,
 }
 _DELEGATE_SIDE_EFFECT_ACTION_KINDS: set[ActionKind] = {
     ActionKind.BROWSER_WRITE,
@@ -6194,6 +6196,7 @@ def _build_session_frontmatter(
     capabilities: set[Capability],
     policy_taints: set[TaintLabel],
     episode_snapshot: dict[str, Any] | None,
+    current_turn_timestamp: datetime | None = None,
     task_ledger_snapshot: dict[str, Any] | None = None,
     identity_entries: Sequence[MemoryEntry] = (),
     active_attention_entries: Sequence[MemoryEntry] = (),
@@ -6221,6 +6224,7 @@ def _build_session_frontmatter(
         f"session_role={session_role}",
         f"trust_level={_sanitize_frontmatter_value(trust_level)}",
         f"session_created_at={_sanitize_frontmatter_value(created_at_text)}",
+        *current_time_frontmatter_lines(now=current_turn_timestamp),
         f"active_capabilities={_sanitize_frontmatter_value(active_capabilities)}",
         f"policy_taint_labels={_sanitize_frontmatter_value(taint_labels)}",
     ]
@@ -6422,6 +6426,7 @@ def _build_planner_context_scaffold(
     capabilities: set[Capability],
     current_turn_text: str,
     incoming_taint_labels: set[TaintLabel],
+    current_turn_timestamp: datetime | None = None,
     conversation_context: str,
     memory_context: str,
     active_attention_context: str = "",
@@ -6462,6 +6467,7 @@ def _build_planner_context_scaffold(
             capabilities=capabilities,
             policy_taints=policy_taints,
             episode_snapshot=episode_snapshot,
+            current_turn_timestamp=current_turn_timestamp,
             task_ledger_snapshot=task_ledger_snapshot,
             identity_entries=identity_entries,
             active_attention_entries=active_attention_entries,
@@ -9015,6 +9021,11 @@ class SessionImplMixin(HandlerMixinBase):
         } or _is_public_channel_level(validated.trust_level)
 
         transcript_entries = self._transcript_store.list_entries(sid)
+        current_turn_timestamp = (
+            validated.user_transcript_entry.timestamp
+            if validated.user_transcript_entry is not None
+            else (transcript_entries[-1].timestamp if transcript_entries else datetime.now(UTC))
+        )
         context_entries: list[TranscriptEntry]
         if zero_context_session:
             context_entries = []
@@ -9498,6 +9509,7 @@ class SessionImplMixin(HandlerMixinBase):
                 trust_level=validated.trust_level,
                 capabilities=effective_caps,
                 current_turn_text=firewall_result.sanitized_text,
+                current_turn_timestamp=current_turn_timestamp,
                 incoming_taint_labels=validated.incoming_taint_labels,
                 conversation_context=conversation_context,
                 memory_context=memory_context,

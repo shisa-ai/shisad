@@ -1699,6 +1699,28 @@ def _build_tool_registry(
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("time.now"),
+            description=(
+                "Return the trusted current date and current time from the daemon clock, "
+                "including UTC and local timezone metadata. Use for date, time, timezone, "
+                "and clock questions. Do not use shell.exec for date/time."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="timezone",
+                    type="string",
+                    description=(
+                        "Optional IANA timezone name such as UTC or Asia/Tokyo. "
+                        "Omit to use the daemon runtime local timezone."
+                    ),
+                    required=False,
+                ),
+            ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("action.resolve"),
             description=(
                 "Resolve a pending user-confirmation action in the current trusted "

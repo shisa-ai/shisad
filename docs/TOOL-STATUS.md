@@ -29,6 +29,9 @@ Note:
   neither source provides a message id, the read probe is skipped as
   `email_read_probe_message_id_unconfigured`.
 - `tool.evidence.read` and `tool.evidence.promote` are `DISABLED` in this recorded snapshot because the probe does not seed a current-session evidence reference. They are covered by the evidence behavioral suite.
+- `tool.time.now` is a planner-visible structured clock tool for current
+  date/time answers. It has no external dependency and is covered by
+  session-message behavioral tests rather than this direct-RPC snapshot.
 - `tool.attachment.ingest` is the local attachment MVP. It reads allowlisted
   local paths only, returns tainted ArtifactLedger manifest refs, and stores
   unsupported, malformed, oversized, or transcript-risky media as quarantined

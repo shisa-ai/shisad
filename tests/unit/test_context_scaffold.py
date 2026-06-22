@@ -173,6 +173,36 @@ def test_m3_cs4_build_planner_context_scaffold_keeps_memory_untrusted() -> None:
     )
 
 
+def test_gh60_build_planner_context_scaffold_includes_trusted_current_turn_time() -> None:
+    session = Session(
+        id=SessionId("sess-gh60"),
+        channel="cli",
+        mode=SessionMode.DEFAULT,
+        metadata={"trust_level": "trusted"},
+        created_at=datetime(2026, 3, 2, 10, 0, tzinfo=UTC),
+    )
+
+    scaffold = _build_planner_context_scaffold(
+        session_id=SessionId("sess-gh60"),
+        session=session,
+        trust_level="trusted",
+        capabilities={Capability.FILE_READ},
+        current_turn_text="what time is it?",
+        current_turn_timestamp=datetime(2026, 6, 22, 15, 4, 5, tzinfo=UTC),
+        incoming_taint_labels=set(),
+        conversation_context="",
+        memory_context="",
+        episode_snapshot=None,
+    )
+
+    trusted_frontmatter = scaffold.trusted_frontmatter
+    assert "current_turn_started_at_utc=2026-06-22T15:04:05+00:00" in trusted_frontmatter
+    assert "current_turn_local_datetime=" in trusted_frontmatter
+    assert "current_turn_timezone=" in trusted_frontmatter
+    assert "current_turn_timezone_offset=" in trusted_frontmatter
+    assert "current_turn_time_source=daemon_clock" in trusted_frontmatter
+
+
 def test_m3_identity_frontmatter_stays_in_trusted_section(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     elevated = manager.write_with_provenance(
