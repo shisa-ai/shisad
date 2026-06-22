@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from shisad.core.events import EventBus
 from shisad.core.planner import Planner, PlannerOutput
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
@@ -18,6 +19,7 @@ from shisad.core.tools.schema import (
     tool_definitions_to_openai,
 )
 from shisad.core.types import Capability, ToolName
+from shisad.daemon.services import _build_tool_registry
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 
@@ -285,6 +287,42 @@ async def test_c3_base_prompt_steers_natural_file_lookup_to_structured_fs_tools(
     assert "legacy" in system_prompt
     assert "shell.exec" in system_prompt
     assert "ordinary filesystem discovery" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_gh60_planner_payload_exposes_time_now_and_no_shell_time_guidance() -> None:
+    registry, _alarm_tool = _build_tool_registry(EventBus())
+    provider = _RecordingProvider()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=True,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    await planner.propose(
+        "what time is it?",
+        PolicyContext(capabilities=set()),
+        tools=_tools_payload(registry, {"time.now"}),
+    )
+
+    system_prompt = provider.messages[0][0].content.lower()
+    assert "current date" in system_prompt
+    assert "current time" in system_prompt
+    assert "timezone" in system_prompt
+    assert "time.now" in system_prompt
+    assert "do not use shell.exec for date/time" in system_prompt
+
+    tool_names = _canonical_payload_names(provider.tools[0], {"time.now"})
+    assert "time.now" in tool_names
+    time_now_schema = provider.tools[0][0]["function"]["parameters"]
+    assert "timezone" in time_now_schema["properties"]
+    assert "timezone" not in time_now_schema.get("required", [])
 
 
 @pytest.mark.asyncio
