@@ -4934,18 +4934,23 @@ def _strip_rejected_tool_availability_claim_lines(
     raw_text = str(response_text or "")
 
     def _strip_claim_lines(text: str) -> str:
-        kept_lines = [
-            line
-            for line in text.splitlines()
-            if (
-                not _is_unprotected_tool_output_header_line(line)
-                and not _response_claims_rejected_tool_available(
-                    response_text=line,
-                    rejection_reasons=rejection_reasons,
-                    rejected_tool_names=rejected_tool_names,
-                )
-            )
-        ]
+        kept_lines: list[str] = []
+        skipping_unprotected_tool_block = False
+        for line in text.splitlines():
+            if skipping_unprotected_tool_block:
+                if not line.strip():
+                    skipping_unprotected_tool_block = False
+                continue
+            if _is_unprotected_tool_output_header_line(line):
+                skipping_unprotected_tool_block = True
+                continue
+            if _response_claims_rejected_tool_available(
+                response_text=line,
+                rejection_reasons=rejection_reasons,
+                rejected_tool_names=rejected_tool_names,
+            ):
+                continue
+            kept_lines.append(line)
         return "\n".join(kept_lines).strip()
 
     protected_segment = ""
