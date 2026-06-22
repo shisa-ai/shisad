@@ -905,6 +905,15 @@ async def _stub_complete(
         if "gh84 blocked shell denial regression" in goal_lower
         else None
     )
+    gh84_mixed_blocked_shell_call = (
+        _tool_call(
+            "shell.exec",
+            {"command": ["date"], "command_intent": "execute"},
+            call_id="t-gh84-mixed-blocked-shell",
+        )
+        if "gh84 mixed blocked shell denial regression" in goal_lower
+        else None
+    )
     fs_write_call = (
         _tool_call(
             "fs.write",
@@ -919,7 +928,18 @@ async def _stub_complete(
         if "unknown tool probe" in goal_lower
         else None
     )
-    if gh84_blocked_shell_call is not None:
+    if gh84_mixed_blocked_shell_call is not None:
+        tool_calls.extend(
+            [
+                _tool_call(
+                    "fs.read",
+                    {"path": "README.md", "max_bytes": 4096},
+                    call_id="t-gh84-mixed-readme",
+                ),
+                gh84_mixed_blocked_shell_call,
+            ]
+        )
+    elif gh84_blocked_shell_call is not None:
         tool_calls.append(gh84_blocked_shell_call)
     elif unknown_probe_call is not None:
         tool_calls.append(unknown_probe_call)
@@ -969,7 +989,7 @@ async def _stub_complete(
     elif fs_write_call is not None:
         tool_calls.append(fs_write_call)
 
-    if gh84_blocked_shell_call is not None:
+    if gh84_mixed_blocked_shell_call is not None or gh84_blocked_shell_call is not None:
         assistant_response = (
             "I can use shell.exec for that. Could you clarify what you want me to run?"
         )
@@ -2154,6 +2174,37 @@ async def test_gh84_policy_denied_tool_action_returns_terminal_reason(
     assert int(followup.get("blocked_actions", 0)) == 0
     assert int(followup.get("confirmation_required_actions", 0)) == 0
     assert "hello" in str(followup.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_gh84_mixed_policy_denial_preserves_success_and_reports_denial(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": (
+                "read README.md and run gh84 mixed blocked shell denial regression"
+            ),
+        },
+    )
+
+    response_text = str(reply.get("response", ""))
+    normalized_response = response_text.lower()
+    outputs = _extract_tool_outputs(reply)
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) >= 1
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) >= 1
+    assert "fs.read" in outputs
+    assert "could not safely execute" in normalized_response
+    assert "reason:" in normalized_response
+    assert "shell.exec" in normalized_response
+    assert "i can use shell.exec" not in normalized_response
+    assert "could you clarify" not in normalized_response
 
 
 @pytest.mark.asyncio

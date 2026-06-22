@@ -4904,6 +4904,24 @@ def _response_claims_rejected_tool_available(
     return False
 
 
+def _strip_rejected_tool_availability_claim_lines(
+    *,
+    response_text: str,
+    rejection_reasons: Sequence[str],
+    rejected_tool_names: Sequence[str] = (),
+) -> str:
+    kept_lines = [
+        line
+        for line in str(response_text or "").splitlines()
+        if not _response_claims_rejected_tool_available(
+            response_text=line,
+            rejection_reasons=rejection_reasons,
+            rejected_tool_names=rejected_tool_names,
+        )
+    ]
+    return "\n".join(kept_lines).strip()
+
+
 def _blocked_action_feedback(reasons: list[str]) -> str:
     codes = _flatten_rejection_reason_codes(reasons)
     normalized_codes = {code.removeprefix("pep:") for code in codes}
@@ -5048,7 +5066,18 @@ def _coerce_blocked_action_response_text(
     rejection_reasons: list[str],
     rejected_tool_names: Sequence[str] = (),
 ) -> str:
-    if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
+    if rejected <= 0 or pending_confirmation > 0:
+        return response_text
+    if executed_tool_outputs > 0:
+        response_text = _strip_rejected_tool_availability_claim_lines(
+            response_text=response_text,
+            rejection_reasons=rejection_reasons,
+            rejected_tool_names=rejected_tool_names,
+        )
+        feedback = _blocked_action_feedback(rejection_reasons)
+        if feedback and feedback not in response_text:
+            stripped = response_text.strip()
+            return f"{stripped}\n\n{feedback}" if stripped else feedback
         return response_text
     codes = _flatten_rejection_reason_codes(rejection_reasons)
     if any(code.startswith("browser_runtime_unavailable:") for code in codes):

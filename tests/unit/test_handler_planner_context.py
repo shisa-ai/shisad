@@ -743,6 +743,25 @@ def test_gh84_coerces_hyphenated_native_tool_alias_hedging_to_denial_reason() ->
     assert "clarify" not in response
 
 
+def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "I can use shell.exec for that. Could you clarify?\n\n"
+            "I read README.md successfully."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "I read README.md successfully." in response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "I can use shell.exec" not in response
+    assert "clarify" not in response
+
+
 def test_gh84_preserves_rejected_safe_injection_summary() -> None:
     safe_summary = _coerce_internal_tool_narration_response_text(
         response_text="Action monitor rejected goal-misaligned or policy-evasive plan.",
