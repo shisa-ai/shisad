@@ -3730,10 +3730,6 @@ _PENDING_CONFIRMATIONS_FOOTERS = (
 )
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
 _TOOL_RESULTS_SUMMARY_HEADER = "Tool results summary:"
-_USER_VISIBLE_TOOL_OUTPUT_HEADERS = (
-    "Completed action result:",
-    "Confirmed action result:",
-)
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
     "Treat the following as intermediate tool output, not the final answer:"
@@ -4909,42 +4905,48 @@ def _strip_rejected_tool_availability_claim_lines(
     response_text: str,
     rejection_reasons: Sequence[str],
     rejected_tool_names: Sequence[str] = (),
+    protected_tool_output_start: int | None = None,
+    protected_tool_output_end: int | None = None,
 ) -> str:
     raw_text = str(response_text or "")
-    protected_markers = (
-        _TOOL_RESULTS_SUMMARY_HEADER,
-        _COMPLETED_ACTIONS_HEADER,
-        *_USER_VISIBLE_TOOL_OUTPUT_HEADERS,
-    )
-    marker_candidates: list[int] = []
-    for marker in protected_markers:
-        if raw_text.startswith(marker):
-            marker_candidates.append(0)
-        paragraph_index = raw_text.find(f"\n\n{marker}")
-        if paragraph_index >= 0:
-            marker_candidates.append(paragraph_index)
-    marker_start = min(marker_candidates) if marker_candidates else -1
-    if marker_start >= 0:
-        assistant_text = raw_text[:marker_start]
-        tool_summary_text = raw_text[marker_start:]
-    else:
-        assistant_text = raw_text
-        tool_summary_text = ""
-    kept_lines = [
-        line
-        for line in assistant_text.splitlines()
-        if not _response_claims_rejected_tool_available(
-            response_text=line,
-            rejection_reasons=rejection_reasons,
-            rejected_tool_names=rejected_tool_names,
+
+    def _strip_claim_lines(text: str) -> str:
+        kept_lines = [
+            line
+            for line in text.splitlines()
+            if not _response_claims_rejected_tool_available(
+                response_text=line,
+                rejection_reasons=rejection_reasons,
+                rejected_tool_names=rejected_tool_names,
+            )
+        ]
+        return "\n".join(kept_lines).strip()
+
+    protected_segment = ""
+    trailing_text = ""
+    assistant_text = raw_text
+    if protected_tool_output_start is not None:
+        text_len = len(raw_text)
+        protected_start = max(0, min(int(protected_tool_output_start), text_len))
+        protected_end = (
+            text_len
+            if protected_tool_output_end is None
+            else max(protected_start, min(int(protected_tool_output_end), text_len))
         )
+        assistant_text = raw_text[:protected_start]
+        protected_segment = raw_text[protected_start:protected_end].strip()
+        trailing_text = raw_text[protected_end:]
+
+    parts = [
+        part
+        for part in (
+            _strip_claim_lines(assistant_text),
+            protected_segment,
+            _strip_claim_lines(trailing_text),
+        )
+        if part
     ]
-    stripped_assistant_text = "\n".join(kept_lines).strip()
-    if not tool_summary_text:
-        return stripped_assistant_text
-    if not stripped_assistant_text:
-        return tool_summary_text.strip()
-    return f"{stripped_assistant_text}{tool_summary_text}"
+    return "\n\n".join(parts)
 
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
@@ -5090,6 +5092,8 @@ def _coerce_blocked_action_response_text(
     executed_tool_outputs: int,
     rejection_reasons: list[str],
     rejected_tool_names: Sequence[str] = (),
+    protected_tool_output_start: int | None = None,
+    protected_tool_output_end: int | None = None,
 ) -> str:
     if rejected <= 0 or pending_confirmation > 0:
         return response_text
@@ -5098,6 +5102,8 @@ def _coerce_blocked_action_response_text(
             response_text=response_text,
             rejection_reasons=rejection_reasons,
             rejected_tool_names=rejected_tool_names,
+            protected_tool_output_start=protected_tool_output_start,
+            protected_tool_output_end=protected_tool_output_end,
         )
         feedback = _blocked_action_feedback(rejection_reasons)
         if feedback and feedback not in response_text:
@@ -12635,6 +12641,8 @@ class SessionImplMixin(HandlerMixinBase):
         response_text = planner_dispatch.planner_result.output.assistant_response
         initial_planner_response_text = response_text.strip()
         tool_output_summary = ""
+        protected_tool_output_start: int | None = None
+        protected_tool_output_end: int | None = None
         model_facing_chat_serialized_tool_outputs = _model_facing_serialized_tool_outputs(
             chat_serialized_tool_outputs
         )
@@ -12745,7 +12753,9 @@ class SessionImplMixin(HandlerMixinBase):
                 system_generated_pending_confirmation_response = False
             if tool_output_summary:
                 completed_summary = user_visible_tool_output_summary or tool_output_summary
+                protected_tool_output_start = len(response_text) + 2
                 response_text = f"{response_text}\n\nCompleted actions:\n{completed_summary}"
+                protected_tool_output_end = len(response_text)
                 system_generated_pending_confirmation_response = False
         else:
             if action_resolution_text:
@@ -12774,11 +12784,17 @@ class SessionImplMixin(HandlerMixinBase):
                             tool_output_summary,
                             page_title_metadata_block=fallback_page_title_metadata_block,
                         )
+                        protected_tool_output_start = (
+                            len(action_resolution_text) + 2
+                            if action_resolution_text and fallback_response
+                            else 0
+                        )
                         response_text = (
                             f"{action_resolution_text}\n\n{fallback_response}"
                             if action_resolution_text and fallback_response
                             else fallback_response
                         )
+                        protected_tool_output_end = len(response_text)
                 elif response_text.strip():
                     appended_summary = (
                         user_visible_tool_output_summary
@@ -12788,13 +12804,17 @@ class SessionImplMixin(HandlerMixinBase):
                         )
                         else tool_output_summary
                     )
+                    protected_tool_output_start = len(response_text) + 2
                     response_text = f"{response_text}\n\n{appended_summary}"
+                    protected_tool_output_end = len(response_text)
                 else:
                     direct_tool_response = _direct_tool_output_response_without_synthesis(
                         chat_serialized_tool_outputs
                     )
                     if direct_tool_response:
                         response_text = direct_tool_response
+                        protected_tool_output_start = 0
+                        protected_tool_output_end = len(response_text)
                     else:
                         post_tool_synthesis_result = await self._synthesize_post_tool_response(
                             execution=execution,
@@ -12803,6 +12823,9 @@ class SessionImplMixin(HandlerMixinBase):
                             preliminary_prose="",
                         )
                         synthesized_response = post_tool_synthesis_result.response_text
+                        protected_tool_output_start = (
+                            len(synthesized_response) + 2 if synthesized_response else 0
+                        )
                         response_text = (
                             f"{synthesized_response}\n\n{tool_output_summary}"
                             if synthesized_response
@@ -12811,6 +12834,7 @@ class SessionImplMixin(HandlerMixinBase):
                                 page_title_metadata_block=fallback_page_title_metadata_block,
                             )
                         )
+                        protected_tool_output_end = len(response_text)
         if (
             validated.session_mode == SessionMode.ADMIN_CLEANROOM
             and execution.cleanroom_proposals
@@ -12828,6 +12852,7 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = (
                 f"{response_text}\n\n{proposal_note}" if response_text.strip() else proposal_note
             )
+        pre_internal_coercion_response_text = response_text
         response_text = _coerce_internal_tool_narration_response_text(
             response_text=response_text,
             user_text=validated.firewall_result.sanitized_text,
@@ -12837,6 +12862,9 @@ class SessionImplMixin(HandlerMixinBase):
             executed_tool_outputs=len(execution.executed_tool_outputs),
             tool_output_summary=tool_output_summary,
         )
+        if response_text != pre_internal_coercion_response_text:
+            protected_tool_output_start = None
+            protected_tool_output_end = None
         if not response_text.strip():
             if execution.pending_confirmation > 0:
                 response_text = (
@@ -12855,6 +12883,8 @@ class SessionImplMixin(HandlerMixinBase):
                 executed_tool_outputs=len(execution.executed_tool_outputs),
                 rejection_reasons=execution.rejection_reasons_for_user,
                 rejected_tool_names=execution.rejected_tool_names,
+                protected_tool_output_start=protected_tool_output_start,
+                protected_tool_output_end=protected_tool_output_end,
             )
 
         response_taint_labels = set(planner_context.context.taint_labels)
