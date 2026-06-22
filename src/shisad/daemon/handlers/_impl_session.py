@@ -3797,7 +3797,14 @@ def _is_tool_results_summary_only_response(text: str) -> bool:
 
 def _is_placeholder_tool_progress_response(text: str) -> bool:
     normalized = normalize_intent_text(str(text or "")).lower().strip(" .!?")
-    return normalized in {"done", "ok, done", "okay, done", "working on it"}
+    return normalized in {
+        "done",
+        "ok done",
+        "ok, done",
+        "okay done",
+        "okay, done",
+        "working on it",
+    }
 
 
 def _normalized_url_for_confirmation_match(value: str) -> str:
@@ -5237,8 +5244,18 @@ def _coerce_blocked_action_response_text(
     if rejected <= 0:
         return response_text
     if pending_confirmation > 0:
+        unprotected_response_text = response_text
+        if protected_tool_output_start is not None:
+            stripped_response = _strip_rejected_tool_availability_claim_lines(
+                response_text=response_text,
+                rejection_reasons=rejection_reasons,
+                rejected_tool_names=rejected_tool_names,
+                protected_tool_output_start=protected_tool_output_start,
+                protected_tool_output_end=protected_tool_output_end,
+            )
+            response_text, unprotected_response_text = stripped_response
         feedback = _blocked_action_feedback(rejection_reasons)
-        if feedback and feedback not in response_text:
+        if feedback and feedback not in unprotected_response_text:
             stripped = response_text.strip()
             return f"{stripped}\n\n{feedback}" if stripped else feedback
         return response_text

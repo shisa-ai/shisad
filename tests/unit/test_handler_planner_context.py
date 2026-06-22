@@ -850,9 +850,12 @@ def test_gh84_rejected_tool_claim_match_coerces_unpunctuated_first_person_leadin
     assert "clarify" not in response
 
 
-def test_gh84_rejected_only_done_placeholder_coerces_to_denial_reason() -> None:
+@pytest.mark.parametrize("response_text", ("OK, done.", "OK done.", "Okay done."))
+def test_gh84_rejected_only_done_placeholder_coerces_to_denial_reason(
+    response_text: str,
+) -> None:
     response = _coerce_blocked_action_response_text(
-        response_text="OK, done.",
+        response_text=response_text,
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
@@ -880,6 +883,32 @@ def test_gh84_pending_and_rejected_turn_appends_denial_reason() -> None:
     assert "Pending confirmations:" in response
     assert "fs.write requires confirmation" in response
     assert "reason: shell.exec:goal_misaligned_high_risk" in response
+
+
+def test_gh84_pending_rejected_tool_output_cannot_suppress_denial_feedback() -> None:
+    feedback = _blocked_action_feedback(["shell.exec:goal_misaligned_high_risk"])
+    response_text = (
+        "Pending confirmations:\n"
+        "1. fs.write requires confirmation before I continue.\n\n"
+        "Completed actions:\n"
+        "- fs.read: success=True\n"
+        "  output:\n"
+        f"  {feedback}"
+    )
+    response = _coerce_blocked_action_response_text(
+        response_text=response_text,
+        rejected=1,
+        pending_confirmation=1,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+        protected_tool_output_start=response_text.index("Completed actions:"),
+    )
+
+    assert "Pending confirmations:" in response
+    assert "Completed actions:" in response
+    assert response.count(feedback) == 2
+    assert response.rstrip().endswith(feedback)
 
 
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
