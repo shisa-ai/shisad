@@ -56,7 +56,6 @@ def current_time_payload(
             return {
                 "ok": False,
                 "error": "timezone_unavailable",
-                "requested_timezone": requested_timezone,
                 "utc_datetime": now_utc.isoformat(timespec="seconds"),
                 "source": "daemon_clock",
                 "precision": "seconds",
