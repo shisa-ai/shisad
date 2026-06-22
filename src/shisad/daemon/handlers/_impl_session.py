@@ -4897,7 +4897,7 @@ def _is_unprotected_tool_output_payload_line(line: str) -> bool:
         return True
     stripped = line.lstrip()
     return stripped.startswith(("- ", "* ")) or re.match(
-        r"[A-Za-z0-9_.-]+:\s+",
+        r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+:\s+",
         stripped,
     ) is not None
 
