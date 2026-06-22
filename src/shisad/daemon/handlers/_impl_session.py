@@ -4899,6 +4899,16 @@ def _response_contains_unprotected_tool_output_header(response_text: str) -> boo
     )
 
 
+def _response_contains_rejected_tool_availability_phrase(text: str, phrase: str) -> bool:
+    return (
+        re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
+            text,
+        )
+        is not None
+    )
+
+
 def _is_unprotected_tool_output_payload_line(line: str) -> bool:
     if line[:1].isspace():
         return True
@@ -4944,7 +4954,9 @@ def _response_claims_rejected_tool_available(
         )
         for tool_reference in tool_references:
             if any(
-                phrase in normalized
+                _response_contains_rejected_tool_availability_phrase(
+                    normalized, phrase
+                )
                 for phrase in (
                     f"can use {tool_reference}",
                     f"could use {tool_reference}",

@@ -767,6 +767,33 @@ def test_gh84_coerces_rejected_tool_formatted_hedging_to_denial_reason(
     assert "clarify" not in response
 
 
+def test_gh84_rejected_tool_claim_match_respects_tool_name_boundaries() -> None:
+    sibling_response_text = "I can use mcp.docs.lookup-doc for that."
+    sibling_response = _coerce_blocked_action_response_text(
+        response_text=sibling_response_text,
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["pep:tool_not_permitted"],
+        rejected_tool_names=["mcp.docs.lookup"],
+    )
+
+    assert sibling_response == sibling_response_text
+
+    rejected_response = _coerce_blocked_action_response_text(
+        response_text="I can use mcp.docs.lookup for that. Could you clarify?",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["pep:tool_not_permitted"],
+        rejected_tool_names=["mcp.docs.lookup"],
+    )
+
+    assert "reason: pep:tool_not_permitted" in rejected_response
+    assert "I can use" not in rejected_response
+    assert "clarify" not in rejected_response
+
+
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
