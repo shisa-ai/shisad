@@ -728,6 +728,21 @@ def test_gh84_coerces_rejected_tool_alias_hedging_to_denial_reason() -> None:
     assert "clarify" not in response
 
 
+def test_gh84_coerces_hyphenated_native_tool_alias_hedging_to_denial_reason() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text="I can call functions.mcp_docs_lookup_doc for that. Could you clarify?",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["pep:tool_not_permitted"],
+        rejected_tool_names=["mcp.docs.lookup-doc"],
+    )
+
+    assert "reason: pep:tool_not_permitted" in response
+    assert "functions.mcp_docs_lookup_doc" not in response
+    assert "clarify" not in response
+
+
 def test_gh84_preserves_rejected_safe_injection_summary() -> None:
     safe_summary = _coerce_internal_tool_narration_response_text(
         response_text="Action monitor rejected goal-misaligned or policy-evasive plan.",

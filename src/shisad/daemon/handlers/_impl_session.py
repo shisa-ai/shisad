@@ -4857,7 +4857,7 @@ def _tool_name_response_spellings(tool_names: Sequence[str]) -> set[str]:
     for canonical in canonical_names:
         if not canonical:
             continue
-        native_alias = canonical.replace(".", "_")
+        native_alias = openai_function_name(canonical)
         spellings.update(
             {
                 canonical,
@@ -10639,6 +10639,8 @@ class SessionImplMixin(HandlerMixinBase):
                 )
                 executed += resume_result.executed
                 rejected += resume_result.rejected
+                if resume_result.rejected > 0:
+                    _record_rejected_tool_name(proposal_tool_name)
                 executed_tool_outputs.extend(resume_result.tool_outputs)
                 rejection_reasons_for_user.extend(resume_result.rejection_reasons)
                 if resume_result.summary.strip():

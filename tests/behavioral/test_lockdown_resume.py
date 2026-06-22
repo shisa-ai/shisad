@@ -286,11 +286,35 @@ async def test_c2_lockdown_resume_rejects_missing_reason(
 ) -> None:
     planner_inputs: list[str] = []
     visible_toolsets: list[set[str]] = []
+
+    def _misleading_lockdown_resume_response(
+        _turn_index: int,
+        _planner_input: str,
+        _tool_names: set[str],
+    ) -> ProviderResponse:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="I can use lockdown.resume for that. Could you clarify?",
+                tool_calls=[
+                    _tool_call(
+                        "lockdown.resume",
+                        {"reason": ""},
+                        call_id="t-c2-lockdown-resume-missing-reason",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     _install_lockdown_resume_planner(
         monkeypatch,
         planner_inputs=planner_inputs,
         visible_toolsets=visible_toolsets,
         reason="",
+        responder=_misleading_lockdown_resume_response,
     )
     sid = await _create_session(clean_harness.client)
     await _set_caution_lockdown(clean_harness, sid)
@@ -305,6 +329,10 @@ async def test_c2_lockdown_resume_rejects_missing_reason(
     assert reply.get("lockdown_level") == "caution"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
+    response_text = str(reply.get("response", ""))
+    assert "lockdown_resume_requires_reason" in response_text
+    assert "I can use lockdown.resume" not in response_text
+    assert "clarify" not in response_text
     tool_events = await _lockdown_tool_events(clean_harness, sid)
     rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
     assert rejected
