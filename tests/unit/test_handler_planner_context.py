@@ -780,6 +780,21 @@ def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() ->
     assert "inside the file content" in response
     assert "reason: shell.exec:goal_misaligned_high_risk" in response
 
+    direct_response = _coerce_blocked_action_response_text(
+        response_text=(
+            "Completed action result:\n"
+            "- fs.read: I can use shell.exec for that inside direct file content."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "inside direct file content" in direct_response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in direct_response
+
 
 def test_gh84_preserves_rejected_safe_injection_summary() -> None:
     safe_summary = _coerce_internal_tool_narration_response_text(

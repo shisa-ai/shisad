@@ -4911,9 +4911,19 @@ def _strip_rejected_tool_availability_claim_lines(
     rejected_tool_names: Sequence[str] = (),
 ) -> str:
     raw_text = str(response_text or "")
-    marker_start = raw_text.find(f"\n\n{_TOOL_RESULTS_SUMMARY_HEADER}")
-    if marker_start < 0:
-        marker_start = raw_text.find(f"\n\n{_COMPLETED_ACTIONS_HEADER}")
+    protected_markers = (
+        _TOOL_RESULTS_SUMMARY_HEADER,
+        _COMPLETED_ACTIONS_HEADER,
+        *_USER_VISIBLE_TOOL_OUTPUT_HEADERS,
+    )
+    marker_candidates: list[int] = []
+    for marker in protected_markers:
+        if raw_text.startswith(marker):
+            marker_candidates.append(0)
+        paragraph_index = raw_text.find(f"\n\n{marker}")
+        if paragraph_index >= 0:
+            marker_candidates.append(paragraph_index)
+    marker_start = min(marker_candidates) if marker_candidates else -1
     if marker_start >= 0:
         assistant_text = raw_text[:marker_start]
         tool_summary_text = raw_text[marker_start:]
