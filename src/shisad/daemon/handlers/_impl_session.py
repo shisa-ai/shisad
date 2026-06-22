@@ -3744,14 +3744,20 @@ _TOOL_OUTPUT_PAYLOAD_STATUS_RE = re.compile(
     r"(?:success=(?:True|False)|completed\.)(?:\s|,|$)"
 )
 _REJECTED_TOOL_AVAILABILITY_PHRASE_PREFIXES = (
+    "i can use",
+    "i could use",
+    "i will use",
+    "i'll use",
     "can use",
     "could use",
     "will use",
-    "i'll use",
+    "i can call",
+    "i could call",
+    "i will call",
+    "i'll call",
     "can call",
     "could call",
     "will call",
-    "i'll call",
 )
 _REJECTED_TOOL_AVAILABILITY_LINE_START_RE = re.compile(
     r"(?:^|[,:;.!?]\s+)"
@@ -4916,7 +4922,7 @@ def _response_contains_unprotected_tool_output_header(response_text: str) -> boo
 def _response_contains_rejected_tool_availability_phrase(text: str, phrase: str) -> bool:
     return (
         re.search(
-            rf"(?<![A-Za-z0-9_.-]){re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
+            rf"(?:^|[,:;.!?]\s+){re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
             text,
         )
         is not None
