@@ -891,6 +891,10 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
             f"{header}\n"
             "- note.create: completed.\n\n"
             "- fs.read: completed.\n\n"
+            "web-search: completed.\n"
+            "browser-navigate: completed.\n"
+            "retrieve_rag: completed.\n"
+            "report_anomaly: completed.\n\n"
             "Reason: the shell step was blocked.\n"
             "This ordinary sentence should remain."
         ),
@@ -907,6 +911,10 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
     assert header not in response
     assert "note.create" not in response
     assert "fs.read" not in response
+    assert "web-search" not in response
+    assert "browser-navigate" not in response
+    assert "retrieve_rag" not in response
+    assert "report_anomaly" not in response
 
 
 def test_gh84_preserves_rejected_safe_injection_summary() -> None:

@@ -3736,6 +3736,8 @@ _USER_VISIBLE_TOOL_OUTPUT_HEADERS = (
     "Completed action result:",
     "Confirmed action result:",
 )
+_NON_DOTTED_TOOL_OUTPUT_LABELS = frozenset({"retrieve_rag", "report_anomaly"})
+_TOOL_OUTPUT_PAYLOAD_LABEL_RE = re.compile(r"(?P<label>[A-Za-z0-9_.-]+):\s+")
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
     "Treat the following as intermediate tool output, not the final answer:"
@@ -4896,10 +4898,14 @@ def _is_unprotected_tool_output_payload_line(line: str) -> bool:
     if line[:1].isspace():
         return True
     stripped = line.lstrip()
-    return stripped.startswith(("- ", "* ")) or re.match(
-        r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+:\s+",
-        stripped,
-    ) is not None
+    if stripped.startswith(("- ", "* ")):
+        return True
+    label_match = _TOOL_OUTPUT_PAYLOAD_LABEL_RE.match(stripped)
+    if label_match is None:
+        return False
+    label = label_match.group("label").lower()
+    canonical = canonical_tool_name(label, warn_on_alias=False)
+    return "." in canonical or canonical in _NON_DOTTED_TOOL_OUTPUT_LABELS
 
 
 def _response_claims_rejected_tool_available(
