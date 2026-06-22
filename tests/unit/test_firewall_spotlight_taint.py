@@ -250,6 +250,7 @@ def test_m6_taint_label_tool_output_marks_external_tools_only() -> None:
     assert label_tool_output("thread.close") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("thread.why") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("file.read") == set()
+    assert label_tool_output("time.now") == set()
 
 
 def test_m6_taint_sink_decision_handles_credential_and_write_paths() -> None:

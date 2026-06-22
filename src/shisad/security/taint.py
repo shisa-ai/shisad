@@ -50,6 +50,7 @@ _INTERNAL_TOOL_OUTPUTS = {
     "task.create",
     "task.list",
     "task.disable",
+    "time.now",
     "report_anomaly",
 }
 
