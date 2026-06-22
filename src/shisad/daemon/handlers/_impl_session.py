@@ -3730,6 +3730,12 @@ _PENDING_CONFIRMATIONS_FOOTERS = (
 )
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
 _TOOL_RESULTS_SUMMARY_HEADER = "Tool results summary:"
+_USER_VISIBLE_TOOL_OUTPUT_HEADERS = (
+    _TOOL_RESULTS_SUMMARY_HEADER,
+    _COMPLETED_ACTIONS_HEADER,
+    "Completed action result:",
+    "Confirmed action result:",
+)
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
     "Treat the following as intermediate tool output, not the final answer:"
@@ -4680,7 +4686,9 @@ def _coerce_internal_tool_narration_response_text(
         and _response_exposes_safe_summary_planner_narration(response_text)
     ):
         return safe_summary
-    if not str(response_text or "").lstrip().startswith("I completed the tool step"):
+    if rejected <= 0 and not str(response_text or "").lstrip().startswith(
+        "I completed the tool step"
+    ):
         stripped_summary_tail = _strip_appended_tool_results_summary(response_text)
         if (
             stripped_summary_tail != str(response_text or "").strip()
@@ -4910,14 +4918,24 @@ def _strip_rejected_tool_availability_claim_lines(
 ) -> str:
     raw_text = str(response_text or "")
 
+    def _is_unprotected_tool_output_header_line(line: str) -> bool:
+        stripped = line.strip()
+        return any(
+            stripped == header or stripped.startswith(f"{header} ")
+            for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
+        )
+
     def _strip_claim_lines(text: str) -> str:
         kept_lines = [
             line
             for line in text.splitlines()
-            if not _response_claims_rejected_tool_available(
-                response_text=line,
-                rejection_reasons=rejection_reasons,
-                rejected_tool_names=rejected_tool_names,
+            if (
+                not _is_unprotected_tool_output_header_line(line)
+                and not _response_claims_rejected_tool_available(
+                    response_text=line,
+                    rejection_reasons=rejection_reasons,
+                    rejected_tool_names=rejected_tool_names,
+                )
             )
         ]
         return "\n".join(kept_lines).strip()

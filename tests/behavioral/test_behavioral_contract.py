@@ -2200,6 +2200,7 @@ async def test_gh84_mixed_policy_denial_preserves_success_and_reports_denial(
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) >= 1
     assert "fs.read" in outputs
+    assert "fs.read" in normalized_response
     assert "could not safely execute" in normalized_response
     assert "reason:" in normalized_response
     assert "shell.exec" in normalized_response
