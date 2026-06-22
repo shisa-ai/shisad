@@ -52,7 +52,7 @@ def current_time_payload(
     if requested_timezone:
         try:
             zone = ZoneInfo(requested_timezone)
-        except ZoneInfoNotFoundError:
+        except (ValueError, ZoneInfoNotFoundError):
             return {
                 "ok": False,
                 "error": "timezone_unavailable",
