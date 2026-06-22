@@ -4892,6 +4892,16 @@ def _response_contains_unprotected_tool_output_header(response_text: str) -> boo
     )
 
 
+def _is_unprotected_tool_output_payload_line(line: str) -> bool:
+    if line[:1].isspace():
+        return True
+    stripped = line.lstrip()
+    return stripped.startswith(("- ", "* ")) or re.match(
+        r"[A-Za-z0-9_.-]+:\s+",
+        stripped,
+    ) is not None
+
+
 def _response_claims_rejected_tool_available(
     *,
     response_text: str,
@@ -4938,9 +4948,9 @@ def _strip_rejected_tool_availability_claim_lines(
         skipping_unprotected_tool_block = False
         for line in text.splitlines():
             if skipping_unprotected_tool_block:
-                if not line.strip():
-                    skipping_unprotected_tool_block = False
-                continue
+                if not line.strip() or _is_unprotected_tool_output_payload_line(line):
+                    continue
+                skipping_unprotected_tool_block = False
             if _is_unprotected_tool_output_header_line(line):
                 skipping_unprotected_tool_block = True
                 continue

@@ -890,6 +890,7 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
         response_text=(
             f"{header}\n"
             "- note.create: completed.\n\n"
+            "- fs.read: completed.\n\n"
             "This ordinary sentence should remain."
         ),
         rejected=1,
@@ -903,6 +904,7 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
     assert "reason: shell.exec:goal_misaligned_high_risk" in response
     assert header not in response
     assert "note.create" not in response
+    assert "fs.read" not in response
 
 
 def test_gh84_preserves_rejected_safe_injection_summary() -> None:
