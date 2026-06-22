@@ -1649,6 +1649,7 @@ class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
         *,
         monitor_kind: MonitorDecisionType = MonitorDecisionType.APPROVE,
         monitor_reason: str = "",
+        monitor_flags: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.plan_violations: list[str] = []
@@ -1657,6 +1658,7 @@ class _TraceConfirmationRoutingHarness(_PendingPolicySnapshotHarness):
             evaluate=lambda **_kwargs: SimpleNamespace(
                 kind=monitor_kind,
                 reason=monitor_reason,
+                flags=list(monitor_flags or []),
             )
         )
         self._registry = SimpleNamespace(
@@ -2124,6 +2126,7 @@ async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
     harness = _TraceConfirmationRoutingHarness(
         monitor_kind=MonitorDecisionType.REJECT,
         monitor_reason="Action monitor rejected goal-misaligned or policy-evasive plan",
+        monitor_flags=["fs.list:suspicious_argument_content"],
     )
     sid = SessionId("sess-g1")
     planner_context = SessionMessagePlannerContextResult(
@@ -2193,9 +2196,7 @@ async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
 
     assert result.pending_confirmation == 0
     assert result.rejected == 1
-    assert result.rejection_reasons_for_user == [
-        "Action monitor rejected goal-misaligned or policy-evasive plan"
-    ]
+    assert result.rejection_reasons_for_user == ["fs.list:suspicious_argument_content"]
 
 
 @pytest.mark.asyncio

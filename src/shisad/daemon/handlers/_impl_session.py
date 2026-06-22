@@ -4821,6 +4821,18 @@ def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
     return ""
 
 
+def _action_monitor_rejection_reason(monitor_decision: Any) -> str:
+    flags = [
+        str(flag).strip()
+        for flag in getattr(monitor_decision, "flags", [])
+        if str(flag).strip()
+    ]
+    if flags:
+        return ",".join(flags)
+    reason = str(getattr(monitor_decision, "reason", "")).strip()
+    return reason or "monitor_reject"
+
+
 def _blocked_action_feedback(reasons: list[str]) -> str:
     codes = _flatten_rejection_reason_codes(reasons)
     normalized_codes = {code.removeprefix("pep:") for code in codes}
@@ -4965,17 +4977,6 @@ def _coerce_blocked_action_response_text(
     rejection_reasons: list[str],
 ) -> str:
     if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
-        return response_text
-    codes = _flatten_rejection_reason_codes(rejection_reasons)
-    if any(code.startswith("browser_runtime_unavailable:") for code in codes):
-        return _blocked_action_feedback(rejection_reasons)
-    if any(code == "resource:outside_workspace_root" for code in codes):
-        return _blocked_action_feedback(rejection_reasons)
-    if any(code == "pep:resource_authorization_failed" for code in codes):
-        return _blocked_action_feedback(rejection_reasons)
-    if "successfully" in response_text.lower():
-        return _blocked_action_feedback(rejection_reasons)
-    if response_text.strip() != _GENERIC_BLOCKED_ACTION_MESSAGE:
         return response_text
     return _blocked_action_feedback(rejection_reasons)
 
@@ -10694,7 +10695,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 elif monitor_decision.kind == MonitorDecisionType.REJECT:
                     final_kind = "reject"
-                    final_reason = monitor_decision.reason or "monitor_reject"
+                    final_reason = _action_monitor_rejection_reason(monitor_decision)
                 elif trace_confirmation_routable_block and (
                     pep_decision.kind.value != "reject" or pep_elevation is not None
                 ):
@@ -10713,6 +10714,12 @@ class SessionImplMixin(HandlerMixinBase):
             elif cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION and final_kind == "allow":
                 final_kind = "require_confirmation"
                 final_reason = ",".join(cp_user_reason_codes) or "control_plane_confirmation"
+            elif (
+                final_kind == "reject"
+                and pep_decision.kind.value != "reject"
+                and monitor_decision.kind == MonitorDecisionType.REJECT
+            ):
+                final_reason = _action_monitor_rejection_reason(monitor_decision)
             if final_kind == "reject" and final_reason == "pep_reject":
                 final_reason = (
                     pep_decision.reason_code.strip() or pep_decision.reason or "pep_reject"

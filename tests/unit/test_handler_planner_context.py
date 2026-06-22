@@ -684,6 +684,20 @@ def test_m3_s0b3_coerces_generic_blocked_text_to_actionable_feedback() -> None:
     assert "requires elevated runtime actions" in response
 
 
+def test_gh84_coerces_rejected_only_planner_hedging_to_denial_reason() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text="I can use shell.exec for that. Could you clarify?",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+    )
+
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "I can use shell.exec" not in response
+    assert "clarify" not in response
+
+
 def test_m9_coerces_pep_resource_authorization_to_actionable_feedback() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(

@@ -896,6 +896,15 @@ async def _stub_complete(
                 {"command": diagnostic_audit_command, "command_intent": "execute"},
                 call_id="t-diagnostic-audit-query",
             )
+    gh84_blocked_shell_call = (
+        _tool_call(
+            "shell.exec",
+            {"command": ["date"], "command_intent": "execute"},
+            call_id="t-gh84-blocked-shell",
+        )
+        if "gh84 blocked shell denial regression" in goal_lower
+        else None
+    )
     fs_write_call = (
         _tool_call(
             "fs.write",
@@ -910,7 +919,9 @@ async def _stub_complete(
         if "unknown tool probe" in goal_lower
         else None
     )
-    if unknown_probe_call is not None:
+    if gh84_blocked_shell_call is not None:
+        tool_calls.append(gh84_blocked_shell_call)
+    elif unknown_probe_call is not None:
         tool_calls.append(unknown_probe_call)
     elif note_create_call is not None:
         tool_calls.append(note_create_call)
@@ -958,13 +969,16 @@ async def _stub_complete(
     elif fs_write_call is not None:
         tool_calls.append(fs_write_call)
 
-    assistant_response = (
-        "Working on it."
-        if tool_calls
-        else "Hello! How can I help?"
-        if "hello" in goal_lower or goal_lower.strip() in {"hi", "hello"}
-        else "OK."
-    )
+    if gh84_blocked_shell_call is not None:
+        assistant_response = (
+            "I can use shell.exec for that. Could you clarify what you want me to run?"
+        )
+    elif tool_calls:
+        assistant_response = "Working on it."
+    elif "hello" in goal_lower or goal_lower.strip() in {"hi", "hello"}:
+        assistant_response = "Hello! How can I help?"
+    else:
+        assistant_response = "OK."
     return ProviderResponse(
         message=Message(role="assistant", content=assistant_response, tool_calls=tool_calls),
         model="behavioral-stub",
@@ -2103,6 +2117,43 @@ async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown
         "trace:action_not_committed" in json.dumps(event, ensure_ascii=True)
         for event in violations.get("events", [])
     )
+
+
+@pytest.mark.asyncio
+async def test_gh84_policy_denied_tool_action_returns_terminal_reason(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    denied = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "please run gh84 blocked shell denial regression",
+        },
+    )
+
+    response_text = str(denied.get("response", ""))
+    normalized_response = response_text.lower()
+    assert denied.get("lockdown_level") == "normal"
+    assert int(denied.get("blocked_actions", 0)) >= 1
+    assert int(denied.get("confirmation_required_actions", 0)) == 0
+    assert int(denied.get("executed_actions", 0)) == 0
+    assert _extract_tool_outputs(denied) == {}
+    assert "could not safely execute" in normalized_response
+    assert "reason:" in normalized_response
+    assert "shell.exec" in normalized_response
+    assert "could you clarify" not in normalized_response
+    assert "i can use shell.exec" not in normalized_response
+
+    followup = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "hello"},
+    )
+    assert followup.get("lockdown_level") == "normal"
+    assert int(followup.get("blocked_actions", 0)) == 0
+    assert int(followup.get("confirmation_required_actions", 0)) == 0
+    assert "hello" in str(followup.get("response", "")).lower()
 
 
 @pytest.mark.asyncio
