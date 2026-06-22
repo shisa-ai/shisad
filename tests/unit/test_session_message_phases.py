@@ -2197,6 +2197,7 @@ async def test_m9_trace_confirmation_does_not_override_monitor_reject() -> None:
     assert result.pending_confirmation == 0
     assert result.rejected == 1
     assert result.rejection_reasons_for_user == ["fs.list:suspicious_argument_content"]
+    assert result.rejected_tool_names == ["fs.list"]
 
 
 @pytest.mark.asyncio

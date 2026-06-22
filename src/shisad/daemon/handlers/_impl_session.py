@@ -74,7 +74,11 @@ from shisad.core.planner import (
 )
 from shisad.core.session import Session, SessionRehydrateError
 from shisad.core.session_archive import SessionArchiveError
-from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
+from shisad.core.tools.names import (
+    LEGACY_TOOL_NAME_ALIASES,
+    canonical_tool_name,
+    canonical_tool_name_typed,
+)
 from shisad.core.tools.registry import is_valid_semantic_value
 from shisad.core.tools.schema import (
     ToolDefinition,
@@ -594,6 +598,7 @@ class SessionMessageExecutionResult:
     pending_confirmation: int = 0
     executed: int = 0
     rejection_reasons_for_user: list[str] = field(default_factory=list)
+    rejected_tool_names: list[str] = field(default_factory=list)
     checkpoint_ids: list[str] = field(default_factory=list)
     pending_confirmation_ids: list[str] = field(default_factory=list)
     executed_tool_outputs: list[Any] = field(default_factory=list)
@@ -4838,17 +4843,50 @@ def _rejected_tool_names_from_reasons(reasons: Sequence[str]) -> set[str]:
     for code in _flatten_rejection_reason_codes(list(reasons)):
         tool_name, separator, _reason = code.partition(":")
         if separator and "." in tool_name:
-            tool_names.add(tool_name.lower())
+            tool_names.add(canonical_tool_name(tool_name, warn_on_alias=False).lower())
     return tool_names
+
+
+def _tool_name_response_spellings(tool_names: Sequence[str]) -> set[str]:
+    spellings: set[str] = set()
+    canonical_names = {
+        canonical_tool_name(str(tool_name), warn_on_alias=False).lower()
+        for tool_name in tool_names
+        if str(tool_name).strip()
+    }
+    for canonical in canonical_names:
+        if not canonical:
+            continue
+        native_alias = canonical.replace(".", "_")
+        spellings.update(
+            {
+                canonical,
+                native_alias,
+                f"functions.{native_alias}",
+            }
+        )
+        for alias, alias_canonical in LEGACY_TOOL_NAME_ALIASES.items():
+            if alias_canonical == canonical:
+                normalized_alias = alias.lower()
+                spellings.add(normalized_alias)
+                spellings.add(f"functions.{normalized_alias}")
+    return spellings
 
 
 def _response_claims_rejected_tool_available(
     *,
     response_text: str,
     rejection_reasons: Sequence[str],
+    rejected_tool_names: Sequence[str] = (),
 ) -> bool:
     normalized = normalize_intent_text(str(response_text or "")).lower()
-    for tool_name in _rejected_tool_names_from_reasons(rejection_reasons):
+    tool_spellings = _tool_name_response_spellings(
+        [
+            *_rejected_tool_names_from_reasons(rejection_reasons),
+            *[str(tool_name) for tool_name in rejected_tool_names],
+        ]
+    )
+    for tool_name in tool_spellings:
         if any(
             phrase in normalized
             for phrase in (
@@ -5008,6 +5046,7 @@ def _coerce_blocked_action_response_text(
     pending_confirmation: int,
     executed_tool_outputs: int,
     rejection_reasons: list[str],
+    rejected_tool_names: Sequence[str] = (),
 ) -> str:
     if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
         return response_text
@@ -5029,6 +5068,7 @@ def _coerce_blocked_action_response_text(
     if _response_claims_rejected_tool_available(
         response_text=response_text,
         rejection_reasons=rejection_reasons,
+        rejected_tool_names=rejected_tool_names,
     ):
         return _blocked_action_feedback(rejection_reasons)
     if response_text.strip() != _GENERIC_BLOCKED_ACTION_MESSAGE:
@@ -10249,6 +10289,7 @@ class SessionImplMixin(HandlerMixinBase):
         pending_confirmation = 0
         executed = 0
         rejection_reasons_for_user: list[str] = []
+        rejected_tool_names: list[str] = []
         checkpoint_ids: list[str] = []
         pending_confirmation_ids: list[str] = []
         executed_tool_outputs: list[Any] = []
@@ -10277,6 +10318,11 @@ class SessionImplMixin(HandlerMixinBase):
             )
             return explicit_memory_ingress_context
 
+        def _record_rejected_tool_name(tool_name: str) -> None:
+            canonical = canonical_tool_name(tool_name, warn_on_alias=False).strip()
+            if canonical and canonical not in rejected_tool_names:
+                rejected_tool_names.append(canonical)
+
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
             proposal_tool_name = canonical_tool_name(str(proposal.tool_name), warn_on_alias=False)
@@ -10303,6 +10349,7 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             if final_reason:
                 rejected += 1
+                _record_rejected_tool_name(proposal_tool_name)
                 rejection_reasons_for_user.append(final_reason)
                 public_arguments = _redact_sensitive_browser_public_arguments(
                     proposal.tool_name,
@@ -10408,6 +10455,7 @@ class SessionImplMixin(HandlerMixinBase):
                 ) and not _has_clean_trusted_turn_privileges(validated):
                     final_reason = "action_resolve_requires_clean_trusted_turn"
                     rejected += 1
+                    _record_rejected_tool_name(proposal_tool_name)
                     rejection_reasons_for_user.append(final_reason)
                     safe_summary = _safe_untrusted_pasted_content_summary(
                         user_text=validated.firewall_result.sanitized_text,
@@ -10444,6 +10492,7 @@ class SessionImplMixin(HandlerMixinBase):
                         pep_decision.reason or pep_decision.reason_code.strip() or "pep_reject"
                     )
                     rejected += 1
+                    _record_rejected_tool_name(proposal_tool_name)
                     rejection_reasons_for_user.append(final_reason)
                     action_resolve_summaries.append(f"action.resolve rejected: {final_reason}")
                     await self._event_bus.publish(
@@ -10477,6 +10526,8 @@ class SessionImplMixin(HandlerMixinBase):
                 )
                 executed += resolve_result.executed
                 rejected += resolve_result.rejected
+                if resolve_result.rejected > 0:
+                    _record_rejected_tool_name(proposal_tool_name)
                 checkpoint_ids.extend(resolve_result.checkpoint_ids)
                 executed_tool_outputs.extend(resolve_result.tool_outputs)
                 rejection_reasons_for_user.extend(resolve_result.rejection_reasons)
@@ -10556,6 +10607,7 @@ class SessionImplMixin(HandlerMixinBase):
                         pep_decision.reason or pep_decision.reason_code.strip() or "pep_reject"
                     )
                     rejected += 1
+                    _record_rejected_tool_name(proposal_tool_name)
                     rejection_reasons_for_user.append(final_reason)
                     action_resolve_summaries.append(f"lockdown.resume rejected: {final_reason}")
                     await self._event_bus.publish(
@@ -10828,6 +10880,7 @@ class SessionImplMixin(HandlerMixinBase):
                         f"{proposal.tool_name!s}:untrusted_context_source"
                     )
                     rejected += 1
+                    _record_rejected_tool_name(proposal_tool_name)
                     rejection_reasons_for_user.append(proposal_reason)
                 cleanroom_proposal_arguments = _redact_sensitive_browser_public_arguments(
                     proposal.tool_name,
@@ -10867,6 +10920,7 @@ class SessionImplMixin(HandlerMixinBase):
 
             if final_kind == "reject":
                 rejected += 1
+                _record_rejected_tool_name(proposal_tool_name)
                 rejection_reasons_for_user.append(final_reason or pep_decision.reason)
                 await self._observe_pep_reject_signal(
                     sid=sid,
@@ -10962,6 +11016,7 @@ class SessionImplMixin(HandlerMixinBase):
                         )
                     except PolicyMergeError as exc:
                         rejected += 1
+                        _record_rejected_tool_name(proposal_tool_name)
                         rejection_reasons_for_user.append(f"policy_merge:{exc}")
                         await self._event_bus.publish(
                             ToolRejected(
@@ -11052,6 +11107,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 except ApprovalRoutingError as exc:
                     rejected += 1
+                    _record_rejected_tool_name(proposal_tool_name)
                     rejection_reasons_for_user.append(str(exc.reason))
                     await self._event_bus.publish(
                         ToolRejected(
@@ -11149,6 +11205,7 @@ class SessionImplMixin(HandlerMixinBase):
             pending_confirmation=pending_confirmation,
             executed=executed,
             rejection_reasons_for_user=rejection_reasons_for_user,
+            rejected_tool_names=rejected_tool_names,
             checkpoint_ids=checkpoint_ids,
             pending_confirmation_ids=pending_confirmation_ids,
             executed_tool_outputs=executed_tool_outputs,
@@ -12741,6 +12798,7 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_confirmation=execution.pending_confirmation,
                 executed_tool_outputs=len(execution.executed_tool_outputs),
                 rejection_reasons=execution.rejection_reasons_for_user,
+                rejected_tool_names=execution.rejected_tool_names,
             )
 
         response_taint_labels = set(planner_context.context.taint_labels)
