@@ -4910,16 +4910,31 @@ def _strip_rejected_tool_availability_claim_lines(
     rejection_reasons: Sequence[str],
     rejected_tool_names: Sequence[str] = (),
 ) -> str:
+    raw_text = str(response_text or "")
+    marker_start = raw_text.find(f"\n\n{_TOOL_RESULTS_SUMMARY_HEADER}")
+    if marker_start < 0:
+        marker_start = raw_text.find(f"\n\n{_COMPLETED_ACTIONS_HEADER}")
+    if marker_start >= 0:
+        assistant_text = raw_text[:marker_start]
+        tool_summary_text = raw_text[marker_start:]
+    else:
+        assistant_text = raw_text
+        tool_summary_text = ""
     kept_lines = [
         line
-        for line in str(response_text or "").splitlines()
+        for line in assistant_text.splitlines()
         if not _response_claims_rejected_tool_available(
             response_text=line,
             rejection_reasons=rejection_reasons,
             rejected_tool_names=rejected_tool_names,
         )
     ]
-    return "\n".join(kept_lines).strip()
+    stripped_assistant_text = "\n".join(kept_lines).strip()
+    if not tool_summary_text:
+        return stripped_assistant_text
+    if not stripped_assistant_text:
+        return tool_summary_text.strip()
+    return f"{stripped_assistant_text}{tool_summary_text}"
 
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
