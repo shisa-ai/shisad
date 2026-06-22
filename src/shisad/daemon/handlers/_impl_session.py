@@ -4833,6 +4833,39 @@ def _action_monitor_rejection_reason(monitor_decision: Any) -> str:
     return reason or "monitor_reject"
 
 
+def _rejected_tool_names_from_reasons(reasons: Sequence[str]) -> set[str]:
+    tool_names: set[str] = set()
+    for code in _flatten_rejection_reason_codes(list(reasons)):
+        tool_name, separator, _reason = code.partition(":")
+        if separator and "." in tool_name:
+            tool_names.add(tool_name.lower())
+    return tool_names
+
+
+def _response_claims_rejected_tool_available(
+    *,
+    response_text: str,
+    rejection_reasons: Sequence[str],
+) -> bool:
+    normalized = normalize_intent_text(str(response_text or "")).lower()
+    for tool_name in _rejected_tool_names_from_reasons(rejection_reasons):
+        if any(
+            phrase in normalized
+            for phrase in (
+                f"can use {tool_name}",
+                f"could use {tool_name}",
+                f"will use {tool_name}",
+                f"i'll use {tool_name}",
+                f"can call {tool_name}",
+                f"could call {tool_name}",
+                f"will call {tool_name}",
+                f"i'll call {tool_name}",
+            )
+        ):
+            return True
+    return False
+
+
 def _blocked_action_feedback(reasons: list[str]) -> str:
     codes = _flatten_rejection_reason_codes(reasons)
     normalized_codes = {code.removeprefix("pep:") for code in codes}
@@ -4977,6 +5010,28 @@ def _coerce_blocked_action_response_text(
     rejection_reasons: list[str],
 ) -> str:
     if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
+        return response_text
+    codes = _flatten_rejection_reason_codes(rejection_reasons)
+    if any(code.startswith("browser_runtime_unavailable:") for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
+    if any(code == "resource:outside_workspace_root" for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
+    if any(code == "pep:resource_authorization_failed" for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
+    if "successfully" in response_text.lower():
+        return _blocked_action_feedback(rejection_reasons)
+    if _is_placeholder_tool_progress_response(response_text):
+        return _blocked_action_feedback(rejection_reasons)
+    if _is_planner_validation_fallback_response(response_text):
+        return _blocked_action_feedback(rejection_reasons)
+    if _response_exposes_internal_tool_narration(response_text):
+        return _blocked_action_feedback(rejection_reasons)
+    if _response_claims_rejected_tool_available(
+        response_text=response_text,
+        rejection_reasons=rejection_reasons,
+    ):
+        return _blocked_action_feedback(rejection_reasons)
+    if response_text.strip() != _GENERIC_BLOCKED_ACTION_MESSAGE:
         return response_text
     return _blocked_action_feedback(rejection_reasons)
 
