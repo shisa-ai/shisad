@@ -3743,6 +3743,32 @@ _TOOL_OUTPUT_PAYLOAD_LABEL_RE = re.compile(
 _TOOL_OUTPUT_PAYLOAD_STATUS_RE = re.compile(
     r"(?:success=(?:True|False)|completed\.)(?:\s|,|$)"
 )
+_REJECTED_TOOL_AVAILABILITY_PHRASE_PREFIXES = (
+    "can use",
+    "could use",
+    "will use",
+    "i'll use",
+    "can call",
+    "could call",
+    "will call",
+    "i'll call",
+)
+_REJECTED_TOOL_AVAILABILITY_LINE_STARTERS = (
+    "i can use",
+    "i could use",
+    "i will use",
+    "i'll use",
+    "can use",
+    "could use",
+    "will use",
+    "i can call",
+    "i could call",
+    "i will call",
+    "i'll call",
+    "can call",
+    "could call",
+    "will call",
+)
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
     "Treat the following as intermediate tool output, not the final answer:"
@@ -4955,21 +4981,17 @@ def _response_claims_rejected_tool_available(
         for tool_reference in tool_references:
             if any(
                 _response_contains_rejected_tool_availability_phrase(
-                    normalized, phrase
+                    normalized, f"{phrase_prefix} {tool_reference}"
                 )
-                for phrase in (
-                    f"can use {tool_reference}",
-                    f"could use {tool_reference}",
-                    f"will use {tool_reference}",
-                    f"i'll use {tool_reference}",
-                    f"can call {tool_reference}",
-                    f"could call {tool_reference}",
-                    f"will call {tool_reference}",
-                    f"i'll call {tool_reference}",
-                )
+                for phrase_prefix in _REJECTED_TOOL_AVAILABILITY_PHRASE_PREFIXES
             ):
                 return True
     return False
+
+
+def _line_can_start_rejected_tool_availability_claim(line: str) -> bool:
+    normalized = normalize_intent_text(str(line or "").replace("`", "")).lower()
+    return normalized.startswith(_REJECTED_TOOL_AVAILABILITY_LINE_STARTERS)
 
 
 def _strip_rejected_tool_availability_claim_lines(
@@ -4986,6 +5008,24 @@ def _strip_rejected_tool_availability_claim_lines(
         kept_lines: list[str] = []
         skipping_unprotected_tool_block = False
         lines = text.splitlines()
+
+        def _claim_window_end_index(start: int) -> int | None:
+            window_lines: list[str] = []
+            for end, candidate_line in enumerate(lines[start:], start=start + 1):
+                if (
+                    end > start + 1
+                    and _is_unprotected_tool_output_header_line(candidate_line)
+                ):
+                    break
+                window_lines.append(candidate_line)
+                if _response_claims_rejected_tool_available(
+                    response_text="\n".join(window_lines),
+                    rejection_reasons=rejection_reasons,
+                    rejected_tool_names=rejected_tool_names,
+                ):
+                    return end
+            return None
+
         index = 0
         while index < len(lines):
             line = lines[index]
@@ -5005,22 +5045,13 @@ def _strip_rejected_tool_availability_claim_lines(
             ):
                 index += 1
                 continue
-            skipped_wrapped_claim = False
-            for window_size in (2, 3):
-                if index + window_size > len(lines):
-                    continue
-                window_lines = lines[index : index + window_size]
-                if any(not candidate.strip() for candidate in window_lines):
-                    continue
-                if _response_claims_rejected_tool_available(
-                    response_text="\n".join(window_lines),
-                    rejection_reasons=rejection_reasons,
-                    rejected_tool_names=rejected_tool_names,
-                ):
-                    index += window_size
-                    skipped_wrapped_claim = True
-                    break
-            if skipped_wrapped_claim:
+            if not _line_can_start_rejected_tool_availability_claim(line):
+                kept_lines.append(line)
+                index += 1
+                continue
+            claim_window_end = _claim_window_end_index(index)
+            if claim_window_end is not None:
+                index = claim_window_end
                 continue
             kept_lines.append(line)
             index += 1
