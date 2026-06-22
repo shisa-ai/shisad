@@ -880,6 +880,26 @@ def test_gh84_mixed_turn_strips_blank_wrapped_rejected_tool_claim() -> None:
     assert "Could you clarify" not in response
 
 
+def test_gh84_mixed_turn_strips_prefaced_wrapped_rejected_tool_claim() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "Sure, I can use\n\n"
+            "shell.exec for that. Could you clarify?\n\n"
+            "I read README.md successfully."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "I read README.md successfully." in response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "Sure" not in response
+    assert "Could you clarify" not in response
+
+
 def test_gh84_mixed_turn_tool_output_cannot_suppress_denial_feedback() -> None:
     feedback = _blocked_action_feedback(["shell.exec:goal_misaligned_high_risk"])
     response_text = (
@@ -921,6 +941,27 @@ def test_gh84_mixed_turn_preserves_success_before_later_wrapped_claim() -> None:
     assert "reason: shell.exec:goal_misaligned_high_risk" in response
     assert "shell.exec for that" not in response
     assert "Could you clarify" not in response
+
+
+def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_wrap() -> None:
+    response_text = (
+        "Users can use\n\n"
+        "shell.exec in a different daemon policy.\n\n"
+        "I read README.md successfully."
+    )
+    response = _coerce_blocked_action_response_text(
+        response_text=response_text,
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "Users can use" in response
+    assert "shell.exec in a different daemon policy" in response
+    assert "I read README.md successfully." in response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
 
 
 def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() -> None:

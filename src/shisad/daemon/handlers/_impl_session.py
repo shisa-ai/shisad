@@ -3753,21 +3753,9 @@ _REJECTED_TOOL_AVAILABILITY_PHRASE_PREFIXES = (
     "will call",
     "i'll call",
 )
-_REJECTED_TOOL_AVAILABILITY_LINE_STARTERS = (
-    "i can use",
-    "i could use",
-    "i will use",
-    "i'll use",
-    "can use",
-    "could use",
-    "will use",
-    "i can call",
-    "i could call",
-    "i will call",
-    "i'll call",
-    "can call",
-    "could call",
-    "will call",
+_REJECTED_TOOL_AVAILABILITY_LINE_START_RE = re.compile(
+    r"(?:^|[,:;.!?]\s+)"
+    r"(?:(?:i\s+)?(?:can|could|will)\s+(?:use|call)|i'll\s+(?:use|call))\b"
 )
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
@@ -4991,7 +4979,7 @@ def _response_claims_rejected_tool_available(
 
 def _line_can_start_rejected_tool_availability_claim(line: str) -> bool:
     normalized = normalize_intent_text(str(line or "").replace("`", "")).lower()
-    return normalized.startswith(_REJECTED_TOOL_AVAILABILITY_LINE_STARTERS)
+    return _REJECTED_TOOL_AVAILABILITY_LINE_START_RE.search(normalized) is not None
 
 
 def _strip_rejected_tool_availability_claim_lines(
