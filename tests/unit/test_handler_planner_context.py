@@ -905,6 +905,8 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
             "memory_timeline_search: completed.\n"
             "task_pending_confirmations: completed.\n"
             "mcp_docs_lookup_doc: completed.\n\n"
+            "memory_retrieve: success=False, ok=False\n"
+            "functions.mcp_docs_lookup_doc: success=True, ok=True\n\n"
             "Reason: the shell step was blocked.\n"
             "Status: completed.\n"
             "This ordinary sentence should remain."
@@ -936,6 +938,7 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
     assert "memory_timeline_search" not in response
     assert "task_pending_confirmations" not in response
     assert "mcp_docs_lookup_doc" not in response
+    assert "functions.mcp_docs_lookup_doc" not in response
     assert "Status: completed." in response
 
 
