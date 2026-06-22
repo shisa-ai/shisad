@@ -3737,6 +3737,23 @@ _USER_VISIBLE_TOOL_OUTPUT_HEADERS = (
     "Confirmed action result:",
 )
 _NON_DOTTED_TOOL_OUTPUT_LABELS = frozenset({"retrieve_rag", "report_anomaly"})
+_TOOL_OUTPUT_NATIVE_ALIAS_CANONICAL_LABELS = frozenset(
+    {
+        *LEGACY_TOOL_NAME_ALIASES.values(),
+        "action.resolve",
+        "browser.paste",
+        "email.read",
+        "email.search",
+        "lockdown.resume",
+        "time.now",
+    }
+)
+_TOOL_OUTPUT_NATIVE_ALIAS_LABELS = frozenset(
+    alias
+    for canonical in _TOOL_OUTPUT_NATIVE_ALIAS_CANONICAL_LABELS
+    for native_alias in (openai_function_name(canonical).lower(),)
+    for alias in (native_alias, f"functions.{native_alias}")
+)
 _TOOL_OUTPUT_PAYLOAD_LABEL_RE = re.compile(r"(?P<label>[A-Za-z0-9_.-]+):\s+")
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
@@ -4905,7 +4922,11 @@ def _is_unprotected_tool_output_payload_line(line: str) -> bool:
         return False
     label = label_match.group("label").lower()
     canonical = canonical_tool_name(label, warn_on_alias=False)
-    return "." in canonical or canonical in _NON_DOTTED_TOOL_OUTPUT_LABELS
+    return (
+        label in _TOOL_OUTPUT_NATIVE_ALIAS_LABELS
+        or "." in canonical
+        or canonical in _NON_DOTTED_TOOL_OUTPUT_LABELS
+    )
 
 
 def _response_claims_rejected_tool_available(
