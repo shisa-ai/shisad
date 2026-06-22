@@ -4686,9 +4686,9 @@ def _coerce_internal_tool_narration_response_text(
         and _response_exposes_safe_summary_planner_narration(response_text)
     ):
         return safe_summary
-    if rejected <= 0 and not str(response_text or "").lstrip().startswith(
-        "I completed the tool step"
-    ):
+    if (rejected <= 0 or executed_tool_outputs <= 0) and not str(
+        response_text or ""
+    ).lstrip().startswith("I completed the tool step"):
         stripped_summary_tail = _strip_appended_tool_results_summary(response_text)
         if (
             stripped_summary_tail != str(response_text or "").strip()
@@ -4877,6 +4877,21 @@ def _tool_name_response_spellings(tool_names: Sequence[str]) -> set[str]:
     return spellings
 
 
+def _is_unprotected_tool_output_header_line(line: str) -> bool:
+    stripped = line.strip()
+    return any(
+        stripped == header or stripped.startswith(f"{header} ")
+        for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
+    )
+
+
+def _response_contains_unprotected_tool_output_header(response_text: str) -> bool:
+    return any(
+        _is_unprotected_tool_output_header_line(line)
+        for line in str(response_text or "").splitlines()
+    )
+
+
 def _response_claims_rejected_tool_available(
     *,
     response_text: str,
@@ -4917,13 +4932,6 @@ def _strip_rejected_tool_availability_claim_lines(
     protected_tool_output_end: int | None = None,
 ) -> str:
     raw_text = str(response_text or "")
-
-    def _is_unprotected_tool_output_header_line(line: str) -> bool:
-        stripped = line.strip()
-        return any(
-            stripped == header or stripped.startswith(f"{header} ")
-            for header in _USER_VISIBLE_TOOL_OUTPUT_HEADERS
-        )
 
     def _strip_claim_lines(text: str) -> str:
         kept_lines = [
@@ -5134,6 +5142,8 @@ def _coerce_blocked_action_response_text(
     if any(code == "resource:outside_workspace_root" for code in codes):
         return _blocked_action_feedback(rejection_reasons)
     if any(code == "pep:resource_authorization_failed" for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
+    if _response_contains_unprotected_tool_output_header(response_text):
         return _blocked_action_feedback(rejection_reasons)
     if "successfully" in response_text.lower():
         return _blocked_action_feedback(rejection_reasons)

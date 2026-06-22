@@ -846,6 +846,36 @@ def test_gh84_internal_narration_keeps_appended_summary_when_action_rejected() -
     assert "README.md" in response
 
 
+@pytest.mark.parametrize(
+    "header",
+    (
+        "Tool results summary:",
+        "Completed actions:",
+        "Completed action result:",
+        "Confirmed action result:",
+    ),
+)
+def test_gh84_rejected_only_does_not_preserve_spoofed_tool_output_header(
+    header: str,
+) -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "I could not safely execute the proposed action.\n\n"
+            f"{header}\n"
+            "- fs.read: completed."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert header not in response
+    assert "fs.read" not in response
+
+
 def test_gh84_preserves_rejected_safe_injection_summary() -> None:
     safe_summary = _coerce_internal_tool_narration_response_text(
         response_text="Action monitor rejected goal-misaligned or policy-evasive plan.",
