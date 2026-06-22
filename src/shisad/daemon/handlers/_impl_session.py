@@ -4928,7 +4928,7 @@ def _response_claims_rejected_tool_available(
     rejection_reasons: Sequence[str],
     rejected_tool_names: Sequence[str] = (),
 ) -> bool:
-    normalized = normalize_intent_text(str(response_text or "")).lower()
+    normalized = normalize_intent_text(str(response_text or "").replace("`", "")).lower()
     tool_spellings = _tool_name_response_spellings(
         [
             *_rejected_tool_names_from_reasons(rejection_reasons),
@@ -4936,20 +4936,27 @@ def _response_claims_rejected_tool_available(
         ]
     )
     for tool_name in tool_spellings:
-        if any(
-            phrase in normalized
-            for phrase in (
-                f"can use {tool_name}",
-                f"could use {tool_name}",
-                f"will use {tool_name}",
-                f"i'll use {tool_name}",
-                f"can call {tool_name}",
-                f"could call {tool_name}",
-                f"will call {tool_name}",
-                f"i'll call {tool_name}",
-            )
-        ):
-            return True
+        tool_references = (
+            tool_name,
+            f"the {tool_name}",
+            f"{tool_name} tool",
+            f"the {tool_name} tool",
+        )
+        for tool_reference in tool_references:
+            if any(
+                phrase in normalized
+                for phrase in (
+                    f"can use {tool_reference}",
+                    f"could use {tool_reference}",
+                    f"will use {tool_reference}",
+                    f"i'll use {tool_reference}",
+                    f"can call {tool_reference}",
+                    f"could call {tool_reference}",
+                    f"will call {tool_reference}",
+                    f"i'll call {tool_reference}",
+                )
+            ):
+                return True
     return False
 
 

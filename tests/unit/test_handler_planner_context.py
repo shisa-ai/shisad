@@ -743,6 +743,30 @@ def test_gh84_coerces_hyphenated_native_tool_alias_hedging_to_denial_reason() ->
     assert "clarify" not in response
 
 
+@pytest.mark.parametrize(
+    "response_text",
+    (
+        "I can use `shell.exec` for that. Could you clarify?",
+        "I can use the shell.exec tool for that. Could you clarify?",
+    ),
+)
+def test_gh84_coerces_rejected_tool_formatted_hedging_to_denial_reason(
+    response_text: str,
+) -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=response_text,
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "I can use" not in response
+    assert "clarify" not in response
+
+
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
