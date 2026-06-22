@@ -4902,7 +4902,7 @@ def _response_contains_unprotected_tool_output_header(response_text: str) -> boo
 def _response_contains_rejected_tool_availability_phrase(text: str, phrase: str) -> bool:
     return (
         re.search(
-            rf"(?<![A-Za-z0-9_-]){re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
+            rf"(?<![A-Za-z0-9_.-]){re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
             text,
         )
         is not None
@@ -4979,27 +4979,51 @@ def _strip_rejected_tool_availability_claim_lines(
     rejected_tool_names: Sequence[str] = (),
     protected_tool_output_start: int | None = None,
     protected_tool_output_end: int | None = None,
-) -> str:
+) -> tuple[str, str]:
     raw_text = str(response_text or "")
 
     def _strip_claim_lines(text: str) -> str:
         kept_lines: list[str] = []
         skipping_unprotected_tool_block = False
-        for line in text.splitlines():
+        lines = text.splitlines()
+        index = 0
+        while index < len(lines):
+            line = lines[index]
             if skipping_unprotected_tool_block:
                 if not line.strip() or _is_unprotected_tool_output_payload_line(line):
+                    index += 1
                     continue
                 skipping_unprotected_tool_block = False
             if _is_unprotected_tool_output_header_line(line):
                 skipping_unprotected_tool_block = True
+                index += 1
                 continue
             if _response_claims_rejected_tool_available(
                 response_text=line,
                 rejection_reasons=rejection_reasons,
                 rejected_tool_names=rejected_tool_names,
             ):
+                index += 1
+                continue
+            skipped_wrapped_claim = False
+            for window_size in (2, 3):
+                if index + window_size > len(lines):
+                    continue
+                window_lines = lines[index : index + window_size]
+                if any(not candidate.strip() for candidate in window_lines):
+                    continue
+                if _response_claims_rejected_tool_available(
+                    response_text="\n".join(window_lines),
+                    rejection_reasons=rejection_reasons,
+                    rejected_tool_names=rejected_tool_names,
+                ):
+                    index += window_size
+                    skipped_wrapped_claim = True
+                    break
+            if skipped_wrapped_claim:
                 continue
             kept_lines.append(line)
+            index += 1
         return "\n".join(kept_lines).strip()
 
     protected_segment = ""
@@ -5017,16 +5041,21 @@ def _strip_rejected_tool_availability_claim_lines(
         protected_segment = raw_text[protected_start:protected_end].strip()
         trailing_text = raw_text[protected_end:]
 
+    stripped_assistant_text = _strip_claim_lines(assistant_text)
+    stripped_trailing_text = _strip_claim_lines(trailing_text)
     parts = [
         part
         for part in (
-            _strip_claim_lines(assistant_text),
+            stripped_assistant_text,
             protected_segment,
-            _strip_claim_lines(trailing_text),
+            stripped_trailing_text,
         )
         if part
     ]
-    return "\n\n".join(parts)
+    unprotected_parts = [
+        part for part in (stripped_assistant_text, stripped_trailing_text) if part
+    ]
+    return "\n\n".join(parts), "\n\n".join(unprotected_parts)
 
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
@@ -5178,15 +5207,16 @@ def _coerce_blocked_action_response_text(
     if rejected <= 0 or pending_confirmation > 0:
         return response_text
     if executed_tool_outputs > 0:
-        response_text = _strip_rejected_tool_availability_claim_lines(
+        stripped_response = _strip_rejected_tool_availability_claim_lines(
             response_text=response_text,
             rejection_reasons=rejection_reasons,
             rejected_tool_names=rejected_tool_names,
             protected_tool_output_start=protected_tool_output_start,
             protected_tool_output_end=protected_tool_output_end,
         )
+        response_text, unprotected_response_text = stripped_response
         feedback = _blocked_action_feedback(rejection_reasons)
-        if feedback and feedback not in response_text:
+        if feedback and feedback not in unprotected_response_text:
             stripped = response_text.strip()
             return f"{stripped}\n\n{feedback}" if stripped else feedback
         return response_text

@@ -794,6 +794,33 @@ def test_gh84_rejected_tool_claim_match_respects_tool_name_boundaries() -> None:
     assert "clarify" not in rejected_response
 
 
+def test_gh84_rejected_tool_claim_match_respects_left_tool_name_boundaries() -> None:
+    sibling_response_text = "The log mentioned skill.can use demo.lookup for that."
+    sibling_response = _coerce_blocked_action_response_text(
+        response_text=sibling_response_text,
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["pep:tool_not_permitted"],
+        rejected_tool_names=["demo.lookup"],
+    )
+
+    assert sibling_response == sibling_response_text
+
+    rejected_response = _coerce_blocked_action_response_text(
+        response_text="I can use demo.lookup for that. Could you clarify?",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["pep:tool_not_permitted"],
+        rejected_tool_names=["demo.lookup"],
+    )
+
+    assert "reason: pep:tool_not_permitted" in rejected_response
+    assert "I can use" not in rejected_response
+    assert "clarify" not in rejected_response
+
+
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
@@ -811,6 +838,49 @@ def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     assert "reason: shell.exec:goal_misaligned_high_risk" in response
     assert "I can use shell.exec" not in response
     assert "clarify" not in response
+
+
+def test_gh84_mixed_turn_strips_wrapped_rejected_tool_claim() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "I can use\n"
+            "shell.exec for that. Could you clarify?\n\n"
+            "I read README.md successfully."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "I read README.md successfully." in response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "I can use" not in response
+    assert "Could you clarify" not in response
+
+
+def test_gh84_mixed_turn_tool_output_cannot_suppress_denial_feedback() -> None:
+    feedback = _blocked_action_feedback(["shell.exec:goal_misaligned_high_risk"])
+    response_text = (
+        "Tool results summary:\n"
+        "- fs.read: success=True\n"
+        "  output:\n"
+        f"  {feedback}"
+    )
+    response = _coerce_blocked_action_response_text(
+        response_text=response_text,
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+        protected_tool_output_start=0,
+    )
+
+    assert "Tool results summary:" in response
+    assert response.count(feedback) == 2
+    assert response.rstrip().endswith(feedback)
 
 
 def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() -> None:
