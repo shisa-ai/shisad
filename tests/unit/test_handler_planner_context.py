@@ -850,6 +850,38 @@ def test_gh84_rejected_tool_claim_match_coerces_unpunctuated_first_person_leadin
     assert "clarify" not in response
 
 
+def test_gh84_rejected_only_done_placeholder_coerces_to_denial_reason() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text="OK, done.",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "done" not in response.lower()
+
+
+def test_gh84_pending_and_rejected_turn_appends_denial_reason() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "Pending confirmations:\n"
+            "1. fs.write requires confirmation before I continue."
+        ),
+        rejected=1,
+        pending_confirmation=1,
+        executed_tool_outputs=0,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "Pending confirmations:" in response
+    assert "fs.write requires confirmation" in response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+
+
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
