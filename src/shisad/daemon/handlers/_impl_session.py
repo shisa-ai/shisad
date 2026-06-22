@@ -3760,8 +3760,9 @@ _REJECTED_TOOL_AVAILABILITY_PHRASE_PREFIXES = (
     "will call",
 )
 _REJECTED_TOOL_AVAILABILITY_LINE_START_RE = re.compile(
-    r"(?:^|[,:;.!?]\s+)"
-    r"(?:(?:i\s+)?(?:can|could|will)\s+(?:use|call)|i'll\s+(?:use|call))\b"
+    r"(?:(?<![A-Za-z0-9_.-])"
+    r"(?:i\s+(?:can|could|will)\s+(?:use|call)|i'll\s+(?:use|call))\b"
+    r"|(?:^|[,:;.!?]\s+)(?:can|could|will)\s+(?:use|call)\b)"
 )
 _INTERMEDIATE_TOOL_OUTPUT_HEADER = (
     "I completed the tool step, but I could not generate a final answer in this turn. "
@@ -4920,9 +4921,13 @@ def _response_contains_unprotected_tool_output_header(response_text: str) -> boo
 
 
 def _response_contains_rejected_tool_availability_phrase(text: str, phrase: str) -> bool:
+    first_person_phrase = phrase.startswith(("i ", "i'"))
+    left_boundary = (
+        r"(?<![A-Za-z0-9_.-])" if first_person_phrase else r"(?:^|[,:;.!?]\s+)"
+    )
     return (
         re.search(
-            rf"(?:^|[,:;.!?]\s+){re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
+            rf"{left_boundary}{re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
             text,
         )
         is not None

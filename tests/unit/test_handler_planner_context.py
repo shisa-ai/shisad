@@ -835,6 +835,21 @@ def test_gh84_rejected_tool_claim_match_preserves_nonassistant_subject() -> None
     assert response == response_text
 
 
+def test_gh84_rejected_tool_claim_match_coerces_unpunctuated_first_person_leadin() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text="Sure I can use shell.exec for that. Could you clarify?",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "Sure I can use" not in response
+    assert "clarify" not in response
+
+
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
@@ -995,6 +1010,25 @@ def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_same_line() -> None
     assert "Users can use shell.exec in a different daemon policy." in response
     assert "I read README.md successfully." in response
     assert "reason: shell.exec:goal_misaligned_high_risk" in response
+
+
+def test_gh84_mixed_turn_strips_unpunctuated_first_person_leadin() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text=(
+            "Sure I can use shell.exec for that. Could you clarify?\n\n"
+            "I read README.md successfully."
+        ),
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejected_tool_names=["shell.exec"],
+    )
+
+    assert "I read README.md successfully." in response
+    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "Sure I can use" not in response
+    assert "Could you clarify" not in response
 
 
 def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() -> None:
