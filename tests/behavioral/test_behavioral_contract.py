@@ -1931,6 +1931,85 @@ async def test_contract_direct_diagnostic_audit_command_executes_or_confirms_wit
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(
+    reason="Blocked on GH85 structured turn authorization replacing prose goal alignment",
+    strict=True,
+)
+async def test_gh61_ledger_demo_shell_command_queues_valid_argv_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        policy_extra_lines=[
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+            "    confirmation:",
+            "      level: software",
+        ],
+    ) as harness:
+
+        async def _ledger_demo_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = self, messages, tools
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Working on it.",
+                    tool_calls=[
+                        _tool_call(
+                            "shell.exec",
+                            {
+                                "command": ["echo", "Hello", "Ledger!"],
+                                "command_intent": "execute",
+                            },
+                            call_id="t-gh61-ledger-demo",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _ledger_demo_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "let's test our ledger"},
+        )
+
+        assert reply.get("lockdown_level") == "normal"
+        assert int(reply.get("blocked_actions", 0)) == 0
+        assert int(reply.get("executed_actions", 0)) == 0
+        assert int(reply.get("confirmation_required_actions", 0)) >= 1
+        response_text = str(reply.get("response", "")).lower()
+        assert "schema validation failed" not in response_text
+        assert "command_token" not in response_text
+        pending_ids = reply.get("pending_confirmation_ids")
+        assert isinstance(pending_ids, list)
+        assert pending_ids
+
+        pending = await harness.client.call(
+            "action.pending",
+            {"confirmation_id": str(pending_ids[0])},
+        )
+
+    actions = list(pending.get("actions", []))
+    assert actions
+    assert actions[0].get("tool_name") == "shell.exec"
+    arguments = dict(actions[0].get("arguments", {}))
+    assert arguments.get("command") == ["echo", "Hello", "Ledger!"]
+    assert "command_intent" not in arguments
+
+
+@pytest.mark.asyncio
 async def test_m3_long_clean_session_goal_not_truncated_for_planner(
     contract_harness: ContractHarness,
 ) -> None:
