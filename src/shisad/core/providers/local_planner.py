@@ -124,7 +124,7 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
         return True
     if remainder[0] in ".:,;-":
         return True
-    return remainder.startswith(("and ", "because ", "but ", "while ", "instead "))
+    return remainder.startswith(("and ", "because ", "but ", "while ", "instead ", "to "))
 
 
 def _task_close_gate_has_failure_cue(text: str) -> bool:
@@ -165,10 +165,19 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 
 def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
-    return any(
-        _task_close_gate_starts_with_statement_cue(normalized, cue)
-        for cue in ("yes", "true", "detected", "confirmed")
-    )
+    for cue in ("yes", "true", "detected", "confirmed"):
+        if not normalized.startswith(cue):
+            continue
+        remainder = normalized[len(cue) :].lstrip()
+        if not remainder:
+            return True
+        if remainder[0] in ".:,;":
+            return True
+        if remainder.startswith(
+            ("and ", "because ", "but ", "while ", "instead ", "due to ", "from ")
+        ):
+            return True
+    return False
 
 
 def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bool:
@@ -182,8 +191,6 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
                 return False
             if _task_close_gate_label_value_is_truthy(remainder):
                 return True
-            if _task_close_gate_discusses_diagnostic_text(remainder):
-                return False
             return _task_close_gate_has_goal_drift_cue(
                 remainder,
                 review_result=review_result,
@@ -202,10 +209,6 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
     )
     if normalized.startswith(general_object_cues):
         return True
-    if _task_close_gate_discusses_diagnostic_text(normalized):
-        return False
-    if review_result and normalized.startswith(review_object_cues):
-        return True
     startswith_cues = (
         "delegated task changed scope",
         "the delegated task changed scope",
@@ -223,10 +226,14 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
         "the delegated task drafted a shell-based",
         "the task drafted a shell-based",
     )
-    return any(
+    if any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)
         for cue in startswith_cues
-    )
+    ):
+        return True
+    if _task_close_gate_discusses_diagnostic_text(normalized):
+        return False
+    return review_result and normalized.startswith(review_object_cues)
 
 
 def _task_close_gate_local_response(planner_input: str) -> str:
