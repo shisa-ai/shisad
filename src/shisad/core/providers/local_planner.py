@@ -221,7 +221,9 @@ def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
         if index < 0:
             return False
         prefix = normalized[:index].rstrip()
-        if cue.startswith("case is") and not prefix.endswith("diagnostic"):
+        if cue.startswith("case is") and not _task_close_gate_ends_with_word(
+            prefix, "diagnostic"
+        ):
             start = index + 1
             continue
         remainder = normalized[index + len(cue) :].lstrip()
@@ -232,6 +234,14 @@ def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
         if remainder.startswith("as "):
             return True
         start = index + 1
+
+
+def _task_close_gate_ends_with_word(text: str, word: str) -> bool:
+    stripped = text.rstrip()
+    if not stripped.endswith(word):
+        return False
+    start = len(stripped) - len(word)
+    return start == 0 or stripped[start - 1].isspace()
 
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
