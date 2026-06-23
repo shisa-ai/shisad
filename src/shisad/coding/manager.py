@@ -94,6 +94,41 @@ def _diff_untracked_file(worktree_path: Path, relative_path: str) -> str:
     return result.stdout.strip()
 
 
+def _coding_agent_write_activity_count(raw_updates: tuple[dict[str, Any], ...]) -> int:
+    count = 0
+    seen_tool_call_ids: set[str] = set()
+    for notification in raw_updates:
+        update = notification.get("update")
+        if not isinstance(update, Mapping):
+            continue
+        session_update = (
+            str(update.get("session_update", "")).strip()
+            or str(update.get("sessionUpdate", "")).strip()
+        )
+        if session_update not in {"tool_call", "tool_call_update"}:
+            continue
+        kind = str(update.get("kind", "")).strip().lower()
+        content_list = update.get("content")
+        has_diff_content = isinstance(content_list, list) and any(
+            isinstance(item, Mapping)
+            and str(item.get("type", "")).strip() == "diff"
+            and bool(str(item.get("path", "")).strip())
+            for item in content_list
+        )
+        if kind != "edit" and not has_diff_content:
+            continue
+        tool_call_id = (
+            str(update.get("tool_call_id", "")).strip()
+            or str(update.get("toolCallId", "")).strip()
+        )
+        if tool_call_id:
+            if tool_call_id in seen_tool_call_ids:
+                continue
+            seen_tool_call_ids.add(tool_call_id)
+        count += 1
+    return count
+
+
 class CodingAgentManager:
     """Create isolated worktrees and execute coding tasks through adapters."""
 
@@ -192,6 +227,9 @@ class CodingAgentManager:
                     "stop_reason": adapter_output.stop_reason,
                     "error_code": adapter_output.error_code,
                     "updates": list(adapter_output.raw_updates),
+                    "write_activity_count": _coding_agent_write_activity_count(
+                        adapter_output.raw_updates
+                    ),
                     "worktree_path": str(managed_worktree),
                     "attempts": [
                         {

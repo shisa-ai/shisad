@@ -94,6 +94,23 @@ def _parse_task_close_gate_signals(text: str) -> dict[str, str]:
     return signals
 
 
+def _task_close_gate_signal_int(signals: dict[str, str], key: str) -> int:
+    try:
+        value = int(signals.get(key, "0") or "0")
+    except ValueError:
+        return 0
+    return max(0, value)
+
+
+def _artifactless_write_activity_notes() -> str:
+    return (
+        "The coding agent reported file write operations, but no changes were detected "
+        "in the sandboxed worktree or proposal diff. This usually means it wrote to an "
+        "absolute path outside the coding worktree. Set SHISAD_CODING_REPO_ROOT to the "
+        "target git repo and use relative paths."
+    )
+
+
 def _task_close_gate_local_response(planner_input: str) -> str:
     evidence_text = _extract_marked_untrusted_payload(planner_input)
     sections = _parse_task_close_gate_sections(evidence_text)
@@ -120,8 +137,16 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     response_present = signals.get("response_present") == "yes" or bool(response.strip())
     proposal_present = signals.get("proposal_present") == "yes"
     proposal_has_diff = signals.get("proposal_has_diff") == "yes" or proposal_diff_present
+    write_activity_count = _task_close_gate_signal_int(signals, "write_activity_count")
     task_kind = signals.get("task_kind", "")
     read_only = signals.get("read_only") == "true"
+    executor = signals.get("executor", "")
+    artifactless_write_activity = (
+        executor == "coding_agent"
+        and write_activity_count > 0
+        and not files_present
+        and not proposal_has_diff
+    )
     has_concrete_result = any(
         (
             summary_present,
@@ -132,7 +157,11 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         )
     )
 
-    if not has_concrete_result:
+    if artifactless_write_activity:
+        status = "INCOMPLETE"
+        reason = "no_artifact_evidence"
+        notes = _artifactless_write_activity_notes()
+    elif not has_concrete_result:
         status = "INCOMPLETE"
         reason = "no_task_output"
         notes = (

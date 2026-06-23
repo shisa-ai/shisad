@@ -11,6 +11,13 @@ import pytest
 
 import shisad.daemon.handlers._impl_session as session_impl
 import shisad.daemon.services as daemon_services
+from shisad.coding.manager import CodingAgentExecutionRecord, CodingAgentManager
+from shisad.coding.models import CodingAgentResult
+from shisad.coding.registry import (
+    AgentCommandSpec,
+    AgentSelectionAttempt,
+    AgentSelectionResult,
+)
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.events import EventBus, TaskSessionCompleted
@@ -1372,6 +1379,136 @@ async def test_m1_task_close_gate_blocks_incomplete_handoff_before_task_session_
         assert "self-check" in task_result["summary"].lower()
         assert completed_event["data"]["reason"] == "task_self_check_incomplete"
         assert completed_event["data"]["self_check_status"] == "incomplete"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_gh80_task_close_gate_explains_write_activity_without_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response=(
+                        "SELF_CHECK_STATUS: INCOMPLETE\n"
+                        "SELF_CHECK_REASON: no_artifact_evidence\n"
+                        "SELF_CHECK_NOTES: The delegated implement task has only "
+                        "summary text and no files changed or proposal diff."
+                    ),
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Parent turn should delegate to the coding agent.",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    async def _execute_coding_task(
+        self: CodingAgentManager,
+        **kwargs: object,
+    ) -> CodingAgentExecutionRecord:
+        _ = (self, kwargs)
+        return CodingAgentExecutionRecord(
+            result=CodingAgentResult(
+                agent="codex",
+                task="Build the complete Python CLI project at /tmp/external-project.",
+                success=True,
+                summary="codex completed the requested project scaffold",
+                files_changed=(),
+                duration_ms=12,
+            ),
+            selected_agent="codex",
+            raw_log_payload={
+                "updates": [
+                    {
+                        "session_id": "agent-session",
+                        "update": {
+                            "session_update": "tool_call_update",
+                            "kind": "edit",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "diff",
+                                    "path": "/tmp/external-project/pyproject.toml",
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "write_activity_count": 1,
+            },
+            proposal_payload=None,
+        )
+
+    def _select_coding_agent(self: CodingAgentManager, config: object) -> AgentSelectionResult:
+        _ = (self, config)
+        return AgentSelectionResult(
+            spec=AgentCommandSpec(name="codex", command=("codex",)),
+            attempts=(AgentSelectionAttempt(agent="codex", available=True, reason="ok"),),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    monkeypatch.setattr(CodingAgentManager, "select_agent", _select_coding_agent)
+    monkeypatch.setattr(CodingAgentManager, "execute", _execute_coding_task)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "file.write", "shell.exec"),
+        assistant_fs_roots=[],
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate the external project write",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": (
+                        "Build the complete Python CLI project at "
+                        "/tmp/external-project/."
+                    ),
+                    "capabilities": ["file.read", "file.write", "shell.exec"],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_self_check_incomplete"
+        assert task_result["self_check_status"] == "incomplete"
+        assert "write operations" in task_result["summary"]
+        assert "no changes were detected in the sandboxed worktree" in task_result["summary"]
+        assert "SHISAD_CODING_REPO_ROOT" in task_result["summary"]
+        assert "relative paths" in task_result["summary"]
     finally:
         await _shutdown_daemon(daemon_task, client)
 

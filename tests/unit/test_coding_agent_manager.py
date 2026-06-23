@@ -36,6 +36,41 @@ class _TransportErrorAdapter(CodingAgentAdapter):
         )
 
 
+class _WriteActivityNoWorktreeDiffAdapter(CodingAgentAdapter):
+    async def run(
+        self,
+        *,
+        prompt_text: str,
+        workdir: Path,
+        config: CodingAgentConfig,
+    ) -> CodingAgentRunOutput:
+        _ = (workdir, config)
+        return CodingAgentRunOutput(
+            result=CodingAgentResult(
+                agent="codex",
+                task=prompt_text,
+                success=True,
+                summary="Coding agent wrote files in the requested external directory.",
+            ),
+            raw_updates=(
+                {
+                    "session_id": "agent-session",
+                    "update": {
+                        "session_update": "tool_call_update",
+                        "kind": "edit",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "diff",
+                                "path": "/tmp/external-project/pyproject.toml",
+                            }
+                        ],
+                    },
+                },
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_m3_manager_logs_worktree_cleanup_failures(
     caplog: pytest.LogCaptureFixture,
@@ -167,3 +202,36 @@ async def test_m9_manager_persists_adapter_transport_error(
         "message": "Authentication required",
         "data": {"missing_env": ["OPENAI_API_KEY"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_gh80_manager_records_write_activity_without_worktree_diff(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = CodingAgentManager(
+        repo_root=tmp_path,
+        data_dir=tmp_path / "data",
+        registry_overrides={"codex": sys.executable},
+        adapter_factory=lambda _spec: _WriteActivityNoWorktreeDiffAdapter(),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_create_worktree",
+        lambda path: path.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(manager, "_remove_worktree", lambda _path: None)
+    monkeypatch.setattr(manager, "_collect_worktree_changes", lambda _path: ([], ""))
+
+    record = await manager.execute(
+        task_session_id="task-external-write",
+        task_description="Build the project at /tmp/external-project.",
+        file_refs=(),
+        config=CodingAgentConfig(preferred_agent="codex", read_only=False),
+    )
+
+    assert record.result.success is True
+    assert record.result.files_changed == ()
+    assert record.proposal_payload is None
+    assert isinstance(record.raw_log_payload, dict)
+    assert record.raw_log_payload["write_activity_count"] == 1

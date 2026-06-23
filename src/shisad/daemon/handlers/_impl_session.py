@@ -2586,6 +2586,86 @@ def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) 
     return tuple(files)
 
 
+def _coerce_nonnegative_int(value: Any) -> int:
+    try:
+        coerced = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, coerced)
+
+
+def _task_write_activity_count(
+    *,
+    serialized_tool_outputs: Sequence[dict[str, Any]],
+    reported_write_activity_count: Any,
+) -> int:
+    reported = _coerce_nonnegative_int(reported_write_activity_count)
+    write_tool_outputs = 0
+    for record in serialized_tool_outputs:
+        tool_name = str(record.get("tool_name", "")).strip()
+        if tool_name in {"file.write", "fs.write", "coding_agent.write"}:
+            write_tool_outputs += 1
+    return max(reported, write_tool_outputs)
+
+
+def _proposal_payload_has_artifact_evidence(proposal_payload: Mapping[str, Any] | None) -> bool:
+    if not isinstance(proposal_payload, Mapping):
+        return False
+    raw_files = proposal_payload.get("files_changed", [])
+    if isinstance(raw_files, list) and any(str(item).strip() for item in raw_files):
+        return True
+    return bool(str(proposal_payload.get("diff", "")).strip())
+
+
+def _artifactless_write_activity_notes(
+    *,
+    task_request: TaskSessionRequest,
+    files_changed: Sequence[str],
+    proposal_payload: Mapping[str, Any] | None,
+    write_activity_count: int,
+) -> str | None:
+    if write_activity_count <= 0 or task_request.executor != "coding_agent":
+        return None
+    if any(str(item).strip() for item in files_changed):
+        return None
+    if _proposal_payload_has_artifact_evidence(proposal_payload):
+        return None
+    return (
+        "The coding agent reported file write operations, but no changes were detected "
+        "in the sandboxed worktree or proposal diff. This usually means it wrote to an "
+        "absolute path outside the coding worktree. Set SHISAD_CODING_REPO_ROOT to the "
+        "target git repo and use relative paths."
+    )
+
+
+def _annotate_task_close_gate_artifactless_write_activity(
+    assessment: TaskCloseGateAssessment,
+    *,
+    task_request: TaskSessionRequest,
+    files_changed: Sequence[str],
+    proposal_payload: Mapping[str, Any] | None,
+    write_activity_count: int,
+) -> TaskCloseGateAssessment:
+    notes = _artifactless_write_activity_notes(
+        task_request=task_request,
+        files_changed=files_changed,
+        proposal_payload=proposal_payload,
+        write_activity_count=write_activity_count,
+    )
+    if notes is None or assessment.status not in {
+        _TASK_CLOSE_GATE_STATUS_COMPLETE,
+        _TASK_CLOSE_GATE_STATUS_INCOMPLETE,
+    }:
+        return assessment
+    return replace(
+        assessment,
+        status=_TASK_CLOSE_GATE_STATUS_INCOMPLETE,
+        reason="no_artifact_evidence",
+        notes=notes,
+        passed=False,
+    )
+
+
 def _normalized_task_executed_actions(
     *, serialized_tool_outputs: Sequence[dict[str, Any]], reported_executed_actions: Any
 ) -> int:
@@ -4763,6 +4843,7 @@ def _task_close_gate_result_signals(
     files_changed: Sequence[str],
     serialized_tool_outputs: Sequence[dict[str, Any]],
     proposal_payload: Mapping[str, Any] | None,
+    write_activity_count: int = 0,
 ) -> str:
     proposal_files: tuple[str, ...] = ()
     proposal_diff_present = False
@@ -4790,6 +4871,7 @@ def _task_close_gate_result_signals(
         f"response_present={'yes' if raw_response_text.strip() else 'no'}",
         f"files_changed_count={len(tuple(item for item in files_changed if str(item).strip()))}",
         f"tool_output_count={len(serialized_tool_outputs)}",
+        f"write_activity_count={max(0, write_activity_count)}",
         f"proposal_present={'yes' if isinstance(proposal_payload, Mapping) else 'no'}",
         f"proposal_has_diff={'yes' if proposal_diff_present else 'no'}",
         f"proposal_files_changed_count={len(proposal_files)}",
@@ -13648,6 +13730,7 @@ class SessionImplMixin(HandlerMixinBase):
         serialized_tool_outputs: Sequence[dict[str, Any]],
         proposal_payload: Mapping[str, Any] | None,
         agent: str | None,
+        write_activity_count: int = 0,
     ) -> TaskCloseGateAssessment:
         result_signals_block = _task_close_gate_result_signals(
             task_request=task_request,
@@ -13658,6 +13741,7 @@ class SessionImplMixin(HandlerMixinBase):
             files_changed=files_changed,
             serialized_tool_outputs=serialized_tool_outputs,
             proposal_payload=proposal_payload,
+            write_activity_count=write_activity_count,
         )
         file_lines = [f"- {item}" for item in files_changed if str(item).strip()]
         file_block = _truncate_close_gate_evidence_text(
@@ -13812,7 +13896,13 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text="",
                 passed=False,
             )
-        return _parse_task_close_gate_response(response_text)
+        return _annotate_task_close_gate_artifactless_write_activity(
+            _parse_task_close_gate_response(response_text),
+            task_request=task_request,
+            files_changed=files_changed,
+            proposal_payload=proposal_payload,
+            write_activity_count=write_activity_count,
+        )
 
     def _prepare_identity_candidate_suggestion(
         self,
@@ -14518,6 +14608,7 @@ class SessionImplMixin(HandlerMixinBase):
                                     "tool_outputs": [],
                                 }
                             else:
+                                raw_log_payload = coding_record.raw_log_payload or {}
                                 task_response_payload = {
                                     "response": coding_record.result.summary,
                                     "plan_hash": None,
@@ -14525,13 +14616,16 @@ class SessionImplMixin(HandlerMixinBase):
                                     "confirmation_required_actions": 0,
                                     "executed_actions": 0,
                                     "tool_outputs": [],
-                                    "raw_log_payload": coding_record.raw_log_payload or {},
+                                    "raw_log_payload": raw_log_payload,
                                     "proposal_payload": coding_record.proposal_payload,
                                     "files_changed": list(coding_record.result.files_changed),
                                     "agent": coding_record.selected_agent,
                                     "cost": coding_record.result.cost,
                                     "stop_reason": coding_record.stop_reason,
                                     "worktree_path": coding_record.worktree_path,
+                                    "write_activity_count": _coerce_nonnegative_int(
+                                        raw_log_payload.get("write_activity_count")
+                                    ),
                                 }
                 else:
                     task_params = self._task_internal_ingress_payload(
@@ -14583,6 +14677,10 @@ class SessionImplMixin(HandlerMixinBase):
                 list(task_response_payload.get("tool_outputs", []))
                 if isinstance(task_response_payload.get("tool_outputs", []), list)
                 else []
+            )
+            write_activity_count = _task_write_activity_count(
+                serialized_tool_outputs=serialized_tool_outputs,
+                reported_write_activity_count=task_response_payload.get("write_activity_count"),
             )
             executed_actions = _normalized_task_executed_actions(
                 serialized_tool_outputs=serialized_tool_outputs,
@@ -14668,6 +14766,7 @@ class SessionImplMixin(HandlerMixinBase):
                         dict(proposal_payload) if isinstance(proposal_payload, Mapping) else None
                     ),
                     agent=task_agent,
+                    write_activity_count=write_activity_count,
                 )
                 self_check_status = self_check.status
                 self_check_ref = self._write_task_artifact(
