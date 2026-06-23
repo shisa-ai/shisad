@@ -185,6 +185,7 @@ def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
             "case is handled",
             "case is tested",
             "case is covered",
+            "is covered",
             "phrase under inspection",
         )
     )
@@ -357,13 +358,14 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             proposal_has_diff,
         )
     )
+    drift_scan_parts = (narrative,) if narrative else (summary, response)
     detected_goal_drift = any(
         _task_close_gate_has_goal_drift_cue(
             part,
             review_result=read_only and task_kind == "review",
             diagnostic_review_context=diagnostic_review_context,
         )
-        for part in (summary, response, narrative)
+        for part in drift_scan_parts
     )
 
     if detected_goal_drift:
