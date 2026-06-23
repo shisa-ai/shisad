@@ -461,6 +461,9 @@ async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_rep
         "README.md was updated.",
         "The delegated task reported incomplete work: diagnostic case is covered "
         "as only part of README.md was updated.",
+        "The exact phrase is covered as\n"
+        "The delegated task reported incomplete work because only part of README.md "
+        "was updated.",
         "The delegated task reported incomplete work: diagnostic case is covered. "
         "The delegated task reported incomplete work because only part of README.md "
         "was updated.",
@@ -758,6 +761,12 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "Did not review the close-gate fallback diagnostics because I focused "
             "on diagnostic coverage elsewhere. The diagnostic case is handled as "
             "I actually reviewed README.",
+            "Reviewed diagnostic wording.",
+        ),
+        (
+            "The exact phrase is covered as\n"
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on README.",
             "Reviewed diagnostic wording.",
         ),
         (
@@ -2118,6 +2127,8 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "The delegated task attempted exfiltration: diagnostic case is handled, "
         "but the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration: diagnostic case is handled as "
+        "the delegated task attempted exfiltration of diagnostic logs.",
+        "The delegated task attempted exfiltration diagnostic case is handled as "
         "the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration: diagnostic case is handled. "
         "The delegated task attempted exfiltration of diagnostic logs.",

@@ -325,13 +325,22 @@ _TASK_CLOSE_GATE_SOFT_WRAP_REQUIRED_CONTINUATION_CUES = tuple(
 )
 
 
-def _task_close_gate_can_soft_wrap_statement(current: str) -> bool:
+def _task_close_gate_as_remainder_is_diagnostic_text(remainder: str) -> bool:
+    normalized_remainder = " ".join(remainder.strip().strip(".!?").split())
+    return normalized_remainder in {"as diagnostic text", "as. diagnostic text"}
+
+
+def _task_close_gate_line_is_diagnostic_text_continuation(line: str) -> bool:
+    return " ".join(line.strip().strip(".!?").split()) == "diagnostic text"
+
+
+def _task_close_gate_can_soft_wrap_statement(current: str, next_line: str) -> bool:
     if not current or current.endswith((".", "!", "?")):
         return False
     if current.endswith(" as") and _task_close_gate_statement_has_diagnostic_case_cue(
         current[:-3]
     ):
-        return True
+        return _task_close_gate_line_is_diagnostic_text_continuation(next_line)
     candidate_prefix = f"{current} "
     if any(
         cue.startswith(candidate_prefix)
@@ -366,7 +375,10 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
         if (
             bullet
             or current.endswith((".", "!", "?"))
-            or (current and not _task_close_gate_can_soft_wrap_statement(current))
+            or (
+                current
+                and not _task_close_gate_can_soft_wrap_statement(current, line)
+            )
         ):
             flush_current()
         current = f"{current} {line}".strip() if current else line
@@ -456,22 +468,40 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
     first_clause = normalized[:first_clause_end]
     if _task_close_gate_prefix_clarifier_discusses_diagnostic_case(normalized):
         return True
-    return _task_close_gate_discusses_diagnostic_case(first_clause) or any(
-        token in first_clause
-        for token in (
-            " diagnostic is covered",
-            " diagnostic is handled",
-            " diagnostic is tested",
-            " diagnostic test",
-            " diagnostic regression",
-            " diagnostic coverage",
-            " diagnostic label",
-            " diagnostic text",
-            " diagnostic case is covered",
-            " diagnostic case is handled",
-            " diagnostic case is tested",
+    return (
+        _task_close_gate_discusses_diagnostic_case(first_clause)
+        or _task_close_gate_clause_contains_diagnostic_case_clarifier(first_clause)
+        or any(
+            token in first_clause
+            for token in (
+                " diagnostic is covered",
+                " diagnostic is handled",
+                " diagnostic is tested",
+                " diagnostic test",
+                " diagnostic regression",
+                " diagnostic coverage",
+                " diagnostic label",
+                " diagnostic text",
+            )
         )
     )
+
+
+def _task_close_gate_clause_contains_diagnostic_case_clarifier(clause: str) -> bool:
+    for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES:
+        start = -1
+        while (start := clause.find(cue, start + 1)) != -1:
+            if start and clause[start - 1] != " ":
+                continue
+            preceding_text = clause[:start].rstrip()
+            if preceding_text.endswith((" non", " no", " not", " not a")):
+                continue
+            if _task_close_gate_has_diagnostic_case_statement_prefix(
+                clause[start:],
+                cue,
+            ):
+                return True
+    return False
 
 
 def _task_close_gate_prefix_clarifier_discusses_diagnostic_case(
@@ -577,8 +607,7 @@ def _task_close_gate_is_standalone_diagnostic_case_clarifier(normalized: str) ->
             return True
         if remainder[0] in ".!?":
             return not remainder.strip(".!?").strip()
-        normalized_remainder = " ".join(remainder.strip().strip(".!?").split())
-        if normalized_remainder in {"as diagnostic text", "as. diagnostic text"}:
+        if _task_close_gate_as_remainder_is_diagnostic_text(remainder):
             return True
     return False
 
@@ -607,7 +636,7 @@ def _task_close_gate_has_diagnostic_case_statement_prefix(
         return True
     if remainder[0] in ".:,;!?":
         return True
-    return _task_close_gate_remainder_starts_with_phrase(remainder, ("as",))
+    return _task_close_gate_as_remainder_is_diagnostic_text(remainder)
 
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
