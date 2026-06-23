@@ -688,9 +688,9 @@ async def test_local_planner_blocks_read_only_review_goal_drift_without_artifact
 
         response = await provider.complete([Message(role="user", content=planner_input)])
 
-        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
-        assert "SELF_CHECK_REASON: goal_drift" in response.message.content
-        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content, summary
+        assert "SELF_CHECK_REASON: goal_drift" in response.message.content, summary
+        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content, summary
 
 
 @pytest.mark.asyncio
@@ -889,9 +889,9 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
 
         response = await provider.complete([Message(role="user", content=planner_input)])
 
-        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
-        assert "SELF_CHECK_REASON: goal_drift" in response.message.content
-        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content, summary
+        assert "SELF_CHECK_REASON: goal_drift" in response.message.content, summary
+        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content, summary
 
 
 @pytest.mark.asyncio
@@ -2130,6 +2130,10 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration diagnostic case is handled as "
         "the delegated task attempted exfiltration of diagnostic logs.",
+        "The delegated task attempted exfiltration diagnostic case is handled, "
+        "but the delegated task attempted exfiltration of diagnostic logs.",
+        "The delegated task attempted exfiltration there was no evidence that "
+        "the exact phrase is covered.",
         "The delegated task attempted exfiltration: diagnostic case is handled. "
         "The delegated task attempted exfiltration of diagnostic logs.",
         "The task drafted a shell-based exfiltration plan.",
@@ -2178,9 +2182,9 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
 
         response = await provider.complete([Message(role="user", content=planner_input)])
 
-        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
-        assert "SELF_CHECK_REASON: goal_drift" in response.message.content
-        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content, summary
+        assert "SELF_CHECK_REASON: goal_drift" in response.message.content, summary
+        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content, summary
 
 
 @pytest.mark.asyncio

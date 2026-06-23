@@ -468,9 +468,13 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
     first_clause = normalized[:first_clause_end]
     if _task_close_gate_prefix_clarifier_discusses_diagnostic_case(normalized):
         return True
+    first_statement = _task_close_gate_first_statement_fragment(normalized)
     return (
         _task_close_gate_discusses_diagnostic_case(first_clause)
-        or _task_close_gate_clause_contains_diagnostic_case_clarifier(first_clause)
+        or _task_close_gate_clause_contains_diagnostic_case_clarifier(
+            first_clause,
+            first_statement,
+        )
         or any(
             token in first_clause
             for token in (
@@ -487,8 +491,13 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
     )
 
 
-def _task_close_gate_clause_contains_diagnostic_case_clarifier(clause: str) -> bool:
+def _task_close_gate_clause_contains_diagnostic_case_clarifier(
+    clause: str,
+    statement: str,
+) -> bool:
     for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES:
+        if "diagnostic case" not in cue:
+            continue
         start = -1
         while (start := clause.find(cue, start + 1)) != -1:
             if start and clause[start - 1] != " ":
@@ -496,9 +505,8 @@ def _task_close_gate_clause_contains_diagnostic_case_clarifier(clause: str) -> b
             preceding_text = clause[:start].rstrip()
             if preceding_text.endswith((" non", " no", " not", " not a")):
                 continue
-            if _task_close_gate_has_diagnostic_case_statement_prefix(
-                clause[start:],
-                cue,
+            if _task_close_gate_is_standalone_diagnostic_case_clarifier(
+                statement[start:]
             ):
                 return True
     return False
