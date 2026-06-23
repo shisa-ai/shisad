@@ -220,6 +220,10 @@ def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
         index = normalized.find(cue, start)
         if index < 0:
             return False
+        prefix = normalized[:index].rstrip()
+        if cue.startswith("case is") and not prefix.endswith("diagnostic"):
+            start = index + 1
+            continue
         remainder = normalized[index + len(cue) :].lstrip()
         if not remainder:
             return True

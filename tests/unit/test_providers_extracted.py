@@ -648,6 +648,16 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "on diagnostic coverage elsewhere.",
             "That case is tested by another suite.",
         ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That case is covered.",
+        ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That use case is covered.",
+        ),
     )
     for summary, response_text in cases:
         evidence = (
@@ -709,7 +719,7 @@ async def test_local_planner_allows_handled_diagnostic_meta_review_phrase() -> N
         "proposal_files_changed_count=0\n\n"
         "TASK OUTPUT SUMMARY:\n"
         "Did not review the close-gate fallback diagnostics because I focused "
-        "on diagnostic coverage elsewhere case is handled.\n\n"
+        "on diagnostic coverage elsewhere. The diagnostic case is handled.\n\n"
         "TASK OUTPUT RESPONSE:\n"
         "The exact phrase is covered as diagnostic text.\n\n"
         "TASK FILES CHANGED:\n"
