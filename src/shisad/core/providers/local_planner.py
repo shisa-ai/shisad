@@ -167,7 +167,6 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             "different goal",
             "exfiltrat",
             "shell-based",
-            "mismatch",
         )
     )
 
