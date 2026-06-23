@@ -325,6 +325,48 @@ async def test_gh80_local_planner_provider_allows_artifacted_worktree_mismatch_f
 
 
 @pytest.mark.asyncio
+async def test_gh80_local_planner_provider_allows_artifacted_generic_failure_fix() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Fix the task failed before completion diagnostic.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Added coverage for the failed before completion diagnostic.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The incomplete work message is now covered by tests.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- tests/example_test.py\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/tests/example_test.py b/tests/example_test.py\n"
+        "+++ b/tests/example_test.py\n"
+        "+def test_failed_before_completion_diagnostic(): pass\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+    assert "incomplete_work" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_gh80_local_planner_provider_preserves_mismatch_over_artifactless_write() -> None:
     provider = LocalPlannerProvider()
     evidence = (

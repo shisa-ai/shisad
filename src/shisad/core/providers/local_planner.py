@@ -186,6 +186,10 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             "The evidence contains no clear delegated result to verify against "
             "the original request."
         )
+    elif proposal_has_diff or files_present:
+        status = "COMPLETE"
+        reason = "complete"
+        notes = "The delegated task produced concrete proposal or file-change evidence."
     elif any(
         token in combined_lower
         for token in (
@@ -211,10 +215,6 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         status = "INCOMPLETE"
         reason = "incomplete_work"
         notes = "Local fallback assessment found missing or incomplete delegated work."
-    elif proposal_has_diff or files_present:
-        status = "COMPLETE"
-        reason = "complete"
-        notes = "The delegated task produced concrete proposal or file-change evidence."
     elif read_only and task_kind == "review" and (summary_present or response_present):
         status = "COMPLETE"
         reason = "complete"
