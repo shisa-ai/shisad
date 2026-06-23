@@ -210,7 +210,6 @@ def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
 
 def _task_close_gate_statement_has_diagnostic_case_cue(normalized: str) -> bool:
     case_subjects = (
-        "case",
         "diagnostic case",
         "the diagnostic case",
         "this diagnostic case",
