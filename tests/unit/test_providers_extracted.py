@@ -163,6 +163,46 @@ async def test_gh80_local_planner_provider_flags_artifactless_write_activity() -
 
 
 @pytest.mark.asyncio
+async def test_gh80_local_planner_provider_preserves_artifactless_over_incomplete_work() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Build the complete Python CLI project at /tmp/external-project.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=0\n"
+        "tool_output_count=0\n"
+        "write_activity_count=1\n"
+        "proposal_present=no\n"
+        "proposal_has_diff=no\n"
+        "proposal_files_changed_count=0\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "The delegated task did not make the requested update.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The delegated task reported incomplete work.\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "(none)\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        '[{"payload": {"write_activity": true}, "tool_name": "coding_agent.write"}]\n'
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: INCOMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: no_artifact_evidence" in response.message.content
+    assert "SHISAD_CODING_REPO_ROOT" in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_gh80_local_planner_provider_preserves_mismatch_over_artifactless_write() -> None:
     provider = LocalPlannerProvider()
     evidence = (

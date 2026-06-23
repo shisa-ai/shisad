@@ -171,7 +171,15 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         )
     )
 
-    if not has_concrete_result:
+    if detected_goal_drift:
+        status = "MISMATCH"
+        reason = "goal_drift"
+        notes = "Local fallback assessment detected delegated-task goal drift."
+    elif artifactless_write_activity:
+        status = "INCOMPLETE"
+        reason = "no_artifact_evidence"
+        notes = _artifactless_write_activity_notes()
+    elif not has_concrete_result:
         status = "INCOMPLETE"
         reason = "no_task_output"
         notes = (
@@ -193,14 +201,6 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         status = "INCOMPLETE"
         reason = "incomplete_work"
         notes = "Local fallback assessment found missing or incomplete delegated work."
-    elif detected_goal_drift:
-        status = "MISMATCH"
-        reason = "goal_drift"
-        notes = "Local fallback assessment detected delegated-task goal drift."
-    elif artifactless_write_activity:
-        status = "INCOMPLETE"
-        reason = "no_artifact_evidence"
-        notes = _artifactless_write_activity_notes()
     elif proposal_has_diff or files_present:
         status = "COMPLETE"
         reason = "complete"
