@@ -208,7 +208,7 @@ def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
             "case is handled",
             "case is tested",
             "case is covered",
-            "is covered",
+            "exact phrase is covered",
             "phrase under inspection",
         )
     )
