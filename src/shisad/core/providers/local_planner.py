@@ -140,11 +140,12 @@ def _task_close_gate_remainder_starts_with_phrase(
     for phrase in phrases:
         if remainder == phrase or remainder.startswith(f"{phrase} "):
             return True
-        if (
-            remainder.startswith(phrase)
-            and remainder[len(phrase) : len(phrase) + 1]
-            in _TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION
-        ):
+        if not remainder.startswith(phrase):
+            continue
+        next_char = remainder[len(phrase) : len(phrase) + 1]
+        if next_char in _TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION - {"-"}:
+            return True
+        if next_char == "-" and remainder[len(phrase) + 1 : len(phrase) + 2].isspace():
             return True
     return False
 
@@ -155,7 +156,7 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
     remainder = normalized[len(cue) :].lstrip()
     if not remainder:
         return True
-    if remainder[0] in ".:,;-":
+    if remainder[0] in _TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION:
         return True
     return _task_close_gate_remainder_starts_with_phrase(
         remainder, ("and", "because", "but", "while", "instead", "to")
@@ -412,7 +413,7 @@ def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
         remainder = normalized[len(cue) :].lstrip()
         if not remainder:
             return True
-        if remainder[0] in ".:,;":
+        if remainder[0] in _TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION - {"-"}:
             return True
         if remainder.startswith("- "):
             return True
