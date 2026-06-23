@@ -142,6 +142,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     task_kind = signals.get("task_kind", "")
     read_only = signals.get("read_only") == "true"
     executor = signals.get("executor", "")
+    artifact_evidence_present = files_present or proposal_has_diff
     artifactless_write_activity = (
         executor == "coding_agent"
         and write_activity_count > 0
@@ -195,9 +196,16 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             "did not make the requested update",
             "only reviewed the file",
             "incomplete work",
-            "repo-root mismatch",
-            "repo root mismatch",
-            "worktree mismatch",
+        )
+    ) or (
+        not artifact_evidence_present
+        and any(
+            token in combined_lower
+            for token in (
+                "repo-root mismatch",
+                "repo root mismatch",
+                "worktree mismatch",
+            )
         )
     ):
         status = "INCOMPLETE"

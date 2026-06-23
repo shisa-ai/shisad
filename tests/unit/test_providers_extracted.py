@@ -283,6 +283,48 @@ async def test_gh80_local_planner_provider_flags_zero_write_worktree_mismatch() 
 
 
 @pytest.mark.asyncio
+async def test_gh80_local_planner_provider_allows_artifacted_worktree_mismatch_fix() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Fix the worktree mismatch diagnostic.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Fixed the worktree mismatch diagnostic.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The repo-root mismatch handling now has a regression test.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- src/example.py\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/src/example.py b/src/example.py\n"
+        "+++ b/src/example.py\n"
+        "+# Fix worktree mismatch diagnostic\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+    assert "incomplete_work" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_gh80_local_planner_provider_preserves_mismatch_over_artifactless_write() -> None:
     provider = LocalPlannerProvider()
     evidence = (
