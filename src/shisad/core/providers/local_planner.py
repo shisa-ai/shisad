@@ -164,19 +164,26 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
     )
 
 
+def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
+    return any(
+        _task_close_gate_starts_with_statement_cue(normalized, cue)
+        for cue in ("yes", "true", "detected", "confirmed")
+    )
+
+
 def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
-    if _task_close_gate_discusses_diagnostic_text(normalized):
-        return False
     for label in ("changed scope:", "goal drift:"):
         if normalized.startswith(label):
             remainder = normalized[len(label) :].lstrip()
-            if not remainder or _task_close_gate_discusses_diagnostic_text(remainder):
+            if not remainder:
                 return False
-            if remainder.startswith(("yes", "true", "detected", "confirmed")):
+            if _task_close_gate_label_value_is_truthy(remainder):
                 return True
+            if _task_close_gate_discusses_diagnostic_text(remainder):
+                return False
             return _task_close_gate_has_goal_drift_cue(
                 remainder,
                 review_result=review_result,
@@ -193,9 +200,11 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
         "i did not review ",
         "did not review ",
     )
-    if normalized.startswith(general_object_cues) or (
-        review_result and normalized.startswith(review_object_cues)
-    ):
+    if normalized.startswith(general_object_cues):
+        return True
+    if _task_close_gate_discusses_diagnostic_text(normalized):
+        return False
+    if review_result and normalized.startswith(review_object_cues):
         return True
     startswith_cues = (
         "delegated task changed scope",

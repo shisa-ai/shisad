@@ -697,6 +697,48 @@ async def test_local_planner_allows_artifacted_implement_did_not_review_text() -
 
 
 @pytest.mark.asyncio
+async def test_local_planner_allows_non_truthy_colon_label_prefix_words() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Add coverage for close-gate label boundary cases.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Goal drift: yesterday's finding was reviewed.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "Changed scope: truecolor output handling was checked.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- tests/example_test.py\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/tests/example_test.py b/tests/example_test.py\n"
+        "+++ b/tests/example_test.py\n"
+        "+def test_label_boundary_words(): pass\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+    assert "goal_drift" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_local_planner_blocks_self_reported_no_update_without_artifacts() -> None:
     provider = LocalPlannerProvider()
     summaries = (
@@ -883,9 +925,9 @@ async def test_local_planner_preserves_colon_label_drift_over_artifacts() -> Non
         "proposal_has_diff=yes\n"
         "proposal_files_changed_count=1\n\n"
         "TASK OUTPUT SUMMARY:\n"
-        "Goal drift: yes, I updated unrelated files instead.\n\n"
+        "Goal drift: yes, diagnostic coverage was added instead.\n\n"
         "TASK OUTPUT RESPONSE:\n"
-        "Changed scope: yes.\n\n"
+        "Changed scope: true, false-positive case handled elsewhere.\n\n"
         "TASK FILES CHANGED:\n"
         "- README.md\n\n"
         "TASK PROPOSAL DIFF:\n"
