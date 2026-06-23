@@ -112,6 +112,27 @@ def _artifactless_write_activity_notes() -> str:
     )
 
 
+def _task_close_gate_section_has_content(value: str) -> bool:
+    return value.strip().lower() not in {"", "(none)", "(empty)"}
+
+
+def _task_close_gate_has_failure_cue(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    startswith_cues = (
+        "delegated task failed before completion",
+        "delegated task timed out before completion",
+        "requested coding agent is not available",
+        "could not create or inspect the isolated worktree",
+        "the delegated task did not make the requested update",
+        "the delegated task reported incomplete work",
+        "the review timed out before completion",
+        "the delegated review reported incomplete work",
+    )
+    return normalized.startswith(startswith_cues)
+
+
 def _task_close_gate_local_response(planner_input: str) -> str:
     evidence_text = _extract_marked_untrusted_payload(planner_input)
     sections = _parse_task_close_gate_sections(evidence_text)
@@ -120,22 +141,24 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     response = sections.get("TASK OUTPUT RESPONSE:", "")
     files_changed = sections.get("TASK FILES CHANGED:", "")
     proposal_diff = sections.get("TASK PROPOSAL DIFF:", "")
-    combined = "\n".join(
+    narrative = "\n".join(
         part
         for part in (
-            sections.get("TASK RESULT SIGNALS:", "").strip(),
             summary.strip(),
             response.strip(),
-            files_changed.strip(),
-            proposal_diff.strip(),
         )
         if part
     ).strip()
-    combined_lower = combined.lower()
-    files_present = files_changed.strip() not in {"", "(none)"}
-    proposal_diff_present = proposal_diff.strip() not in {"", "(none)"}
-    summary_present = signals.get("summary_present") == "yes" or bool(summary.strip())
-    response_present = signals.get("response_present") == "yes" or bool(response.strip())
+    narrative_lower = narrative.lower()
+    files_present = _task_close_gate_section_has_content(files_changed)
+    proposal_diff_present = _task_close_gate_section_has_content(proposal_diff)
+    summary_present = (
+        signals.get("summary_present") == "yes" or _task_close_gate_section_has_content(summary)
+    )
+    response_present = (
+        signals.get("response_present") == "yes"
+        or _task_close_gate_section_has_content(response)
+    )
     proposal_present = signals.get("proposal_present") == "yes"
     proposal_has_diff = signals.get("proposal_has_diff") == "yes" or proposal_diff_present
     write_activity_count = _task_close_gate_signal_int(signals, "write_activity_count")
@@ -159,7 +182,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         )
     )
     detected_goal_drift = any(
-        token in combined_lower
+        token in narrative_lower
         for token in (
             "changed scope",
             "goal drift",
@@ -191,19 +214,12 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         reason = "complete"
         notes = "The delegated task produced concrete proposal or file-change evidence."
     elif any(
-        token in combined_lower
-        for token in (
-            "failed before completion",
-            "timed out before completion",
-            "requested coding agent is not available",
-            "could not create or inspect the isolated worktree",
-            "did not make the requested update",
-            "incomplete work",
-        )
+        _task_close_gate_has_failure_cue(part)
+        for part in (summary, response, narrative)
     ) or (
         not artifact_evidence_present
         and any(
-            token in combined_lower
+            token in narrative_lower
             for token in (
                 "repo-root mismatch",
                 "repo root mismatch",
@@ -220,7 +236,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         note_source = summary.strip() or response.strip() or "Delegated review completed."
         note_text = " ".join(note_source.split())
         notes = note_text[:160] if len(note_text) > 160 else note_text
-    elif "only reviewed the file" in combined_lower:
+    elif "only reviewed the file" in narrative_lower:
         status = "INCOMPLETE"
         reason = "incomplete_work"
         notes = "Local fallback assessment found missing or incomplete delegated work."

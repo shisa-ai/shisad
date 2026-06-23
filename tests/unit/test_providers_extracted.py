@@ -163,6 +163,45 @@ async def test_gh80_local_planner_provider_flags_artifactless_write_activity() -
 
 
 @pytest.mark.asyncio
+async def test_local_planner_provider_ignores_empty_close_gate_placeholders() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Review README.md and summarize findings.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=planner\n"
+        "agent=(none)\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=review\n"
+        "read_only=true\n"
+        "summary_present=no\n"
+        "response_present=no\n"
+        "files_changed_count=0\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=no\n"
+        "proposal_has_diff=no\n"
+        "proposal_files_changed_count=0\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "(empty)\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "(empty)\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "(none)\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: INCOMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: no_task_output" in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_gh80_local_planner_provider_preserves_artifactless_over_incomplete_work() -> None:
     provider = LocalPlannerProvider()
     evidence = (
@@ -325,6 +364,47 @@ async def test_gh80_local_planner_provider_allows_artifacted_worktree_mismatch_f
 
 
 @pytest.mark.asyncio
+async def test_gh80_local_planner_provider_ignores_drift_words_in_artifacted_diff() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Add coverage for shell diagnostics.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Added the requested diagnostic coverage.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The requested tests were added.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- tests/example_test.py\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/tests/example_test.py b/tests/example_test.py\n"
+        "+++ b/tests/example_test.py\n"
+        "+def test_shell_based_exfiltration_diagnostic(): pass\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_gh80_local_planner_provider_allows_artifacted_generic_failure_fix() -> None:
     provider = LocalPlannerProvider()
     evidence = (
@@ -354,6 +434,46 @@ async def test_gh80_local_planner_provider_allows_artifacted_generic_failure_fix
         "diff --git a/tests/example_test.py b/tests/example_test.py\n"
         "+++ b/tests/example_test.py\n"
         "+def test_failed_before_completion_diagnostic(): pass\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+    assert "incomplete_work" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_provider_allows_read_only_review_quoting_failure_text() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Review the close-gate fallback diagnostics.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=planner\n"
+        "agent=(none)\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=review\n"
+        "read_only=true\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=0\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=no\n"
+        "proposal_has_diff=no\n"
+        "proposal_files_changed_count=0\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Reviewed the fallback; `timed out before completion` is handled.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The incomplete work phrase appears only as reviewed diagnostic text.\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "(none)\n\n"
         "TASK TOOL OUTPUT EVIDENCE:\n"
         "(none)\n"
     )
