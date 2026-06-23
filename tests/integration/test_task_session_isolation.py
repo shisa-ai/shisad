@@ -1401,10 +1401,10 @@ async def test_gh80_task_close_gate_explains_write_activity_without_artifacts(
             return PlannerResult(
                 output=PlannerOutput(
                     assistant_response=(
-                        "SELF_CHECK_STATUS: INCOMPLETE\n"
-                        "SELF_CHECK_REASON: no_artifact_evidence\n"
-                        "SELF_CHECK_NOTES: The delegated implement task has only "
-                        "summary text and no files changed or proposal diff."
+                        "SELF_CHECK_STATUS: COMPLETE\n"
+                        "SELF_CHECK_REASON: complete\n"
+                        "SELF_CHECK_NOTES: The task output claims the project scaffold "
+                        "completed."
                     ),
                     actions=[],
                 ),
