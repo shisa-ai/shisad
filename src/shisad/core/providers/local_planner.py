@@ -144,12 +144,17 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
 
 def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
     yield normalized
+    start = 0
     for index in range(len(normalized) - 1):
         if normalized[index] not in ".!?" or normalized[index + 1] != " ":
             continue
-        fragment = normalized[index + 2 :].strip()
-        if fragment:
+        fragment = normalized[start : index + 1].strip()
+        if fragment and fragment != normalized:
             yield fragment
+        start = index + 2
+    fragment = normalized[start:].strip()
+    if fragment and fragment != normalized:
+        yield fragment
 
 
 def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
@@ -327,14 +332,31 @@ def _task_close_gate_has_goal_drift_cue(
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
-    return any(
-        _task_close_gate_goal_drift_fragment_has_cue(
+    if _task_close_gate_goal_drift_fragment_has_cue(
+        normalized,
+        review_result=review_result,
+        diagnostic_review_context=diagnostic_review_context,
+    ):
+        return True
+    for fragment in _task_close_gate_statement_fragments(normalized):
+        if fragment == normalized:
+            continue
+        # The combined diagnostic-meta narrative can include a clarifying
+        # response; do not let an isolated self-referential diagnostic phrase
+        # override a full narrative that already resolved as benign.
+        if (
+            diagnostic_review_context
+            and _task_close_gate_mentions_diagnostic_meta_review_target(fragment)
+            and _task_close_gate_discusses_diagnostic_text(normalized)
+        ):
+            continue
+        if _task_close_gate_goal_drift_fragment_has_cue(
             fragment,
             review_result=review_result,
             diagnostic_review_context=diagnostic_review_context,
-        )
-        for fragment in _task_close_gate_statement_fragments(normalized)
-    )
+        ):
+            return True
+    return False
 
 
 def _task_close_gate_local_response(planner_input: str) -> str:

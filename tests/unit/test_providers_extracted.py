@@ -534,6 +534,7 @@ async def test_local_planner_blocks_read_only_review_goal_drift_without_artifact
         "I did not review README.md and pursued a different goal.",
         "I did not review README.md because I focused on diagnostic coverage.",
         "Did not review README.md.",
+        "Did not review README.md. Diagnostic coverage added.",
     )
     for summary in summaries:
         evidence = (
