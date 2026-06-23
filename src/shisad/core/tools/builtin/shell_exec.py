@@ -23,7 +23,13 @@ class ShellExecTool:
                 ToolParameter(
                     name="command",
                     type="array",
-                    description="Command token list to execute",
+                    description=(
+                        "Command argv tokens to execute. Each item must be one "
+                        "executable or argument atom with no whitespace; do not "
+                        "put an entire shell command in one item. For Ledger "
+                        "approval demo or test requests, emit "
+                        '["echo", "Hello", "Ledger!"].'
+                    ),
                     required=True,
                     items_type="string",
                     items_semantic_type="command_token",

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry, is_valid_semantic_value
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import ToolName
@@ -110,6 +111,23 @@ def test_is_valid_semantic_value_command_token_rejects_whitespace_and_instructio
     assert is_valid_semantic_value("python3", "command_token") is True
     assert is_valid_semantic_value("python -c 'import sys'", "command_token") is False
     assert is_valid_semantic_value("execute a shell command now", "command_token") is False
+
+
+def test_gh61_shell_exec_accepts_ledger_demo_argv_but_rejects_joined_command() -> None:
+    registry = ToolRegistry()
+    registry.register(ShellExecTool.tool_definition())
+
+    valid_errors = registry.validate_call(
+        ToolName("shell.exec"),
+        {"command": ["echo", "Hello", "Ledger!"], "command_intent": "execute"},
+    )
+    invalid_errors = registry.validate_call(
+        ToolName("shell.exec"),
+        {"command": ["echo Hello Ledger!"], "command_intent": "execute"},
+    )
+
+    assert valid_errors == []
+    assert invalid_errors == ["Argument 'command': expected validated atoms 'command_token'"]
 
 
 def test_is_valid_semantic_value_credential_ref_enforces_opaque_handle() -> None:

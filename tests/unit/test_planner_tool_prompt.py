@@ -326,6 +326,41 @@ async def test_gh60_planner_payload_exposes_time_now_and_no_shell_time_guidance(
 
 
 @pytest.mark.asyncio
+async def test_gh61_planner_payload_exposes_shell_exec_argv_guidance() -> None:
+    registry, _alarm_tool = _build_tool_registry(EventBus())
+    provider = _RecordingProvider()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=True,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    await planner.propose(
+        "let's test our ledger",
+        PolicyContext(capabilities={Capability.SHELL_EXEC}),
+        tools=_tools_payload(registry, {"shell.exec"}),
+    )
+
+    system_prompt = provider.messages[0][0].content.lower()
+    assert "argv tokens" in system_prompt
+    assert '"echo", "hello", "ledger!"' in system_prompt
+    assert "do not put an entire shell command in one command item" in system_prompt
+
+    tool_names = _canonical_payload_names(provider.tools[0], {"shell.exec"})
+    assert "shell.exec" in tool_names
+    shell_exec_schema = provider.tools[0][0]["function"]["parameters"]
+    command_description = shell_exec_schema["properties"]["command"]["description"].lower()
+    assert "argv tokens" in command_description
+    assert '"echo", "hello", "ledger!"' in command_description
+
+
+@pytest.mark.asyncio
 async def test_m7_planner_payload_exposes_memory_graph_and_skill_surfaces() -> None:
     registry = _make_registry()
     provider = _RecordingProvider()
