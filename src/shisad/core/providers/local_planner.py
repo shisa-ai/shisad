@@ -147,25 +147,55 @@ def _task_close_gate_has_failure_cue(text: str) -> bool:
     )
 
 
-def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
+def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
+    return any(
+        token in normalized
+        for token in (
+            "diagnostic",
+            "coverage",
+            "covered",
+            "false-positive",
+            "false positive",
+            "case is handled",
+            "case is tested",
+            "case is covered",
+            "phrase under inspection",
+        )
+    )
+
+
+def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
+        return False
+    if _task_close_gate_discusses_diagnostic_text(normalized):
         return False
     for label in ("changed scope:", "goal drift:"):
         if normalized.startswith(label):
             remainder = normalized[len(label) :].lstrip()
-            return bool(remainder) and _task_close_gate_has_goal_drift_cue(remainder)
-    object_cues = (
+            if not remainder or _task_close_gate_discusses_diagnostic_text(remainder):
+                return False
+            if remainder.startswith(("yes", "true", "detected", "confirmed")):
+                return True
+            return _task_close_gate_has_goal_drift_cue(
+                remainder,
+                review_result=review_result,
+            )
+    general_object_cues = (
         "the delegated task ignored the ",
         "the task ignored the ",
         "i ignored the requested ",
         "ignored the requested ",
+    )
+    review_object_cues = (
         "the delegated task did not review ",
         "the task did not review ",
         "i did not review ",
         "did not review ",
     )
-    if normalized.startswith(object_cues):
+    if normalized.startswith(general_object_cues) or (
+        review_result and normalized.startswith(review_object_cues)
+    ):
         return True
     startswith_cues = (
         "delegated task changed scope",
@@ -239,7 +269,10 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         )
     )
     detected_goal_drift = any(
-        _task_close_gate_has_goal_drift_cue(part)
+        _task_close_gate_has_goal_drift_cue(
+            part,
+            review_result=read_only and task_kind == "review",
+        )
         for part in (summary, response, narrative)
     )
 

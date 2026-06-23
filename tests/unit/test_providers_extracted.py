@@ -593,9 +593,9 @@ async def test_local_planner_allows_benign_colon_label_diagnostics() -> None:
         "proposal_has_diff=no\n"
         "proposal_files_changed_count=0\n\n"
         "TASK OUTPUT SUMMARY:\n"
-        "Goal drift: diagnostic coverage added.\n\n"
+        "Goal drift: did not review README.md case is handled.\n\n"
         "TASK OUTPUT RESPONSE:\n"
-        "Changed scope: false-positive case is tested.\n\n"
+        "Did not review README.md. diagnostic case is covered.\n\n"
         "TASK FILES CHANGED:\n"
         "(none)\n\n"
         "TASK PROPOSAL DIFF:\n"
@@ -642,6 +642,48 @@ async def test_local_planner_allows_artifacted_colon_label_diagnostics() -> None
         "diff --git a/tests/example_test.py b/tests/example_test.py\n"
         "+++ b/tests/example_test.py\n"
         "+def test_goal_drift_diagnostic_label(): pass\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+    assert "goal_drift" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_allows_artifacted_implement_did_not_review_text() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Update README.md with the requested install note.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "I did not review README.md; I updated it instead.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The requested README update is present in the proposal diff.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- README.md\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/README.md b/README.md\n"
+        "+++ b/README.md\n"
+        "+Install note\n\n"
         "TASK TOOL OUTPUT EVIDENCE:\n"
         "(none)\n"
     )
@@ -841,9 +883,9 @@ async def test_local_planner_preserves_colon_label_drift_over_artifacts() -> Non
         "proposal_has_diff=yes\n"
         "proposal_files_changed_count=1\n\n"
         "TASK OUTPUT SUMMARY:\n"
-        "Goal drift: pursued a different goal.\n\n"
+        "Goal drift: yes, I updated unrelated files instead.\n\n"
         "TASK OUTPUT RESPONSE:\n"
-        "The requested install note was not implemented.\n\n"
+        "Changed scope: yes.\n\n"
         "TASK FILES CHANGED:\n"
         "- README.md\n\n"
         "TASK PROPOSAL DIFF:\n"
