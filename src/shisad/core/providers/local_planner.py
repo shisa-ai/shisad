@@ -190,6 +190,12 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         status = "COMPLETE"
         reason = "complete"
         notes = "The delegated task produced concrete proposal or file-change evidence."
+    elif read_only and task_kind == "review" and (summary_present or response_present):
+        status = "COMPLETE"
+        reason = "complete"
+        note_source = summary.strip() or response.strip() or "Delegated review completed."
+        note_text = " ".join(note_source.split())
+        notes = note_text[:160] if len(note_text) > 160 else note_text
     elif any(
         token in combined_lower
         for token in (
@@ -215,12 +221,6 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         status = "INCOMPLETE"
         reason = "incomplete_work"
         notes = "Local fallback assessment found missing or incomplete delegated work."
-    elif read_only and task_kind == "review" and (summary_present or response_present):
-        status = "COMPLETE"
-        reason = "complete"
-        note_source = summary.strip() or response.strip() or "Delegated review completed."
-        note_text = " ".join(note_source.split())
-        notes = note_text[:160] if len(note_text) > 160 else note_text
     else:
         status = "COMPLETE"
         reason = "complete"
