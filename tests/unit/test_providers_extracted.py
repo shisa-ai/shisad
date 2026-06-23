@@ -467,7 +467,7 @@ async def test_local_planner_provider_allows_read_only_review_quoting_failure_te
         "proposal_has_diff=no\n"
         "proposal_files_changed_count=0\n\n"
         "TASK OUTPUT SUMMARY:\n"
-        "Reviewed the fallback; `timed out before completion` is handled.\n\n"
+        "The review timed out before completion diagnostic is handled.\n\n"
         "TASK OUTPUT RESPONSE:\n"
         "The incomplete work phrase appears only as reviewed diagnostic text.\n\n"
         "TASK FILES CHANGED:\n"
@@ -507,9 +507,9 @@ async def test_local_planner_provider_allows_read_only_review_quoting_drift_text
         "proposal_has_diff=no\n"
         "proposal_files_changed_count=0\n\n"
         "TASK OUTPUT SUMMARY:\n"
-        "Reviewed the goal drift and shell-based exfiltration diagnostics.\n\n"
+        "The task changed scope diagnostic is covered.\n\n"
         "TASK OUTPUT RESPONSE:\n"
-        "The review confirms those terms are only diagnostic labels here.\n\n"
+        "The shell-based exfiltration terms are only diagnostic labels here.\n\n"
         "TASK FILES CHANGED:\n"
         "(none)\n\n"
         "TASK PROPOSAL DIFF:\n"
@@ -529,41 +529,47 @@ async def test_local_planner_provider_allows_read_only_review_quoting_drift_text
 @pytest.mark.asyncio
 async def test_local_planner_blocks_self_reported_no_update_without_artifacts() -> None:
     provider = LocalPlannerProvider()
-    evidence = (
-        "ORIGINAL TASK DESCRIPTION:\n"
-        "Update README.md with the install note.\n\n"
-        "TASK RESULT SIGNALS:\n"
-        "executor=planner\n"
-        "agent=(none)\n"
-        "handoff_mode=summary_only\n"
-        "task_kind=implement\n"
-        "read_only=false\n"
-        "summary_present=yes\n"
-        "response_present=yes\n"
-        "files_changed_count=0\n"
-        "tool_output_count=0\n"
-        "write_activity_count=0\n"
-        "proposal_present=no\n"
-        "proposal_has_diff=no\n"
-        "proposal_files_changed_count=0\n\n"
-        "TASK OUTPUT SUMMARY:\n"
-        "I reviewed README.md but did not make the requested update.\n\n"
-        "TASK OUTPUT RESPONSE:\n"
-        "No files were changed.\n\n"
-        "TASK FILES CHANGED:\n"
-        "(none)\n\n"
-        "TASK PROPOSAL DIFF:\n"
-        "(none)\n\n"
-        "TASK TOOL OUTPUT EVIDENCE:\n"
-        "(none)\n"
+    summaries = (
+        "I reviewed README.md but did not make the requested update.",
+        "Checked README.md but did not make the requested update.",
+        "I read README.md. I did not make the requested update.",
     )
-    planner_input = _build_local_close_gate_prompt(evidence)
+    for summary in summaries:
+        evidence = (
+            "ORIGINAL TASK DESCRIPTION:\n"
+            "Update README.md with the install note.\n\n"
+            "TASK RESULT SIGNALS:\n"
+            "executor=planner\n"
+            "agent=(none)\n"
+            "handoff_mode=summary_only\n"
+            "task_kind=implement\n"
+            "read_only=false\n"
+            "summary_present=yes\n"
+            "response_present=yes\n"
+            "files_changed_count=0\n"
+            "tool_output_count=0\n"
+            "write_activity_count=0\n"
+            "proposal_present=no\n"
+            "proposal_has_diff=no\n"
+            "proposal_files_changed_count=0\n\n"
+            "TASK OUTPUT SUMMARY:\n"
+            f"{summary}\n\n"
+            "TASK OUTPUT RESPONSE:\n"
+            "No files were changed.\n\n"
+            "TASK FILES CHANGED:\n"
+            "(none)\n\n"
+            "TASK PROPOSAL DIFF:\n"
+            "(none)\n\n"
+            "TASK TOOL OUTPUT EVIDENCE:\n"
+            "(none)\n"
+        )
+        planner_input = _build_local_close_gate_prompt(evidence)
 
-    response = await provider.complete([Message(role="user", content=planner_input)])
+        response = await provider.complete([Message(role="user", content=planner_input)])
 
-    assert "SELF_CHECK_STATUS: INCOMPLETE" in response.message.content
-    assert "SELF_CHECK_REASON: incomplete_work" in response.message.content
-    assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+        assert "SELF_CHECK_STATUS: INCOMPLETE" in response.message.content
+        assert "SELF_CHECK_REASON: incomplete_work" in response.message.content
+        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
 
 
 @pytest.mark.asyncio

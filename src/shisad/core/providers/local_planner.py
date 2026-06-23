@@ -116,6 +116,17 @@ def _task_close_gate_section_has_content(value: str) -> bool:
     return value.strip().lower() not in {"", "(none)", "(empty)"}
 
 
+def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> bool:
+    if not normalized.startswith(cue):
+        return False
+    remainder = normalized[len(cue) :].lstrip()
+    if not remainder:
+        return True
+    if remainder[0] in ".:,;-":
+        return True
+    return remainder.startswith(("and ", "because ", "but ", "while ", "instead "))
+
+
 def _task_close_gate_has_failure_cue(text: str) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
@@ -130,11 +141,10 @@ def _task_close_gate_has_failure_cue(text: str) -> bool:
         "the review timed out before completion",
         "the delegated review reported incomplete work",
     )
-    self_reported_no_update = (
-        " but did not make the requested update" in normalized
-        and normalized.startswith(("i reviewed ", "i read ", "i inspected ", "i checked "))
+    return any(
+        _task_close_gate_starts_with_statement_cue(normalized, cue)
+        for cue in startswith_cues
     )
-    return normalized.startswith(startswith_cues) or self_reported_no_update
 
 
 def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
@@ -166,7 +176,10 @@ def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
         "the delegated task drafted a shell-based",
         "the task drafted a shell-based",
     )
-    return normalized.startswith(startswith_cues)
+    return any(
+        _task_close_gate_starts_with_statement_cue(normalized, cue)
+        for cue in startswith_cues
+    )
 
 
 def _task_close_gate_local_response(planner_input: str) -> str:
@@ -217,7 +230,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             proposal_has_diff,
         )
     )
-    detected_goal_drift = any(
+    detected_goal_drift = not (read_only and task_kind == "review") and any(
         _task_close_gate_has_goal_drift_cue(part)
         for part in (summary, response, narrative)
     )
@@ -258,6 +271,10 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         status = "INCOMPLETE"
         reason = "incomplete_work"
         notes = "Local fallback assessment found missing or incomplete delegated work."
+    elif task_kind == "implement" and not artifact_evidence_present:
+        status = "INCOMPLETE"
+        reason = "incomplete_work"
+        notes = "Local fallback assessment found no implementation artifacts."
     elif read_only and task_kind == "review" and (summary_present or response_present):
         status = "COMPLETE"
         reason = "complete"
