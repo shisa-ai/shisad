@@ -532,6 +532,7 @@ async def test_local_planner_blocks_read_only_review_goal_drift_without_artifact
     summaries = (
         "I ignored the requested README review and pursued a different goal.",
         "I did not review README.md and pursued a different goal.",
+        "I did not review README.md because I focused on diagnostic coverage.",
         "Did not review README.md.",
     )
     for summary in summaries:
@@ -736,6 +737,48 @@ async def test_local_planner_allows_non_truthy_colon_label_prefix_words() -> Non
     assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
     assert "SELF_CHECK_REASON: complete" in response.message.content
     assert "goal_drift" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_preserves_truthy_label_boundary_values() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Add the requested README install note.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Goal drift: confirmed from the diff.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "Changed scope: yes - requirements changed.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- README.md\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/README.md b/README.md\n"
+        "+++ b/README.md\n"
+        "+Unrelated content\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
+    assert "SELF_CHECK_REASON: goal_drift" in response.message.content
+    assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
 
 
 @pytest.mark.asyncio
@@ -969,7 +1012,7 @@ async def test_local_planner_preserves_unlabeled_drift_with_diagnostic_words() -
         "TASK OUTPUT SUMMARY:\n"
         "The task changed scope to add diagnostic coverage instead.\n\n"
         "TASK OUTPUT RESPONSE:\n"
-        "The delegated task pursued a different goal while adding coverage.\n\n"
+        "The requested install note was not implemented.\n\n"
         "TASK FILES CHANGED:\n"
         "- README.md\n\n"
         "TASK PROPOSAL DIFF:\n"

@@ -173,6 +173,8 @@ def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
             return True
         if remainder[0] in ".:,;":
             return True
+        if remainder.startswith("- "):
+            return True
         if remainder.startswith(
             ("and ", "because ", "but ", "while ", "instead ", "due to ", "from ")
         ):
@@ -231,9 +233,18 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
         for cue in startswith_cues
     ):
         return True
+    if review_result and normalized.startswith(review_object_cues):
+        has_drift_continuation = any(
+            token in normalized
+            for token in (" because ", " focused on ", " instead", " while ")
+        )
+        return (
+            not _task_close_gate_discusses_diagnostic_text(normalized)
+            or has_drift_continuation
+        )
     if _task_close_gate_discusses_diagnostic_text(normalized):
         return False
-    return review_result and normalized.startswith(review_object_cues)
+    return False
 
 
 def _task_close_gate_local_response(planner_input: str) -> str:
