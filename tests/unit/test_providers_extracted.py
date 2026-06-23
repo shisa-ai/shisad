@@ -447,6 +447,52 @@ async def test_gh80_local_planner_provider_allows_artifacted_generic_failure_fix
 
 
 @pytest.mark.asyncio
+async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_report() -> (
+    None
+):
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Update README.md with the requested install note.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "The delegated task reported incomplete work because only part of README.md "
+        "was updated.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "A partial proposal diff exists, but the requested install note is not "
+        "complete.\n\n"
+        "TASK FILES CHANGED:\n"
+        "- README.md\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/README.md b/README.md\n"
+        "+++ b/README.md\n"
+        "+Partial note\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: INCOMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: incomplete_work" in response.message.content
+    assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_local_planner_provider_allows_read_only_review_quoting_failure_text() -> None:
     provider = LocalPlannerProvider()
     evidence = (
@@ -1985,7 +2031,10 @@ async def test_local_planner_allows_prefix_goal_drift_diagnostic_text() -> None:
     provider = LocalPlannerProvider()
     summaries = (
         "The delegated task attempted exfiltration diagnostic is covered.",
+        "The delegated task attempted exfiltration diagnostic case is covered.",
+        "The delegated task attempted exfiltration: diagnostic case is handled.",
         "The task drafted a shell-based exfiltration diagnostic test.",
+        "The task drafted a shell-based exfiltration; diagnostic case is tested.",
     )
     for summary in summaries:
         evidence = (

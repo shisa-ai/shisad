@@ -167,7 +167,7 @@ def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
     yield normalized
     start = 0
     for index in range(len(normalized) - 1):
-        if normalized[index] not in ".!?" or normalized[index + 1] != " ":
+        if normalized[index] not in ".!?;" or normalized[index + 1] != " ":
             continue
         fragment = normalized[start : index + 1].strip()
         if fragment and fragment != normalized:
@@ -318,27 +318,26 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
             statements.append(current)
             current = ""
 
-    for raw_segment in text.split(";"):
-        for raw_line in raw_segment.splitlines():
-            line = " ".join(raw_line.lower().split())
-            bullet = False
-            while line.startswith(("- ", "* ")):
-                line = line[2:].lstrip()
-                bullet = True
-            while line.startswith(("-", "*")):
-                line = line[1:].lstrip()
-                bullet = True
-            if not line:
-                flush_current()
-                continue
-            if (
-                bullet
-                or current.endswith((".", "!", "?"))
-                or (current and not _task_close_gate_can_soft_wrap_statement(current))
-            ):
-                flush_current()
-            current = f"{current} {line}".strip() if current else line
-        flush_current()
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.lower().split())
+        bullet = False
+        while line.startswith(("- ", "* ")):
+            line = line[2:].lstrip()
+            bullet = True
+        while line.startswith(("-", "*")):
+            line = line[1:].lstrip()
+            bullet = True
+        if not line:
+            flush_current()
+            continue
+        if (
+            bullet
+            or current.endswith((".", "!", "?"))
+            or (current and not _task_close_gate_can_soft_wrap_statement(current))
+        ):
+            flush_current()
+        current = f"{current} {line}".strip() if current else line
+    flush_current()
     return ". ".join(statements)
 
 
@@ -378,7 +377,7 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bool:
     first_clause_end = min(
-        (index for token in ".:,;!?" if (index := normalized.find(token)) != -1),
+        (index for token in ".,!?" if (index := normalized.find(token)) != -1),
         default=len(normalized),
     )
     first_clause = normalized[:first_clause_end]
@@ -393,6 +392,9 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
             " diagnostic coverage",
             " diagnostic label",
             " diagnostic text",
+            " diagnostic case is covered",
+            " diagnostic case is handled",
+            " diagnostic case is tested",
         )
     )
 
@@ -505,6 +507,9 @@ def _task_close_gate_has_goal_drift_cue(
     normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
+    prefix_drift_diagnostic_statement = normalized.startswith(
+        _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+    ) and _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized)
     if _task_close_gate_goal_drift_fragment_has_cue(
         normalized,
         review_result=review_result,
@@ -521,6 +526,10 @@ def _task_close_gate_has_goal_drift_cue(
             diagnostic_review_context
             and _task_close_gate_mentions_diagnostic_meta_review_target(fragment)
             and _task_close_gate_discusses_diagnostic_case(normalized)
+        ):
+            continue
+        if prefix_drift_diagnostic_statement and fragment.startswith(
+            _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
         ):
             continue
         if _task_close_gate_goal_drift_fragment_has_cue(
@@ -597,6 +606,21 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         )
         for part in drift_scan_parts
     )
+    detected_failure = any(
+        _task_close_gate_has_failure_cue(part)
+        for part in (summary, response, narrative)
+    )
+    detected_artifactless_worktree_mismatch = (
+        not artifact_evidence_present
+        and any(
+            token in narrative_lower
+            for token in (
+                "repo-root mismatch",
+                "repo root mismatch",
+                "worktree mismatch",
+            )
+        )
+    )
 
     if detected_goal_drift:
         status = "MISMATCH"
@@ -613,27 +637,14 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             "The evidence contains no clear delegated result to verify against "
             "the original request."
         )
+    elif detected_failure or detected_artifactless_worktree_mismatch:
+        status = "INCOMPLETE"
+        reason = "incomplete_work"
+        notes = "Local fallback assessment found missing or incomplete delegated work."
     elif proposal_has_diff or files_present:
         status = "COMPLETE"
         reason = "complete"
         notes = "The delegated task produced concrete proposal or file-change evidence."
-    elif any(
-        _task_close_gate_has_failure_cue(part)
-        for part in (summary, response, narrative)
-    ) or (
-        not artifact_evidence_present
-        and any(
-            token in narrative_lower
-            for token in (
-                "repo-root mismatch",
-                "repo root mismatch",
-                "worktree mismatch",
-            )
-        )
-    ):
-        status = "INCOMPLETE"
-        reason = "incomplete_work"
-        notes = "Local fallback assessment found missing or incomplete delegated work."
     elif task_kind == "implement" and not artifact_evidence_present:
         status = "INCOMPLETE"
         reason = "incomplete_work"
