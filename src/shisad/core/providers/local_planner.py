@@ -157,6 +157,19 @@ def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
         yield fragment
 
 
+def _task_close_gate_normalized_statement_text(text: str) -> str:
+    statements: list[str] = []
+    for raw_line in text.replace(";", "\n").splitlines():
+        line = " ".join(raw_line.lower().split())
+        while line.startswith(("- ", "* ")):
+            line = line[2:].lstrip()
+        while line.startswith(("-", "*")):
+            line = line[1:].lstrip()
+        if line:
+            statements.append(line)
+    return ". ".join(statements)
+
+
 def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
     startswith_cues = (
         "delegated task failed before completion",
@@ -175,7 +188,7 @@ def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
 
 
 def _task_close_gate_has_failure_cue(text: str) -> bool:
-    normalized = " ".join(text.lower().split())
+    normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
     return any(
@@ -368,7 +381,7 @@ def _task_close_gate_has_goal_drift_cue(
     review_result: bool,
     diagnostic_review_context: bool,
 ) -> bool:
-    normalized = " ".join(text.lower().split())
+    normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
     if _task_close_gate_goal_drift_fragment_has_cue(
