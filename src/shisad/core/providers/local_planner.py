@@ -342,18 +342,50 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
 
 
 def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
-    return any(
-        _task_close_gate_starts_with_statement_cue(normalized, cue)
-        for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
-    )
+    for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES:
+        if not _task_close_gate_starts_with_statement_cue(normalized, cue):
+            continue
+        return not _task_close_gate_discusses_failure_cue_as_diagnostic(
+            normalized,
+            cue,
+        )
+    return False
+
+
+def _task_close_gate_failure_fragment_starts_with_cue(normalized: str) -> bool:
+    return any(normalized.startswith(cue) for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES)
+
+
+def _task_close_gate_discusses_failure_cue_as_diagnostic(
+    normalized: str,
+    cue: str,
+) -> bool:
+    if not normalized.startswith(cue):
+        return False
+    remainder = normalized[len(cue) :].lstrip()
+    if not remainder or remainder[0] not in ":;":
+        return False
+    diagnostic_remainder = remainder[1:].lstrip()
+    return _task_close_gate_discusses_diagnostic_case(diagnostic_remainder)
 
 
 def _task_close_gate_has_failure_cue(text: str) -> bool:
     normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
+    failure_diagnostic_statement = any(
+        _task_close_gate_discusses_failure_cue_as_diagnostic(normalized, cue)
+        for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
+    )
     return any(
-        _task_close_gate_failure_fragment_has_cue(fragment)
+        (
+            not (
+                failure_diagnostic_statement
+                and fragment != normalized
+                and _task_close_gate_failure_fragment_starts_with_cue(fragment)
+            )
+            and _task_close_gate_failure_fragment_has_cue(fragment)
+        )
         for fragment in _task_close_gate_statement_fragments(normalized)
     )
 
@@ -377,10 +409,12 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bool:
     first_clause_end = min(
-        (index for token in ".,!?" if (index := normalized.find(token)) != -1),
+        (index for token in ".:,;!?" if (index := normalized.find(token)) != -1),
         default=len(normalized),
     )
     first_clause = normalized[:first_clause_end]
+    if _task_close_gate_prefix_clarifier_discusses_diagnostic_case(normalized):
+        return True
     return _task_close_gate_discusses_diagnostic_case(first_clause) or any(
         token in first_clause
         for token in (
@@ -397,6 +431,48 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
             " diagnostic case is tested",
         )
     )
+
+
+def _task_close_gate_prefix_clarifier_discusses_diagnostic_case(
+    normalized: str,
+) -> bool:
+    prefix_cue = next(
+        (
+            cue
+            for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+            if normalized.startswith(cue)
+        ),
+        "",
+    )
+    if not prefix_cue:
+        return False
+    separator_indexes = (
+        index
+        for token in ":;"
+        if (index := normalized.find(token, len(prefix_cue))) != -1
+    )
+    separator_index = min(separator_indexes, default=-1)
+    if separator_index == -1:
+        return False
+    prefix_remainder = normalized[len(prefix_cue) : separator_index].strip()
+    if not _task_close_gate_prefix_remainder_is_diagnostic_subject(
+        prefix_cue,
+        prefix_remainder,
+    ):
+        return False
+    diagnostic_remainder = normalized[separator_index + 1 :].lstrip()
+    return _task_close_gate_discusses_diagnostic_case(diagnostic_remainder)
+
+
+def _task_close_gate_prefix_remainder_is_diagnostic_subject(
+    cue: str,
+    remainder: str,
+) -> bool:
+    if "exfiltrat" in cue:
+        return remainder in {"e", "ed", "ing", "ion"}
+    if "shell-based" in cue:
+        return remainder in {"", "exfiltration"}
+    return False
 
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
