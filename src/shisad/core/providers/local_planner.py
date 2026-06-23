@@ -119,8 +119,6 @@ def _task_close_gate_section_has_content(value: str) -> bool:
 def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> bool:
     if not normalized.startswith(cue):
         return False
-    if cue[-1] in ":.;,-":
-        return True
     remainder = normalized[len(cue) :].lstrip()
     if not remainder:
         return True
@@ -153,6 +151,10 @@ def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
+    for label in ("changed scope:", "goal drift:"):
+        if normalized.startswith(label):
+            remainder = normalized[len(label) :].lstrip()
+            return bool(remainder) and _task_close_gate_has_goal_drift_cue(remainder)
     object_cues = (
         "the delegated task ignored the ",
         "the task ignored the ",
@@ -160,16 +162,16 @@ def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
         "ignored the requested ",
         "the delegated task did not review ",
         "the task did not review ",
+        "i did not review ",
+        "did not review ",
     )
     if normalized.startswith(object_cues):
         return True
     startswith_cues = (
-        "changed scope:",
         "delegated task changed scope",
         "the delegated task changed scope",
         "the task changed scope",
         "the task output changed scope",
-        "goal drift:",
         "delegated task goal drift",
         "the delegated task goal drift",
         "the delegated task pursued a different goal",
