@@ -307,12 +307,8 @@ def _task_close_gate_goal_drift_fragment_has_cue(
             for token in (" because ", " focused on ", " instead", " while ")
         )
         if diagnostic_review_context:
-            if (
-                has_drift_continuation
-                and _task_close_gate_mentions_diagnostic_meta_review_target(normalized)
-                and not _task_close_gate_discusses_diagnostic_case(normalized)
-            ):
-                return True
+            if _task_close_gate_mentions_diagnostic_meta_review_target(normalized):
+                return not _task_close_gate_discusses_diagnostic_case(normalized)
             return not _task_close_gate_discusses_diagnostic_text(normalized)
         return (
             not _task_close_gate_discusses_diagnostic_text(normalized)
@@ -347,7 +343,7 @@ def _task_close_gate_has_goal_drift_cue(
         if (
             diagnostic_review_context
             and _task_close_gate_mentions_diagnostic_meta_review_target(fragment)
-            and _task_close_gate_discusses_diagnostic_text(normalized)
+            and _task_close_gate_discusses_diagnostic_case(normalized)
         ):
             continue
         if _task_close_gate_goal_drift_fragment_has_cue(
