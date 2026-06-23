@@ -376,6 +376,22 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
     )
 
 
+def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bool:
+    return _task_close_gate_discusses_diagnostic_case(normalized) or any(
+        token in normalized
+        for token in (
+            " diagnostic is covered",
+            " diagnostic is handled",
+            " diagnostic is tested",
+            " diagnostic test",
+            " diagnostic regression",
+            " diagnostic coverage",
+            " diagnostic label",
+            " diagnostic text",
+        )
+    )
+
+
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
     return any(
         _task_close_gate_statement_has_diagnostic_case_cue(fragment)
@@ -451,7 +467,7 @@ def _task_close_gate_goal_drift_fragment_has_cue(
     if normalized.startswith(_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES):
         return True
     if normalized.startswith(_TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES):
-        return not _task_close_gate_discusses_diagnostic_text(normalized)
+        return not _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized)
     if any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)
         for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES

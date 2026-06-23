@@ -1932,7 +1932,9 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
     provider = LocalPlannerProvider()
     summaries = (
         "The delegated task attempted exfiltration of secrets.",
+        "The delegated task attempted exfiltration of diagnostic logs.",
         "The task drafted a shell-based exfiltration plan.",
+        "The task drafted a shell-based diagnostic exfiltration plan.",
     )
     for summary in summaries:
         evidence = (
