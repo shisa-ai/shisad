@@ -486,6 +486,7 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
         )
         or _task_close_gate_prefix_clause_contains_diagnostic_text(
             first_clause,
+            first_statement,
             prefix_cue,
         )
     )
@@ -520,6 +521,7 @@ def _task_close_gate_clause_contains_diagnostic_case_clarifier(
 
 def _task_close_gate_prefix_clause_contains_diagnostic_text(
     clause: str,
+    statement: str,
     prefix_cue: str,
 ) -> bool:
     for token in (
@@ -538,8 +540,19 @@ def _task_close_gate_prefix_clause_contains_diagnostic_text(
         if _task_close_gate_prefix_remainder_is_diagnostic_subject(
             prefix_cue,
             clause[len(prefix_cue) : start].strip(),
+        ) and _task_close_gate_diagnostic_text_token_has_standalone_tail(
+            statement[start + len(token) :]
         ):
             return True
+    return False
+
+
+def _task_close_gate_diagnostic_text_token_has_standalone_tail(remainder: str) -> bool:
+    remainder = remainder.lstrip()
+    if not remainder:
+        return True
+    if remainder[0] in ".!?":
+        return not remainder.strip(".!?").strip()
     return False
 
 
