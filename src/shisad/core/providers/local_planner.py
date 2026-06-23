@@ -358,7 +358,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             proposal_has_diff,
         )
     )
-    drift_scan_parts = (narrative,) if narrative else (summary, response)
+    drift_scan_parts = (narrative, response) if narrative else (summary, response)
     detected_goal_drift = any(
         _task_close_gate_has_goal_drift_cue(
             part,
