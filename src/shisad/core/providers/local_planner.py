@@ -207,6 +207,13 @@ def _task_close_gate_first_statement_fragment(normalized: str) -> str:
     return normalized
 
 
+def _task_close_gate_strip_leading_statement_continuation(normalized: str) -> str:
+    for cue in ("but, ", "but ", "and, ", "and ", "however, ", "however ", "instead "):
+        if normalized.startswith(cue):
+            return normalized[len(cue) :].lstrip()
+    return normalized
+
+
 _TASK_CLOSE_GATE_FAILURE_START_CUES = (
     "delegated task failed before completion",
     "delegated task timed out before completion",
@@ -387,6 +394,7 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
 
 
 def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
+    normalized = _task_close_gate_strip_leading_statement_continuation(normalized)
     for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES:
         if not _task_close_gate_starts_with_statement_cue(normalized, cue):
             continue
@@ -723,6 +731,7 @@ def _task_close_gate_goal_drift_fragment_has_cue(
     review_result: bool,
     diagnostic_review_context: bool,
 ) -> bool:
+    normalized = _task_close_gate_strip_leading_statement_continuation(normalized)
     while True:
         for label in _TASK_CLOSE_GATE_GOAL_DRIFT_LABEL_CUES:
             if not normalized.startswith(label):
