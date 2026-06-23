@@ -203,8 +203,8 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
     return any(
-        token in normalized
-        for token in (
+        _task_close_gate_has_diagnostic_case_cue(normalized, cue)
+        for cue in (
             "case is handled",
             "case is tested",
             "case is covered",
@@ -212,6 +212,22 @@ def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
             "phrase under inspection",
         )
     )
+
+
+def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
+    start = 0
+    while True:
+        index = normalized.find(cue, start)
+        if index < 0:
+            return False
+        remainder = normalized[index + len(cue) :].lstrip()
+        if not remainder:
+            return True
+        if remainder[0] in ".:,;!?":
+            return True
+        if remainder.startswith("as "):
+            return True
+        start = index + 1
 
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:

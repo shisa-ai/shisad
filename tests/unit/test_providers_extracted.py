@@ -633,6 +633,21 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "on diagnostic coverage elsewhere.",
             "That regression is covered by another suite.",
         ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That case is covered by another suite.",
+        ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That case is handled by another suite.",
+        ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That case is tested by another suite.",
+        ),
     )
     for summary, response_text in cases:
         evidence = (
