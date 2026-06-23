@@ -195,6 +195,9 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             "did not make the requested update",
             "only reviewed the file",
             "incomplete work",
+            "repo-root mismatch",
+            "repo root mismatch",
+            "worktree mismatch",
         )
     ):
         status = "INCOMPLETE"
