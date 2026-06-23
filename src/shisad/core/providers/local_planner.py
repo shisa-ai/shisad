@@ -221,6 +221,9 @@ def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
         if index < 0:
             return False
         prefix = normalized[:index].rstrip()
+        if _task_close_gate_prefix_has_near_negator(prefix):
+            start = index + 1
+            continue
         if cue.startswith("case is") and not (
             _task_close_gate_has_explicit_diagnostic_case_prefix(prefix)
         ):
@@ -236,11 +239,13 @@ def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
         start = index + 1
 
 
+def _task_close_gate_prefix_has_near_negator(text: str) -> bool:
+    return any(word in {"no", "non", "not"} for word in text.split()[-3:])
+
+
 def _task_close_gate_has_explicit_diagnostic_case_prefix(text: str) -> bool:
     words = text.split()
     if not words or words[-1] != "diagnostic":
-        return False
-    if any(word in {"non", "not"} for word in words[-3:-1]):
         return False
     if len(words) == 1:
         return True

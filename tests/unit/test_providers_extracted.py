@@ -678,6 +678,16 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "on diagnostic coverage elsewhere.",
             "That is not a diagnostic case is covered.",
         ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That is not the exact phrase is covered.",
+        ),
+        (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on diagnostic coverage elsewhere.",
+            "That is not the phrase under inspection.",
+        ),
     )
     for summary, response_text in cases:
         evidence = (
