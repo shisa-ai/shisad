@@ -466,6 +466,19 @@ _TASK_CLOSE_GATE_FILES_MAX_CHARS = 2000
 _TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_PROPOSAL_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_DIFF_MAX_CHARS = 4000
+_TASK_CLOSE_GATE_SECTION_HEADERS = {
+    "ORIGINAL TASK DESCRIPTION:",
+    "REQUESTED FILE REFS:",
+    "TASK EXECUTION METADATA:",
+    "TASK RESULT SIGNALS:",
+    "TASK OUTPUT SUMMARY:",
+    "TASK OUTPUT RESPONSE:",
+    "TASK FILES CHANGED:",
+    "TASK PROPOSAL DIFF:",
+    "TASK TOOL OUTPUT EVIDENCE:",
+    "TASK TOOL OUTPUTS JSON:",
+    "TASK PROPOSAL JSON:",
+}
 _TASK_SUMMARY_CHECKPOINT_FAILURE_REASON = "task_summary_firewall_checkpoint_failed"
 _EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = (
     "content",
@@ -4178,6 +4191,18 @@ def _truncate_close_gate_evidence_text(text: str, *, max_chars: int) -> str:
     if not truncated:
         return notice.lstrip("\n")
     return f"{truncated}{notice}"
+
+
+def _escape_task_close_gate_section_headers(text: str) -> str:
+    if not text:
+        return text
+    escaped_lines: list[str] = []
+    for line in text.splitlines():
+        if line.rstrip() in _TASK_CLOSE_GATE_SECTION_HEADERS:
+            escaped_lines.append(f" {line}")
+            continue
+        escaped_lines.append(line)
+    return "\n".join(escaped_lines)
 
 
 def _build_post_tool_synthesis_untrusted_content(
@@ -13750,9 +13775,11 @@ class SessionImplMixin(HandlerMixinBase):
             max_chars=_TASK_CLOSE_GATE_FILES_MAX_CHARS,
         )
         proposal_diff_block = (
-            _truncate_close_gate_evidence_text(
-                str(proposal_payload.get("diff", "")).strip() or "(none)",
-                max_chars=_TASK_CLOSE_GATE_DIFF_MAX_CHARS,
+            _escape_task_close_gate_section_headers(
+                _truncate_close_gate_evidence_text(
+                    str(proposal_payload.get("diff", "")).strip() or "(none)",
+                    max_chars=_TASK_CLOSE_GATE_DIFF_MAX_CHARS,
+                )
             )
             if isinstance(proposal_payload, Mapping)
             else "(none)"
@@ -13768,13 +13795,17 @@ class SessionImplMixin(HandlerMixinBase):
         tool_output_block = _build_task_close_gate_tool_output_block(
             serialized_tool_outputs=serialized_tool_outputs,
         )
-        response_block = _truncate_close_gate_evidence_text(
-            raw_response_text or "(empty)",
-            max_chars=_TASK_CLOSE_GATE_RESPONSE_MAX_CHARS,
+        response_block = _escape_task_close_gate_section_headers(
+            _truncate_close_gate_evidence_text(
+                raw_response_text or "(empty)",
+                max_chars=_TASK_CLOSE_GATE_RESPONSE_MAX_CHARS,
+            )
         )
-        summary_block = _truncate_close_gate_evidence_text(
-            summary_text or "(empty)",
-            max_chars=_TASK_CLOSE_GATE_SUMMARY_MAX_CHARS,
+        summary_block = _escape_task_close_gate_section_headers(
+            _truncate_close_gate_evidence_text(
+                summary_text or "(empty)",
+                max_chars=_TASK_CLOSE_GATE_SUMMARY_MAX_CHARS,
+            )
         )
         evidence_text = "\n\n".join(
             [

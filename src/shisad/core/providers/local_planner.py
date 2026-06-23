@@ -26,6 +26,7 @@ _TASK_CLOSE_GATE_SECTION_HEADERS = (
     "TASK TOOL OUTPUTS JSON:",
     "TASK PROPOSAL JSON:",
 )
+_TASK_CLOSE_GATE_SECTION_HEADER_SET = set(_TASK_CLOSE_GATE_SECTION_HEADERS)
 _PLANNER_FALLBACK_CONFIGURATION_PREFIX = "[PLANNER FALLBACK: CONFIGURATION]"
 _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX = "[PLANNER FALLBACK: ROUTE ERROR]"
 _PROVIDER_HTTP_ERROR_RE = re.compile(r"\bProvider HTTP error (?P<status>[1-5][0-9]{2})\b")
@@ -69,7 +70,11 @@ def _parse_task_close_gate_sections(evidence_text: str) -> dict[str, str]:
     current_lines: list[str] = []
     for raw_line in evidence_text.splitlines():
         line = raw_line.rstrip()
-        if line in _TASK_CLOSE_GATE_SECTION_HEADERS:
+        if line in _TASK_CLOSE_GATE_SECTION_HEADER_SET:
+            if line == current_header or line in sections:
+                if current_header:
+                    current_lines.append(raw_line)
+                continue
             if current_header:
                 sections[current_header] = "\n".join(current_lines).strip()
             current_header = line
