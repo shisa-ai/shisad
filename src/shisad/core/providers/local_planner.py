@@ -269,6 +269,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     sections = _parse_task_close_gate_sections(evidence_text)
     signals = _parse_task_close_gate_signals(sections.get("TASK RESULT SIGNALS:", ""))
     task_description = sections.get("ORIGINAL TASK DESCRIPTION:", "")
+    requested_file_refs = sections.get("REQUESTED FILE REFS:", "")
     summary = sections.get("TASK OUTPUT SUMMARY:", "")
     response = sections.get("TASK OUTPUT RESPONSE:", "")
     files_changed = sections.get("TASK FILES CHANGED:", "")
@@ -297,8 +298,11 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     task_kind = signals.get("task_kind", "")
     read_only = signals.get("read_only") == "true"
     executor = signals.get("executor", "")
-    diagnostic_review_context = read_only and task_kind == "review" and (
-        _task_close_gate_is_diagnostic_meta_review(task_description)
+    diagnostic_review_context = (
+        read_only
+        and task_kind == "review"
+        and not _task_close_gate_section_has_content(requested_file_refs)
+        and _task_close_gate_is_diagnostic_meta_review(task_description)
     )
     artifact_evidence_present = files_present or proposal_has_diff
     artifactless_write_activity = (
