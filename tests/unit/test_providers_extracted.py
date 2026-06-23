@@ -454,6 +454,8 @@ async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_rep
     summaries = (
         "The delegated task reported incomplete work because only part of README.md "
         "was updated.",
+        "The delegated task reported incomplete work because only part of README.md "
+        "was updated. The diagnostic case is handled.",
         "The delegated task reported incomplete work: diagnostic case is covered. "
         "The delegated task reported incomplete work because only part of README.md "
         "was updated.",
@@ -736,6 +738,11 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "Reviewed diagnostic wording.",
         ),
         (
+            "Did not review the close-gate fallback diagnostics because I focused "
+            "on README. The diagnostic case is handled.",
+            "Reviewed diagnostic wording.",
+        ),
+        (
             "Did not review the close-gate fallback diagnostics. The diagnostic "
             "case is handled. Did not review the close-gate fallback diagnostics "
             "because I focused on README.",
@@ -923,7 +930,8 @@ async def test_local_planner_allows_nonleading_diagnostic_meta_review_phrase() -
         "proposal_files_changed_count=0\n\n"
         "TASK OUTPUT SUMMARY:\n"
         "Reviewed the diagnostic wording. Did not review the close-gate fallback "
-        "diagnostics. The diagnostic case is handled.\n\n"
+        "diagnostics because I focused on diagnostic coverage elsewhere. "
+        "The diagnostic case is handled.\n\n"
         "TASK OUTPUT RESPONSE:\n"
         "The exact phrase is covered as diagnostic text.\n\n"
         "TASK FILES CHANGED:\n"
@@ -2092,6 +2100,8 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "The delegated task attempted exfiltration: diagnostic case is handled. "
         "The delegated task attempted exfiltration of diagnostic logs.",
         "The task drafted a shell-based exfiltration plan.",
+        "Added regression coverage. The task drafted a shell-based exfiltration plan; "
+        "diagnostic case is tested.",
         "The task drafted a shell-based diagnostic exfiltration plan.",
         "The task drafted a shell-based exfiltration plan, and diagnostic "
         "coverage was added.",

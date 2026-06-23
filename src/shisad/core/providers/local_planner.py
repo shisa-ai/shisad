@@ -181,18 +181,21 @@ def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
 def _task_close_gate_statement_fragment_contexts(
     normalized: str,
 ) -> Iterator[tuple[str, str]]:
-    yield normalized, ""
+    fragments = [normalized]
     start = 0
     for index in range(len(normalized) - 1):
         if normalized[index] not in ".!?;" or normalized[index + 1] != " ":
             continue
         fragment = normalized[start : index + 1].strip()
         if fragment and fragment != normalized:
-            yield fragment, normalized[index + 2 :].strip()
+            fragments.append(fragment)
         start = index + 2
     fragment = normalized[start:].strip()
     if fragment and fragment != normalized:
-        yield fragment, ""
+        fragments.append(fragment)
+    for index, fragment in enumerate(fragments):
+        following_text = fragments[index + 1] if index + 1 < len(fragments) else ""
+        yield fragment, following_text
 
 
 _TASK_CLOSE_GATE_FAILURE_START_CUES = (
@@ -503,8 +506,20 @@ def _task_close_gate_prefix_fragment_is_diagnostic_prefix(
 ) -> bool:
     if not fragment.endswith((":", ";")):
         return False
-    return fragment.startswith(
-        _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+    prefix_cue = next(
+        (
+            cue
+            for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+            if fragment.startswith(cue)
+        ),
+        "",
+    )
+    if not prefix_cue:
+        return False
+    prefix_remainder = fragment[len(prefix_cue) : -1].strip()
+    return _task_close_gate_prefix_remainder_is_diagnostic_subject(
+        prefix_cue,
+        prefix_remainder,
     ) and _task_close_gate_discusses_diagnostic_case(following_text)
 
 
@@ -513,10 +528,25 @@ def _task_close_gate_diagnostic_meta_fragment_has_clarifier(
     fragment: str,
     following_text: str,
 ) -> bool:
-    return _task_close_gate_mentions_diagnostic_meta_review_target(fragment) and (
+    if not _task_close_gate_mentions_diagnostic_meta_review_target(fragment):
+        return False
+    target_remainder = _task_close_gate_diagnostic_meta_target_remainder(fragment)
+    if (
+        target_remainder
+        and not _task_close_gate_discusses_diagnostic_text(target_remainder)
+    ):
+        return False
+    return (
         _task_close_gate_discusses_diagnostic_case(fragment)
         or _task_close_gate_discusses_diagnostic_case(following_text)
     )
+
+
+def _task_close_gate_diagnostic_meta_target_remainder(fragment: str) -> str:
+    for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES:
+        if fragment.startswith(cue):
+            return fragment[len(cue) :].strip()
+    return fragment
 
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
