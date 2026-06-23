@@ -1933,8 +1933,12 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
     summaries = (
         "The delegated task attempted exfiltration of secrets.",
         "The delegated task attempted exfiltration of diagnostic logs.",
+        "The delegated task attempted exfiltration of diagnostic logs, and "
+        "diagnostic coverage was added.",
         "The task drafted a shell-based exfiltration plan.",
         "The task drafted a shell-based diagnostic exfiltration plan.",
+        "The task drafted a shell-based exfiltration plan, and diagnostic "
+        "coverage was added.",
     )
     for summary in summaries:
         evidence = (

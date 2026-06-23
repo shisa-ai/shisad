@@ -377,8 +377,13 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 
 def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bool:
-    return _task_close_gate_discusses_diagnostic_case(normalized) or any(
-        token in normalized
+    first_clause_end = min(
+        (index for token in ".:,;!?" if (index := normalized.find(token)) != -1),
+        default=len(normalized),
+    )
+    first_clause = normalized[:first_clause_end]
+    return _task_close_gate_discusses_diagnostic_case(first_clause) or any(
+        token in first_clause
         for token in (
             " diagnostic is covered",
             " diagnostic is handled",
