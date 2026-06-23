@@ -125,9 +125,14 @@ def test_gh61_shell_exec_accepts_ledger_demo_argv_but_rejects_joined_command() -
         ToolName("shell.exec"),
         {"command": ["echo Hello Ledger!"], "command_intent": "execute"},
     )
+    ledger_cli_errors = registry.validate_call(
+        ToolName("shell.exec"),
+        {"command": ["ledgerctl", "status"], "command_intent": "execute"},
+    )
 
     assert valid_errors == []
     assert invalid_errors == ["Argument 'command': expected validated atoms 'command_token'"]
+    assert ledger_cli_errors == []
 
 
 def test_is_valid_semantic_value_credential_ref_enforces_opaque_handle() -> None:

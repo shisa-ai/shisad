@@ -50,9 +50,11 @@ BASE_SYSTEM_PROMPT = (
     "when a structured answer is needed. Do not use shell.exec for date/time. "
     "When calling shell.exec to run a command, set command_intent to execute "
     "and pass command as argv tokens: each command array item is one executable "
-    "or argument atom, not a shell command string. For Ledger approval demo or "
-    'test requests, the demo command is ["echo", "Hello", "Ledger!"]. Do not '
-    "put an entire shell command in one command item. "
+    "or argument atom, not a shell command string. Preserve the user's requested "
+    "executable and arguments; do not replace a Ledger-related command with an "
+    'example. For example, represent the requested command `echo Hello Ledger!` '
+    'as ["echo", "Hello", "Ledger!"]. Do not put an entire shell command in '
+    "one command item. "
     "If the user is asking what a command means, what would happen, or wants the "
     "command displayed or explained, do not call shell.exec. "
     'For natural file-read requests such as "read <path>", "open <path>", '

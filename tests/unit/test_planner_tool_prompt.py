@@ -349,7 +349,10 @@ async def test_gh61_planner_payload_exposes_shell_exec_argv_guidance() -> None:
 
     system_prompt = provider.messages[0][0].content.lower()
     assert "argv tokens" in system_prompt
+    assert "preserve the user's requested executable and arguments" in system_prompt
+    assert "do not replace a ledger-related command with an example" in system_prompt
     assert '"echo", "hello", "ledger!"' in system_prompt
+    assert "ledger approval demo or test requests" not in system_prompt
     assert "do not put an entire shell command in one command item" in system_prompt
 
     tool_names = _canonical_payload_names(provider.tools[0], {"shell.exec"})
@@ -357,7 +360,10 @@ async def test_gh61_planner_payload_exposes_shell_exec_argv_guidance() -> None:
     shell_exec_schema = provider.tools[0][0]["function"]["parameters"]
     command_description = shell_exec_schema["properties"]["command"]["description"].lower()
     assert "argv tokens" in command_description
+    assert "preserve the requested executable and arguments" in command_description
+    assert "do not replace ledger-related commands with this example" in command_description
     assert '"echo", "hello", "ledger!"' in command_description
+    assert "ledger approval demo or test requests" not in command_description
 
 
 @pytest.mark.asyncio

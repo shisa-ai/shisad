@@ -26,8 +26,10 @@ class ShellExecTool:
                     description=(
                         "Command argv tokens to execute. Each item must be one "
                         "executable or argument atom with no whitespace; do not "
-                        "put an entire shell command in one item. For Ledger "
-                        "approval demo or test requests, emit "
+                        "put an entire shell command in one item. Preserve the "
+                        "requested executable and arguments; do not replace "
+                        "Ledger-related commands with this example. For example, "
+                        "the requested command `echo Hello Ledger!` should be "
                         '["echo", "Hello", "Ledger!"].'
                     ),
                     required=True,
