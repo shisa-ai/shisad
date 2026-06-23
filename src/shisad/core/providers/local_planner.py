@@ -178,6 +178,18 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
     )
 
 
+def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
+    return any(
+        token in normalized
+        for token in (
+            "case is handled",
+            "case is tested",
+            "case is covered",
+            "phrase under inspection",
+        )
+    )
+
+
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
     target_cues = (
         "the delegated task did not review the close-gate fallback diagnostics",
@@ -276,6 +288,7 @@ def _task_close_gate_has_goal_drift_cue(
             if (
                 has_drift_continuation
                 and _task_close_gate_mentions_diagnostic_meta_review_target(normalized)
+                and not _task_close_gate_discusses_diagnostic_case(normalized)
             ):
                 return True
             return not _task_close_gate_discusses_diagnostic_text(normalized)
