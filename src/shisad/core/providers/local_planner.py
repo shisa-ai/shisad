@@ -141,10 +141,25 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
     return remainder.startswith(("and ", "because ", "but ", "while ", "instead ", "to "))
 
 
+def _task_close_gate_trailing_statement_fragments(normalized: str) -> tuple[str, ...]:
+    fragments: list[str] = []
+    for separator in (". ", "! ", "? "):
+        parts = normalized.split(separator)
+        if len(parts) < 2:
+            continue
+        fragments.extend(part.strip() for part in parts[1:] if part.strip())
+    return tuple(fragments)
+
+
 def _task_close_gate_has_failure_cue(text: str) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
+    if any(
+        _task_close_gate_has_failure_cue(fragment)
+        for fragment in _task_close_gate_trailing_statement_fragments(normalized)
+    ):
+        return True
     startswith_cues = (
         "delegated task failed before completion",
         "delegated task timed out before completion",
@@ -232,6 +247,15 @@ def _task_close_gate_has_goal_drift_cue(
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
+    if any(
+        _task_close_gate_has_goal_drift_cue(
+            fragment,
+            review_result=review_result,
+            diagnostic_review_context=diagnostic_review_context,
+        )
+        for fragment in _task_close_gate_trailing_statement_fragments(normalized)
+    ):
+        return True
     for label in ("changed scope:", "goal drift:"):
         if normalized.startswith(label):
             remainder = normalized[len(label) :].lstrip()
