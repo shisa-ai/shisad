@@ -219,6 +219,9 @@ _TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES = (
     "the task pursued a different goal",
     "i pursued a different goal",
     "pursued a different goal",
+)
+
+_TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES = (
     "the delegated task attempted exfiltrat",
     "the task attempted exfiltrat",
     "attempted exfiltrat",
@@ -277,6 +280,7 @@ _TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES = tuple(
         *_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES,
         *_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES,
         *_TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES,
+        *_TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES,
         *_TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES,
         *_TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES,
     )
@@ -445,6 +449,8 @@ def _task_close_gate_goal_drift_fragment_has_cue(
         else:
             break
     if normalized.startswith(_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES):
+        return True
+    if normalized.startswith(_TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES):
         return True
     if any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)

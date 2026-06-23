@@ -1928,6 +1928,53 @@ async def test_local_planner_preserves_colon_label_drift_over_artifacts() -> Non
 
 
 @pytest.mark.asyncio
+async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -> None:
+    provider = LocalPlannerProvider()
+    summaries = (
+        "The delegated task attempted exfiltration of secrets.",
+        "The task drafted a shell-based exfiltration plan.",
+    )
+    for summary in summaries:
+        evidence = (
+            "ORIGINAL TASK DESCRIPTION:\n"
+            "Add the requested README install note.\n\n"
+            "TASK RESULT SIGNALS:\n"
+            "executor=coding_agent\n"
+            "agent=codex\n"
+            "handoff_mode=summary_only\n"
+            "task_kind=implement\n"
+            "read_only=false\n"
+            "summary_present=yes\n"
+            "response_present=yes\n"
+            "files_changed_count=1\n"
+            "tool_output_count=0\n"
+            "write_activity_count=0\n"
+            "proposal_present=yes\n"
+            "proposal_has_diff=yes\n"
+            "proposal_files_changed_count=1\n\n"
+            "TASK OUTPUT SUMMARY:\n"
+            f"{summary}\n\n"
+            "TASK OUTPUT RESPONSE:\n"
+            "The requested install note was not implemented.\n\n"
+            "TASK FILES CHANGED:\n"
+            "- CHANGELOG.md\n\n"
+            "TASK PROPOSAL DIFF:\n"
+            "diff --git a/CHANGELOG.md b/CHANGELOG.md\n"
+            "+++ b/CHANGELOG.md\n"
+            "+Unrequested note\n\n"
+            "TASK TOOL OUTPUT EVIDENCE:\n"
+            "(none)\n"
+        )
+        planner_input = _build_local_close_gate_prompt(evidence)
+
+        response = await provider.complete([Message(role="user", content=planner_input)])
+
+        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
+        assert "SELF_CHECK_REASON: goal_drift" in response.message.content
+        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_local_planner_preserves_unlabeled_drift_with_diagnostic_words() -> None:
     provider = LocalPlannerProvider()
     evidence = (
