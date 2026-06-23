@@ -596,7 +596,7 @@ async def test_local_planner_allows_benign_colon_label_diagnostics() -> None:
         "TASK OUTPUT SUMMARY:\n"
         "Goal drift: did not review README.md case is handled.\n\n"
         "TASK OUTPUT RESPONSE:\n"
-        "Did not review README.md. diagnostic case is covered.\n\n"
+        "Did not review README.md because I focused on diagnostic coverage case is handled.\n\n"
         "TASK FILES CHANGED:\n"
         "(none)\n\n"
         "TASK PROPOSAL DIFF:\n"
@@ -742,43 +742,48 @@ async def test_local_planner_allows_non_truthy_colon_label_prefix_words() -> Non
 @pytest.mark.asyncio
 async def test_local_planner_preserves_truthy_label_boundary_values() -> None:
     provider = LocalPlannerProvider()
-    evidence = (
-        "ORIGINAL TASK DESCRIPTION:\n"
-        "Add the requested README install note.\n\n"
-        "TASK RESULT SIGNALS:\n"
-        "executor=coding_agent\n"
-        "agent=codex\n"
-        "handoff_mode=summary_only\n"
-        "task_kind=implement\n"
-        "read_only=false\n"
-        "summary_present=yes\n"
-        "response_present=yes\n"
-        "files_changed_count=1\n"
-        "tool_output_count=0\n"
-        "write_activity_count=0\n"
-        "proposal_present=yes\n"
-        "proposal_has_diff=yes\n"
-        "proposal_files_changed_count=1\n\n"
-        "TASK OUTPUT SUMMARY:\n"
-        "Goal drift: confirmed from the diff.\n\n"
-        "TASK OUTPUT RESPONSE:\n"
-        "Changed scope: yes - requirements changed.\n\n"
-        "TASK FILES CHANGED:\n"
-        "- README.md\n\n"
-        "TASK PROPOSAL DIFF:\n"
-        "diff --git a/README.md b/README.md\n"
-        "+++ b/README.md\n"
-        "+Unrelated content\n\n"
-        "TASK TOOL OUTPUT EVIDENCE:\n"
-        "(none)\n"
+    summaries = (
+        "Goal drift: confirmed from the diff.",
+        "Changed scope: yes - requirements changed.",
     )
-    planner_input = _build_local_close_gate_prompt(evidence)
+    for summary in summaries:
+        evidence = (
+            "ORIGINAL TASK DESCRIPTION:\n"
+            "Add the requested README install note.\n\n"
+            "TASK RESULT SIGNALS:\n"
+            "executor=coding_agent\n"
+            "agent=codex\n"
+            "handoff_mode=summary_only\n"
+            "task_kind=implement\n"
+            "read_only=false\n"
+            "summary_present=yes\n"
+            "response_present=yes\n"
+            "files_changed_count=1\n"
+            "tool_output_count=0\n"
+            "write_activity_count=0\n"
+            "proposal_present=yes\n"
+            "proposal_has_diff=yes\n"
+            "proposal_files_changed_count=1\n\n"
+            "TASK OUTPUT SUMMARY:\n"
+            f"{summary}\n\n"
+            "TASK OUTPUT RESPONSE:\n"
+            "The requested install note was not implemented.\n\n"
+            "TASK FILES CHANGED:\n"
+            "- README.md\n\n"
+            "TASK PROPOSAL DIFF:\n"
+            "diff --git a/README.md b/README.md\n"
+            "+++ b/README.md\n"
+            "+Unrelated content\n\n"
+            "TASK TOOL OUTPUT EVIDENCE:\n"
+            "(none)\n"
+        )
+        planner_input = _build_local_close_gate_prompt(evidence)
 
-    response = await provider.complete([Message(role="user", content=planner_input)])
+        response = await provider.complete([Message(role="user", content=planner_input)])
 
-    assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
-    assert "SELF_CHECK_REASON: goal_drift" in response.message.content
-    assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+        assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
+        assert "SELF_CHECK_REASON: goal_drift" in response.message.content
+        assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
 
 
 @pytest.mark.asyncio

@@ -182,7 +182,12 @@ def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
     return False
 
 
-def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bool:
+def _task_close_gate_has_goal_drift_cue(
+    text: str,
+    *,
+    review_result: bool,
+    diagnostic_review_context: bool,
+) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
@@ -196,6 +201,7 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
             return _task_close_gate_has_goal_drift_cue(
                 remainder,
                 review_result=review_result,
+                diagnostic_review_context=diagnostic_review_context,
             )
     general_object_cues = (
         "the delegated task ignored the ",
@@ -238,6 +244,8 @@ def _task_close_gate_has_goal_drift_cue(text: str, *, review_result: bool) -> bo
             token in normalized
             for token in (" because ", " focused on ", " instead", " while ")
         )
+        if diagnostic_review_context:
+            return not _task_close_gate_discusses_diagnostic_text(normalized)
         return (
             not _task_close_gate_discusses_diagnostic_text(normalized)
             or has_drift_continuation
@@ -251,6 +259,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     evidence_text = _extract_marked_untrusted_payload(planner_input)
     sections = _parse_task_close_gate_sections(evidence_text)
     signals = _parse_task_close_gate_signals(sections.get("TASK RESULT SIGNALS:", ""))
+    task_description = sections.get("ORIGINAL TASK DESCRIPTION:", "")
     summary = sections.get("TASK OUTPUT SUMMARY:", "")
     response = sections.get("TASK OUTPUT RESPONSE:", "")
     files_changed = sections.get("TASK FILES CHANGED:", "")
@@ -279,6 +288,10 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     task_kind = signals.get("task_kind", "")
     read_only = signals.get("read_only") == "true"
     executor = signals.get("executor", "")
+    diagnostic_review_context = read_only and task_kind == "review" and any(
+        token in task_description.lower()
+        for token in ("diagnostic", "close-gate", "fallback")
+    )
     artifact_evidence_present = files_present or proposal_has_diff
     artifactless_write_activity = (
         executor == "coding_agent"
@@ -299,6 +312,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         _task_close_gate_has_goal_drift_cue(
             part,
             review_result=read_only and task_kind == "review",
+            diagnostic_review_context=diagnostic_review_context,
         )
         for part in (summary, response, narrative)
     )
