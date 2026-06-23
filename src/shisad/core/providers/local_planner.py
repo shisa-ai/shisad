@@ -119,6 +119,8 @@ def _task_close_gate_section_has_content(value: str) -> bool:
 def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> bool:
     if not normalized.startswith(cue):
         return False
+    if cue[-1] in ":.;,-":
+        return True
     remainder = normalized[len(cue) :].lstrip()
     if not remainder:
         return True
@@ -151,6 +153,16 @@ def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
     normalized = " ".join(text.lower().split())
     if not normalized:
         return False
+    object_cues = (
+        "the delegated task ignored the ",
+        "the task ignored the ",
+        "i ignored the requested ",
+        "ignored the requested ",
+        "the delegated task did not review ",
+        "the task did not review ",
+    )
+    if normalized.startswith(object_cues):
+        return True
     startswith_cues = (
         "changed scope:",
         "delegated task changed scope",
@@ -160,12 +172,6 @@ def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
         "goal drift:",
         "delegated task goal drift",
         "the delegated task goal drift",
-        "the delegated task ignored the",
-        "the task ignored the",
-        "i ignored the requested",
-        "ignored the requested",
-        "the delegated task did not review",
-        "the task did not review",
         "the delegated task pursued a different goal",
         "the task pursued a different goal",
         "i pursued a different goal",
@@ -230,7 +236,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
             proposal_has_diff,
         )
     )
-    detected_goal_drift = not (read_only and task_kind == "review") and any(
+    detected_goal_drift = any(
         _task_close_gate_has_goal_drift_cue(part)
         for part in (summary, response, narrative)
     )
