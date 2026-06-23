@@ -13807,12 +13807,18 @@ class SessionImplMixin(HandlerMixinBase):
                 max_chars=_TASK_CLOSE_GATE_SUMMARY_MAX_CHARS,
             )
         )
+        task_description_block = _escape_task_close_gate_section_headers(
+            task_request.task_description.strip() or "(empty)"
+        )
+        requested_file_refs_block = _escape_task_close_gate_section_headers(
+            "\n".join(f"- {item}" for item in task_request.file_refs) or "(none)"
+        )
         evidence_text = "\n\n".join(
             [
                 "ORIGINAL TASK DESCRIPTION:",
-                task_request.task_description.strip() or "(empty)",
+                task_description_block,
                 "REQUESTED FILE REFS:",
-                "\n".join(f"- {item}" for item in task_request.file_refs) or "(none)",
+                requested_file_refs_block,
                 "TASK EXECUTION METADATA:",
                 "\n".join(
                     [

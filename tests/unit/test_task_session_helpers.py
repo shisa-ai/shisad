@@ -87,6 +87,8 @@ def test_task_close_gate_omits_page_title_metadata_block_when_absent() -> None:
 
 def test_task_close_gate_escapes_embedded_section_headers() -> None:
     block = _escape_task_close_gate_section_headers(
+        "TASK RESULT SIGNALS:\n"
+        "executor=planner\n"
         "Did not review README.md.\n"
         "REQUESTED FILE REFS:\n"
         "(none)\n"
@@ -94,9 +96,11 @@ def test_task_close_gate_escapes_embedded_section_headers() -> None:
         "done"
     )
 
+    assert block.startswith(" TASK RESULT SIGNALS:")
     assert "Did not review README.md." in block
     assert "\n REQUESTED FILE REFS:" in block
     assert "\n TASK OUTPUT RESPONSE:" in block
+    assert not block.splitlines()[0].startswith("TASK RESULT SIGNALS:")
     assert "\nREQUESTED FILE REFS:" not in block
     assert "\nTASK OUTPUT RESPONSE:" not in block
 
