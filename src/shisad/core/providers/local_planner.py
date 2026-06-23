@@ -178,6 +178,20 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
     )
 
 
+def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
+    target_cues = (
+        "the delegated task did not review the close-gate fallback diagnostics",
+        "the delegated task did not review close-gate fallback diagnostics",
+        "the task did not review the close-gate fallback diagnostics",
+        "the task did not review close-gate fallback diagnostics",
+        "i did not review the close-gate fallback diagnostics",
+        "i did not review close-gate fallback diagnostics",
+        "did not review the close-gate fallback diagnostics",
+        "did not review close-gate fallback diagnostics",
+    )
+    return any(normalized.startswith(cue) for cue in target_cues)
+
+
 def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
     for cue in ("yes", "true", "detected", "confirmed"):
         if not normalized.startswith(cue):
@@ -259,6 +273,11 @@ def _task_close_gate_has_goal_drift_cue(
             for token in (" because ", " focused on ", " instead", " while ")
         )
         if diagnostic_review_context:
+            if (
+                has_drift_continuation
+                and _task_close_gate_mentions_diagnostic_meta_review_target(normalized)
+            ):
+                return True
             return not _task_close_gate_discusses_diagnostic_text(normalized)
         return (
             not _task_close_gate_discusses_diagnostic_text(normalized)
