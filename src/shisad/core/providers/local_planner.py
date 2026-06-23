@@ -198,6 +198,15 @@ def _task_close_gate_statement_fragment_contexts(
         yield fragment, following_text
 
 
+def _task_close_gate_first_statement_fragment(normalized: str) -> str:
+    for fragment, _following_text in _task_close_gate_statement_fragment_contexts(
+        normalized
+    ):
+        if fragment != normalized:
+            return fragment
+    return normalized
+
+
 _TASK_CLOSE_GATE_FAILURE_START_CUES = (
     "delegated task failed before completion",
     "delegated task timed out before completion",
@@ -382,7 +391,9 @@ def _task_close_gate_discusses_failure_cue_as_diagnostic(
     if not remainder or remainder[0] not in ":;":
         return False
     diagnostic_remainder = remainder[1:].lstrip()
-    return _task_close_gate_discusses_diagnostic_case(diagnostic_remainder)
+    return _task_close_gate_is_standalone_diagnostic_case_clarifier(
+        _task_close_gate_first_statement_fragment(diagnostic_remainder)
+    )
 
 
 def _task_close_gate_failure_fragment_is_diagnostic_prefix(
@@ -393,7 +404,9 @@ def _task_close_gate_failure_fragment_is_diagnostic_prefix(
     if not fragment.endswith((":", ";")):
         return False
     return any(
-        fragment.startswith(cue) and _task_close_gate_discusses_diagnostic_case(following_text)
+        fragment.startswith(cue)
+        and not fragment[len(cue) : -1].strip()
+        and _task_close_gate_is_standalone_diagnostic_case_clarifier(following_text)
         for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
     )
 
@@ -485,7 +498,9 @@ def _task_close_gate_prefix_clarifier_discusses_diagnostic_case(
     ):
         return False
     diagnostic_remainder = normalized[separator_index + 1 :].lstrip()
-    return _task_close_gate_discusses_diagnostic_case(diagnostic_remainder)
+    return _task_close_gate_is_standalone_diagnostic_case_clarifier(
+        _task_close_gate_first_statement_fragment(diagnostic_remainder)
+    )
 
 
 def _task_close_gate_prefix_remainder_is_diagnostic_subject(
@@ -520,7 +535,7 @@ def _task_close_gate_prefix_fragment_is_diagnostic_prefix(
     return _task_close_gate_prefix_remainder_is_diagnostic_subject(
         prefix_cue,
         prefix_remainder,
-    ) and _task_close_gate_discusses_diagnostic_case(following_text)
+    ) and _task_close_gate_is_standalone_diagnostic_case_clarifier(following_text)
 
 
 def _task_close_gate_diagnostic_meta_fragment_has_clarifier(
@@ -536,10 +551,7 @@ def _task_close_gate_diagnostic_meta_fragment_has_clarifier(
         and not _task_close_gate_discusses_diagnostic_text(target_remainder)
     ):
         return False
-    return (
-        _task_close_gate_discusses_diagnostic_case(fragment)
-        or _task_close_gate_discusses_diagnostic_case(following_text)
-    )
+    return _task_close_gate_is_standalone_diagnostic_case_clarifier(following_text)
 
 
 def _task_close_gate_diagnostic_meta_target_remainder(fragment: str) -> str:
@@ -547,6 +559,23 @@ def _task_close_gate_diagnostic_meta_target_remainder(fragment: str) -> str:
         if fragment.startswith(cue):
             return fragment[len(cue) :].strip()
     return fragment
+
+
+def _task_close_gate_is_standalone_diagnostic_case_clarifier(normalized: str) -> bool:
+    normalized = normalized.strip()
+    if not normalized:
+        return False
+    for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES:
+        if not normalized.startswith(cue):
+            continue
+        remainder = normalized[len(cue) :].lstrip()
+        if not remainder:
+            return True
+        if remainder[0] in ".!?":
+            return not remainder.strip(".!?").strip()
+        if _task_close_gate_remainder_starts_with_phrase(remainder, ("as",)):
+            return True
+    return False
 
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
@@ -637,7 +666,7 @@ def _task_close_gate_goal_drift_fragment_has_cue(
         )
         if diagnostic_review_context:
             if _task_close_gate_mentions_diagnostic_meta_review_target(normalized):
-                return not _task_close_gate_discusses_diagnostic_case(normalized)
+                return True
             return not _task_close_gate_discusses_diagnostic_text(normalized)
         return (
             not _task_close_gate_discusses_diagnostic_text(normalized)
@@ -657,13 +686,25 @@ def _task_close_gate_has_goal_drift_cue(
     normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
-    if _task_close_gate_goal_drift_fragment_has_cue(
-        normalized,
-        review_result=review_result,
-        diagnostic_review_context=diagnostic_review_context,
+    fragment_contexts = tuple(_task_close_gate_statement_fragment_contexts(normalized))
+    has_statement_fragments = any(
+        fragment != normalized for fragment, _following_text in fragment_contexts
+    )
+    skip_full_diagnostic_meta_target = (
+        diagnostic_review_context
+        and has_statement_fragments
+        and _task_close_gate_mentions_diagnostic_meta_review_target(normalized)
+    )
+    if (
+        not skip_full_diagnostic_meta_target
+        and _task_close_gate_goal_drift_fragment_has_cue(
+            normalized,
+            review_result=review_result,
+            diagnostic_review_context=diagnostic_review_context,
+        )
     ):
         return True
-    for fragment, following_text in _task_close_gate_statement_fragment_contexts(normalized):
+    for fragment, following_text in fragment_contexts:
         if fragment == normalized:
             continue
         # The combined diagnostic-meta narrative can include a clarifying
