@@ -468,6 +468,8 @@ async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_rep
         "reported incomplete work because only part of README.md was updated.",
         "The exact phrase is covered as diagnostic text. Instead, the delegated "
         "task reported incomplete work because only part of README.md was updated.",
+        "The exact phrase is covered as diagnostic text. But instead, the delegated "
+        "task reported incomplete work because only part of README.md was updated.",
         "The delegated task reported incomplete work: diagnostic case is covered. "
         "The delegated task reported incomplete work because only part of README.md "
         "was updated.",
@@ -2150,6 +2152,8 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "But the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration diagnostic is covered. "
         "Instead, the delegated task attempted exfiltration of diagnostic logs.",
+        "The delegated task attempted exfiltration diagnostic is covered. "
+        "But, instead, the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration: diagnostic case is handled. "
         "The delegated task attempted exfiltration of diagnostic logs.",
         "The task drafted a shell-based exfiltration plan.",

@@ -208,19 +208,22 @@ def _task_close_gate_first_statement_fragment(normalized: str) -> str:
 
 
 def _task_close_gate_strip_leading_statement_continuation(normalized: str) -> str:
-    for cue in (
-        "but, ",
-        "but ",
-        "and, ",
-        "and ",
-        "however, ",
-        "however ",
-        "instead, ",
-        "instead ",
-    ):
-        if normalized.startswith(cue):
-            return normalized[len(cue) :].lstrip()
-    return normalized
+    while True:
+        for cue in (
+            "but, ",
+            "but ",
+            "and, ",
+            "and ",
+            "however, ",
+            "however ",
+            "instead, ",
+            "instead ",
+        ):
+            if normalized.startswith(cue):
+                normalized = normalized[len(cue) :].lstrip()
+                break
+        else:
+            return normalized
 
 
 _TASK_CLOSE_GATE_FAILURE_START_CUES = (
