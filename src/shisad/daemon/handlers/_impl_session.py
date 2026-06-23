@@ -2655,6 +2655,7 @@ def _annotate_task_close_gate_artifactless_write_activity(
     if notes is None or assessment.status not in {
         _TASK_CLOSE_GATE_STATUS_COMPLETE,
         _TASK_CLOSE_GATE_STATUS_INCOMPLETE,
+        _TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
     }:
         return assessment
     return replace(
@@ -13868,20 +13869,32 @@ class SessionImplMixin(HandlerMixinBase):
             )
             response_text = str(result.output.assistant_response).strip()
         except TimeoutError:
-            return TaskCloseGateAssessment(
-                status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
-                reason="task_self_check_timeout",
-                notes="Self-check timed out before returning a verdict.",
-                response_text="",
-                passed=False,
+            return _annotate_task_close_gate_artifactless_write_activity(
+                TaskCloseGateAssessment(
+                    status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
+                    reason="task_self_check_timeout",
+                    notes="Self-check timed out before returning a verdict.",
+                    response_text="",
+                    passed=False,
+                ),
+                task_request=task_request,
+                files_changed=files_changed,
+                proposal_payload=proposal_payload,
+                write_activity_count=write_activity_count,
             )
         except PlannerOutputError as exc:
-            return TaskCloseGateAssessment(
-                status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
-                reason="planner_output_invalid",
-                notes=f"Self-check planner output was invalid: {exc}",
-                response_text="",
-                passed=False,
+            return _annotate_task_close_gate_artifactless_write_activity(
+                TaskCloseGateAssessment(
+                    status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
+                    reason="planner_output_invalid",
+                    notes=f"Self-check planner output was invalid: {exc}",
+                    response_text="",
+                    passed=False,
+                ),
+                task_request=task_request,
+                files_changed=files_changed,
+                proposal_payload=proposal_payload,
+                write_activity_count=write_activity_count,
             )
         except Exception as exc:
             logger.warning(
@@ -13889,12 +13902,18 @@ class SessionImplMixin(HandlerMixinBase):
                 task_session.id,
                 exc_info=True,
             )
-            return TaskCloseGateAssessment(
-                status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
-                reason=f"task_self_check_error_{exc.__class__.__name__.lower()}",
-                notes="Self-check failed before returning a verdict.",
-                response_text="",
-                passed=False,
+            return _annotate_task_close_gate_artifactless_write_activity(
+                TaskCloseGateAssessment(
+                    status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
+                    reason=f"task_self_check_error_{exc.__class__.__name__.lower()}",
+                    notes="Self-check failed before returning a verdict.",
+                    response_text="",
+                    passed=False,
+                ),
+                task_request=task_request,
+                files_changed=files_changed,
+                proposal_payload=proposal_payload,
+                write_activity_count=write_activity_count,
             )
         return _annotate_task_close_gate_artifactless_write_activity(
             _parse_task_close_gate_response(response_text),

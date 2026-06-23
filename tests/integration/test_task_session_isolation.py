@@ -1384,9 +1384,11 @@ async def test_m1_task_close_gate_blocks_incomplete_handoff_before_task_session_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("self_check_mode", ("false_complete", "error"))
 async def test_gh80_task_close_gate_explains_write_activity_without_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    self_check_mode: str,
 ) -> None:
     async def _planner(
         self: Planner,
@@ -1398,6 +1400,8 @@ async def test_gh80_task_close_gate_explains_write_activity_without_artifacts(
     ) -> PlannerResult:
         _ = (tools, persona_tone_override)
         if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            if self_check_mode == "error":
+                raise RuntimeError("close_gate_unavailable")
             return PlannerResult(
                 output=PlannerOutput(
                     assistant_response=(
