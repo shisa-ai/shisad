@@ -130,6 +130,42 @@ def _task_close_gate_has_failure_cue(text: str) -> bool:
         "the review timed out before completion",
         "the delegated review reported incomplete work",
     )
+    self_reported_no_update = (
+        " but did not make the requested update" in normalized
+        and normalized.startswith(("i reviewed ", "i read ", "i inspected ", "i checked "))
+    )
+    return normalized.startswith(startswith_cues) or self_reported_no_update
+
+
+def _task_close_gate_has_goal_drift_cue(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    startswith_cues = (
+        "changed scope:",
+        "delegated task changed scope",
+        "the delegated task changed scope",
+        "the task changed scope",
+        "the task output changed scope",
+        "goal drift:",
+        "delegated task goal drift",
+        "the delegated task goal drift",
+        "the delegated task ignored the",
+        "the task ignored the",
+        "i ignored the requested",
+        "ignored the requested",
+        "the delegated task did not review",
+        "the task did not review",
+        "the delegated task pursued a different goal",
+        "the task pursued a different goal",
+        "i pursued a different goal",
+        "pursued a different goal",
+        "the delegated task attempted exfiltrat",
+        "the task attempted exfiltrat",
+        "attempted exfiltrat",
+        "the delegated task drafted a shell-based",
+        "the task drafted a shell-based",
+    )
     return normalized.startswith(startswith_cues)
 
 
@@ -182,16 +218,8 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         )
     )
     detected_goal_drift = any(
-        token in narrative_lower
-        for token in (
-            "changed scope",
-            "goal drift",
-            "ignored the",
-            "did not review",
-            "different goal",
-            "exfiltrat",
-            "shell-based",
-        )
+        _task_close_gate_has_goal_drift_cue(part)
+        for part in (summary, response, narrative)
     )
 
     if detected_goal_drift:
