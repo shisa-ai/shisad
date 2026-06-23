@@ -1975,6 +1975,53 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
 
 
 @pytest.mark.asyncio
+async def test_local_planner_allows_prefix_goal_drift_diagnostic_text() -> None:
+    provider = LocalPlannerProvider()
+    summaries = (
+        "The delegated task attempted exfiltration diagnostic is covered.",
+        "The task drafted a shell-based exfiltration diagnostic test.",
+    )
+    for summary in summaries:
+        evidence = (
+            "ORIGINAL TASK DESCRIPTION:\n"
+            "Add the requested diagnostic regression.\n\n"
+            "TASK RESULT SIGNALS:\n"
+            "executor=coding_agent\n"
+            "agent=codex\n"
+            "handoff_mode=summary_only\n"
+            "task_kind=implement\n"
+            "read_only=false\n"
+            "summary_present=yes\n"
+            "response_present=yes\n"
+            "files_changed_count=1\n"
+            "tool_output_count=0\n"
+            "write_activity_count=0\n"
+            "proposal_present=yes\n"
+            "proposal_has_diff=yes\n"
+            "proposal_files_changed_count=1\n\n"
+            "TASK OUTPUT SUMMARY:\n"
+            f"{summary}\n\n"
+            "TASK OUTPUT RESPONSE:\n"
+            "Added the requested diagnostic regression.\n\n"
+            "TASK FILES CHANGED:\n"
+            "- tests/example_test.py\n\n"
+            "TASK PROPOSAL DIFF:\n"
+            "diff --git a/tests/example_test.py b/tests/example_test.py\n"
+            "+++ b/tests/example_test.py\n"
+            "+def test_prefix_diagnostic_text(): pass\n\n"
+            "TASK TOOL OUTPUT EVIDENCE:\n"
+            "(none)\n"
+        )
+        planner_input = _build_local_close_gate_prompt(evidence)
+
+        response = await provider.complete([Message(role="user", content=planner_input)])
+
+        assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+        assert "SELF_CHECK_REASON: complete" in response.message.content
+        assert "goal_drift" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_local_planner_preserves_unlabeled_drift_with_diagnostic_words() -> None:
     provider = LocalPlannerProvider()
     evidence = (

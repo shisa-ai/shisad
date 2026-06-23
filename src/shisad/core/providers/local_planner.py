@@ -451,7 +451,7 @@ def _task_close_gate_goal_drift_fragment_has_cue(
     if normalized.startswith(_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES):
         return True
     if normalized.startswith(_TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES):
-        return True
+        return not _task_close_gate_discusses_diagnostic_text(normalized)
     if any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)
         for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES
