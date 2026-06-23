@@ -288,9 +288,8 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     task_kind = signals.get("task_kind", "")
     read_only = signals.get("read_only") == "true"
     executor = signals.get("executor", "")
-    diagnostic_review_context = read_only and task_kind == "review" and any(
-        token in task_description.lower()
-        for token in ("diagnostic", "close-gate", "fallback")
+    diagnostic_review_context = read_only and task_kind == "review" and (
+        "close-gate fallback diagnostics" in task_description.lower()
     )
     artifact_evidence_present = files_present or proposal_has_diff
     artifactless_write_activity = (
