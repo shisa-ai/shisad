@@ -1387,6 +1387,47 @@ async def test_local_planner_preserves_later_sentence_failure_cue_for_review() -
 
 
 @pytest.mark.asyncio
+async def test_local_planner_preserves_newline_statement_goal_drift_for_review() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Review README.md and summarize findings.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=planner\n"
+        "agent=(none)\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=review\n"
+        "read_only=true\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=0\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=no\n"
+        "proposal_has_diff=no\n"
+        "proposal_files_changed_count=0\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Reviewed README.md\n"
+        "Did not review README.md because I focused elsewhere.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "I focused on a different file instead.\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "(none)\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: MISMATCH" in response.message.content
+    assert "SELF_CHECK_REASON: goal_drift" in response.message.content
+    assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_local_planner_preserves_semicolon_failure_cue_for_review() -> None:
     provider = LocalPlannerProvider()
     evidence = (
@@ -1411,6 +1452,48 @@ async def test_local_planner_preserves_semicolon_failure_cue_for_review() -> Non
         "TASK OUTPUT RESPONSE:\n"
         "Reviewed the requested README content; The delegated review reported "
         "incomplete work because the findings were not finished.\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "(none)\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: INCOMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: incomplete_work" in response.message.content
+    assert "SELF_CHECK_STATUS: COMPLETE" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_preserves_newline_statement_failure_cue_for_review() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Review README.md and summarize findings.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=planner\n"
+        "agent=(none)\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=review\n"
+        "read_only=true\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=0\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=no\n"
+        "proposal_has_diff=no\n"
+        "proposal_files_changed_count=0\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Reviewed the requested README content.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "Reviewed the requested README content\n"
+        "The delegated review reported incomplete work because the findings were "
+        "not finished.\n\n"
         "TASK FILES CHANGED:\n"
         "(none)\n\n"
         "TASK PROPOSAL DIFF:\n"

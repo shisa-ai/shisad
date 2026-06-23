@@ -157,6 +157,87 @@ def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
         yield fragment
 
 
+_TASK_CLOSE_GATE_FAILURE_START_CUES = (
+    "delegated task failed before completion",
+    "delegated task timed out before completion",
+    "requested coding agent is not available",
+    "could not create or inspect the isolated worktree",
+    "the delegated task did not make the requested update",
+    "the delegated task reported incomplete work",
+    "the review timed out before completion",
+    "the delegated review reported incomplete work",
+)
+
+_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES = (
+    "the delegated task ignored the ",
+    "the task ignored the ",
+    "i ignored the requested ",
+    "ignored the requested ",
+)
+
+_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES = (
+    "the delegated task did not review ",
+    "the task did not review ",
+    "i did not review ",
+    "did not review ",
+)
+
+_TASK_CLOSE_GATE_GOAL_DRIFT_LABEL_CUES = (
+    "changed scope:",
+    "goal drift:",
+)
+
+_TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES = (
+    "delegated task changed scope",
+    "the delegated task changed scope",
+    "the task changed scope",
+    "the task output changed scope",
+    "delegated task goal drift",
+    "the delegated task goal drift",
+    "the delegated task pursued a different goal",
+    "the task pursued a different goal",
+    "i pursued a different goal",
+    "pursued a different goal",
+    "the delegated task attempted exfiltrat",
+    "the task attempted exfiltrat",
+    "attempted exfiltrat",
+    "the delegated task drafted a shell-based",
+    "the task drafted a shell-based",
+)
+
+_TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES = tuple(
+    cue.strip()
+    for cue in (
+        *_TASK_CLOSE_GATE_FAILURE_START_CUES,
+        *_TASK_CLOSE_GATE_GOAL_DRIFT_LABEL_CUES,
+        *_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES,
+        *_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES,
+        *_TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES,
+    )
+)
+
+_TASK_CLOSE_GATE_SOFT_WRAP_REQUIRED_CONTINUATION_CUES = tuple(
+    cue.strip()
+    for cue in (
+        *_TASK_CLOSE_GATE_GOAL_DRIFT_LABEL_CUES,
+        *_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES,
+        *_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES,
+    )
+)
+
+
+def _task_close_gate_can_soft_wrap_statement(current: str) -> bool:
+    if not current or current.endswith((".", "!", "?")):
+        return False
+    candidate_prefix = f"{current} "
+    if any(
+        cue.startswith(candidate_prefix)
+        for cue in _TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES
+    ):
+        return True
+    return current in _TASK_CLOSE_GATE_SOFT_WRAP_REQUIRED_CONTINUATION_CUES
+
+
 def _task_close_gate_normalized_statement_text(text: str) -> str:
     statements: list[str] = []
     current = ""
@@ -180,7 +261,11 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
             if not line:
                 flush_current()
                 continue
-            if bullet or current.endswith((".", "!", "?")):
+            if (
+                bullet
+                or current.endswith((".", "!", "?"))
+                or (current and not _task_close_gate_can_soft_wrap_statement(current))
+            ):
                 flush_current()
             current = f"{current} {line}".strip() if current else line
         flush_current()
@@ -188,19 +273,9 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
 
 
 def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
-    startswith_cues = (
-        "delegated task failed before completion",
-        "delegated task timed out before completion",
-        "requested coding agent is not available",
-        "could not create or inspect the isolated worktree",
-        "the delegated task did not make the requested update",
-        "the delegated task reported incomplete work",
-        "the review timed out before completion",
-        "the delegated review reported incomplete work",
-    )
     return any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)
-        for cue in startswith_cues
+        for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
     )
 
 
@@ -326,7 +401,7 @@ def _task_close_gate_goal_drift_fragment_has_cue(
     diagnostic_review_context: bool,
 ) -> bool:
     while True:
-        for label in ("changed scope:", "goal drift:"):
+        for label in _TASK_CLOSE_GATE_GOAL_DRIFT_LABEL_CUES:
             if not normalized.startswith(label):
                 continue
             remainder = normalized[len(label) :].lstrip()
@@ -338,43 +413,14 @@ def _task_close_gate_goal_drift_fragment_has_cue(
             break
         else:
             break
-    general_object_cues = (
-        "the delegated task ignored the ",
-        "the task ignored the ",
-        "i ignored the requested ",
-        "ignored the requested ",
-    )
-    review_object_cues = (
-        "the delegated task did not review ",
-        "the task did not review ",
-        "i did not review ",
-        "did not review ",
-    )
-    if normalized.startswith(general_object_cues):
+    if normalized.startswith(_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES):
         return True
-    startswith_cues = (
-        "delegated task changed scope",
-        "the delegated task changed scope",
-        "the task changed scope",
-        "the task output changed scope",
-        "delegated task goal drift",
-        "the delegated task goal drift",
-        "the delegated task pursued a different goal",
-        "the task pursued a different goal",
-        "i pursued a different goal",
-        "pursued a different goal",
-        "the delegated task attempted exfiltrat",
-        "the task attempted exfiltrat",
-        "attempted exfiltrat",
-        "the delegated task drafted a shell-based",
-        "the task drafted a shell-based",
-    )
     if any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)
-        for cue in startswith_cues
+        for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES
     ):
         return True
-    if review_result and normalized.startswith(review_object_cues):
+    if review_result and normalized.startswith(_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES):
         has_drift_continuation = any(
             token in normalized
             for token in (" because ", " focused on ", " instead", " while ")
