@@ -352,10 +352,6 @@ def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
     return False
 
 
-def _task_close_gate_failure_fragment_starts_with_cue(normalized: str) -> bool:
-    return any(normalized.startswith(cue) for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES)
-
-
 def _task_close_gate_discusses_failure_cue_as_diagnostic(
     normalized: str,
     cue: str,
@@ -369,20 +365,32 @@ def _task_close_gate_discusses_failure_cue_as_diagnostic(
     return _task_close_gate_discusses_diagnostic_case(diagnostic_remainder)
 
 
+def _task_close_gate_failure_fragment_is_diagnostic_prefix(
+    *,
+    normalized: str,
+    fragment: str,
+) -> bool:
+    if not normalized.startswith(fragment) or not fragment.endswith((":", ";")):
+        return False
+    return any(
+        fragment.startswith(cue)
+        and _task_close_gate_discusses_failure_cue_as_diagnostic(normalized, cue)
+        for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
+    )
+
+
 def _task_close_gate_has_failure_cue(text: str) -> bool:
     normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
-    failure_diagnostic_statement = any(
-        _task_close_gate_discusses_failure_cue_as_diagnostic(normalized, cue)
-        for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
-    )
     return any(
         (
             not (
-                failure_diagnostic_statement
-                and fragment != normalized
-                and _task_close_gate_failure_fragment_starts_with_cue(fragment)
+                fragment != normalized
+                and _task_close_gate_failure_fragment_is_diagnostic_prefix(
+                    normalized=normalized,
+                    fragment=fragment,
+                )
             )
             and _task_close_gate_failure_fragment_has_cue(fragment)
         )
@@ -473,6 +481,18 @@ def _task_close_gate_prefix_remainder_is_diagnostic_subject(
     if "shell-based" in cue:
         return remainder in {"", "exfiltration"}
     return False
+
+
+def _task_close_gate_prefix_fragment_is_diagnostic_prefix(
+    *,
+    normalized: str,
+    fragment: str,
+) -> bool:
+    if not normalized.startswith(fragment) or not fragment.endswith((":", ";")):
+        return False
+    return normalized.startswith(
+        _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+    ) and _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized)
 
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
@@ -583,9 +603,6 @@ def _task_close_gate_has_goal_drift_cue(
     normalized = _task_close_gate_normalized_statement_text(text)
     if not normalized:
         return False
-    prefix_drift_diagnostic_statement = normalized.startswith(
-        _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
-    ) and _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized)
     if _task_close_gate_goal_drift_fragment_has_cue(
         normalized,
         review_result=review_result,
@@ -604,8 +621,9 @@ def _task_close_gate_has_goal_drift_cue(
             and _task_close_gate_discusses_diagnostic_case(normalized)
         ):
             continue
-        if prefix_drift_diagnostic_statement and fragment.startswith(
-            _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+        if _task_close_gate_prefix_fragment_is_diagnostic_prefix(
+            normalized=normalized,
+            fragment=fragment,
         ):
             continue
         if _task_close_gate_goal_drift_fragment_has_cue(
