@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import shlex
+from collections.abc import Iterator
 from typing import Any
 
 from shisad.core.providers.base import EmbeddingResponse, Message, ProviderResponse
@@ -141,25 +142,17 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
     return remainder.startswith(("and ", "because ", "but ", "while ", "instead ", "to "))
 
 
-def _task_close_gate_trailing_statement_fragments(normalized: str) -> tuple[str, ...]:
-    fragments: list[str] = []
-    for separator in (". ", "! ", "? "):
-        parts = normalized.split(separator)
-        if len(parts) < 2:
+def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
+    yield normalized
+    for index in range(len(normalized) - 1):
+        if normalized[index] not in ".!?" or normalized[index + 1] != " ":
             continue
-        fragments.extend(part.strip() for part in parts[1:] if part.strip())
-    return tuple(fragments)
+        fragment = normalized[index + 2 :].strip()
+        if fragment:
+            yield fragment
 
 
-def _task_close_gate_has_failure_cue(text: str) -> bool:
-    normalized = " ".join(text.lower().split())
-    if not normalized:
-        return False
-    if any(
-        _task_close_gate_has_failure_cue(fragment)
-        for fragment in _task_close_gate_trailing_statement_fragments(normalized)
-    ):
-        return True
+def _task_close_gate_failure_fragment_has_cue(normalized: str) -> bool:
     startswith_cues = (
         "delegated task failed before completion",
         "delegated task timed out before completion",
@@ -173,6 +166,16 @@ def _task_close_gate_has_failure_cue(text: str) -> bool:
     return any(
         _task_close_gate_starts_with_statement_cue(normalized, cue)
         for cue in startswith_cues
+    )
+
+
+def _task_close_gate_has_failure_cue(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(
+        _task_close_gate_failure_fragment_has_cue(fragment)
+        for fragment in _task_close_gate_statement_fragments(normalized)
     )
 
 
@@ -238,36 +241,25 @@ def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
     return False
 
 
-def _task_close_gate_has_goal_drift_cue(
-    text: str,
+def _task_close_gate_goal_drift_fragment_has_cue(
+    normalized: str,
     *,
     review_result: bool,
     diagnostic_review_context: bool,
 ) -> bool:
-    normalized = " ".join(text.lower().split())
-    if not normalized:
-        return False
-    if any(
-        _task_close_gate_has_goal_drift_cue(
-            fragment,
-            review_result=review_result,
-            diagnostic_review_context=diagnostic_review_context,
-        )
-        for fragment in _task_close_gate_trailing_statement_fragments(normalized)
-    ):
-        return True
-    for label in ("changed scope:", "goal drift:"):
-        if normalized.startswith(label):
+    while True:
+        for label in ("changed scope:", "goal drift:"):
+            if not normalized.startswith(label):
+                continue
             remainder = normalized[len(label) :].lstrip()
             if not remainder:
                 return False
             if _task_close_gate_label_value_is_truthy(remainder):
                 return True
-            return _task_close_gate_has_goal_drift_cue(
-                remainder,
-                review_result=review_result,
-                diagnostic_review_context=diagnostic_review_context,
-            )
+            normalized = remainder
+            break
+        else:
+            break
     general_object_cues = (
         "the delegated task ignored the ",
         "the task ignored the ",
@@ -324,6 +316,25 @@ def _task_close_gate_has_goal_drift_cue(
     if _task_close_gate_discusses_diagnostic_text(normalized):
         return False
     return False
+
+
+def _task_close_gate_has_goal_drift_cue(
+    text: str,
+    *,
+    review_result: bool,
+    diagnostic_review_context: bool,
+) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+    return any(
+        _task_close_gate_goal_drift_fragment_has_cue(
+            fragment,
+            review_result=review_result,
+            diagnostic_review_context=diagnostic_review_context,
+        )
+        for fragment in _task_close_gate_statement_fragments(normalized)
+    )
 
 
 def _task_close_gate_local_response(planner_input: str) -> str:
