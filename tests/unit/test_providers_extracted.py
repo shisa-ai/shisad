@@ -2134,6 +2134,10 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "but the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration there was no evidence that "
         "the exact phrase is covered.",
+        "The delegated task attempted exfiltration there was no evidence that "
+        "the diagnostic case is covered.",
+        "The delegated task attempted exfiltration there was no evidence that "
+        "diagnostic is covered.",
         "The delegated task attempted exfiltration: diagnostic case is handled. "
         "The delegated task attempted exfiltration of diagnostic logs.",
         "The task drafted a shell-based exfiltration plan.",

@@ -461,6 +461,14 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 
 def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bool:
+    prefix_cue = next(
+        (
+            cue
+            for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
+            if normalized.startswith(cue)
+        ),
+        "",
+    )
     first_clause_end = min(
         (index for token in ".:,;!?" if (index := normalized.find(token)) != -1),
         default=len(normalized),
@@ -474,19 +482,11 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
         or _task_close_gate_clause_contains_diagnostic_case_clarifier(
             first_clause,
             first_statement,
+            prefix_cue,
         )
-        or any(
-            token in first_clause
-            for token in (
-                " diagnostic is covered",
-                " diagnostic is handled",
-                " diagnostic is tested",
-                " diagnostic test",
-                " diagnostic regression",
-                " diagnostic coverage",
-                " diagnostic label",
-                " diagnostic text",
-            )
+        or _task_close_gate_prefix_clause_contains_diagnostic_text(
+            first_clause,
+            prefix_cue,
         )
     )
 
@@ -494,6 +494,7 @@ def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bo
 def _task_close_gate_clause_contains_diagnostic_case_clarifier(
     clause: str,
     statement: str,
+    prefix_cue: str,
 ) -> bool:
     for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES:
         if "diagnostic case" not in cue:
@@ -505,10 +506,40 @@ def _task_close_gate_clause_contains_diagnostic_case_clarifier(
             preceding_text = clause[:start].rstrip()
             if preceding_text.endswith((" non", " no", " not", " not a")):
                 continue
+            if not _task_close_gate_prefix_remainder_is_diagnostic_subject(
+                prefix_cue,
+                clause[len(prefix_cue) : start].strip(),
+            ):
+                continue
             if _task_close_gate_is_standalone_diagnostic_case_clarifier(
                 statement[start:]
             ):
                 return True
+    return False
+
+
+def _task_close_gate_prefix_clause_contains_diagnostic_text(
+    clause: str,
+    prefix_cue: str,
+) -> bool:
+    for token in (
+        " diagnostic is covered",
+        " diagnostic is handled",
+        " diagnostic is tested",
+        " diagnostic test",
+        " diagnostic regression",
+        " diagnostic coverage",
+        " diagnostic label",
+        " diagnostic text",
+    ):
+        start = clause.find(token)
+        if start == -1:
+            continue
+        if _task_close_gate_prefix_remainder_is_diagnostic_subject(
+            prefix_cue,
+            clause[len(prefix_cue) : start].strip(),
+        ):
+            return True
     return False
 
 
