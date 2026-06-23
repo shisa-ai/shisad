@@ -508,6 +508,8 @@ async def test_gh80_local_planner_provider_allows_artifacted_failure_diagnostic_
         "The delegated task reported incomplete work: diagnostic case is covered.",
         "The delegated task did not make the requested update; diagnostic case is handled.",
         "The review timed out before completion; diagnostic case is tested.",
+        "Added regression coverage. The delegated task reported incomplete work; "
+        "diagnostic case is covered.",
     )
     for summary in summaries:
         evidence = (
@@ -734,6 +736,12 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "Reviewed diagnostic wording.",
         ),
         (
+            "Did not review the close-gate fallback diagnostics. The diagnostic "
+            "case is handled. Did not review the close-gate fallback diagnostics "
+            "because I focused on README.",
+            "Reviewed diagnostic wording.",
+        ),
+        (
             "Did not review the close-gate fallback diagnostics because I focused "
             "on diagnostic coverage elsewhere.",
             "That regression is covered by another suite.",
@@ -875,6 +883,47 @@ async def test_local_planner_allows_handled_diagnostic_meta_review_phrase() -> N
         "TASK OUTPUT SUMMARY:\n"
         "Did not review the close-gate fallback diagnostics because I focused "
         "on diagnostic coverage elsewhere. The diagnostic case is handled.\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "The exact phrase is covered as diagnostic text.\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "(none)\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        "(none)\n"
+    )
+    planner_input = _build_local_close_gate_prompt(evidence)
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+    assert "goal_drift" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_allows_nonleading_diagnostic_meta_review_phrase() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Review the close-gate fallback diagnostics.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=planner\n"
+        "agent=(none)\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=review\n"
+        "read_only=true\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=0\n"
+        "tool_output_count=0\n"
+        "write_activity_count=0\n"
+        "proposal_present=no\n"
+        "proposal_has_diff=no\n"
+        "proposal_files_changed_count=0\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "Reviewed the diagnostic wording. Did not review the close-gate fallback "
+        "diagnostics. The diagnostic case is handled.\n\n"
         "TASK OUTPUT RESPONSE:\n"
         "The exact phrase is covered as diagnostic text.\n\n"
         "TASK FILES CHANGED:\n"
@@ -2100,6 +2149,8 @@ async def test_local_planner_allows_prefix_goal_drift_diagnostic_text() -> None:
         "The delegated task attempted exfiltration: diagnostic case is handled.",
         "The task drafted a shell-based exfiltration diagnostic test.",
         "The task drafted a shell-based exfiltration; diagnostic case is tested.",
+        "Added regression coverage. The task drafted a shell-based exfiltration; "
+        "diagnostic case is tested.",
     )
     for summary in summaries:
         evidence = (

@@ -178,6 +178,23 @@ def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
         yield fragment
 
 
+def _task_close_gate_statement_fragment_contexts(
+    normalized: str,
+) -> Iterator[tuple[str, str]]:
+    yield normalized, ""
+    start = 0
+    for index in range(len(normalized) - 1):
+        if normalized[index] not in ".!?;" or normalized[index + 1] != " ":
+            continue
+        fragment = normalized[start : index + 1].strip()
+        if fragment and fragment != normalized:
+            yield fragment, normalized[index + 2 :].strip()
+        start = index + 2
+    fragment = normalized[start:].strip()
+    if fragment and fragment != normalized:
+        yield fragment, ""
+
+
 _TASK_CLOSE_GATE_FAILURE_START_CUES = (
     "delegated task failed before completion",
     "delegated task timed out before completion",
@@ -367,14 +384,13 @@ def _task_close_gate_discusses_failure_cue_as_diagnostic(
 
 def _task_close_gate_failure_fragment_is_diagnostic_prefix(
     *,
-    normalized: str,
     fragment: str,
+    following_text: str,
 ) -> bool:
-    if not normalized.startswith(fragment) or not fragment.endswith((":", ";")):
+    if not fragment.endswith((":", ";")):
         return False
     return any(
-        fragment.startswith(cue)
-        and _task_close_gate_discusses_failure_cue_as_diagnostic(normalized, cue)
+        fragment.startswith(cue) and _task_close_gate_discusses_diagnostic_case(following_text)
         for cue in _TASK_CLOSE_GATE_FAILURE_START_CUES
     )
 
@@ -384,17 +400,14 @@ def _task_close_gate_has_failure_cue(text: str) -> bool:
     if not normalized:
         return False
     return any(
-        (
-            not (
-                fragment != normalized
-                and _task_close_gate_failure_fragment_is_diagnostic_prefix(
-                    normalized=normalized,
-                    fragment=fragment,
-                )
-            )
-            and _task_close_gate_failure_fragment_has_cue(fragment)
+        not _task_close_gate_failure_fragment_is_diagnostic_prefix(
+            fragment=fragment,
+            following_text=following_text,
         )
-        for fragment in _task_close_gate_statement_fragments(normalized)
+        and _task_close_gate_failure_fragment_has_cue(fragment)
+        for fragment, following_text in _task_close_gate_statement_fragment_contexts(
+            normalized
+        )
     )
 
 
@@ -485,14 +498,25 @@ def _task_close_gate_prefix_remainder_is_diagnostic_subject(
 
 def _task_close_gate_prefix_fragment_is_diagnostic_prefix(
     *,
-    normalized: str,
     fragment: str,
+    following_text: str,
 ) -> bool:
-    if not normalized.startswith(fragment) or not fragment.endswith((":", ";")):
+    if not fragment.endswith((":", ";")):
         return False
-    return normalized.startswith(
+    return fragment.startswith(
         _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
-    ) and _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized)
+    ) and _task_close_gate_discusses_diagnostic_case(following_text)
+
+
+def _task_close_gate_diagnostic_meta_fragment_has_clarifier(
+    *,
+    fragment: str,
+    following_text: str,
+) -> bool:
+    return _task_close_gate_mentions_diagnostic_meta_review_target(fragment) and (
+        _task_close_gate_discusses_diagnostic_case(fragment)
+        or _task_close_gate_discusses_diagnostic_case(following_text)
+    )
 
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
@@ -609,7 +633,7 @@ def _task_close_gate_has_goal_drift_cue(
         diagnostic_review_context=diagnostic_review_context,
     ):
         return True
-    for fragment in _task_close_gate_statement_fragments(normalized):
+    for fragment, following_text in _task_close_gate_statement_fragment_contexts(normalized):
         if fragment == normalized:
             continue
         # The combined diagnostic-meta narrative can include a clarifying
@@ -617,13 +641,15 @@ def _task_close_gate_has_goal_drift_cue(
         # override a full narrative that already resolved as benign.
         if (
             diagnostic_review_context
-            and _task_close_gate_mentions_diagnostic_meta_review_target(fragment)
-            and _task_close_gate_discusses_diagnostic_case(normalized)
+            and _task_close_gate_diagnostic_meta_fragment_has_clarifier(
+                fragment=fragment,
+                following_text=following_text,
+            )
         ):
             continue
         if _task_close_gate_prefix_fragment_is_diagnostic_prefix(
-            normalized=normalized,
             fragment=fragment,
+            following_text=following_text,
         ):
             continue
         if _task_close_gate_goal_drift_fragment_has_cue(
