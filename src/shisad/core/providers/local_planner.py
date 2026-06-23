@@ -203,53 +203,59 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
     return any(
-        _task_close_gate_has_diagnostic_case_cue(normalized, cue)
+        _task_close_gate_statement_has_diagnostic_case_cue(fragment)
+        for fragment in _task_close_gate_statement_fragments(normalized)
+    )
+
+
+def _task_close_gate_statement_has_diagnostic_case_cue(normalized: str) -> bool:
+    case_subjects = (
+        "case",
+        "diagnostic case",
+        "the diagnostic case",
+        "this diagnostic case",
+        "that diagnostic case",
+        "a diagnostic case",
+    )
+    phrase_subjects = (
+        "exact phrase",
+        "the exact phrase",
+        "this exact phrase",
+        "that exact phrase",
+        "phrase under inspection",
+        "the phrase under inspection",
+        "this phrase under inspection",
+        "that phrase under inspection",
+    )
+    return any(
+        _task_close_gate_has_diagnostic_case_statement_prefix(
+            normalized, f"{subject} is {state}"
+        )
+        for subject in case_subjects
+        for state in ("covered", "handled", "tested")
+    ) or any(
+        _task_close_gate_has_diagnostic_case_statement_prefix(normalized, cue)
         for cue in (
-            "case is handled",
-            "case is tested",
-            "case is covered",
-            "exact phrase is covered",
+            *(f"{subject} is covered" for subject in phrase_subjects),
             "phrase under inspection",
+            "the phrase under inspection",
+            "this phrase under inspection",
+            "that phrase under inspection",
         )
     )
 
 
-def _task_close_gate_has_diagnostic_case_cue(normalized: str, cue: str) -> bool:
-    start = 0
-    while True:
-        index = normalized.find(cue, start)
-        if index < 0:
-            return False
-        prefix = normalized[:index].rstrip()
-        if _task_close_gate_prefix_has_near_negator(prefix):
-            start = index + 1
-            continue
-        if cue.startswith("case is") and not (
-            _task_close_gate_has_explicit_diagnostic_case_prefix(prefix)
-        ):
-            start = index + 1
-            continue
-        remainder = normalized[index + len(cue) :].lstrip()
-        if not remainder:
-            return True
-        if remainder[0] in ".:,;!?":
-            return True
-        if remainder.startswith("as "):
-            return True
-        start = index + 1
-
-
-def _task_close_gate_prefix_has_near_negator(text: str) -> bool:
-    return any(word in {"no", "non", "not"} for word in text.split()[-3:])
-
-
-def _task_close_gate_has_explicit_diagnostic_case_prefix(text: str) -> bool:
-    words = text.split()
-    if not words or words[-1] != "diagnostic":
+def _task_close_gate_has_diagnostic_case_statement_prefix(
+    normalized: str, cue: str
+) -> bool:
+    if not normalized.startswith(cue):
         return False
-    if len(words) == 1:
+    remainder = normalized[len(cue) :].lstrip()
+    if not remainder:
         return True
-    return words[-2] in {"a", "an", "that", "the", "this"}
+    if remainder[0] in ".:,;!?":
+        return True
+    return remainder.startswith("as ")
 
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
