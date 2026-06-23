@@ -159,14 +159,31 @@ def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
 
 def _task_close_gate_normalized_statement_text(text: str) -> str:
     statements: list[str] = []
-    for raw_line in text.replace(";", "\n").splitlines():
-        line = " ".join(raw_line.lower().split())
-        while line.startswith(("- ", "* ")):
-            line = line[2:].lstrip()
-        while line.startswith(("-", "*")):
-            line = line[1:].lstrip()
-        if line:
-            statements.append(line)
+    current = ""
+
+    def flush_current() -> None:
+        nonlocal current
+        if current:
+            statements.append(current)
+            current = ""
+
+    for raw_segment in text.split(";"):
+        for raw_line in raw_segment.splitlines():
+            line = " ".join(raw_line.lower().split())
+            bullet = False
+            while line.startswith(("- ", "* ")):
+                line = line[2:].lstrip()
+                bullet = True
+            while line.startswith(("-", "*")):
+                line = line[1:].lstrip()
+                bullet = True
+            if not line:
+                flush_current()
+                continue
+            if bullet or current.endswith((".", "!", "?")):
+                flush_current()
+            current = f"{current} {line}".strip() if current else line
+        flush_current()
     return ". ".join(statements)
 
 
