@@ -157,6 +157,8 @@ def _is_unknown_session_error(exc: Exception) -> bool:
     if rpc_code != -32602:
         return False
     lowered = message.lower()
+    if _is_session_id_validation_error(lowered):
+        return True
     return any(
         marker in lowered
         for marker in (
@@ -165,6 +167,16 @@ def _is_unknown_session_error(exc: Exception) -> bool:
             "session not found",
             "invalid session",
         )
+    )
+
+
+def _is_session_id_validation_error(lowered_message: str) -> bool:
+    """Match the daemon's bounded schema error for invalid session.message ids."""
+    if "sessionmessageparams" not in lowered_message or "session_id" not in lowered_message:
+        return False
+    return (
+        "input should be a valid string" in lowered_message
+        or "field required" in lowered_message
     )
 
 
@@ -235,7 +247,7 @@ class ChatApp(App[None]):
         self._transcript_root = None if data_dir is None else data_dir / "sessions"
         self._user_id = user_id
         self._workspace_id = workspace_id
-        self._session_id = session_id
+        self._session_id = self._normalize_session_id(session_id)
         self._reuse_bound_session = reuse_bound_session
         self._reconnected = False
         self._prompt_history: list[str] = []
@@ -358,8 +370,9 @@ class ChatApp(App[None]):
 
     async def _ensure_session(self, client: Any) -> None:
         """Create a session if one wasn't provided."""
-        if self._session_id:
+        if self._active_session_id():
             return
+        self._session_id = None
         if self._reuse_bound_session:
             existing_session_id, lockdown_level = await self._find_bound_session(client)
             if existing_session_id:
@@ -421,7 +434,8 @@ class ChatApp(App[None]):
         If the session is unknown (daemon restarted), automatically creates
         a new session and retries once.
         """
-        if not self._session_id:
+        if not self._active_session_id():
+            self._session_id = None
             await self._ensure_session(client)
         try:
             result = await self._do_session_message(client, content)
@@ -446,7 +460,7 @@ class ChatApp(App[None]):
 
     async def _do_session_message(self, client: Any, content: str) -> dict[str, Any]:
         """Call session.message RPC and return the raw result dict."""
-        session_id = str(self._session_id or "").strip()
+        session_id = self._active_session_id()
         if not session_id:
             raise RuntimeError("No active session; could not send message")
         result = await client.call(
@@ -456,6 +470,14 @@ class ChatApp(App[None]):
         if not isinstance(result, Mapping):
             raise RuntimeError(f"Invalid session.message response type: {type(result).__name__}")
         return dict(result)
+
+    @staticmethod
+    def _normalize_session_id(session_id: str | None) -> str | None:
+        sid = str(session_id or "").strip()
+        return sid or None
+
+    def _active_session_id(self) -> str:
+        return str(self._session_id or "").strip()
 
     @staticmethod
     def _extract_response(result: dict[str, Any]) -> str:

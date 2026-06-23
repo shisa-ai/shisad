@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from textual.widgets import Markdown, TextArea
 
+from shisad.core.api.transport import JsonRpcCallError
 from shisad.ui.chat import ChatApp, format_assistant_message, format_user_message
 
 # ---------------------------------------------------------------------------
@@ -384,6 +385,34 @@ async def test_chat_app_send_message_creates_session_when_unbound() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_chat_app_send_message_creates_session_when_local_session_id_blank() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="   ",
+        reuse_bound_session=False,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        side_effect=[
+            {"session_id": "fresh-sid"},
+            {"response": "Hello from shisad!"},
+        ]
+    )
+
+    result = await app._send_message(mock_client, "hello")
+
+    assert result == {"response": "Hello from shisad!"}
+    assert app._session_id == "fresh-sid"
+    assert mock_client.call.call_args_list[0].args == ("session.create",)
+    assert mock_client.call.call_args_list[1].kwargs == {
+        "params": {"session_id": "fresh-sid", "content": "hello"}
+    }
+
+
 def test_chat_app_detects_pending_preview_preservation_from_raw_result() -> None:
     assert ChatApp._preserve_pending_preview_escapes({"pending_confirmation_ids": ["c-1"]}) is True
     assert ChatApp._preserve_pending_preview_escapes({"pending_confirmation_ids": []}) is False
@@ -589,6 +618,42 @@ async def test_chat_app_recovers_from_session_expired_variant() -> None:
     assert result == {"response": "Recovered"}
     assert app._session_id == "new-id"
     assert app._reconnected is True
+
+
+@pytest.mark.asyncio
+async def test_chat_app_recovers_from_session_id_validation_error_shape() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="stale-id",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        side_effect=[
+            JsonRpcCallError(
+                code=-32602,
+                message=(
+                    "1 validation error for SessionMessageParams\n"
+                    "session_id\n"
+                    "  Input should be a valid string"
+                ),
+            ),
+            {"sessions": []},
+            {"session_id": "new-id"},
+            {"response": "Recovered"},
+        ]
+    )
+
+    result = await app._send_message(mock_client, "hello")
+
+    assert result == {"response": "Recovered"}
+    assert app._session_id == "new-id"
+    assert app._reconnected is True
+    assert mock_client.call.call_args_list[3].kwargs == {
+        "params": {"session_id": "new-id", "content": "hello"}
+    }
 
 
 @pytest.mark.asyncio
