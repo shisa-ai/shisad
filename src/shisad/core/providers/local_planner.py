@@ -139,7 +139,19 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
         return True
     if remainder[0] in ".:,;-":
         return True
-    return remainder.startswith(("and ", "because ", "but ", "while ", "instead ", "to "))
+    continuation_words = ("and", "because", "but", "while", "instead", "to")
+    for word in continuation_words:
+        if remainder == word or remainder.startswith(f"{word} "):
+            return True
+        if remainder.startswith(word) and remainder[len(word) : len(word) + 1] in {
+            ".",
+            ":",
+            ",",
+            ";",
+            "-",
+        }:
+            return True
+    return False
 
 
 def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
@@ -205,6 +217,49 @@ _TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES = (
     "the task drafted a shell-based",
 )
 
+_TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES = (
+    "the delegated task did not review the close-gate fallback diagnostics",
+    "the delegated task did not review close-gate fallback diagnostics",
+    "the task did not review the close-gate fallback diagnostics",
+    "the task did not review close-gate fallback diagnostics",
+    "i did not review the close-gate fallback diagnostics",
+    "i did not review close-gate fallback diagnostics",
+    "did not review the close-gate fallback diagnostics",
+    "did not review close-gate fallback diagnostics",
+)
+
+_TASK_CLOSE_GATE_DIAGNOSTIC_CASE_SUBJECTS = (
+    "diagnostic case",
+    "the diagnostic case",
+    "this diagnostic case",
+    "that diagnostic case",
+    "a diagnostic case",
+)
+
+_TASK_CLOSE_GATE_DIAGNOSTIC_PHRASE_SUBJECTS = (
+    "exact phrase",
+    "the exact phrase",
+    "this exact phrase",
+    "that exact phrase",
+    "phrase under inspection",
+    "the phrase under inspection",
+    "this phrase under inspection",
+    "that phrase under inspection",
+)
+
+_TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES = (
+    *(
+        f"{subject} is {state}"
+        for subject in _TASK_CLOSE_GATE_DIAGNOSTIC_CASE_SUBJECTS
+        for state in ("covered", "handled", "tested")
+    ),
+    *(f"{subject} is covered" for subject in _TASK_CLOSE_GATE_DIAGNOSTIC_PHRASE_SUBJECTS),
+    "phrase under inspection",
+    "the phrase under inspection",
+    "this phrase under inspection",
+    "that phrase under inspection",
+)
+
 _TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES = tuple(
     cue.strip()
     for cue in (
@@ -213,6 +268,8 @@ _TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES = tuple(
         *_TASK_CLOSE_GATE_GENERAL_OBJECT_CUES,
         *_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES,
         *_TASK_CLOSE_GATE_GOAL_DRIFT_START_CUES,
+        *_TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES,
+        *_TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES,
     )
 )
 
@@ -314,38 +371,9 @@ def _task_close_gate_discusses_diagnostic_case(normalized: str) -> bool:
 
 
 def _task_close_gate_statement_has_diagnostic_case_cue(normalized: str) -> bool:
-    case_subjects = (
-        "diagnostic case",
-        "the diagnostic case",
-        "this diagnostic case",
-        "that diagnostic case",
-        "a diagnostic case",
-    )
-    phrase_subjects = (
-        "exact phrase",
-        "the exact phrase",
-        "this exact phrase",
-        "that exact phrase",
-        "phrase under inspection",
-        "the phrase under inspection",
-        "this phrase under inspection",
-        "that phrase under inspection",
-    )
     return any(
-        _task_close_gate_has_diagnostic_case_statement_prefix(
-            normalized, f"{subject} is {state}"
-        )
-        for subject in case_subjects
-        for state in ("covered", "handled", "tested")
-    ) or any(
         _task_close_gate_has_diagnostic_case_statement_prefix(normalized, cue)
-        for cue in (
-            *(f"{subject} is covered" for subject in phrase_subjects),
-            "phrase under inspection",
-            "the phrase under inspection",
-            "this phrase under inspection",
-            "that phrase under inspection",
-        )
+        for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_CASE_CUES
     )
 
 
@@ -359,21 +387,14 @@ def _task_close_gate_has_diagnostic_case_statement_prefix(
         return True
     if remainder[0] in ".:,;!?":
         return True
-    return remainder.startswith("as ")
+    return remainder == "as" or remainder.startswith("as ")
 
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
-    target_cues = (
-        "the delegated task did not review the close-gate fallback diagnostics",
-        "the delegated task did not review close-gate fallback diagnostics",
-        "the task did not review the close-gate fallback diagnostics",
-        "the task did not review close-gate fallback diagnostics",
-        "i did not review the close-gate fallback diagnostics",
-        "i did not review close-gate fallback diagnostics",
-        "did not review the close-gate fallback diagnostics",
-        "did not review close-gate fallback diagnostics",
+    return any(
+        normalized.startswith(cue)
+        for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES
     )
-    return any(normalized.startswith(cue) for cue in target_cues)
 
 
 def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
