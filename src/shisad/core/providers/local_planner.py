@@ -328,6 +328,10 @@ _TASK_CLOSE_GATE_SOFT_WRAP_REQUIRED_CONTINUATION_CUES = tuple(
 def _task_close_gate_can_soft_wrap_statement(current: str) -> bool:
     if not current or current.endswith((".", "!", "?")):
         return False
+    if current.endswith(" as") and _task_close_gate_statement_has_diagnostic_case_cue(
+        current[:-3]
+    ):
+        return True
     candidate_prefix = f"{current} "
     if any(
         cue.startswith(candidate_prefix)
@@ -573,7 +577,8 @@ def _task_close_gate_is_standalone_diagnostic_case_clarifier(normalized: str) ->
             return True
         if remainder[0] in ".!?":
             return not remainder.strip(".!?").strip()
-        if _task_close_gate_remainder_starts_with_phrase(remainder, ("as",)):
+        normalized_remainder = " ".join(remainder.strip().strip(".!?").split())
+        if normalized_remainder in {"as diagnostic text", "as. diagnostic text"}:
             return True
     return False
 
