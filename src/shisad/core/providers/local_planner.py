@@ -116,6 +116,15 @@ def _task_close_gate_section_has_content(value: str) -> bool:
     return value.strip().lower() not in {"", "(none)", "(empty)"}
 
 
+def _task_close_gate_is_diagnostic_meta_review(task_description: str) -> bool:
+    normalized = " ".join(task_description.strip().lower().split())
+    normalized = normalized.strip(".:;!?")
+    return normalized in {
+        "review close-gate fallback diagnostics",
+        "review the close-gate fallback diagnostics",
+    }
+
+
 def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> bool:
     if not normalized.startswith(cue):
         return False
@@ -289,7 +298,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     read_only = signals.get("read_only") == "true"
     executor = signals.get("executor", "")
     diagnostic_review_context = read_only and task_kind == "review" and (
-        "close-gate fallback diagnostics" in task_description.lower()
+        _task_close_gate_is_diagnostic_meta_review(task_description)
     )
     artifact_evidence_present = files_present or proposal_has_diff
     artifactless_write_activity = (

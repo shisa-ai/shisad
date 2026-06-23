@@ -618,7 +618,7 @@ async def test_local_planner_blocks_real_drift_for_fallback_diagnostic_review() 
     provider = LocalPlannerProvider()
     evidence = (
         "ORIGINAL TASK DESCRIPTION:\n"
-        "Review README.md and local_planner.py fallback diagnostics.\n\n"
+        "Review README.md and the close-gate fallback diagnostics.\n\n"
         "TASK RESULT SIGNALS:\n"
         "executor=planner\n"
         "agent=(none)\n"
