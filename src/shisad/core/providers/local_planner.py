@@ -131,6 +131,24 @@ def _task_close_gate_is_diagnostic_meta_review(task_description: str) -> bool:
     }
 
 
+_TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION = frozenset(".:,;-!?")
+
+
+def _task_close_gate_remainder_starts_with_phrase(
+    remainder: str, phrases: tuple[str, ...]
+) -> bool:
+    for phrase in phrases:
+        if remainder == phrase or remainder.startswith(f"{phrase} "):
+            return True
+        if (
+            remainder.startswith(phrase)
+            and remainder[len(phrase) : len(phrase) + 1]
+            in _TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION
+        ):
+            return True
+    return False
+
+
 def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> bool:
     if not normalized.startswith(cue):
         return False
@@ -139,19 +157,9 @@ def _task_close_gate_starts_with_statement_cue(normalized: str, cue: str) -> boo
         return True
     if remainder[0] in ".:,;-":
         return True
-    continuation_words = ("and", "because", "but", "while", "instead", "to")
-    for word in continuation_words:
-        if remainder == word or remainder.startswith(f"{word} "):
-            return True
-        if remainder.startswith(word) and remainder[len(word) : len(word) + 1] in {
-            ".",
-            ":",
-            ",",
-            ";",
-            "-",
-        }:
-            return True
-    return False
+    return _task_close_gate_remainder_starts_with_phrase(
+        remainder, ("and", "because", "but", "while", "instead", "to")
+    )
 
 
 def _task_close_gate_statement_fragments(normalized: str) -> Iterator[str]:
@@ -387,7 +395,7 @@ def _task_close_gate_has_diagnostic_case_statement_prefix(
         return True
     if remainder[0] in ".:,;!?":
         return True
-    return remainder == "as" or remainder.startswith("as ")
+    return _task_close_gate_remainder_starts_with_phrase(remainder, ("as",))
 
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
@@ -408,8 +416,9 @@ def _task_close_gate_label_value_is_truthy(normalized: str) -> bool:
             return True
         if remainder.startswith("- "):
             return True
-        if remainder.startswith(
-            ("and ", "because ", "but ", "while ", "instead ", "due to ", "from ")
+        if _task_close_gate_remainder_starts_with_phrase(
+            remainder,
+            ("and", "because", "but", "while", "instead", "due to", "from"),
         ):
             return True
     return False
