@@ -148,7 +148,9 @@ async def test_gh80_local_planner_provider_flags_artifactless_write_activity() -
         "TASK FILES CHANGED:\n"
         "(none)\n\n"
         "TASK PROPOSAL DIFF:\n"
-        "(none)\n"
+        "(none)\n\n"
+        "TASK TOOL OUTPUT EVIDENCE:\n"
+        '[{"payload": {"write_activity": true}, "tool_name": "coding_agent.write"}]\n'
     )
     planner_input = _build_local_close_gate_prompt(evidence)
 
