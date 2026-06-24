@@ -924,11 +924,67 @@ async def test_chat_app_mount_bounds_transcript_content_reads_before_replay(
         rendered = [widget._markdown for widget in app.query(Markdown)]
 
     expected_entry_ids = [
-        f"a-{index}" for index in range(5, ChatApp.TRANSCRIPT_REPLAY_LIMIT + 5)
+        f"a-{index}"
+        for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT + 4, 4, -1)
     ]
     assert read_entry_ids == expected_entry_ids
-    assert rendered == [f"content {entry_id}" for entry_id in expected_entry_ids]
+    assert rendered == [f"content a-{index}" for index in range(5, 55)]
     assert "a-0" in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
+async def test_chat_app_mount_backfills_unreadable_recent_replay_candidates(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "entry_id": f"a-{index}",
+                    "role": "assistant",
+                    "content_preview": f"preview {index}",
+                    "metadata": {"channel": "cli"},
+                }
+            )
+            for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT + 5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    read_entry_ids: list[str] = []
+
+    def content_for(entry: object) -> str:
+        assert isinstance(entry, dict)
+        entry_id = str(entry.get("entry_id", "")).strip()
+        read_entry_ids.append(entry_id)
+        if entry_id in {"a-52", "a-53", "a-54"}:
+            return ""
+        return f"content {entry_id}"
+
+    app._transcript_entry_content = content_for  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    expected_entry_ids = [f"a-{index}" for index in range(54, 1, -1)]
+    assert read_entry_ids == expected_entry_ids
+    assert rendered == [f"content a-{index}" for index in range(2, 52)]
+    assert "a-1" in app._displayed_transcript_entry_ids
+    assert "a-54" in app._displayed_transcript_entry_ids
 
 
 @pytest.mark.asyncio

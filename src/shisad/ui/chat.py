@@ -586,16 +586,10 @@ class ChatApp(App[None]):
         for entry_id in hidden_entry_ids:
             self._displayed_transcript_entry_ids.add(entry_id)
 
-        replay_entries = visible_entries[-self.TRANSCRIPT_REPLAY_LIMIT :]
-        older_entry_ids = {
-            str(entry.get("entry_id", "")).strip()
-            for entry, _role in visible_entries[: -self.TRANSCRIPT_REPLAY_LIMIT]
-        }
-        self._displayed_transcript_entry_ids.update(
-            entry_id for entry_id in older_entry_ids if entry_id
-        )
         render_entries: list[tuple[Mapping[str, Any], str, str]] = []
-        for entry, role in replay_entries:
+        oldest_render_index = len(visible_entries)
+        for index in range(len(visible_entries) - 1, -1, -1):
+            entry, role = visible_entries[index]
             entry_id = str(entry.get("entry_id", "")).strip()
             content = self._transcript_entry_content(entry).strip()
             if not content:
@@ -605,6 +599,17 @@ class ChatApp(App[None]):
             if entry_id:
                 self._displayed_transcript_entry_ids.add(entry_id)
             render_entries.append((entry, role, content))
+            oldest_render_index = index
+            if len(render_entries) >= self.TRANSCRIPT_REPLAY_LIMIT:
+                break
+        older_entry_ids = {
+            str(entry.get("entry_id", "")).strip()
+            for entry, _role in visible_entries[:oldest_render_index]
+        }
+        self._displayed_transcript_entry_ids.update(
+            entry_id for entry_id in older_entry_ids if entry_id
+        )
+        render_entries.reverse()
         if render_entries:
             self._append_history(f"info: loaded {len(render_entries)} previous messages.")
         for entry, role, content in render_entries:
