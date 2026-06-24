@@ -13,6 +13,14 @@ from textual.widgets import Markdown, TextArea
 from shisad.core.api.transport import JsonRpcCallError
 from shisad.ui.chat import ChatApp, format_assistant_message, format_user_message
 
+
+def _rendered_static_texts(app: ChatApp, selector: str) -> list[str]:
+    return [
+        str(widget.renderable)
+        for widget in app.query(selector)
+        if hasattr(widget, "renderable")
+    ]
+
 # ---------------------------------------------------------------------------
 # Message formatting tests
 # ---------------------------------------------------------------------------
@@ -758,7 +766,108 @@ async def test_chat_app_renders_assistant_turn_as_markdown_widget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_app_mount_renders_existing_async_delivery_after_priming(tmp_path) -> None:
+async def test_chat_app_mount_replays_existing_session_history(tmp_path) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    "entry_id": "u-1",
+                    "role": "user",
+                    "content_preview": "What did we decide?",
+                    "metadata": {"channel": "cli"},
+                },
+                {
+                    "entry_id": "tool-1",
+                    "role": "tool",
+                    "content_preview": "internal tool output",
+                    "metadata": {"channel": "cli"},
+                },
+                {
+                    "entry_id": "a-1",
+                    "role": "assistant",
+                    "content_preview": "We decided to ship the small fix.",
+                    "metadata": {"channel": "cli"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        user_messages = _rendered_static_texts(app, ".user-message")
+        status_messages = _rendered_static_texts(app, ".status-message")
+        assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+
+    assert "info: current session sess-1 user=ops workspace=default" in status_messages
+    assert user_messages == ["you: What did we decide?"]
+    assert assistant_messages == ["We decided to ship the small fix."]
+    assert "tool-1" in app._displayed_transcript_entry_ids
+    assert all("internal tool output" not in message for message in status_messages)
+    assert all("internal tool output" not in message for message in user_messages)
+    assert all("internal tool output" not in message for message in assistant_messages)
+
+
+@pytest.mark.asyncio
+async def test_chat_app_mount_replays_blob_backed_assistant_history(tmp_path) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    blob_dir = tmp_path / "sessions" / "blobs"
+    transcript_dir.mkdir(parents=True)
+    blob_dir.mkdir(parents=True)
+    (blob_dir / "blob-1.txt").write_text(
+        "Full previous answer from blob storage.",
+        encoding="utf-8",
+    )
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "entry_id": "a-blob",
+                "role": "assistant",
+                "blob_ref": "blob-1",
+                "content_preview": "truncated previous answer",
+                "metadata": {"channel": "cli"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == ["Full previous answer from blob storage."]
+    assert "a-blob" in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
+async def test_chat_app_mount_replays_existing_async_delivery_without_duplicate(tmp_path) -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
         data_dir=tmp_path,
@@ -805,9 +914,11 @@ async def test_chat_app_mount_renders_existing_async_delivery_after_priming(tmp_
 
     async with app.run_test() as pilot:
         await pilot.pause()
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
         rendered = [widget._markdown for widget in app.query(Markdown)]
 
-    assert rendered == ["Reminder: arrived during startup"]
+    assert rendered == ["previous normal answer", "Reminder: arrived during startup"]
     tx_entry_ids = {
         entry_id
         for entry_id in app._displayed_transcript_entry_ids
@@ -884,7 +995,7 @@ async def test_chat_app_transcript_poll_drains_multiple_async_deliveries(tmp_pat
 
         rendered = [widget._markdown for widget in app.query(Markdown)]
 
-    assert rendered == ["Reminder: first", "Reminder: second"]
+    assert rendered == ["normal response", "Reminder: first", "Reminder: second"]
 
 
 @pytest.mark.asyncio

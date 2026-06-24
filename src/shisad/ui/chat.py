@@ -188,6 +188,7 @@ class ChatApp(App[None]):
     PROMPT_INPUT_MAX_HEIGHT = 8
     PROMPT_INPUT_CHROME_ROWS = 2
     PROMPT_INPUT_HORIZONTAL_CHROME = 4
+    TRANSCRIPT_REPLAY_LIMIT = 50
 
     CSS = """
     Screen {
@@ -278,9 +279,10 @@ class ChatApp(App[None]):
                 await self._ensure_session(client)
             finally:
                 await client.close()
-            self._prime_transcript_display_state_best_effort()
-            self._start_transcript_polling()
             self._append_history("Connected.")
+            self._append_current_session_status()
+            self._replay_recent_transcript_history_best_effort()
+            self._start_transcript_polling()
             self._append_history(
                 "Type a message and press Enter. "
                 "Up/Down recalls prompts. "
@@ -524,6 +526,15 @@ class ChatApp(App[None]):
             classes="assistant-turn",
         )
 
+    def _append_current_session_status(self) -> None:
+        session_id = self._active_session_id()
+        if not session_id:
+            return
+        self._append_history(
+            f"info: current session {session_id} "
+            f"user={self._user_id} workspace={self._workspace_id}"
+        )
+
     def _start_transcript_polling(self) -> None:
         if self._transcript_root is None or self._transcript_poll_task is not None:
             return
@@ -546,11 +557,58 @@ class ChatApp(App[None]):
         except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
             return
 
+    def _replay_recent_transcript_history_best_effort(self) -> None:
+        try:
+            self._replay_recent_transcript_history()
+        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+            return
+
     def _prime_transcript_display_state(self) -> None:
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
             if entry_id and not self._is_async_assistant_delivery(entry):
                 self._displayed_transcript_entry_ids.add(entry_id)
+
+    def _replay_recent_transcript_history(self) -> None:
+        visible_entries: list[tuple[Mapping[str, Any], str, str]] = []
+        hidden_entry_ids: set[str] = set()
+        for entry in self._read_transcript_entries():
+            entry_id = str(entry.get("entry_id", "")).strip()
+            role = str(entry.get("role", "")).strip().lower()
+            if role not in {"user", "assistant"}:
+                if entry_id:
+                    hidden_entry_ids.add(entry_id)
+                continue
+            content = self._transcript_entry_content(entry).strip()
+            if not content:
+                if entry_id and not self._is_async_assistant_delivery(entry):
+                    hidden_entry_ids.add(entry_id)
+                continue
+            visible_entries.append((entry, role, content))
+
+        for entry_id in hidden_entry_ids:
+            self._displayed_transcript_entry_ids.add(entry_id)
+
+        replay_entries = visible_entries[-self.TRANSCRIPT_REPLAY_LIMIT :]
+        if replay_entries:
+            self._append_history(f"info: loaded {len(replay_entries)} previous messages.")
+        replay_entry_ids = {
+            str(entry.get("entry_id", "")).strip()
+            for entry, _role, _content in visible_entries
+        }
+        self._displayed_transcript_entry_ids.update(
+            entry_id for entry_id in replay_entry_ids if entry_id
+        )
+        for entry, role, content in replay_entries:
+            if role == "user":
+                self._append_user_message(content)
+                continue
+            self._append_assistant_message(
+                content,
+                preserve_pending_preview_escapes=(
+                    self._transcript_entry_preserve_pending_preview_escapes(entry)
+                ),
+            )
 
     def _poll_transcript_for_async_messages(self) -> None:
         for entry in self._read_transcript_entries():
@@ -571,6 +629,7 @@ class ChatApp(App[None]):
         path = self._transcript_path()
         if path is None or not path.exists():
             return []
+        session_id = self._active_session_id()
         entries: list[Mapping[str, Any]] = []
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
@@ -583,7 +642,7 @@ class ChatApp(App[None]):
                 entry = dict(payload)
                 if not str(entry.get("entry_id", "")).strip():
                     entry["entry_id"] = derive_legacy_transcript_entry_id(
-                        session_id=str(self._session_id or ""),
+                        session_id=session_id,
                         line_number=line_number,
                         payload=entry,
                     )
@@ -591,9 +650,10 @@ class ChatApp(App[None]):
         return entries
 
     def _transcript_path(self) -> Path | None:
-        if self._transcript_root is None or not self._session_id:
+        session_id = self._active_session_id()
+        if self._transcript_root is None or not session_id:
             return None
-        return self._transcript_root / "transcripts" / f"{self._session_id}.jsonl"
+        return self._transcript_root / "transcripts" / f"{session_id}.jsonl"
 
     def _is_async_assistant_delivery(self, entry: Mapping[str, Any]) -> bool:
         if str(entry.get("role", "")).strip() != "assistant":
@@ -605,11 +665,23 @@ class ChatApp(App[None]):
         if not isinstance(delivery_target, Mapping):
             delivery_target = {}
         recipient = str(delivery_target.get("recipient", "")).strip()
-        if recipient and recipient != str(self._session_id or ""):
+        if recipient and recipient != self._active_session_id():
             return False
         delivered_by = str(metadata.get("delivered_by", "")).strip()
         channel = str(metadata.get("channel", "")).strip()
         return bool(delivered_by) or channel == "session"
+
+    @staticmethod
+    def _transcript_entry_preserve_pending_preview_escapes(
+        entry: Mapping[str, Any],
+    ) -> bool:
+        metadata = entry.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            return False
+        pending_ids = metadata.get("pending_confirmation_ids")
+        return isinstance(pending_ids, list) and any(
+            isinstance(item, str) and item.strip() for item in pending_ids
+        )
 
     def _transcript_entry_content(self, entry: Mapping[str, Any]) -> str:
         blob_ref = str(entry.get("blob_ref", "") or "").strip()
