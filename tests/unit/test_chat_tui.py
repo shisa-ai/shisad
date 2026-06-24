@@ -797,6 +797,15 @@ async def test_chat_app_mount_replays_existing_session_history(tmp_path) -> None
                     "metadata": {"channel": "cli"},
                 },
                 {
+                    "entry_id": "ev-1",
+                    "role": "assistant",
+                    "content_preview": "raw evidence read content",
+                    "metadata": {
+                        "channel": "cli",
+                        "ephemeral_evidence_read": True,
+                    },
+                },
+                {
                     "entry_id": "a-1",
                     "role": "assistant",
                     "content_preview": "We decided to ship the small fix.",
@@ -818,9 +827,11 @@ async def test_chat_app_mount_replays_existing_session_history(tmp_path) -> None
     assert user_messages == ["you: What did we decide?"]
     assert assistant_messages == ["We decided to ship the small fix."]
     assert "tool-1" in app._displayed_transcript_entry_ids
+    assert "ev-1" in app._displayed_transcript_entry_ids
     assert all("internal tool output" not in message for message in status_messages)
     assert all("internal tool output" not in message for message in user_messages)
     assert all("internal tool output" not in message for message in assistant_messages)
+    assert all("raw evidence read content" not in message for message in assistant_messages)
 
 
 @pytest.mark.asyncio
@@ -864,6 +875,55 @@ async def test_chat_app_mount_replays_blob_backed_assistant_history(tmp_path) ->
 
     assert rendered == ["Full previous answer from blob storage."]
     assert "a-blob" in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
+async def test_chat_app_mount_preserves_pending_confirmation_transcript_preview(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "entry_id": "pending-1",
+                "role": "assistant",
+                "content_preview": (
+                    "[PENDING CONFIRMATIONS]\n"
+                    "Queued for your approval:\n"
+                    "1. c-1\n"
+                    "   Preview:\n"
+                    "     body: line1\\nline2\n\n"
+                    "Review all pending: shisad action list"
+                ),
+                "metadata": {
+                    "channel": "cli",
+                    "system_generated_pending_confirmations": True,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert len(rendered) == 1
+    assert "body: line1\\nline2" in rendered[0]
+    assert "body: line1\nline2" not in rendered[0]
 
 
 @pytest.mark.asyncio
@@ -925,6 +985,60 @@ async def test_chat_app_mount_replays_existing_async_delivery_without_duplicate(
         if entry_id.startswith("tx-")
     }
     assert len(tx_entry_ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_app_transcript_poll_preserves_pending_confirmation_preview(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript_path.write_text(
+            json.dumps(
+                {
+                    "entry_id": "pending-async",
+                    "role": "assistant",
+                    "content_preview": (
+                        "[PENDING CONFIRMATIONS]\n"
+                        "Queued for your approval:\n"
+                        "1. c-1\n"
+                        "   Preview:\n"
+                        "     body: line1\\nline2\n\n"
+                        "Review all pending: shisad action list"
+                    ),
+                    "metadata": {
+                        "channel": "session",
+                        "delivered_by": "scheduler",
+                        "delivery_target": {"recipient": "sess-1"},
+                        "pending_confirmation_bridge": True,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert len(rendered) == 1
+    assert "body: line1\\nline2" in rendered[0]
+    assert "body: line1\nline2" not in rendered[0]
 
 
 @pytest.mark.asyncio

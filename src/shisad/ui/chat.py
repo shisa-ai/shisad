@@ -575,7 +575,9 @@ class ChatApp(App[None]):
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
             role = str(entry.get("role", "")).strip().lower()
-            if role not in {"user", "assistant"}:
+            if role not in {"user", "assistant"} or (
+                self._transcript_entry_is_ephemeral_evidence_read(entry)
+            ):
                 if entry_id:
                     hidden_entry_ids.add(entry_id)
                 continue
@@ -615,6 +617,9 @@ class ChatApp(App[None]):
             entry_id = str(entry.get("entry_id", "")).strip()
             if not entry_id or entry_id in self._displayed_transcript_entry_ids:
                 continue
+            if self._transcript_entry_is_ephemeral_evidence_read(entry):
+                self._displayed_transcript_entry_ids.add(entry_id)
+                continue
             if not self._is_async_assistant_delivery(entry):
                 self._displayed_transcript_entry_ids.add(entry_id)
                 continue
@@ -622,7 +627,12 @@ class ChatApp(App[None]):
             if not content:
                 continue
             self._displayed_transcript_entry_ids.add(entry_id)
-            self._append_assistant_message(content)
+            self._append_assistant_message(
+                content,
+                preserve_pending_preview_escapes=(
+                    self._transcript_entry_preserve_pending_preview_escapes(entry)
+                ),
+            )
             self._append_history("")
 
     def _read_transcript_entries(self) -> list[Mapping[str, Any]]:
@@ -672,12 +682,26 @@ class ChatApp(App[None]):
         return bool(delivered_by) or channel == "session"
 
     @staticmethod
+    def _transcript_entry_metadata(entry: Mapping[str, Any]) -> Mapping[str, Any]:
+        metadata = entry.get("metadata", {})
+        if isinstance(metadata, Mapping):
+            return metadata
+        return {}
+
+    @classmethod
+    def _transcript_entry_is_ephemeral_evidence_read(cls, entry: Mapping[str, Any]) -> bool:
+        return bool(cls._transcript_entry_metadata(entry).get("ephemeral_evidence_read"))
+
+    @classmethod
     def _transcript_entry_preserve_pending_preview_escapes(
+        cls,
         entry: Mapping[str, Any],
     ) -> bool:
-        metadata = entry.get("metadata", {})
-        if not isinstance(metadata, Mapping):
-            return False
+        metadata = cls._transcript_entry_metadata(entry)
+        if bool(metadata.get("system_generated_pending_confirmations")) or bool(
+            metadata.get("pending_confirmation_bridge")
+        ):
+            return True
         pending_ids = metadata.get("pending_confirmation_ids")
         return isinstance(pending_ids, list) and any(
             isinstance(item, str) and item.strip() for item in pending_ids
