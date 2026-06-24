@@ -988,6 +988,57 @@ async def test_chat_app_mount_backfills_unreadable_recent_replay_candidates(
 
 
 @pytest.mark.asyncio
+async def test_chat_app_mount_preserves_unreadable_async_blob_for_poll_retry(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    blob_dir = tmp_path / "sessions" / "blobs"
+    transcript_dir.mkdir(parents=True)
+    blob_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "entry_id": "r-blob",
+                "role": "assistant",
+                "blob_ref": "blob-1",
+                "content_preview": "Reminder: truncated preview",
+                "metadata": {
+                    "channel": "session",
+                    "delivered_by": "scheduler",
+                    "delivery_target": {"recipient": "sess-1"},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert list(app.query(Markdown)) == []
+        assert "r-blob" not in app._displayed_transcript_entry_ids
+
+        (blob_dir / "blob-1.txt").write_text("Reminder: delayed blob", encoding="utf-8")
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == ["Reminder: delayed blob"]
+    assert "r-blob" in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
 async def test_chat_app_mount_preserves_pending_confirmation_transcript_preview(
     tmp_path,
 ) -> None:

@@ -605,6 +605,7 @@ class ChatApp(App[None]):
         older_entry_ids = {
             str(entry.get("entry_id", "")).strip()
             for entry, _role in visible_entries[:oldest_render_index]
+            if not self._is_async_assistant_delivery(entry)
         }
         self._displayed_transcript_entry_ids.update(
             entry_id for entry_id in older_entry_ids if entry_id
