@@ -1257,6 +1257,40 @@ def test_gh53_web_search_cli_renders_unconfigured_backend_diagnostic(
     assert '"error": "web_search_backend_unconfigured"' not in result.output
 
 
+def test_signer_register_cli_rejects_unsupported_ledger_algorithm_before_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_key = tmp_path / "pubkey.pem"
+    public_key.write_text("not needed\n", encoding="utf-8")
+
+    def _unexpected_rpc_call(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("signer.register should not be called")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _unexpected_rpc_call)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        [
+            "signer",
+            "register",
+            "--backend",
+            "ledger",
+            "--algorithm",
+            "ed25519",
+            "--user",
+            "alice",
+            "--key-id",
+            "ledger:stax-1",
+            "--public-key",
+            str(public_key),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Ledger signer registrations require --algorithm ecdsa-secp256k1" in result.output
+
+
 def test_thread_cli_forwards_context_filter_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

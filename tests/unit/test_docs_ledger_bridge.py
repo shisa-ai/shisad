@@ -47,3 +47,10 @@ def test_ledger_public_key_extraction_docs_use_noninteractive_npm_script() -> No
         text = path.read_text(encoding="utf-8")
         assert expected in text
         assert "npx tsx src/extract-key.ts >" not in text
+
+
+def test_ledger_registration_docs_describe_enforced_algorithm_contract() -> None:
+    for path in [RUNBOOK, ENV_VARS_DOC]:
+        text = path.read_text(encoding="utf-8")
+        assert "algorithm=ecdsa-secp256k1" in text
+        assert "require" in text

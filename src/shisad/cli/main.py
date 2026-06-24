@@ -2598,7 +2598,7 @@ def signer() -> None:
     "--algorithm",
     default=None,
     type=click.Choice(["ed25519", "ecdsa-secp256k1"]),
-    help="Signature algorithm (default: ecdsa-secp256k1 for ledger, ed25519 for kms).",
+    help="Signature algorithm (KMS defaults to ed25519; Ledger requires ecdsa-secp256k1).",
 )
 @click.option(
     "--device-type",
@@ -2624,6 +2624,10 @@ def signer_register(
     """Register a signer key for approval policies."""
     if algorithm is None:
         algorithm = "ecdsa-secp256k1" if backend == "ledger" else "ed25519"
+    if backend == "ledger" and algorithm != "ecdsa-secp256k1":
+        raise click.ClickException(
+            "Ledger signer registrations require --algorithm ecdsa-secp256k1"
+        )
     if not device_type.strip():
         device_type = "ledger-consumer" if backend == "ledger" else "ledger-enterprise"
     config = _get_config()
