@@ -1039,6 +1039,60 @@ async def test_chat_app_mount_preserves_unreadable_async_blob_for_poll_retry(
 
 
 @pytest.mark.asyncio
+async def test_chat_app_mount_marks_readable_async_rows_outside_replay_window_displayed(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    rows = [
+        {
+            "entry_id": "r-old",
+            "role": "assistant",
+            "content_preview": "Reminder: older async delivery",
+            "metadata": {
+                "channel": "session",
+                "delivered_by": "scheduler",
+                "delivery_target": {"recipient": "sess-1"},
+            },
+        }
+    ]
+    rows.extend(
+        {
+            "entry_id": f"a-{index}",
+            "role": "assistant",
+            "content_preview": f"normal response {index}",
+            "metadata": {"channel": "cli"},
+        }
+        for index in range(1, ChatApp.TRANSCRIPT_REPLAY_LIMIT + 5)
+    )
+    transcript_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert "r-old" in app._displayed_transcript_entry_ids
+    assert "Reminder: older async delivery" not in rendered
+    assert rendered == [f"normal response {index}" for index in range(5, 55)]
+
+
+@pytest.mark.asyncio
 async def test_chat_app_mount_preserves_pending_confirmation_transcript_preview(
     tmp_path,
 ) -> None:

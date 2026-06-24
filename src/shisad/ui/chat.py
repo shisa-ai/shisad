@@ -602,14 +602,15 @@ class ChatApp(App[None]):
             oldest_render_index = index
             if len(render_entries) >= self.TRANSCRIPT_REPLAY_LIMIT:
                 break
-        older_entry_ids = {
-            str(entry.get("entry_id", "")).strip()
-            for entry, _role in visible_entries[:oldest_render_index]
-            if not self._is_async_assistant_delivery(entry)
-        }
-        self._displayed_transcript_entry_ids.update(
-            entry_id for entry_id in older_entry_ids if entry_id
-        )
+        for entry, _role in visible_entries[:oldest_render_index]:
+            entry_id = str(entry.get("entry_id", "")).strip()
+            if not entry_id:
+                continue
+            if self._is_async_assistant_delivery(entry) and (
+                not self._transcript_entry_content(entry).strip()
+            ):
+                continue
+            self._displayed_transcript_entry_ids.add(entry_id)
         render_entries.reverse()
         if render_entries:
             self._append_history(f"info: loaded {len(render_entries)} previous messages.")
