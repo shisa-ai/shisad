@@ -607,7 +607,7 @@ class ChatApp(App[None]):
             if not entry_id:
                 continue
             if self._is_async_assistant_delivery(entry) and (
-                not self._transcript_entry_content(entry).strip()
+                not self._transcript_entry_content_available(entry)
             ):
                 continue
             self._displayed_transcript_entry_ids.add(entry_id)
@@ -721,15 +721,24 @@ class ChatApp(App[None]):
         )
 
     def _transcript_entry_content(self, entry: Mapping[str, Any]) -> str:
-        blob_ref = str(entry.get("blob_ref", "") or "").strip()
-        if blob_ref:
-            if self._transcript_root is None:
-                return ""
-            blob_path = self._transcript_root / "blobs" / f"{blob_ref}.txt"
+        blob_path = self._transcript_entry_blob_path(entry)
+        if blob_path is not None:
             if not blob_path.exists():
                 return ""
             return blob_path.read_text(encoding="utf-8")
         return str(entry.get("content_preview", "") or "")
+
+    def _transcript_entry_content_available(self, entry: Mapping[str, Any]) -> bool:
+        blob_path = self._transcript_entry_blob_path(entry)
+        if blob_path is not None:
+            return blob_path.exists()
+        return bool(str(entry.get("content_preview", "") or "").strip())
+
+    def _transcript_entry_blob_path(self, entry: Mapping[str, Any]) -> Path | None:
+        blob_ref = str(entry.get("blob_ref", "") or "").strip()
+        if not blob_ref or self._transcript_root is None:
+            return None
+        return self._transcript_root / "blobs" / f"{blob_ref}.txt"
 
     def _append_turn(self, *widgets: Static | Markdown, classes: str) -> None:
         history = self.query_one("#chat-log", VerticalScroll)

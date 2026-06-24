@@ -1093,6 +1093,78 @@ async def test_chat_app_mount_marks_readable_async_rows_outside_replay_window_di
 
 
 @pytest.mark.asyncio
+async def test_chat_app_mount_marks_old_async_blob_rows_without_reading_content(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    blob_dir = tmp_path / "sessions" / "blobs"
+    transcript_dir.mkdir(parents=True)
+    blob_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    rows = [
+        {
+            "entry_id": f"r-old-{index}",
+            "role": "assistant",
+            "blob_ref": f"old-blob-{index}",
+            "content_preview": "Reminder: older async delivery",
+            "metadata": {
+                "channel": "session",
+                "delivered_by": "scheduler",
+                "delivery_target": {"recipient": "sess-1"},
+            },
+        }
+        for index in range(5)
+    ]
+    for index in range(5):
+        (blob_dir / f"old-blob-{index}.txt").write_text(
+            f"Reminder: old async blob {index}",
+            encoding="utf-8",
+        )
+    rows.extend(
+        {
+            "entry_id": f"a-{index}",
+            "role": "assistant",
+            "content_preview": f"normal response {index}",
+            "metadata": {"channel": "cli"},
+        }
+        for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT)
+    )
+    transcript_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    read_entry_ids: list[str] = []
+
+    def content_for(entry: object) -> str:
+        assert isinstance(entry, dict)
+        entry_id = str(entry.get("entry_id", "")).strip()
+        read_entry_ids.append(entry_id)
+        return f"content {entry_id}"
+
+    app._transcript_entry_content = content_for  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert all(f"r-old-{index}" in app._displayed_transcript_entry_ids for index in range(5))
+    assert all(entry_id.startswith("a-") for entry_id in read_entry_ids)
+    assert rendered == [f"content a-{index}" for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT)]
+
+
+@pytest.mark.asyncio
 async def test_chat_app_mount_preserves_pending_confirmation_transcript_preview(
     tmp_path,
 ) -> None:
