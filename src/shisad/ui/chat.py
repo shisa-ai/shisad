@@ -570,7 +570,7 @@ class ChatApp(App[None]):
                 self._displayed_transcript_entry_ids.add(entry_id)
 
     def _replay_recent_transcript_history(self) -> None:
-        visible_entries: list[tuple[Mapping[str, Any], str, str]] = []
+        visible_entries: list[tuple[Mapping[str, Any], str]] = []
         hidden_entry_ids: set[str] = set()
         for entry in self._read_transcript_entries():
             entry_id = str(entry.get("entry_id", "")).strip()
@@ -581,27 +581,33 @@ class ChatApp(App[None]):
                 if entry_id:
                     hidden_entry_ids.add(entry_id)
                 continue
-            content = self._transcript_entry_content(entry).strip()
-            if not content:
-                if entry_id and not self._is_async_assistant_delivery(entry):
-                    hidden_entry_ids.add(entry_id)
-                continue
-            visible_entries.append((entry, role, content))
+            visible_entries.append((entry, role))
 
         for entry_id in hidden_entry_ids:
             self._displayed_transcript_entry_ids.add(entry_id)
 
         replay_entries = visible_entries[-self.TRANSCRIPT_REPLAY_LIMIT :]
-        if replay_entries:
-            self._append_history(f"info: loaded {len(replay_entries)} previous messages.")
-        replay_entry_ids = {
+        older_entry_ids = {
             str(entry.get("entry_id", "")).strip()
-            for entry, _role, _content in visible_entries
+            for entry, _role in visible_entries[: -self.TRANSCRIPT_REPLAY_LIMIT]
         }
         self._displayed_transcript_entry_ids.update(
-            entry_id for entry_id in replay_entry_ids if entry_id
+            entry_id for entry_id in older_entry_ids if entry_id
         )
-        for entry, role, content in replay_entries:
+        render_entries: list[tuple[Mapping[str, Any], str, str]] = []
+        for entry, role in replay_entries:
+            entry_id = str(entry.get("entry_id", "")).strip()
+            content = self._transcript_entry_content(entry).strip()
+            if not content:
+                if entry_id and not self._is_async_assistant_delivery(entry):
+                    self._displayed_transcript_entry_ids.add(entry_id)
+                continue
+            if entry_id:
+                self._displayed_transcript_entry_ids.add(entry_id)
+            render_entries.append((entry, role, content))
+        if render_entries:
+            self._append_history(f"info: loaded {len(render_entries)} previous messages.")
+        for entry, role, content in render_entries:
             if role == "user":
                 self._append_user_message(content)
                 continue

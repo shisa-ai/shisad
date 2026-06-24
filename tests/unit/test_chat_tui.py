@@ -878,6 +878,60 @@ async def test_chat_app_mount_replays_blob_backed_assistant_history(tmp_path) ->
 
 
 @pytest.mark.asyncio
+async def test_chat_app_mount_bounds_transcript_content_reads_before_replay(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "entry_id": f"a-{index}",
+                    "role": "assistant",
+                    "content_preview": f"preview {index}",
+                    "metadata": {"channel": "cli"},
+                }
+            )
+            for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT + 5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    read_entry_ids: list[str] = []
+
+    def content_for(entry: object) -> str:
+        assert isinstance(entry, dict)
+        entry_id = str(entry.get("entry_id", "")).strip()
+        read_entry_ids.append(entry_id)
+        return f"content {entry_id}"
+
+    app._transcript_entry_content = content_for  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    expected_entry_ids = [
+        f"a-{index}" for index in range(5, ChatApp.TRANSCRIPT_REPLAY_LIMIT + 5)
+    ]
+    assert read_entry_ids == expected_entry_ids
+    assert rendered == [f"content {entry_id}" for entry_id in expected_entry_ids]
+    assert "a-0" in app._displayed_transcript_entry_ids
+
+
+@pytest.mark.asyncio
 async def test_chat_app_mount_preserves_pending_confirmation_transcript_preview(
     tmp_path,
 ) -> None:
@@ -1039,6 +1093,52 @@ async def test_chat_app_transcript_poll_preserves_pending_confirmation_preview(
     assert len(rendered) == 1
     assert "body: line1\\nline2" in rendered[0]
     assert "body: line1\nline2" not in rendered[0]
+
+
+@pytest.mark.asyncio
+async def test_chat_app_transcript_poll_skips_ephemeral_evidence_read_rows(
+    tmp_path,
+) -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        data_dir=tmp_path,
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    transcript_dir = tmp_path / "sessions" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    transcript_path = transcript_dir / "sess-1.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript_path.write_text(
+            json.dumps(
+                {
+                    "entry_id": "ev-async",
+                    "role": "assistant",
+                    "content_preview": "raw async evidence read content",
+                    "metadata": {
+                        "channel": "session",
+                        "delivered_by": "scheduler",
+                        "delivery_target": {"recipient": "sess-1"},
+                        "ephemeral_evidence_read": True,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        app._poll_transcript_for_async_messages()
+        await pilot.pause()
+        rendered = [widget._markdown for widget in app.query(Markdown)]
+
+    assert rendered == []
+    assert "ev-async" in app._displayed_transcript_entry_ids
 
 
 @pytest.mark.asyncio
