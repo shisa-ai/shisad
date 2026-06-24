@@ -478,6 +478,33 @@ async def test_signer_register_rejects_unsupported_ledger_signing_scheme(
     assert harness._credential_store.get_signer_key("ledger:stax-1") is None
 
 
+@pytest.mark.asyncio
+async def test_signer_register_ledger_persists_eip712_signing_scheme(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    private_key = generate_secp256k1_private_key()
+
+    registered = await harness.do_signer_register(
+        {
+            "backend": "ledger",
+            "user_id": "alice",
+            "key_id": "ledger:stax-1",
+            "name": "alice-ledger",
+            "public_key_pem": public_key_pem(private_key),
+        }
+    )
+
+    assert registered["registered"] is True
+    assert registered["algorithm"] == "ecdsa-secp256k1"
+    record = harness._credential_store.get_signer_key("ledger:stax-1")
+    assert record is not None
+    assert record.backend == "ledger"
+    assert record.algorithm == "ecdsa-secp256k1"
+    assert record.signing_scheme == "eip712"
+    assert record.device_type == "ledger-consumer"
+
+
 def test_gh49_current_turn_reminder_confirmation_drops_false_provenance_warnings(
     tmp_path: Path,
 ) -> None:
