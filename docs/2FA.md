@@ -362,6 +362,9 @@ export SHISAD_SIGNER_KMS_BEARER_TOKEN="..."
 If `SHISAD_SIGNER_KMS_URL` is unset, the `kms` signer method is unavailable
 and policies requiring it fail closed with an actionable error.
 
+For Ledger bridge deployments where the daemon runs remotely while the USB
+Ledger stays local, see the [Ledger bridge runbook](runbooks/LEDGER-BRIDGE.md).
+
 ### Register a signer public key
 
 ```bash
