@@ -497,7 +497,10 @@ async def test_signer_register_ledger_persists_eip712_signing_scheme(
 
     assert registered["registered"] is True
     assert registered["algorithm"] == "ecdsa-secp256k1"
-    record = harness._credential_store.get_signer_key("ledger:stax-1")
+
+    reloaded = InMemoryCredentialStore()
+    reloaded.set_approval_store_path(tmp_path / "approval-factors.json")
+    record = reloaded.get_signer_key("ledger:stax-1")
     assert record is not None
     assert record.backend == "ledger"
     assert record.algorithm == "ecdsa-secp256k1"

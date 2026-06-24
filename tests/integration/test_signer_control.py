@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
@@ -202,6 +203,35 @@ async def test_signer_register_rejects_public_key_algorithm_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     private_key = generate_ed25519_private_key()
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        registered = await client.call(
+            "signer.register",
+            {
+                "backend": "ledger",
+                "user_id": "alice",
+                "key_id": "ledger:stax-1",
+                "name": "alice-ledger",
+                "algorithm": "ecdsa-secp256k1",
+                "device_type": "ledger-consumer",
+                "public_key_pem": public_key_pem(private_key),
+            },
+        )
+        assert registered["registered"] is False
+        assert registered["reason"] == "signer_public_key_algorithm_mismatch"
+
+        listed = await client.call("signer.list", {"user_id": "alice", "backend": "ledger"})
+        assert listed["count"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_signer_register_rejects_wrong_elliptic_curve_public_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = ec.generate_private_key(ec.SECP256R1())
     daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
         registered = await client.call(
