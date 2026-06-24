@@ -226,6 +226,35 @@ async def test_signer_register_rejects_public_key_algorithm_mismatch(
 
 
 @pytest.mark.asyncio
+async def test_signer_register_rejects_unsupported_ledger_algorithm_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = generate_ed25519_private_key()
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        registered = await client.call(
+            "signer.register",
+            {
+                "backend": "ledger",
+                "user_id": "alice",
+                "key_id": "ledger:stax-1",
+                "name": "alice-ledger",
+                "algorithm": "ed25519",
+                "device_type": "ledger-consumer",
+                "public_key_pem": public_key_pem(private_key),
+            },
+        )
+        assert registered["registered"] is False
+        assert registered["reason"] == "unsupported_ledger_signer_algorithm"
+
+        listed = await client.call("signer.list", {"user_id": "alice", "backend": "ledger"})
+        assert listed["count"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_signer_register_ledger_defaults_to_secp256k1_algorithm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

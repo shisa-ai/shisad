@@ -949,6 +949,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         if algorithm not in {"ed25519", "ecdsa-secp256k1"}:
             return {"registered": False, "reason": "unsupported_signer_algorithm"}
+        if backend == "ledger" and algorithm != "ecdsa-secp256k1":
+            return {"registered": False, "reason": "unsupported_ledger_signer_algorithm"}
         default_device_type = "ledger-consumer" if backend == "ledger" else "ledger-enterprise"
         device_type = (
             str(params.get("device_type") or default_device_type).strip() or default_device_type
@@ -960,6 +962,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         if signing_scheme not in {"raw", "eip712", "eth_personal_sign"}:
             return {"registered": False, "reason": "unsupported_signing_scheme"}
+        if backend == "ledger" and signing_scheme != "eip712":
+            return {"registered": False, "reason": "unsupported_ledger_signing_scheme"}
         public_key_error = _validate_signer_public_key(public_key_pem, algorithm=algorithm)
         if public_key_error:
             return {"registered": False, "reason": public_key_error}
