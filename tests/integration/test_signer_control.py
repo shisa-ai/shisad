@@ -14,7 +14,12 @@ from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
-from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
+from tests.helpers.signer import (
+    StubSignerService,
+    generate_ed25519_private_key,
+    generate_secp256k1_private_key,
+    public_key_pem,
+)
 
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,6 +160,96 @@ async def test_signer_revoke_blocks_reuse_of_same_key_id(
         assert listed["count"] == 1
         assert listed["entries"][0]["credential_id"] == "kms:finance-primary"
         assert listed["entries"][0]["revoked"] is True
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_signer_register_rejects_malformed_ledger_public_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        registered = await client.call(
+            "signer.register",
+            {
+                "backend": "ledger",
+                "user_id": "alice",
+                "key_id": "ledger:stax-1",
+                "name": "alice-ledger",
+                "algorithm": "ecdsa-secp256k1",
+                "device_type": "ledger-consumer",
+                "public_key_pem": (
+                    "Need to install the following packages:\n"
+                    "  tsx@4.20.0\n"
+                    "Ok to proceed? (y) "
+                ),
+            },
+        )
+        assert registered["registered"] is False
+        assert registered["reason"] == "invalid_signer_public_key"
+
+        listed = await client.call("signer.list", {"user_id": "alice", "backend": "ledger"})
+        assert listed["count"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_signer_register_rejects_public_key_algorithm_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = generate_ed25519_private_key()
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        registered = await client.call(
+            "signer.register",
+            {
+                "backend": "ledger",
+                "user_id": "alice",
+                "key_id": "ledger:stax-1",
+                "name": "alice-ledger",
+                "algorithm": "ecdsa-secp256k1",
+                "device_type": "ledger-consumer",
+                "public_key_pem": public_key_pem(private_key),
+            },
+        )
+        assert registered["registered"] is False
+        assert registered["reason"] == "signer_public_key_algorithm_mismatch"
+
+        listed = await client.call("signer.list", {"user_id": "alice", "backend": "ledger"})
+        assert listed["count"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_signer_register_ledger_defaults_to_secp256k1_algorithm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = generate_secp256k1_private_key()
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        registered = await client.call(
+            "signer.register",
+            {
+                "backend": "ledger",
+                "user_id": "alice",
+                "key_id": "ledger:stax-1",
+                "name": "alice-ledger",
+                "public_key_pem": public_key_pem(private_key),
+            },
+        )
+        assert registered["registered"] is True
+        assert registered["algorithm"] == "ecdsa-secp256k1"
+        assert registered["backend"] == "ledger"
+
+        listed = await client.call("signer.list", {"user_id": "alice", "backend": "ledger"})
+        assert listed["count"] == 1
+        assert listed["entries"][0]["algorithm"] == "ecdsa-secp256k1"
     finally:
         await _shutdown_daemon(daemon_task, client)
 

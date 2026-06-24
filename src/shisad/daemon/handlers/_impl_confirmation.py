@@ -14,6 +14,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+
 from shisad.core.approval import (
     ConfirmationEvidence,
     ConfirmationLevel,
@@ -77,6 +80,25 @@ _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
         "web.fetch",
     }
 )
+
+
+def _validate_signer_public_key(public_key_pem: str, *, algorithm: str) -> str:
+    try:
+        public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
+    except (TypeError, ValueError):
+        return "invalid_signer_public_key"
+
+    if algorithm == "ed25519":
+        if isinstance(public_key, ed25519.Ed25519PublicKey):
+            return ""
+        return "signer_public_key_algorithm_mismatch"
+    if algorithm == "ecdsa-secp256k1":
+        if not isinstance(public_key, ec.EllipticCurvePublicKey):
+            return "signer_public_key_algorithm_mismatch"
+        if public_key.curve.name.lower() != "secp256k1":
+            return "signer_public_key_algorithm_mismatch"
+        return ""
+    return "unsupported_signer_algorithm"
 
 
 def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
@@ -938,6 +960,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         if signing_scheme not in {"raw", "eip712", "eth_personal_sign"}:
             return {"registered": False, "reason": "unsupported_signing_scheme"}
+        public_key_error = _validate_signer_public_key(public_key_pem, algorithm=algorithm)
+        if public_key_error:
+            return {"registered": False, "reason": public_key_error}
         existing = self._credential_store.get_signer_key(key_id)
         if existing is not None:
             return {

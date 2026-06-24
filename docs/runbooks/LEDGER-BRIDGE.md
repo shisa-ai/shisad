@@ -116,7 +116,7 @@ the address for review:
 
 ```bash
 cd contrib/ledger-bridge
-npx tsx src/extract-key.ts > ledger-pubkey.pem
+npm run --silent extract-key -- > ledger-pubkey.pem
 ```
 
 Copy `ledger-pubkey.pem` to the remote daemon host over your normal secure
@@ -132,7 +132,15 @@ shisad signer register \
 
 The `ledger` backend defaults to ECDSA secp256k1 and the EIP-712 signing
 scheme. If you use a non-default derivation path, use the same
-`--derivation-path` value for `src/extract-key.ts` and `src/server.ts`.
+`--derivation-path` value for `src/extract-key.ts` and `src/server.ts`:
+
+```bash
+npm run --silent extract-key -- --derivation-path "44'/60'/0'/0/0" > ledger-pubkey.pem
+```
+
+Run `npm install` first so `tsx` resolves from the bridge package's local
+dependencies. Avoid redirecting `npx tsx ...` directly into a PEM file;
+interactive package-manager prompts can corrupt the public-key export.
 
 ## Health and Readiness Checks
 

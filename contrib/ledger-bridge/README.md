@@ -33,8 +33,12 @@ npm install
 ### 1. Extract your Ledger's public key
 
 ```bash
-npx tsx src/extract-key.ts > pubkey.pem
+npm run --silent extract-key -- > pubkey.pem
 ```
+
+Run `npm install` first so `tsx` resolves from this package's local
+dependencies. Avoid redirecting `npx tsx ...` directly into `pubkey.pem`;
+interactive package-manager prompts can corrupt the PEM output.
 
 ### 2. Register the key with shisad
 
