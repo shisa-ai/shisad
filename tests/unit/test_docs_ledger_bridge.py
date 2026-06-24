@@ -53,4 +53,5 @@ def test_ledger_registration_docs_describe_enforced_algorithm_contract() -> None
     for path in [RUNBOOK, ENV_VARS_DOC]:
         text = path.read_text(encoding="utf-8")
         assert "algorithm=ecdsa-secp256k1" in text
+        assert "signing_scheme=eip712" in text or "EIP-712 signing scheme" in text
         assert "require" in text

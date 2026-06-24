@@ -130,8 +130,8 @@ shisad signer register \
   --public-key ledger-pubkey.pem
 ```
 
-The `ledger` backend requires `algorithm=ecdsa-secp256k1` and the EIP-712
-signing scheme. If you use a non-default derivation path, use the same
+The `ledger` backend requires `algorithm=ecdsa-secp256k1` and
+`signing_scheme=eip712`. If you use a non-default derivation path, use the same
 `--derivation-path` value for `src/extract-key.ts` and `src/server.ts`:
 
 ```bash

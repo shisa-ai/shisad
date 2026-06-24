@@ -70,6 +70,7 @@ from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 from shisad.ui.confirmation import ConfirmationWarningGenerator
+from tests.helpers.signer import generate_secp256k1_private_key, public_key_pem
 
 
 class _StubImpl:
@@ -450,6 +451,31 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         selected_backend_id="software.default",
         selected_backend_method="software",
     )
+
+
+@pytest.mark.asyncio
+async def test_signer_register_rejects_unsupported_ledger_signing_scheme(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    private_key = generate_secp256k1_private_key()
+
+    registered = await harness.do_signer_register(
+        {
+            "backend": "ledger",
+            "user_id": "alice",
+            "key_id": "ledger:stax-1",
+            "name": "alice-ledger",
+            "algorithm": "ecdsa-secp256k1",
+            "device_type": "ledger-consumer",
+            "signing_scheme": "raw",
+            "public_key_pem": public_key_pem(private_key),
+        }
+    )
+
+    assert registered["registered"] is False
+    assert registered["reason"] == "unsupported_ledger_signing_scheme"
+    assert harness._credential_store.get_signer_key("ledger:stax-1") is None
 
 
 def test_gh49_current_turn_reminder_confirmation_drops_false_provenance_warnings(
