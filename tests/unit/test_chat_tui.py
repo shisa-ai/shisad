@@ -65,6 +65,34 @@ def test_format_assistant_message_promotes_inline_bullets_to_markdown_list() -> 
     assert result == "shisad: I can help with:\n\n- Read files\n- Search the web"
 
 
+def test_format_assistant_message_promotes_inline_unicode_bullets_to_markdown_list() -> None:
+    result = format_assistant_message("Demo list: ● Who are you ● Ledger approval")
+
+    assert result == "shisad: Demo list:\n\n- Who are you\n- Ledger approval"
+
+
+def test_format_assistant_message_separates_unicode_bullet_list_from_trailing_prose() -> None:
+    result = format_assistant_message(
+        "Demo list:\n"
+        "● Who are you\n"
+        "● Ledger approval\n"
+        "If you want, I can also turn that into a cleaner checklist format."
+    )
+
+    assert result == (
+        "shisad: Demo list:\n\n"
+        "- Who are you\n"
+        "- Ledger approval\n\n"
+        "If you want, I can also turn that into a cleaner checklist format."
+    )
+
+
+def test_format_assistant_message_promotes_inline_dot_bullets_to_markdown_list() -> None:
+    result = format_assistant_message("Checklist: • Alpha • Beta\nDone.")
+
+    assert result == "shisad: Checklist:\n\n- Alpha\n- Beta\n\nDone."
+
+
 def test_format_assistant_message_keeps_non_list_hyphens_inline() -> None:
     result = format_assistant_message("Range: 1 - 2 and alpha - beta")
 
@@ -95,6 +123,12 @@ def test_format_assistant_message_does_not_rewrite_fenced_code() -> None:
     result = format_assistant_message("```\nItems: - one - two\n```")
 
     assert result == "shisad: ```\nItems: - one - two\n```"
+
+
+def test_format_assistant_message_does_not_rewrite_fenced_unicode_bullets() -> None:
+    result = format_assistant_message("```\nItems: ● one ● two\n```")
+
+    assert result == "shisad: ```\nItems: ● one ● two\n```"
 
 
 def test_format_assistant_message_inserts_blank_line_before_markdown_headings() -> None:

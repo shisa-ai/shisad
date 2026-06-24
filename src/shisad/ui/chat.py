@@ -31,10 +31,15 @@ _INLINE_LIST_BULLET_CONT_RE = re.compile(
 _INLINE_LIST_ORDERED_CONT_RE = re.compile(
     r"\s+(?P<marker>[1-9]\d?[.)])\s+(?=\S)"
 )
+_UNICODE_BULLET_MARKERS = ("\u25cf", "\u2022")
+_UNICODE_LIST_LEAD_RE = re.compile(r":\s+[\u25cf\u2022]\s+(?=\S)")
+_UNICODE_LIST_LINE_RE = re.compile(r"^(?P<indent> {0,3})[\u25cf\u2022]\s+(?=\S)")
+_UNICODE_LIST_CONT_RE = re.compile(r"\s+[\u25cf\u2022]\s+(?=\S)")
 _INLINE_LIST_SUBHEADING_RE = re.compile(
     r"(?P<item_prefix>\n(?:[-*+]|\d+[.)]) [^\n]*?[.!?])\s+"
     r"(?P<heading>[A-Z][^\n:]{1,120}:\n\n?(?:[-*+]|\d+[.)])\s)"
 )
+_MARKDOWN_LIST_ITEM_RE = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)])\s+\S")
 _MARKDOWN_FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _MARKDOWN_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+\S")
 _PENDING_BLOCK_START_RE = re.compile(r"^\[PENDING CONFIRMATIONS\]$", re.MULTILINE)
@@ -75,6 +80,7 @@ def _render_assistant_text(
     if preserve_pending_preview_escapes and _PENDING_BLOCK_START_RE.search(rendered):
         return rendered
     rendered = _normalize_markdown_heading_blocks(rendered)
+    rendered = _normalize_unicode_markdown_lists(rendered)
     return _normalize_inline_markdown_lists(rendered)
 
 
@@ -135,6 +141,73 @@ def _normalize_inline_markdown_lists(text: str) -> str:
     if trailing_newline:
         normalized += "\n"
     return normalized
+
+
+def _normalize_unicode_markdown_lists(text: str) -> str:
+    """Promote common Unicode bullet responses to real Markdown lists."""
+    if not text or not any(marker in text for marker in _UNICODE_BULLET_MARKERS):
+        return text
+
+    trailing_newline = text.endswith("\n")
+    normalized_lines: list[str] = []
+    in_fence = False
+    previous_unicode_list_item = False
+    for line in text.splitlines():
+        if _MARKDOWN_FENCE_RE.match(line):
+            in_fence = not in_fence
+            normalized_lines.append(line)
+            previous_unicode_list_item = False
+            continue
+        if in_fence:
+            normalized_lines.append(line)
+            continue
+
+        starts_unicode_item = _UNICODE_LIST_LINE_RE.match(line) is not None
+        if starts_unicode_item:
+            previous_line = normalized_lines[-1] if normalized_lines else ""
+            if previous_line.strip() and _MARKDOWN_LIST_ITEM_RE.match(previous_line) is None:
+                normalized_lines.append("")
+        elif (
+            previous_unicode_list_item
+            and line.strip()
+            and not line.startswith((" ", "\t"))
+        ):
+            normalized_lines.append("")
+
+        normalized = _normalize_unicode_markdown_list_line(line)
+        normalized_parts = normalized.split("\n")
+        normalized_lines.extend(normalized_parts)
+        previous_unicode_list_item = (
+            _unicode_markdown_list_line_changed(line, normalized)
+            and _MARKDOWN_LIST_ITEM_RE.match(normalized_parts[-1]) is not None
+        )
+
+    normalized = "\n".join(normalized_lines)
+    if trailing_newline:
+        normalized += "\n"
+    return normalized
+
+
+def _normalize_unicode_markdown_list_line(line: str) -> str:
+    first_marker = _UNICODE_LIST_LEAD_RE.search(line)
+    if first_marker is not None:
+        prefix = line[: first_marker.start() + 1].rstrip()
+        tail = line[first_marker.start() + 1 :].lstrip()
+        tail = _UNICODE_LIST_LINE_RE.sub("- ", tail, count=1)
+        tail = _UNICODE_LIST_CONT_RE.sub("\n- ", tail)
+        return f"{prefix}\n\n{tail}"
+
+    line_marker = _UNICODE_LIST_LINE_RE.match(line)
+    if line_marker is None:
+        return line
+
+    tail = line[line_marker.end() :]
+    tail = _UNICODE_LIST_CONT_RE.sub("\n- ", tail)
+    return f"{line_marker.group('indent')}- {tail}"
+
+
+def _unicode_markdown_list_line_changed(original: str, normalized: str) -> bool:
+    return original != normalized and any(marker in original for marker in _UNICODE_BULLET_MARKERS)
 
 
 def _normalize_inline_markdown_list_line(line: str) -> str:
