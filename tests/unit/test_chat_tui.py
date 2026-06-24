@@ -97,6 +97,54 @@ def test_format_assistant_message_does_not_rewrite_fenced_code() -> None:
     assert result == "shisad: ```\nItems: - one - two\n```"
 
 
+def test_format_assistant_message_inserts_blank_line_before_markdown_headings() -> None:
+    result = format_assistant_message(
+        "Quantization means using lower-precision numbers.\n"
+        "## Quantization in machine learning\n"
+        "Weights and activations can both be quantized.\n"
+        "### Practical tradeoffs\n"
+        "Lower precision can reduce memory use."
+    )
+
+    assert result == (
+        "shisad: Quantization means using lower-precision numbers.\n\n"
+        "## Quantization in machine learning\n"
+        "Weights and activations can both be quantized.\n\n"
+        "### Practical tradeoffs\n"
+        "Lower precision can reduce memory use."
+    )
+
+
+def test_format_assistant_message_keeps_existing_heading_block_spacing() -> None:
+    result = format_assistant_message(
+        "Intro paragraph.\n\n## Already separate\nBody text."
+    )
+
+    assert result == "shisad: Intro paragraph.\n\n## Already separate\nBody text."
+
+
+def test_format_assistant_message_does_not_rewrite_fenced_code_headings() -> None:
+    result = format_assistant_message(
+        "Example:\n"
+        "```\n"
+        "value\n"
+        "## Not a markdown heading here\n"
+        "```\n"
+        "Done.\n"
+        "## Real heading"
+    )
+
+    assert result == (
+        "shisad: Example:\n"
+        "```\n"
+        "value\n"
+        "## Not a markdown heading here\n"
+        "```\n"
+        "Done.\n\n"
+        "## Real heading"
+    )
+
+
 def test_format_assistant_message_skips_normalizer_for_pending_previews() -> None:
     result = format_assistant_message(
         "[PENDING CONFIRMATIONS]\n"

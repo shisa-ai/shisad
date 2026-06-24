@@ -36,6 +36,7 @@ _INLINE_LIST_SUBHEADING_RE = re.compile(
     r"(?P<heading>[A-Z][^\n:]{1,120}:\n\n?(?:[-*+]|\d+[.)])\s)"
 )
 _MARKDOWN_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_MARKDOWN_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+\S")
 _PENDING_BLOCK_START_RE = re.compile(r"^\[PENDING CONFIRMATIONS\]$", re.MULTILINE)
 
 
@@ -73,7 +74,36 @@ def _render_assistant_text(
     )
     if preserve_pending_preview_escapes and _PENDING_BLOCK_START_RE.search(rendered):
         return rendered
+    rendered = _normalize_markdown_heading_blocks(rendered)
     return _normalize_inline_markdown_lists(rendered)
+
+
+def _normalize_markdown_heading_blocks(text: str) -> str:
+    """Ensure ATX headings have a blank-line boundary before Textual renders them."""
+    if not text or "#" not in text:
+        return text
+
+    trailing_newline = text.endswith("\n")
+    normalized_lines: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _MARKDOWN_FENCE_RE.match(line):
+            in_fence = not in_fence
+            normalized_lines.append(line)
+            continue
+        if (
+            not in_fence
+            and _MARKDOWN_ATX_HEADING_RE.match(line)
+            and normalized_lines
+            and normalized_lines[-1].strip()
+        ):
+            normalized_lines.append("")
+        normalized_lines.append(line)
+
+    normalized = "\n".join(normalized_lines)
+    if trailing_newline:
+        normalized += "\n"
+    return normalized
 
 
 def _normalize_inline_markdown_lists(text: str) -> str:
