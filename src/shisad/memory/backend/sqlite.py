@@ -292,20 +292,14 @@ class SQLiteRetrievalBackend:
             """
             params: list[object] = [match_query]
         else:
-            predicates = [
-                "LOWER(f.content_sanitized) LIKE ? ESCAPE '\\'"
-                for _ in tokens
-            ]
+            predicates = ["LOWER(f.content_sanitized) LIKE ? ESCAPE '\\'" for _ in tokens]
             sql = f"""
                 SELECT DISTINCT f.chunk_id
                 FROM retrieval_lexical f
                 JOIN retrieval_records r ON r.chunk_id = f.chunk_id
                 WHERE ({" OR ".join(predicates)})
             """
-            params = [
-                f"%{self._escape_like_token(token.lower())}%"
-                for token in tokens
-            ]
+            params = [f"%{self._escape_like_token(token.lower())}%" for token in tokens]
         if collections:
             placeholders = ", ".join("?" for _ in collections)
             sql += f" AND r.collection IN ({placeholders})"

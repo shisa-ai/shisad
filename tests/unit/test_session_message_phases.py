@@ -5686,8 +5686,8 @@ async def test_finalize_response_browser_prose_keeps_title_metadata_labeled() ->
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert text.startswith("I captured the page.")
-    assert "Completed action result:" in text
+    assert text.startswith("I completed the tool step")
+    assert "Tool results summary:" in text
     assert "Confirmed action result:" not in text
     assert "Visible page text." in text
     assert "Optional page-title metadata" in text

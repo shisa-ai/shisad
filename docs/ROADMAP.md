@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-05-20*
+*Updated: 2026-06-25*
 *Status: Active*
 
 ## Goal
@@ -67,6 +67,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.7.3` is published: open-thread/topic resume, fuzzy timeline/archive
   search, procedure-experience candidates, and timeline/procedure security
   hardening extend the structured long-term memory line.
+- `v0.8.0b0` is the first v0.8 beta checkpoint: it publishes the reviewed
+  post-`v0.7.4` bug-fix stack while the stable v0.8 UX overhaul remains in
+  progress.
 
 ## Milestones
 
@@ -339,6 +342,14 @@ TOTP entry remain deferred to `v0.8.0`.
   MELT evaluation artifacts and truth-scope preliminary versus final results.
 - External full-dataset and baseline-adapter execution remains conditional on
   locally available datasets, services, and optional dependencies.
+
+#### v0.8.0b0 — Bug-fix beta checkpoint
+
+- Status (2026-06-25): beta checkpoint release.
+- Publishes the reviewed post-`v0.7.4` bug-fix stack for users who need a more
+  current installable build before the stable `v0.8.0` UX release.
+- Does not claim the full v0.8 UX overhaul; theme, onboarding, web UI, and cost
+  dashboard work remain in the v0.8 line.
 
 ### v0.8 — UX overhaul
 

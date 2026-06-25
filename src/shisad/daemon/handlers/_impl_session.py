@@ -1544,9 +1544,7 @@ def _confirmation_alias_target_is_confirmation_like(
     candidate = str(token or "").strip().strip(".,;:!")
     if pending_confirmation_ids is not None and candidate in pending_confirmation_ids:
         return True
-    return len(candidate) == 32 and all(
-        char in "0123456789abcdef" for char in candidate.casefold()
-    )
+    return len(candidate) == 32 and all(char in "0123456789abcdef" for char in candidate.casefold())
 
 
 def _chat_confirmation_typo_targets_id_like_token(
@@ -1607,12 +1605,8 @@ def _internal_channel_confirmation_error_should_block_planner(
             )
         ):
             tail = " ".join(tokens[2:])
-            tail_is_totp_code = (
-                len(tokens) == 3 and tokens[2].isdigit() and len(tokens[2]) == 6
-            )
-            return not tail or tail_is_totp_code or _action_resolve_command_tail_is_clear(
-                tail
-            )
+            tail_is_totp_code = len(tokens) == 3 and tokens[2].isdigit() and len(tokens[2]) == 6
+            return not tail or tail_is_totp_code or _action_resolve_command_tail_is_clear(tail)
         return False
     return _nearest_confirmation_action(first) is not None
 
@@ -2210,10 +2204,7 @@ def _has_current_turn_reminder_create_intent(
         return False
     if not _has_clean_trusted_turn_privileges(validated):
         return False
-    return (
-        proposal is not None
-        and "user_text:explicit_reminder_intent" in proposal.data_sources
-    )
+    return proposal is not None and "user_text:explicit_reminder_intent" in proposal.data_sources
 
 
 def _filesystem_read_continuation_goal(
@@ -3831,12 +3822,8 @@ _USER_VISIBLE_TOOL_OUTPUT_HEADERS = (
     "Confirmed action result:",
 )
 _NON_DOTTED_TOOL_OUTPUT_LABELS = frozenset({"retrieve_rag", "report_anomaly"})
-_TOOL_OUTPUT_PAYLOAD_LABEL_RE = re.compile(
-    r"(?P<label>[A-Za-z0-9_.-]+):\s+(?P<payload>.*)"
-)
-_TOOL_OUTPUT_PAYLOAD_STATUS_RE = re.compile(
-    r"(?:success=(?:True|False)|completed\.)(?:\s|,|$)"
-)
+_TOOL_OUTPUT_PAYLOAD_LABEL_RE = re.compile(r"(?P<label>[A-Za-z0-9_.-]+):\s+(?P<payload>.*)")
+_TOOL_OUTPUT_PAYLOAD_STATUS_RE = re.compile(r"(?:success=(?:True|False)|completed\.)(?:\s|,|$)")
 _REJECTED_TOOL_AVAILABILITY_PHRASE_PREFIXES = (
     "i can use",
     "i could use",
@@ -4975,9 +4962,7 @@ def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
 
 def _action_monitor_rejection_reason(monitor_decision: Any) -> str:
     flags = [
-        str(flag).strip()
-        for flag in getattr(monitor_decision, "flags", [])
-        if str(flag).strip()
+        str(flag).strip() for flag in getattr(monitor_decision, "flags", []) if str(flag).strip()
     ]
     if flags:
         return ",".join(flags)
@@ -5037,9 +5022,7 @@ def _response_contains_unprotected_tool_output_header(response_text: str) -> boo
 
 def _response_contains_rejected_tool_availability_phrase(text: str, phrase: str) -> bool:
     first_person_phrase = phrase.startswith(("i ", "i'"))
-    left_boundary = (
-        r"(?<![A-Za-z0-9_.-])" if first_person_phrase else r"(?:^|[,:;.!?]\s+)"
-    )
+    left_boundary = r"(?<![A-Za-z0-9_.-])" if first_person_phrase else r"(?:^|[,:;.!?]\s+)"
     return (
         re.search(
             rf"{left_boundary}{re.escape(phrase)}(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])",
@@ -5065,10 +5048,7 @@ def _is_unprotected_tool_output_payload_line(line: str) -> bool:
     return (
         "." in canonical
         or canonical in _NON_DOTTED_TOOL_OUTPUT_LABELS
-        or (
-            native_alias_shaped
-            and _TOOL_OUTPUT_PAYLOAD_STATUS_RE.match(payload) is not None
-        )
+        or (native_alias_shaped and _TOOL_OUTPUT_PAYLOAD_STATUS_RE.match(payload) is not None)
     )
 
 
@@ -5126,10 +5106,7 @@ def _strip_rejected_tool_availability_claim_lines(
         def _claim_window_end_index(start: int) -> int | None:
             window_lines: list[str] = []
             for end, candidate_line in enumerate(lines[start:], start=start + 1):
-                if (
-                    end > start + 1
-                    and _is_unprotected_tool_output_header_line(candidate_line)
-                ):
+                if end > start + 1 and _is_unprotected_tool_output_header_line(candidate_line):
                     break
                 window_lines.append(candidate_line)
                 if _response_claims_rejected_tool_available(
@@ -5197,9 +5174,7 @@ def _strip_rejected_tool_availability_claim_lines(
         )
         if part
     ]
-    unprotected_parts = [
-        part for part in (stripped_assistant_text, stripped_trailing_text) if part
-    ]
+    unprotected_parts = [part for part in (stripped_assistant_text, stripped_trailing_text) if part]
     return "\n\n".join(parts), "\n\n".join(unprotected_parts)
 
 
@@ -8891,9 +8866,7 @@ class SessionImplMixin(HandlerMixinBase):
                     if str(getattr(pending, "confirmation_id", "")).strip()
                 }
                 indexes = (
-                    [visible_index_by_id[target_id]]
-                    if target_id in visible_index_by_id
-                    else []
+                    [visible_index_by_id[target_id]] if target_id in visible_index_by_id else []
                 )
             else:
                 indexes = _resolve_chat_confirmation_indexes(
@@ -11421,9 +11394,7 @@ class SessionImplMixin(HandlerMixinBase):
                         merged_policy=merged_policy,
                         taint_labels=pending_taint_labels,
                         extra_warnings=extra_warnings,
-                        trusted_current_turn_reminder_create=(
-                            current_turn_reminder_create_intent
-                        ),
+                        trusted_current_turn_reminder_create=(current_turn_reminder_create_intent),
                         continuation_user_goal=continuation_user_goal,
                         continuation_mode="planner" if continuation_user_goal else "",
                         pep_context=(

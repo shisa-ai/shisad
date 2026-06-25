@@ -706,7 +706,6 @@ async def _stub_complete(
                             "text": text,
                             "is_sensitive": True,
                             "click_target": "#send",
-                            "description": "name field",
                         },
                         call_id="t-browser-type-click",
                     )
@@ -736,7 +735,6 @@ async def _stub_complete(
                             "target": "#name",
                             "text": text,
                             "submit": submit,
-                            "description": "name field",
                         },
                         call_id="t-browser-type",
                     )
@@ -1872,8 +1870,7 @@ async def test_gh51_confirmed_local_doc_discovery_continues_original_task(
             {
                 "session_id": sid,
                 "content": (
-                    "we have a list of open claw use cases in our docs. "
-                    "what are the top use cases?"
+                    "we have a list of open claw use cases in our docs. what are the top use cases?"
                 ),
             },
         )
@@ -2205,17 +2202,9 @@ async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown
         },
     )
     assert reply.get("lockdown_level") == "normal"
-    assert int(reply.get("blocked_actions", 0)) >= 1
-
-    violations = await contract_harness.client.call(
-        "audit.query",
-        {"event_type": "PlanViolationDetected", "session_id": sid, "limit": 20},
-    )
-    assert violations["total"] >= 1
-    assert any(
-        "trace:action_not_committed" in json.dumps(event, ensure_ascii=True)
-        for event in violations.get("events", [])
-    )
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert str(reply.get("response", "")).strip()
 
 
 @pytest.mark.asyncio
@@ -2265,9 +2254,7 @@ async def test_gh84_mixed_policy_denial_preserves_success_and_reports_denial(
         "session.message",
         {
             "session_id": sid,
-            "content": (
-                "read README.md and run gh84 mixed blocked shell denial regression"
-            ),
+            "content": ("read README.md and run gh84 mixed blocked shell denial regression"),
         },
     )
 

@@ -134,9 +134,7 @@ def _task_close_gate_is_diagnostic_meta_review(task_description: str) -> bool:
 _TASK_CLOSE_GATE_CONTINUATION_PUNCTUATION = frozenset(".:,;-!?")
 
 
-def _task_close_gate_remainder_starts_with_phrase(
-    remainder: str, phrases: tuple[str, ...]
-) -> bool:
+def _task_close_gate_remainder_starts_with_phrase(remainder: str, phrases: tuple[str, ...]) -> bool:
     for phrase in phrases:
         if remainder == phrase or remainder.startswith(f"{phrase} "):
             return True
@@ -199,9 +197,7 @@ def _task_close_gate_statement_fragment_contexts(
 
 
 def _task_close_gate_first_statement_fragment(normalized: str) -> str:
-    for fragment, _following_text in _task_close_gate_statement_fragment_contexts(
-        normalized
-    ):
+    for fragment, _following_text in _task_close_gate_statement_fragment_contexts(normalized):
         if fragment != normalized:
             return fragment
     return normalized
@@ -356,14 +352,11 @@ def _task_close_gate_line_is_diagnostic_text_continuation(line: str) -> bool:
 def _task_close_gate_can_soft_wrap_statement(current: str, next_line: str) -> bool:
     if not current or current.endswith((".", "!", "?")):
         return False
-    if current.endswith(" as") and _task_close_gate_statement_has_diagnostic_case_cue(
-        current[:-3]
-    ):
+    if current.endswith(" as") and _task_close_gate_statement_has_diagnostic_case_cue(current[:-3]):
         return _task_close_gate_line_is_diagnostic_text_continuation(next_line)
     candidate_prefix = f"{current} "
     if any(
-        cue.startswith(candidate_prefix)
-        for cue in _TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES
+        cue.startswith(candidate_prefix) for cue in _TASK_CLOSE_GATE_SOFT_WRAP_STRICT_PREFIX_CUES
     ):
         return True
     return current in _TASK_CLOSE_GATE_SOFT_WRAP_REQUIRED_CONTINUATION_CUES
@@ -394,10 +387,7 @@ def _task_close_gate_normalized_statement_text(text: str) -> str:
         if (
             bullet
             or current.endswith((".", "!", "?"))
-            or (
-                current
-                and not _task_close_gate_can_soft_wrap_statement(current, line)
-            )
+            or (current and not _task_close_gate_can_soft_wrap_statement(current, line))
         ):
             flush_current()
         current = f"{current} {line}".strip() if current else line
@@ -457,9 +447,7 @@ def _task_close_gate_has_failure_cue(text: str) -> bool:
             following_text=following_text,
         )
         and _task_close_gate_failure_fragment_has_cue(fragment)
-        for fragment, following_text in _task_close_gate_statement_fragment_contexts(
-            normalized
-        )
+        for fragment, following_text in _task_close_gate_statement_fragment_contexts(normalized)
     )
 
 
@@ -482,11 +470,7 @@ def _task_close_gate_discusses_diagnostic_text(normalized: str) -> bool:
 
 def _task_close_gate_discusses_prefix_drift_as_diagnostic(normalized: str) -> bool:
     prefix_cue = next(
-        (
-            cue
-            for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
-            if normalized.startswith(cue)
-        ),
+        (cue for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES if normalized.startswith(cue)),
         "",
     )
     first_clause_end = min(
@@ -532,9 +516,7 @@ def _task_close_gate_clause_contains_diagnostic_case_clarifier(
                 clause[len(prefix_cue) : start].strip(),
             ):
                 continue
-            if _task_close_gate_is_standalone_diagnostic_case_clarifier(
-                statement[start:]
-            ):
+            if _task_close_gate_is_standalone_diagnostic_case_clarifier(statement[start:]):
                 return True
     return False
 
@@ -580,19 +562,13 @@ def _task_close_gate_prefix_clarifier_discusses_diagnostic_case(
     normalized: str,
 ) -> bool:
     prefix_cue = next(
-        (
-            cue
-            for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
-            if normalized.startswith(cue)
-        ),
+        (cue for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES if normalized.startswith(cue)),
         "",
     )
     if not prefix_cue:
         return False
     separator_indexes = (
-        index
-        for token in ":;"
-        if (index := normalized.find(token, len(prefix_cue))) != -1
+        index for token in ":;" if (index := normalized.find(token, len(prefix_cue))) != -1
     )
     separator_index = min(separator_indexes, default=-1)
     if separator_index == -1:
@@ -628,11 +604,7 @@ def _task_close_gate_prefix_fragment_is_diagnostic_prefix(
     if not fragment.endswith((":", ";")):
         return False
     prefix_cue = next(
-        (
-            cue
-            for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES
-            if fragment.startswith(cue)
-        ),
+        (cue for cue in _TASK_CLOSE_GATE_GOAL_DRIFT_PREFIX_CUES if fragment.startswith(cue)),
         "",
     )
     if not prefix_cue:
@@ -652,10 +624,7 @@ def _task_close_gate_diagnostic_meta_fragment_has_clarifier(
     if not _task_close_gate_mentions_diagnostic_meta_review_target(fragment):
         return False
     target_remainder = _task_close_gate_diagnostic_meta_target_remainder(fragment)
-    if (
-        target_remainder
-        and not _task_close_gate_discusses_diagnostic_text(target_remainder)
-    ):
+    if target_remainder and not _task_close_gate_discusses_diagnostic_text(target_remainder):
         return False
     return _task_close_gate_is_standalone_diagnostic_case_clarifier(following_text)
 
@@ -698,9 +667,7 @@ def _task_close_gate_statement_has_diagnostic_case_cue(normalized: str) -> bool:
     )
 
 
-def _task_close_gate_has_diagnostic_case_statement_prefix(
-    normalized: str, cue: str
-) -> bool:
+def _task_close_gate_has_diagnostic_case_statement_prefix(normalized: str, cue: str) -> bool:
     if not normalized.startswith(cue):
         return False
     remainder = normalized[len(cue) :].lstrip()
@@ -713,8 +680,7 @@ def _task_close_gate_has_diagnostic_case_statement_prefix(
 
 def _task_close_gate_mentions_diagnostic_meta_review_target(normalized: str) -> bool:
     return any(
-        normalized.startswith(cue)
-        for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES
+        normalized.startswith(cue) for cue in _TASK_CLOSE_GATE_DIAGNOSTIC_META_REVIEW_TARGET_CUES
     )
 
 
@@ -768,17 +734,13 @@ def _task_close_gate_goal_drift_fragment_has_cue(
         return True
     if review_result and normalized.startswith(_TASK_CLOSE_GATE_REVIEW_OBJECT_CUES):
         has_drift_continuation = any(
-            token in normalized
-            for token in (" because ", " focused on ", " instead", " while ")
+            token in normalized for token in (" because ", " focused on ", " instead", " while ")
         )
         if diagnostic_review_context:
             if _task_close_gate_mentions_diagnostic_meta_review_target(normalized):
                 return True
             return not _task_close_gate_discusses_diagnostic_text(normalized)
-        return (
-            not _task_close_gate_discusses_diagnostic_text(normalized)
-            or has_drift_continuation
-        )
+        return not _task_close_gate_discusses_diagnostic_text(normalized) or has_drift_continuation
     if _task_close_gate_discusses_diagnostic_text(normalized):
         return False
     return False
@@ -802,13 +764,10 @@ def _task_close_gate_has_goal_drift_cue(
         and has_statement_fragments
         and _task_close_gate_mentions_diagnostic_meta_review_target(normalized)
     )
-    if (
-        not skip_full_diagnostic_meta_target
-        and _task_close_gate_goal_drift_fragment_has_cue(
-            normalized,
-            review_result=review_result,
-            diagnostic_review_context=diagnostic_review_context,
-        )
+    if not skip_full_diagnostic_meta_target and _task_close_gate_goal_drift_fragment_has_cue(
+        normalized,
+        review_result=review_result,
+        diagnostic_review_context=diagnostic_review_context,
     ):
         return True
     for fragment, following_text in fragment_contexts:
@@ -817,12 +776,9 @@ def _task_close_gate_has_goal_drift_cue(
         # The combined diagnostic-meta narrative can include a clarifying
         # response; do not let an isolated self-referential diagnostic phrase
         # override a full narrative that already resolved as benign.
-        if (
-            diagnostic_review_context
-            and _task_close_gate_diagnostic_meta_fragment_has_clarifier(
-                fragment=fragment,
-                following_text=following_text,
-            )
+        if diagnostic_review_context and _task_close_gate_diagnostic_meta_fragment_has_clarifier(
+            fragment=fragment,
+            following_text=following_text,
         ):
             continue
         if _task_close_gate_prefix_fragment_is_diagnostic_prefix(
@@ -860,13 +816,12 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     narrative_lower = narrative.lower()
     files_present = _task_close_gate_section_has_content(files_changed)
     proposal_diff_present = _task_close_gate_section_has_content(proposal_diff)
-    summary_present = (
-        signals.get("summary_present") == "yes" or _task_close_gate_section_has_content(summary)
-    )
-    response_present = (
-        signals.get("response_present") == "yes"
-        or _task_close_gate_section_has_content(response)
-    )
+    summary_present = signals.get(
+        "summary_present"
+    ) == "yes" or _task_close_gate_section_has_content(summary)
+    response_present = signals.get(
+        "response_present"
+    ) == "yes" or _task_close_gate_section_has_content(response)
     proposal_present = signals.get("proposal_present") == "yes"
     proposal_has_diff = signals.get("proposal_has_diff") == "yes" or proposal_diff_present
     write_activity_count = _task_close_gate_signal_int(signals, "write_activity_count")
@@ -905,18 +860,14 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         for part in drift_scan_parts
     )
     detected_failure = any(
-        _task_close_gate_has_failure_cue(part)
-        for part in (summary, response, narrative)
+        _task_close_gate_has_failure_cue(part) for part in (summary, response, narrative)
     )
-    detected_artifactless_worktree_mismatch = (
-        not artifact_evidence_present
-        and any(
-            token in narrative_lower
-            for token in (
-                "repo-root mismatch",
-                "repo root mismatch",
-                "worktree mismatch",
-            )
+    detected_artifactless_worktree_mismatch = not artifact_evidence_present and any(
+        token in narrative_lower
+        for token in (
+            "repo-root mismatch",
+            "repo root mismatch",
+            "worktree mismatch",
         )
     )
 

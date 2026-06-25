@@ -25,12 +25,8 @@ from shisad.core.transcript import derive_legacy_transcript_entry_id
 from shisad.ui.evidence import render_evidence_refs_for_terminal
 
 _INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
-_INLINE_LIST_BULLET_CONT_RE = re.compile(
-    r"(?<!\d)\s+(?P<marker>[-*+])\s+(?=\S)"
-)
-_INLINE_LIST_ORDERED_CONT_RE = re.compile(
-    r"\s+(?P<marker>[1-9]\d?[.)])\s+(?=\S)"
-)
+_INLINE_LIST_BULLET_CONT_RE = re.compile(r"(?<!\d)\s+(?P<marker>[-*+])\s+(?=\S)")
+_INLINE_LIST_ORDERED_CONT_RE = re.compile(r"\s+(?P<marker>[1-9]\d?[.)])\s+(?=\S)")
 _UNICODE_BULLET_MARKERS = ("\u25cf", "\u2022")
 _UNICODE_LIST_LEAD_RE = re.compile(r":\s+[\u25cf\u2022]\s+(?=\S)")
 _UNICODE_LIST_LINE_RE = re.compile(r"^(?P<indent> {0,3})[\u25cf\u2022]\s+(?=\S)")
@@ -167,11 +163,7 @@ def _normalize_unicode_markdown_lists(text: str) -> str:
             previous_line = normalized_lines[-1] if normalized_lines else ""
             if previous_line.strip() and _MARKDOWN_LIST_ITEM_RE.match(previous_line) is None:
                 normalized_lines.append("")
-        elif (
-            previous_unicode_list_item
-            and line.strip()
-            and not line.startswith((" ", "\t"))
-        ):
+        elif previous_unicode_list_item and line.strip() and not line.startswith((" ", "\t")):
             normalized_lines.append("")
 
         normalized = _normalize_unicode_markdown_list_line(line)
@@ -278,8 +270,7 @@ def _is_session_id_validation_error(lowered_message: str) -> bool:
     if "sessionmessageparams" not in lowered_message or "session_id" not in lowered_message:
         return False
     return (
-        "input should be a valid string" in lowered_message
-        or "field required" in lowered_message
+        "input should be a valid string" in lowered_message or "field required" in lowered_message
     )
 
 

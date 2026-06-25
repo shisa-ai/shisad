@@ -52,7 +52,7 @@ BASE_SYSTEM_PROMPT = (
     "and pass command as argv tokens: each command array item is one executable "
     "or argument atom, not a shell command string. Preserve the user's requested "
     "executable and arguments; do not replace a Ledger-related command with an "
-    'example. For example, represent the requested command `echo Hello Ledger!` '
+    "example. For example, represent the requested command `echo Hello Ledger!` "
     'as ["echo", "Hello", "Ledger!"]. Do not put an entire shell command in '
     "one command item. "
     "If the user is asking what a command means, what would happen, or wants the "

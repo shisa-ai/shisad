@@ -7,9 +7,112 @@ cutting a release tag. Pre-publish release content is marked explicitly and is
 left unlinked until the tag exists. There is no standing "Unreleased" section.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Normal releases use semver-style versions; exceptional follow-up patch lines
-may use PEP 440-compatible four-segment versions when the release checklist
-records that choice.
+Normal releases use semver-style versions; beta checkpoints and exceptional
+follow-up patch lines may use PEP 440-compatible prerelease or four-segment
+versions when the release checklist records that choice.
+
+## [0.8.0b0] - 2026-06-25
+
+This is a beta checkpoint before the stable `v0.8.0` UX overhaul. It publishes
+the reviewed post-`v0.7.4` bug-fix stack so users can install a current build
+while the larger v0.8 polish work continues.
+
+### Added
+
+- **Storage diagnostics now report SQLite FTS5 readiness.** `shisad doctor`
+  can report whether the Python SQLite runtime has FTS5 enabled, and the docs
+  explain install options for common environments. shisad also falls back when
+  FTS5 is unavailable instead of crashing at daemon startup.
+  ([#57](https://github.com/shisa-ai/shisad/issues/57),
+  [#83](https://github.com/shisa-ai/shisad/issues/83))
+
+- **Ledger remote-host setup is documented.** The Ledger bridge docs now show
+  the supported topology for a remote shisad daemon with USB hardware attached
+  to a local workstation. ([#76](https://github.com/shisa-ai/shisad/issues/76))
+
+### Changed
+
+- **Setup and web-search docs are more actionable.** Local source checkouts no
+  longer require root-owned socket paths or custom environment setup for the
+  normal development flow, and the SearxNG/web-search setup docs and
+  unconfigured-backend messages now explain what to do next.
+  ([#50](https://github.com/shisa-ai/shisad/issues/50),
+  [#52](https://github.com/shisa-ai/shisad/issues/52),
+  [#53](https://github.com/shisa-ai/shisad/issues/53))
+
+- **Runtime environment examples avoid shell-quoting traps.** Runbook guidance
+  now recommends comma-separated `runtime.env` values where bash-sourced
+  JSON-array examples can lose quotes. ([#43](https://github.com/shisa-ai/shisad/issues/43))
+
+### Fixed
+
+- **Chat reconnects restore usable session history.** Reconnecting to an
+  existing chat session now replays prior messages instead of starting with a
+  blank view, including bounded transcript reads and retryable async blob
+  backfills. ([#65](https://github.com/shisa-ai/shisad/issues/65))
+
+- **Chat rendering handles common Markdown shapes.** Markdown headings render
+  as block-level sections instead of running into the previous line, and
+  Unicode bullet lists no longer collapse following prose into the final list
+  item. ([#66](https://github.com/shisa-ai/shisad/issues/66),
+  [#67](https://github.com/shisa-ai/shisad/issues/67))
+
+- **The chat TUI handles session ids more safely.** Chat sends now recover or
+  reject invalid session ids instead of calling `session.message` with missing
+  or invalid identifiers. ([#68](https://github.com/shisa-ai/shisad/issues/68))
+
+- **Reminder and time flows are less brittle.** One-shot reminders no longer
+  display like recurring interval schedules, active TUI sessions can receive
+  reminder notifications more reliably, direct reminder requests avoid false
+  taint/cross-thread warnings, direct reminder listing is no longer vetoed by
+  the sequence analyzer, and simple current-time requests can answer without
+  a shell fallback loop. ([#49](https://github.com/shisa-ai/shisad/issues/49),
+  [#54](https://github.com/shisa-ai/shisad/issues/54),
+  [#58](https://github.com/shisa-ai/shisad/issues/58),
+  [#59](https://github.com/shisa-ai/shisad/issues/59),
+  [#60](https://github.com/shisa-ai/shisad/issues/60))
+
+- **Direct local file and audit requests work through clearer policy paths.**
+  Direct local document reads and read-only audit queries no longer fall into
+  misleading taint or goal-misalignment dead ends.
+  ([#51](https://github.com/shisa-ai/shisad/issues/51),
+  [#55](https://github.com/shisa-ai/shisad/issues/55))
+
+- **Browser and evidence-result failures are clearer.** Browser subprocess
+  failures preserve useful sanitized details in audit/CLI output, Ubuntu
+  default Node 18 setups avoid the undici WASM sandbox failure mode, and
+  post-tool synthesis after `evidence.read` reaches the user instead of
+  stopping at planner intent prose.
+  ([#44](https://github.com/shisa-ai/shisad/issues/44),
+  [#45](https://github.com/shisa-ai/shisad/issues/45),
+  [#46](https://github.com/shisa-ai/shisad/issues/46))
+
+- **Channel confirmations and cooldowns are less fragile.** Slack in-channel
+  `confirm N` / `reject N` syntax is recognized, and confirming an action no
+  longer trips a cooldown because a different session recently confirmed
+  another action. ([#41](https://github.com/shisa-ai/shisad/issues/41),
+  [#42](https://github.com/shisa-ai/shisad/issues/42))
+
+- **MCP tool execution reaches the control plane with the right action kind.**
+  Chat-proposed MCP tool calls are no longer blocked as unknown control-plane
+  actions before normal policy evaluation. ([#82](https://github.com/shisa-ai/shisad/issues/82))
+
+- **Policy blocks return a clearer denial.** When policy blocks a tool action,
+  the response now surfaces the denial and reason instead of hedging or
+  entering another clarification loop. ([#84](https://github.com/shisa-ai/shisad/issues/84))
+
+- **The development implement self-check handles external directories.** The
+  implement self-check no longer reports a false negative when an agent writes
+  to an external directory outside the shisad git repo. ([#80](https://github.com/shisa-ai/shisad/issues/80))
+
+### Security
+
+- **Ledger signer registration rejects corrupted or wrong public keys.**
+  Ledger signer setup now fails fast when a public-key file is not valid PEM,
+  uses the wrong key type, uses the wrong elliptic curve, or requests an
+  unsupported Ledger algorithm/signing-scheme combination. The Ledger key
+  extraction docs also avoid redirecting interactive `npx` prompts into PEM
+  output. ([#75](https://github.com/shisa-ai/shisad/issues/75))
 
 ## [0.7.4] - 2026-05-21
 
@@ -983,6 +1086,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.8.0b0]: https://github.com/shisa-ai/shisad/compare/v0.7.4...v0.8.0b0
 [0.7.4]: https://github.com/shisa-ai/shisad/compare/v0.7.3.1...v0.7.4
 [0.7.3]: https://github.com/shisa-ai/shisad/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/shisa-ai/shisad/compare/v0.7.1...v0.7.2

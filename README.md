@@ -51,13 +51,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.7.4`: memory evaluation and reproducibility infrastructure on top of
-`v0.7.3.1` browser/search stabilization, release-process hardening, and
-`v0.7.3` open-thread/topic resume, fuzzy timeline/archive search,
-procedure-experience candidates, and timeline/procedure security hardening.
+`v0.7.4`. A `v0.8.0b0` beta checkpoint is available for users who want the
+post-`v0.7.4` bug-fix stack before the stable `v0.8.0` UX overhaul ships.
 
 | Version | Focus |
 |---------|-------|
+| v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b0`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |

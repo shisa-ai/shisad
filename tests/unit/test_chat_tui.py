@@ -16,10 +16,9 @@ from shisad.ui.chat import ChatApp, format_assistant_message, format_user_messag
 
 def _rendered_static_texts(app: ChatApp, selector: str) -> list[str]:
     return [
-        str(widget.renderable)
-        for widget in app.query(selector)
-        if hasattr(widget, "renderable")
+        str(widget.renderable) for widget in app.query(selector) if hasattr(widget, "renderable")
     ]
+
 
 # ---------------------------------------------------------------------------
 # Message formatting tests
@@ -100,9 +99,7 @@ def test_format_assistant_message_keeps_non_list_hyphens_inline() -> None:
 
 
 def test_format_assistant_message_does_not_split_year_in_list_item() -> None:
-    result = format_assistant_message(
-        "Highlights: - Released in 2024. It supports X - Next item"
-    )
+    result = format_assistant_message("Highlights: - Released in 2024. It supports X - Next item")
 
     assert "2024. It supports X" in result
     assert result == "shisad: Highlights:\n\n- Released in 2024. It supports X\n- Next item"
@@ -114,9 +111,7 @@ def test_format_assistant_message_does_not_split_digit_hyphen_range_in_item() ->
     )
 
     assert "1 - 10" in result
-    assert result == (
-        "shisad: Options:\n\n- Range is 1 - 10 for this setting\n- Another option"
-    )
+    assert result == ("shisad: Options:\n\n- Range is 1 - 10 for this setting\n- Another option")
 
 
 def test_format_assistant_message_does_not_rewrite_fenced_code() -> None:
@@ -150,22 +145,14 @@ def test_format_assistant_message_inserts_blank_line_before_markdown_headings() 
 
 
 def test_format_assistant_message_keeps_existing_heading_block_spacing() -> None:
-    result = format_assistant_message(
-        "Intro paragraph.\n\n## Already separate\nBody text."
-    )
+    result = format_assistant_message("Intro paragraph.\n\n## Already separate\nBody text.")
 
     assert result == "shisad: Intro paragraph.\n\n## Already separate\nBody text."
 
 
 def test_format_assistant_message_does_not_rewrite_fenced_code_headings() -> None:
     result = format_assistant_message(
-        "Example:\n"
-        "```\n"
-        "value\n"
-        "## Not a markdown heading here\n"
-        "```\n"
-        "Done.\n"
-        "## Real heading"
+        "Example:\n```\nvalue\n## Not a markdown heading here\n```\nDone.\n## Real heading"
     )
 
     assert result == (
@@ -1006,8 +993,7 @@ async def test_chat_app_mount_bounds_transcript_content_reads_before_replay(
         rendered = [widget._markdown for widget in app.query(Markdown)]
 
     expected_entry_ids = [
-        f"a-{index}"
-        for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT + 4, 4, -1)
+        f"a-{index}" for index in range(ChatApp.TRANSCRIPT_REPLAY_LIMIT + 4, 4, -1)
     ]
     assert read_entry_ids == expected_entry_ids
     assert rendered == [f"content a-{index}" for index in range(5, 55)]
@@ -1349,9 +1335,7 @@ async def test_chat_app_mount_replays_existing_async_delivery_without_duplicate(
 
     assert rendered == ["previous normal answer", "Reminder: arrived during startup"]
     tx_entry_ids = {
-        entry_id
-        for entry_id in app._displayed_transcript_entry_ids
-        if entry_id.startswith("tx-")
+        entry_id for entry_id in app._displayed_transcript_entry_ids if entry_id.startswith("tx-")
     }
     assert len(tx_entry_ids) == 2
 

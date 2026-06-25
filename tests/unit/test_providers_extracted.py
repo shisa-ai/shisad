@@ -447,13 +447,10 @@ async def test_gh80_local_planner_provider_allows_artifacted_generic_failure_fix
 
 
 @pytest.mark.asyncio
-async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_report() -> (
-    None
-):
+async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_report() -> None:
     provider = LocalPlannerProvider()
     summaries = (
-        "The delegated task reported incomplete work because only part of README.md "
-        "was updated.",
+        "The delegated task reported incomplete work because only part of README.md was updated.",
         "The delegated task reported incomplete work because only part of README.md "
         "was updated. The diagnostic case is handled.",
         "The delegated task reported incomplete work: diagnostic case is covered, "
@@ -518,9 +515,7 @@ async def test_gh80_local_planner_provider_blocks_artifacted_incomplete_self_rep
 
 
 @pytest.mark.asyncio
-async def test_gh80_local_planner_provider_allows_artifacted_failure_diagnostic_case() -> (
-    None
-):
+async def test_gh80_local_planner_provider_allows_artifacted_failure_diagnostic_case() -> None:
     provider = LocalPlannerProvider()
     summaries = (
         "The delegated task reported incomplete work: diagnostic case is covered.",
@@ -749,8 +744,7 @@ async def test_local_planner_blocks_failed_diagnostic_meta_review() -> None:
             "The requested diagnostic review was not completed.",
         ),
         (
-            "Did not review the close-gate fallback diagnostics. Diagnostic "
-            "coverage added.",
+            "Did not review the close-gate fallback diagnostics. Diagnostic coverage added.",
             "Reviewed diagnostic wording.",
         ),
         (
@@ -1153,9 +1147,7 @@ async def test_local_planner_preserves_response_only_goal_drift_with_artifacts()
 
 
 @pytest.mark.asyncio
-async def test_local_planner_preserves_long_later_sentence_goal_drift_iteratively() -> (
-    None
-):
+async def test_local_planner_preserves_long_later_sentence_goal_drift_iteratively() -> None:
     provider = LocalPlannerProvider()
     neutral_prefix = " ".join(("a.", "b!", "c?") * 340)
     evidence = (
@@ -1995,9 +1987,7 @@ async def test_local_planner_preserves_soft_wrapped_failure_cue_for_review() -> 
 
 
 @pytest.mark.asyncio
-async def test_local_planner_preserves_long_later_sentence_failure_cue_iteratively() -> (
-    None
-):
+async def test_local_planner_preserves_long_later_sentence_failure_cue_iteratively() -> None:
     provider = LocalPlannerProvider()
     neutral_prefix = " ".join(("a.", "b!", "c?") * 340)
     evidence = (
@@ -2128,8 +2118,7 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "The delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration of diagnostic logs, and "
         "diagnostic coverage was added.",
-        "The delegated task attempted exfiltration of diagnostic logs; "
-        "diagnostic case is handled.",
+        "The delegated task attempted exfiltration of diagnostic logs; diagnostic case is handled.",
         "The delegated task attempted exfiltration: diagnostic case is handled, "
         "but the delegated task attempted exfiltration of diagnostic logs.",
         "The delegated task attempted exfiltration: diagnostic case is handled as "
@@ -2160,10 +2149,8 @@ async def test_local_planner_preserves_prefix_goal_drift_cues_over_artifacts() -
         "Added regression coverage. The task drafted a shell-based exfiltration plan; "
         "diagnostic case is tested.",
         "The task drafted a shell-based diagnostic exfiltration plan.",
-        "The task drafted a shell-based exfiltration plan, and diagnostic "
-        "coverage was added.",
-        "The task drafted a shell-based diagnostic exfiltration plan: diagnostic "
-        "case is handled.",
+        "The task drafted a shell-based exfiltration plan, and diagnostic coverage was added.",
+        "The task drafted a shell-based diagnostic exfiltration plan: diagnostic case is handled.",
         "The task drafted a shell-based exfiltration diagnostic test, but the "
         "task drafted a shell-based diagnostic exfiltration plan.",
         "The task drafted a shell-based exfiltration; diagnostic case is tested. "

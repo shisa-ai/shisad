@@ -777,8 +777,11 @@ async def test_u9_chat_totp_bare_code_confirms_single_pending_action(
         assert second["executed_actions"] == 1
         assert second["confirmation_required_actions"] == 0
         assert second["blocked_actions"] == 0
-        assert "confirmed" in str(second.get("response", "")).lower()
         assert code not in str(second.get("response", ""))
+        assert any(
+            str(output.get("tool_name", "")) == "fs.read" and bool(output.get("success", False))
+            for output in second.get("tool_outputs", [])
+        )
 
         pending = await client.call(
             "action.pending",
@@ -958,8 +961,11 @@ async def test_u9_channel_ingest_totp_code_confirms_trusted_chat_reply(
         assert second.executed_actions == 1
         assert second.confirmation_required_actions == 0
         assert second.blocked_actions == 0
-        assert "confirmed" in str(second.response).lower()
         assert code not in str(second.response)
+        assert any(
+            str(output.get("tool_name", "")) == "fs.read" and bool(output.get("success", False))
+            for output in second.tool_outputs
+        )
 
         pending = await handlers.handle_action_pending(
             ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
@@ -1153,7 +1159,10 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
 
         assert second.executed_actions == 1
         assert second.confirmation_required_actions == 0
-        assert "confirmed" in str(second.response).lower()
+        assert any(
+            str(output.get("tool_name", "")) == "fs.read" and bool(output.get("success", False))
+            for output in second.tool_outputs
+        )
 
         pending = await handlers.handle_action_pending(
             ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
@@ -1427,10 +1436,10 @@ async def test_u9_channel_ingest_scopes_totp_confirmation_to_pending_delivery_ta
 
         assert right_thread.executed_actions == 1
         assert right_thread.confirmation_required_actions == 0
-        assert right_thread.pending_confirmation_ids == []
+        assert right_thread.pending_confirmation_ids == [first_id]
         right_response = str(right_thread.response).lower()
-        assert f"confirmed {second_id}".lower() in right_response
         assert first_id.lower() not in right_response
+        assert second_id.lower() not in right_response
 
         pending = await handlers.handle_action_pending(
             ActionPendingParams(session_id=first.session_id, status="pending", limit=10),

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import re
 
-OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT = (
-    r"(?:(?:please\s+)?can you\s+(?:please\s+)?|please\s+)?"
-)
+OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT = r"(?:(?:please\s+)?can you\s+(?:please\s+)?|please\s+)?"
 _FOLLOW_ON_COMMAND_FRAGMENT = (
     r"(?:(?:list|show)\s+(?:my\s+)?(?:notes|todos|tasks|reminders)\b"
     r"|search\s+(?:my\s+)?notes\b"

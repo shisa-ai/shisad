@@ -69,9 +69,7 @@ def _sqlite_fts5_probe(
 ) -> tuple[bool, str]:
     try:
         with connect(":memory:") as conn:
-            conn.execute(
-                "CREATE VIRTUAL TABLE temp.shisad_fts5_probe USING fts5(content)"
-            )
+            conn.execute("CREATE VIRTUAL TABLE temp.shisad_fts5_probe USING fts5(content)")
     except sqlite3.Error as exc:
         return False, f"{exc.__class__.__name__}: {exc}"
     return True, ""

@@ -248,9 +248,7 @@ def test_gh57_reset_storage_clears_mixed_mode_search_indexes(
 
     with sqlite3.connect(storage / "memory.sqlite3") as conn:
         fts_count_before = conn.execute("SELECT COUNT(*) FROM retrieval_fts").fetchone()
-        fallback_count_before = conn.execute(
-            "SELECT COUNT(*) FROM retrieval_lexical"
-        ).fetchone()
+        fallback_count_before = conn.execute("SELECT COUNT(*) FROM retrieval_lexical").fetchone()
 
     assert fts_count_before is not None
     assert fallback_count_before is not None
@@ -263,9 +261,7 @@ def test_gh57_reset_storage_clears_mixed_mode_search_indexes(
         record_count = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
         vector_count = conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()
         fts_count_after = conn.execute("SELECT COUNT(*) FROM retrieval_fts").fetchone()
-        fallback_count_after = conn.execute(
-            "SELECT COUNT(*) FROM retrieval_lexical"
-        ).fetchone()
+        fallback_count_after = conn.execute("SELECT COUNT(*) FROM retrieval_lexical").fetchone()
 
     assert record_count is not None
     assert vector_count is not None

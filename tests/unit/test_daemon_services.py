@@ -1837,10 +1837,7 @@ async def test_gh47_browser_health_uses_policy_egress_fallback_scope(
     try:
         assert services.browser_status["status"] == "misconfigured"
         assert "*.browser.example" in services.browser_status["allowed_domains"]
-        assert (
-            "browser_hardened_wildcard_scope_unsupported"
-            in services.browser_status["problems"]
-        )
+        assert "browser_hardened_wildcard_scope_unsupported" in services.browser_status["problems"]
         assert services.registry.get_tool(ToolName("browser.navigate")) is None
     finally:
         await services.shutdown()

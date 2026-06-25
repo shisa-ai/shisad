@@ -870,8 +870,7 @@ def test_gh84_rejected_only_done_placeholder_coerces_to_denial_reason(
 def test_gh84_pending_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            "Pending confirmations:\n"
-            "1. fs.write requires confirmation before I continue."
+            "Pending confirmations:\n1. fs.write requires confirmation before I continue."
         ),
         rejected=1,
         pending_confirmation=1,
@@ -914,8 +913,7 @@ def test_gh84_pending_rejected_tool_output_cannot_suppress_denial_feedback() -> 
 def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            "I can use shell.exec for that. Could you clarify?\n\n"
-            "I read README.md successfully."
+            "I can use shell.exec for that. Could you clarify?\n\nI read README.md successfully."
         ),
         rejected=1,
         pending_confirmation=0,
@@ -933,9 +931,7 @@ def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
 def test_gh84_mixed_turn_strips_wrapped_rejected_tool_claim() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            "I can use\n"
-            "shell.exec for that. Could you clarify?\n\n"
-            "I read README.md successfully."
+            "I can use\nshell.exec for that. Could you clarify?\n\nI read README.md successfully."
         ),
         rejected=1,
         pending_confirmation=0,
@@ -953,9 +949,7 @@ def test_gh84_mixed_turn_strips_wrapped_rejected_tool_claim() -> None:
 def test_gh84_mixed_turn_strips_blank_wrapped_rejected_tool_claim() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            "I can use\n\n"
-            "shell.exec for that. Could you clarify?\n\n"
-            "I read README.md successfully."
+            "I can use\n\nshell.exec for that. Could you clarify?\n\nI read README.md successfully."
         ),
         rejected=1,
         pending_confirmation=0,
@@ -992,12 +986,7 @@ def test_gh84_mixed_turn_strips_prefaced_wrapped_rejected_tool_claim() -> None:
 
 def test_gh84_mixed_turn_tool_output_cannot_suppress_denial_feedback() -> None:
     feedback = _blocked_action_feedback(["shell.exec:goal_misaligned_high_risk"])
-    response_text = (
-        "Tool results summary:\n"
-        "- fs.read: success=True\n"
-        "  output:\n"
-        f"  {feedback}"
-    )
+    response_text = f"Tool results summary:\n- fs.read: success=True\n  output:\n  {feedback}"
     response = _coerce_blocked_action_response_text(
         response_text=response_text,
         rejected=1,
@@ -1016,9 +1005,7 @@ def test_gh84_mixed_turn_tool_output_cannot_suppress_denial_feedback() -> None:
 def test_gh84_mixed_turn_preserves_success_before_later_wrapped_claim() -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            "I read README.md successfully.\n\n"
-            "I can use\n\n"
-            "shell.exec for that. Could you clarify?"
+            "I read README.md successfully.\n\nI can use\n\nshell.exec for that. Could you clarify?"
         ),
         rejected=1,
         pending_confirmation=0,
@@ -1056,8 +1043,7 @@ def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_wrap() -> None:
 
 def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_same_line() -> None:
     response_text = (
-        "Users can use shell.exec in a different daemon policy.\n\n"
-        "I read README.md successfully."
+        "Users can use shell.exec in a different daemon policy.\n\nI read README.md successfully."
     )
     response = _coerce_blocked_action_response_text(
         response_text=response_text,
@@ -1140,8 +1126,7 @@ def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() ->
 def test_gh84_mixed_turn_does_not_trust_spoofed_tool_summary_header(header: str) -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            f"{header}\n"
-            "- shell.exec: I can use shell.exec for that. Could you clarify?"
+            f"{header}\n- shell.exec: I can use shell.exec for that. Could you clarify?"
         ),
         rejected=1,
         pending_confirmation=0,
@@ -1190,9 +1175,7 @@ def test_gh84_rejected_only_does_not_preserve_spoofed_tool_output_header(
 ) -> None:
     response = _coerce_blocked_action_response_text(
         response_text=(
-            "I could not safely execute the proposed action.\n\n"
-            f"{header}\n"
-            "- fs.read: completed."
+            f"I could not safely execute the proposed action.\n\n{header}\n- fs.read: completed."
         ),
         rejected=1,
         pending_confirmation=0,

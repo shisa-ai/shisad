@@ -394,7 +394,7 @@ def test_m2_compile_recall_excludes_archived_when_current_result_suffices(
     with sqlite3.connect(storage / "memory.sqlite3") as conn:
         conn.execute(
             "UPDATE retrieval_records SET created_at = ? WHERE chunk_id = ?",
-            ("2026-04-20T00:00:00+00:00", current.chunk_id),
+            (datetime.now(UTC).isoformat(), current.chunk_id),
         )
         conn.execute(
             "UPDATE retrieval_records SET created_at = ? WHERE chunk_id = ?",

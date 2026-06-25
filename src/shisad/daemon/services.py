@@ -293,9 +293,7 @@ def _browser_runtime_unavailable_planner_note(browser_status: dict[str, Any]) ->
         return ""
     status = str(browser_status.get("status") or "unknown")
     problems = [
-        str(item).strip()
-        for item in browser_status.get("problems", [])
-        if str(item).strip()
+        str(item).strip() for item in browser_status.get("problems", []) if str(item).strip()
     ]
     protocol = browser_status.get("protocol")
     if isinstance(protocol, dict):
@@ -345,9 +343,7 @@ def _browser_runtime_unavailable_planner_note(browser_status: dict[str, Any]) ->
             "allowed-domain scope, then run `shisad doctor check --component browser`."
         )
     if not remediation_parts:
-        remediation_parts.append(
-            "Ask the user to run `shisad doctor check --component browser`."
-        )
+        remediation_parts.append("Ask the user to run `shisad doctor check --component browser`.")
     remediation = " ".join(dict.fromkeys(remediation_parts))
     return (
         f"Browser tools are unavailable because runtime status is {status}: "
@@ -972,9 +968,9 @@ class DaemonServices:
             browser_surface_enabled = _browser_surface_available(browser_status)
             if config.browser_enabled and not browser_surface_enabled:
                 planner_note = str(browser_status.get("planner_note") or "").strip()
-                problems = ", ".join(
-                    str(item) for item in browser_status.get("problems", [])
-                ) or "none"
+                problems = (
+                    ", ".join(str(item) for item in browser_status.get("problems", [])) or "none"
+                )
                 logger.warning(
                     planner_note
                     or (
@@ -1358,9 +1354,7 @@ class DaemonServices:
 
     def _reset_memory_surfaces_for_test(self, cleared: dict[str, int]) -> None:
         db_paths = {self.memory_manager._db_path, self.ingestion._db_path}
-        db_snapshots = {
-            path: path.read_bytes() if path.exists() else None for path in db_paths
-        }
+        db_snapshots = {path: path.read_bytes() if path.exists() else None for path in db_paths}
         memory_entries_snapshot = dict(self.memory_manager._entries)
         memory_legacy_snapshot = self.memory_manager._snapshot_legacy_reset_artifacts()
         ingestion_legacy_snapshot = self.ingestion._snapshot_legacy_reset_artifacts()

@@ -956,10 +956,7 @@ def test_gh82_infer_action_kind_treats_mcp_tools_as_external_actions() -> None:
         infer_action_kind("mcp.todoist.find-tasks-by-date", {"filter": "today"})
         == ActionKind.MCP_EXTERNAL
     )
-    assert (
-        infer_action_kind("mcp.docs.lookup-doc", {"query": "roadmap"})
-        == ActionKind.MCP_EXTERNAL
-    )
+    assert infer_action_kind("mcp.docs.lookup-doc", {"query": "roadmap"}) == ActionKind.MCP_EXTERNAL
 
 
 def test_gh82_trace_allows_known_mcp_external_action_to_reach_pep() -> None:
@@ -1861,9 +1858,7 @@ async def test_gh49_action_monitor_keeps_comma_inside_set_reminder_message() -> 
                 "session_tainted": True,
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
-                "raw_user_text": (
-                    'please set a reminder for 3pm to say "timer done, check oven"'
-                ),
+                "raw_user_text": ('please set a reminder for 3pm to say "timer done, check oven"'),
                 "action_arguments": {
                     "message": "timer done, check oven",
                     "when": "at 3pm",
@@ -2050,9 +2045,7 @@ async def test_gh51_engine_honors_typed_current_turn_filesystem_read_trace_allow
     assert evaluation.decision == ControlDecision.ALLOW
     assert "trace:tdg_confirmation_required" not in evaluation.reason_codes
     trace_votes = [
-        vote
-        for vote in evaluation.consensus.votes
-        if vote.voter == "ExecutionTraceVerifier"
+        vote for vote in evaluation.consensus.votes if vote.voter == "ExecutionTraceVerifier"
     ]
     assert trace_votes
     assert "trace:current_turn_local_filesystem_read_intent" in trace_votes[0].reason_codes

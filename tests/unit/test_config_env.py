@@ -55,9 +55,7 @@ def test_gh50_default_socket_ignores_relative_xdg_runtime_dir(
 
     config = DaemonConfig()
 
-    assert config.socket_path == (
-        Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock"
-    )
+    assert config.socket_path == (Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock")
 
 
 def test_gh50_default_socket_ignores_tilde_xdg_runtime_dir(
@@ -68,9 +66,7 @@ def test_gh50_default_socket_ignores_tilde_xdg_runtime_dir(
 
     config = DaemonConfig()
 
-    assert config.socket_path == (
-        Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock"
-    )
+    assert config.socket_path == (Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock")
 
 
 def test_gh50_default_socket_ignores_leading_whitespace_xdg_runtime_dir(
@@ -81,9 +77,7 @@ def test_gh50_default_socket_ignores_leading_whitespace_xdg_runtime_dir(
 
     config = DaemonConfig()
 
-    assert config.socket_path == (
-        Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock"
-    )
+    assert config.socket_path == (Path("/tmp") / f"shisad-{os.getuid()}" / "control.sock")
 
 
 def test_gh50_default_socket_falls_back_to_user_tmp_dir(

@@ -182,9 +182,7 @@ async def test_signer_register_rejects_malformed_ledger_public_key(
                 "algorithm": "ecdsa-secp256k1",
                 "device_type": "ledger-consumer",
                 "public_key_pem": (
-                    "Need to install the following packages:\n"
-                    "  tsx@4.20.0\n"
-                    "Ok to proceed? (y) "
+                    "Need to install the following packages:\n  tsx@4.20.0\nOk to proceed? (y) "
                 ),
             },
         )

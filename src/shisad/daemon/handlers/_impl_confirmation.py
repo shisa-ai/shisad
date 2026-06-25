@@ -2035,9 +2035,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 else None
             ),
             "tool_outputs": serialized_tool_outputs,
-            "continuation_user_goal": str(
-                getattr(pending, "continuation_user_goal", "")
-            ).strip(),
+            "continuation_user_goal": str(getattr(pending, "continuation_user_goal", "")).strip(),
             "continuation_mode": str(getattr(pending, "continuation_mode", "")).strip(),
         }
 

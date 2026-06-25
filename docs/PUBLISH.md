@@ -22,6 +22,9 @@ Use semver-style bumps for normal releases:
   improvements.
 - Minor (`0.6.0`): new user-facing capabilities, commands, or significant
   security/runtime features.
+- Beta/prerelease (`0.8.0b0`): checkpoint releases for installable bug-fix or
+  release-candidate builds before a stable minor release. Treat them as
+  PEP 440 prereleases and mark the GitHub Release as a prerelease.
 - Major (`1.0.0`): intentionally breaking changes to CLI behavior, config
   format, or security model that need explicit upgrade guidance.
 
@@ -34,10 +37,11 @@ and validation, and call out the choice in the release-close evidence.
 
 Version must be updated in both places:
 
-- `pyproject.toml` — `version = "X.Y.Z"` or an approved patch-line
-  `version = "X.Y.Z.N"`
-- `src/shisad/__init__.py` — `__version__ = "X.Y.Z"` or an approved
-  patch-line `__version__ = "X.Y.Z.N"`
+- `pyproject.toml` — `version = "X.Y.Z"`, an approved prerelease such as
+  `version = "X.Y.ZbN"`, or an approved patch-line `version = "X.Y.Z.N"`
+- `src/shisad/__init__.py` — `__version__ = "X.Y.Z"`, an approved prerelease
+  such as `__version__ = "X.Y.ZbN"`, or an approved patch-line
+  `__version__ = "X.Y.Z.N"`
 
 ## Release Punch List
 

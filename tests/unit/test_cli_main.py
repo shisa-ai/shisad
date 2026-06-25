@@ -3961,12 +3961,14 @@ def test_chat_command_runs_textual_app(
             self,
             *,
             socket_path: Path,
+            data_dir: Path,
             user_id: str,
             workspace_id: str,
             session_id: str | None,
             reuse_bound_session: bool,
         ) -> None:
             captured["socket_path"] = socket_path
+            captured["data_dir"] = data_dir
             captured["user_id"] = user_id
             captured["workspace_id"] = workspace_id
             captured["session_id"] = session_id
@@ -3985,6 +3987,7 @@ def test_chat_command_runs_textual_app(
 
     assert result.exit_code == 0, result.output
     assert captured["socket_path"] == config.socket_path
+    assert captured["data_dir"] == config.data_dir
     assert captured["user_id"] == "alice"
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] == "sess-123"
@@ -4005,12 +4008,14 @@ def test_chat_command_new_forces_fresh_session_binding(
             self,
             *,
             socket_path: Path,
+            data_dir: Path,
             user_id: str,
             workspace_id: str,
             session_id: str | None,
             reuse_bound_session: bool,
         ) -> None:
             captured["socket_path"] = socket_path
+            captured["data_dir"] = data_dir
             captured["user_id"] = user_id
             captured["workspace_id"] = workspace_id
             captured["session_id"] = session_id
@@ -4029,6 +4034,7 @@ def test_chat_command_new_forces_fresh_session_binding(
 
     assert result.exit_code == 0, result.output
     assert captured["socket_path"] == config.socket_path
+    assert captured["data_dir"] == config.data_dir
     assert captured["user_id"] == "alice"
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] is None
@@ -4346,8 +4352,7 @@ def test_gh42_action_confirm_renderer_includes_cooldown_retry_hint() -> None:
     )
 
     assert cli_main._render_action_confirm_result(result) == (
-        "Confirmation failed for c-1: cooldown_active\n"
-        "retry_after_seconds=12.25"
+        "Confirmation failed for c-1: cooldown_active\nretry_after_seconds=12.25"
     )
 
 

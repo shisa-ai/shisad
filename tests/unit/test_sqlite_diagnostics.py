@@ -69,9 +69,7 @@ def test_gh83_sqlite_runtime_status_reports_missing_fts5_as_degraded() -> None:
     assert status["problems"] == ["sqlite_fts5_unavailable"]
     assert status["sqlite"]["fts5"]["available"] is False
     assert status["sqlite"]["fts5"]["compile_option_reported"] is False
-    assert status["sqlite"]["fts5"]["probe_error"] == (
-        "OperationalError: no such module: fts5"
-    )
+    assert status["sqlite"]["fts5"]["probe_error"] == ("OperationalError: no such module: fts5")
     assert status["hint"]
 
 

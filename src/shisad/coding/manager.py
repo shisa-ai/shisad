@@ -118,8 +118,7 @@ def _coding_agent_write_activity_count(raw_updates: tuple[dict[str, Any], ...]) 
         if kind != "edit" and not has_diff_content:
             continue
         tool_call_id = (
-            str(update.get("tool_call_id", "")).strip()
-            or str(update.get("toolCallId", "")).strip()
+            str(update.get("tool_call_id", "")).strip() or str(update.get("toolCallId", "")).strip()
         )
         if tool_call_id:
             if tool_call_id in seen_tool_call_ids:

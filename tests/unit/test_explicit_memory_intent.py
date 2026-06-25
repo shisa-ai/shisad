@@ -690,9 +690,7 @@ def test_m1_explicit_memory_intent_parser_allows_at_iso_reminder_datetime() -> N
 
 
 def test_gh49_explicit_reminder_create_proposal_sets_structured_current_turn_intent() -> None:
-    proposal = _build_explicit_memory_intent_proposal(
-        'remind me to say timer done in 1 minute'
-    )
+    proposal = _build_explicit_memory_intent_proposal("remind me to say timer done in 1 minute")
 
     assert proposal is not None
     assert proposal.tool_name == ToolName("reminder.create")
