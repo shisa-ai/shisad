@@ -8,10 +8,6 @@ resolution-markers = [
     "python_full_version < '3.13' and platform_machine == 's390x'",
 ]
 
-[options]
-exclude-newer = "2026-06-24T02:45:26.687013391Z"
-exclude-newer-span = "P1D"
-
 [[package]]
 name = "agent-client-protocol"
 version = "0.8.1"
