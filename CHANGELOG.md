@@ -33,6 +33,12 @@ reviewed bug fixes before the stable `v0.8.0` UX overhaul.
   ([#61](https://github.com/shisa-ai/shisad/issues/61),
   [#77](https://github.com/shisa-ai/shisad/issues/77))
 
+- **Read-only browser actions keep the no-confirmation path for authorized
+  destinations.** The monitor cleanup preserves direct execution for
+  read-mostly browser tools such as navigate/read/screenshot/end-session while
+  known-bad argument content and non-browser suspicious HTTP destinations remain
+  flagged.
+
 - **Channel pending state is scoped by delivery target.** Channel chat now keeps
   active pending ids, visible pending rows, planner context, continuations, and
   summarizer memory scoped to the current delivery target so a different
