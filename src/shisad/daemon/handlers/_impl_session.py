@@ -1755,8 +1755,7 @@ def _visible_pending_rows_for_delivery_target(
     return [
         pending
         for pending in pending_rows
-        if not _pending_uses_totp(pending)
-        or _pending_matches_delivery_target(
+        if _pending_matches_delivery_target(
             pending,
             effective_delivery_target,
             fallback_target=fallback_target,
