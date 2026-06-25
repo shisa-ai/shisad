@@ -5433,6 +5433,121 @@ def _coerce_blocked_action_response_text(
     return _blocked_action_feedback(rejection_reasons)
 
 
+def _markdown_code_span(value: object) -> str:
+    text = str(value).strip()
+    escaped = text.replace("`", "\\`")
+    return f"`{escaped}`"
+
+
+def _markdown_fenced_block(text: str, *, language: str = "text") -> str:
+    stripped = str(text).strip()
+    max_backtick_run = max(
+        (len(match.group(0)) for match in re.finditer(r"`+", stripped)),
+        default=0,
+    )
+    fence = "`" * max(3, max_backtick_run + 1)
+    info = str(language).strip()
+    if info:
+        return f"{fence}{info}\n{stripped}\n{fence}"
+    return f"{fence}\n{stripped}\n{fence}"
+
+
+def _discord_pending_confirmation_response_text(
+    *,
+    indexed_confirmation_ids: Sequence[str],
+    pending_actions: Mapping[str, Any] | None,
+    pending_index_by_id: Mapping[str, int] | None,
+    pending_public_preview_by_id: Mapping[str, str] | None,
+    totp_guidance_ids: set[str],
+    single_totp_confirmation_id: str,
+    allow_chat_approval: bool,
+) -> str:
+    lines = [
+        "**Pending confirmations**",
+        "",
+        "Queued for your approval.",
+    ]
+    for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
+        pending_number = index
+        if pending_index_by_id is not None:
+            pending_number = pending_index_by_id.get(confirmation_id, pending_number)
+        pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
+        tool_name = "pending action"
+        if pending is not None:
+            tool_name = str(getattr(pending, "tool_name", "") or tool_name).strip() or tool_name
+
+        if index > 1:
+            lines.extend(["", "---"])
+        lines.extend(
+            [
+                "",
+                f"### {pending_number}. {_markdown_code_span(tool_name)}",
+                f"ID: {_markdown_code_span(confirmation_id)}",
+            ]
+        )
+        if pending is not None and _pending_uses_totp(pending):
+            if confirmation_id in totp_guidance_ids:
+                if (
+                    single_totp_confirmation_id == confirmation_id
+                    and len(indexed_confirmation_ids) == 1
+                ):
+                    lines.append("TOTP in chat: reply with the 6-digit code.")
+                else:
+                    lines.append(
+                        "TOTP in chat: reply with "
+                        f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}."
+                    )
+                lines.append(
+                    f"To reject in chat: {_markdown_code_span(f'reject {pending_number}')}"
+                )
+                lines.append(
+                    "CLI fallback: "
+                    f"{_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}"
+                )
+            else:
+                lines.append(
+                    "TOTP approval pending; reject in chat with "
+                    f"{_markdown_code_span(f'reject {pending_number}')}."
+                )
+                lines.append(
+                    f"To approve: {_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}"
+                )
+        else:
+            if allow_chat_approval:
+                lines.append(
+                    "In chat: approve with "
+                    f"{_markdown_code_span(f'confirm {pending_number}')} or reject with "
+                    f"{_markdown_code_span(f'reject {pending_number}')}"
+                )
+            else:
+                lines.append(
+                    f"To reject in chat: {_markdown_code_span(f'reject {pending_number}')}"
+                )
+            lines.append(
+                "Confirm from CLI: "
+                f"{_markdown_code_span(f'shisad action confirm {confirmation_id}')}"
+            )
+
+        warnings = list(getattr(pending, "warnings", []) or []) if pending is not None else []
+        warning_lines = [str(warning).strip() for warning in warnings if str(warning).strip()]
+        if warning_lines:
+            lines.extend(["", "**Warnings:**"])
+            lines.extend(f"- {warning}" for warning in warning_lines)
+
+        preview = ""
+        if pending_public_preview_by_id is not None:
+            preview = str(pending_public_preview_by_id.get(confirmation_id) or "").strip()
+        if pending is not None:
+            if not preview:
+                preview = str(getattr(pending, "safe_preview", "") or "").strip()
+            if not preview:
+                preview = str(getattr(pending, "reason", "") or "").strip()
+        if preview:
+            lines.extend(["", "**Preview:**", _markdown_fenced_block(preview)])
+    lines.extend(["", f"Review all pending: {_markdown_code_span('shisad action list')}"])
+    return "\n".join(lines).strip()
+
+
 def _daemon_pending_confirmation_response_text(
     *,
     pending_confirmation_ids: Sequence[str],
@@ -5442,6 +5557,7 @@ def _daemon_pending_confirmation_response_text(
     binding_pending_rows: Sequence[Any] | None = None,
     totp_guidance_confirmation_ids: Sequence[str] | None = None,
     allow_chat_approval: bool = True,
+    delivery_channel: str = "",
 ) -> str:
     binding_rows = list(binding_pending_rows or ())
     totp_guidance_ids = {
@@ -5473,6 +5589,16 @@ def _daemon_pending_confirmation_response_text(
         for confirmation_id in pending_confirmation_ids
         if str(confirmation_id).strip()
     ]
+    if str(delivery_channel).strip().lower() == "discord":
+        return _discord_pending_confirmation_response_text(
+            indexed_confirmation_ids=indexed_confirmation_ids,
+            pending_actions=pending_actions,
+            pending_index_by_id=pending_index_by_id,
+            pending_public_preview_by_id=pending_public_preview_by_id,
+            totp_guidance_ids=totp_guidance_ids,
+            single_totp_confirmation_id=single_totp_confirmation_id,
+            allow_chat_approval=allow_chat_approval,
+        )
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
         pending_number = index
         if pending_index_by_id is not None:
@@ -13088,6 +13214,7 @@ class SessionImplMixin(HandlerMixinBase):
                 binding_pending_rows=visible_pending_rows,
                 totp_guidance_confirmation_ids=execution.pending_confirmation_ids,
                 allow_chat_approval=not validated.is_internal_ingress,
+                delivery_channel=validated.channel,
             )
             system_generated_pending_confirmation_response = True
             if fallback_notice:

@@ -3166,6 +3166,7 @@ def _finalize_execution_result(
     content: str = "hello",
     sanitized_text: str | None = None,
     trust_level: str = "trusted",
+    channel: str = "cli",
     pending_confirmation: int = 0,
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
@@ -3178,6 +3179,8 @@ def _finalize_execution_result(
         sanitized_text=sanitized_text,
     )
     validated.trust_level = trust_level
+    validated.channel = channel
+    validated.session.channel = channel
     planner_context = SessionMessagePlannerContextResult(
         validated=validated,
         conversation_context="",
@@ -6745,6 +6748,43 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
     assert "shisad action list" in text
     assert "nonce-1" not in text
     assert "nonce-2" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_formats_discord_pending_summary() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            tool_name=ToolName("fs.list"),
+            safe_preview="ACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\n  path: .",
+            warnings=["Contains tainted data"],
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="I'll do it now.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+        channel="discord",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("**Pending confirmations**")
+    assert "[PENDING CONFIRMATIONS]" not in text
+    assert "### 1. `fs.list`" in text
+    assert "ID: `c-1`" in text
+    assert "**Warnings:**" in text
+    assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\n  path: .\n```" in text
 
 
 @pytest.mark.asyncio

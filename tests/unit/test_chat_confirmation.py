@@ -27,6 +27,7 @@ from shisad.daemon.handlers._impl_session import (
     _active_pending_confirmation_ids_for_session,
     _classify_action_resolve_current_turn_intent,
     _classify_chat_confirmation_intent,
+    _daemon_pending_confirmation_response_text,
     _parse_chat_totp_submission,
     _resolve_chat_confirmation_indexes,
     _visible_pending_rows_for_validated_turn,
@@ -302,6 +303,68 @@ def test_chat_pending_confirmation_summary_adds_totp_guidance_when_totp_is_pendi
     assert "confirmation id: c-1" in summary.lower()
     assert "reply with 'confirm n'" not in summary.lower()
     assert "yes to all" not in summary.lower()
+
+
+def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None:
+    plain_pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "."},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .",
+        warnings=["Contains tainted data"],
+    )
+    totp_pending = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        safe_preview="Search the web for hello",
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-1", "c-2"],
+        pending_actions={"c-1": plain_pending, "c-2": totp_pending},
+        pending_index_by_id={"c-1": 1, "c-2": 2},
+        pending_public_preview_by_id={
+            "c-1": plain_pending.safe_preview,
+            "c-2": totp_pending.safe_preview,
+        },
+        binding_pending_rows=[plain_pending, totp_pending],
+        totp_guidance_confirmation_ids=["c-2"],
+        allow_chat_approval=False,
+        delivery_channel="discord",
+    )
+
+    assert response.startswith("**Pending confirmations**")
+    assert "[PENDING CONFIRMATIONS]" not in response
+    assert "### 1. `fs.list`" in response
+    assert "ID: `c-1`" in response
+    assert "To reject in chat: `reject 1`" in response
+    assert "Confirm from CLI: `shisad action confirm c-1`" in response
+    assert "**Warnings:**" in response
+    assert "- Contains tainted data" in response
+    assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .\n```" in response
+    assert "---" in response
+    assert "### 2. `web.search`" in response
+    assert "ID: `c-2`" in response
+    assert "TOTP in chat: reply with `confirm c-2 123456`" in response
+    assert "CLI fallback: `shisad action confirm c-2 --totp-code 123456`" in response
+    assert response.endswith("Review all pending: `shisad action list`")
 
 
 class _ChatConfirmationHarness(SessionImplMixin):
