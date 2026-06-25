@@ -1864,6 +1864,24 @@ def _visible_pending_rows_for_validated_turn(
     )
 
 
+def _summarized_entry_count_metadata_key(validated: Any | None) -> str:
+    base_key = "summarized_entry_count"
+    if validated is None or not bool(getattr(validated, "is_internal_ingress", False)):
+        return base_key
+    delivery_target = getattr(validated, "delivery_target", None)
+    if delivery_target is None:
+        delivery_target = _stored_delivery_target_from_session(getattr(validated, "session", None))
+    if delivery_target is None:
+        return base_key
+    target_payload = json.dumps(
+        delivery_target.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    target_hash = hashlib.sha256(target_payload.encode("utf-8")).hexdigest()[:16]
+    return f"{base_key}:{target_hash}"
+
+
 def _checkpoint_id_from_action_result(result: Mapping[str, Any]) -> str:
     checkpoint_id = result.get("checkpoint_id")
     if checkpoint_id is None:
@@ -13339,6 +13357,7 @@ class SessionImplMixin(HandlerMixinBase):
             session=validated.session,
             session_mode=validated.session_mode,
             capabilities=planner_context.effective_caps,
+            validated=validated,
         )
 
         if self._trace_recorder is not None:
@@ -14353,6 +14372,7 @@ class SessionImplMixin(HandlerMixinBase):
             session=validated.session,
             session_mode=validated.session_mode,
             capabilities=effective_caps,
+            validated=validated,
         )
 
         await self._event_bus.publish(
@@ -15143,6 +15163,7 @@ class SessionImplMixin(HandlerMixinBase):
         session: Any,
         session_mode: SessionMode,
         capabilities: set[Capability],
+        validated: Any | None = None,
     ) -> None:
         if session_mode in {SessionMode.ADMIN_CLEANROOM, SessionMode.TASK}:
             return
@@ -15157,10 +15178,15 @@ class SessionImplMixin(HandlerMixinBase):
             for entry in entries
             if _normalize_context_role(entry.role) in {"user", "assistant"}
             and not _entry_is_ephemeral_evidence_read(entry)
+            and (
+                validated is None
+                or _transcript_entry_visible_for_validated_turn(entry, validated=validated)
+            )
         ]
         if not conversational_entries:
             return
-        summarized_count_raw = session.metadata.get("summarized_entry_count", 0)
+        summarized_count_key = _summarized_entry_count_metadata_key(validated)
+        summarized_count_raw = session.metadata.get(summarized_count_key, 0)
         try:
             summarized_count = int(summarized_count_raw)
         except (TypeError, ValueError):
@@ -15169,7 +15195,7 @@ class SessionImplMixin(HandlerMixinBase):
         pending_entries = conversational_entries[summarized_count:]
         if not self._config.memory_auto_extraction_enabled:
             if pending_entries:
-                session.metadata["summarized_entry_count"] = len(conversational_entries)
+                session.metadata[summarized_count_key] = len(conversational_entries)
                 session.metadata["last_summary_skipped_at"] = datetime.now(UTC).isoformat()
                 session.metadata["last_summary_skipped_reason"] = "memory_auto_extraction_disabled"
                 self._session_manager.persist(sid)
@@ -15250,7 +15276,7 @@ class SessionImplMixin(HandlerMixinBase):
             else:
                 reject_count += 1
 
-        session.metadata["summarized_entry_count"] = len(conversational_entries)
+        session.metadata[summarized_count_key] = len(conversational_entries)
         session.metadata["last_summary_at"] = datetime.now(UTC).isoformat()
         self._session_manager.persist(sid)
 

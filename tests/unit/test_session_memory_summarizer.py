@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.config import DaemonConfig
 from shisad.core.types import Capability, SessionMode, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import HandlerImplementation
@@ -139,6 +142,100 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
             record.chunk_id == summary_records[0].chunk_id for record in alice_recall.results
         )
         assert all(record.chunk_id != summary_records[0].chunk_id for record in bob_recall.results)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_conversation_summarizer_filters_internal_ingress_by_delivery_target(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        summarize_interval=1,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+        target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+        session = services.session_manager.create(
+            channel="discord",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Target A preference should stay isolated.",
+            metadata={"delivery_target": target_a.model_dump(mode="json")},
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Target B preference is visible.",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        )
+        summarized_batches: list[list[str]] = []
+
+        async def _summarize(entries):
+            batch = [entry.content_preview for entry in entries]
+            summarized_batches.append(batch)
+            value = batch[0]
+            return [
+                MemorySummaryProposal(
+                    entry_type="note",
+                    key=f"conversation.target.{len(summarized_batches)}",
+                    value=value,
+                    confidence=0.7,
+                )
+            ]
+
+        monkeypatch.setattr(impl._conversation_summarizer, "summarize_entries", _summarize)
+
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+            validated=SimpleNamespace(
+                is_internal_ingress=True,
+                delivery_target=target_b,
+                session=session,
+            ),
+        )
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+            validated=SimpleNamespace(
+                is_internal_ingress=True,
+                delivery_target=target_a,
+                session=session,
+            ),
+        )
+
+        assert summarized_batches == [
+            ["Target B preference is visible."],
+            ["Target A preference should stay isolated."],
+        ]
+        memory_values = {
+            str(entry.value) for entry in services.memory_manager.list_entries(limit=10)
+        }
+        assert memory_values == {
+            "Target A preference should stay isolated.",
+            "Target B preference is visible.",
+        }
+        count_keys = [
+            key for key in session.metadata if str(key).startswith("summarized_entry_count:")
+        ]
+        assert len(count_keys) == 2
+        assert "summarized_entry_count" not in session.metadata
     finally:
         await services.shutdown()
 
