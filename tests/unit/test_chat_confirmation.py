@@ -3489,7 +3489,7 @@ async def test_gh42_action_resolve_delegates_expired_totp_confirm_to_locked_hand
     assert harness._pending_actions["c-1"].status == "pending"
 
 
-def test_u9_action_resolve_pending_context_filters_totp_by_delivery_target() -> None:
+def test_u9_action_resolve_pending_context_filters_rows_by_delivery_target() -> None:
     current_target = DeliveryTarget(channel="discord", recipient="chan-2")
     other_target = DeliveryTarget(channel="discord", recipient="chan-1")
     software_pending = PendingAction(
@@ -3547,13 +3547,10 @@ def test_u9_action_resolve_pending_context_filters_totp_by_delivery_target() -> 
         validated=validated,
     )
 
-    assert [pending.confirmation_id for pending in visible_rows] == [
-        "c-software",
-        "c-visible",
-    ]
+    assert [pending.confirmation_id for pending in visible_rows] == ["c-visible"]
 
 
-def test_u9_action_resolve_pending_context_uses_stored_delivery_target_fallback() -> None:
+def test_u9_action_resolve_pending_context_blocks_legacy_targetless_rows() -> None:
     current_target = DeliveryTarget(channel="discord", recipient="chan-2")
     other_target = DeliveryTarget(channel="discord", recipient="chan-1")
     software_pending = PendingAction(
@@ -3622,11 +3619,8 @@ def test_u9_action_resolve_pending_context_uses_stored_delivery_target_fallback(
         fallback_target=current_target,
     )
 
-    assert [pending.confirmation_id for pending in visible_rows] == [
-        "c-software",
-        "c-visible",
-    ]
-    assert active_ids == frozenset({"c-software", "c-visible"})
+    assert [pending.confirmation_id for pending in visible_rows] == ["c-visible"]
+    assert active_ids == frozenset({"c-visible"})
 
 
 def test_c3_result_followup_active_ids_filter_internal_ingress_by_delivery_target() -> None:

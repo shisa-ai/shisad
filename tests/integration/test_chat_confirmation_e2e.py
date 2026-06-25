@@ -1607,6 +1607,10 @@ async def test_u9_channel_ingest_scopes_software_reject_index_to_visible_target(
         )
         assert first.confirmation_required_actions == 1
         first_id = str(first.pending_confirmation_ids[0])
+        legacy_pending = handlers._impl._pending_actions[first_id]
+        assert legacy_pending.delivery_target is not None
+        legacy_pending.delivery_target = None
+        handlers._impl._persist_pending_actions()
 
         second = await handlers.handle_channel_ingest(
             ChannelIngestParams(
@@ -1628,6 +1632,12 @@ async def test_u9_channel_ingest_scopes_software_reject_index_to_visible_target(
         assert second_id != first_id
         assert first_id not in second_pending_ids
         assert first_id.lower() not in str(second.response).lower()
+        stored_target = services.session_manager.get(first.session_id).metadata.get(
+            "delivery_target"
+        )
+        assert isinstance(stored_target, dict)
+        assert stored_target.get("channel") == "discord"
+        assert stored_target.get("recipient") == "chan-1"
 
         reject = await handlers.handle_channel_ingest(
             ChannelIngestParams(

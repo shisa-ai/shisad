@@ -1733,13 +1733,17 @@ def _pending_delivery_target(pending: Any) -> DeliveryTarget | None:
 def _pending_matches_delivery_target(
     pending: Any,
     delivery_target: DeliveryTarget | None,
-    *,
-    fallback_target: DeliveryTarget | None = None,
 ) -> bool:
+    if delivery_target is None:
+        return True
     pending_target = _pending_delivery_target(pending)
     if pending_target is None:
-        pending_target = fallback_target
+        return False
     return _delivery_targets_match(delivery_target, pending_target)
+
+
+def _targetless_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
+    return [pending for pending in pending_rows if _pending_delivery_target(pending) is None]
 
 
 def _visible_pending_rows_for_delivery_target(
@@ -1755,11 +1759,7 @@ def _visible_pending_rows_for_delivery_target(
     return [
         pending
         for pending in pending_rows
-        if _pending_matches_delivery_target(
-            pending,
-            effective_delivery_target,
-            fallback_target=fallback_target,
-        )
+        if _pending_matches_delivery_target(pending, effective_delivery_target)
     ]
 
 
@@ -8042,7 +8042,6 @@ def _active_pending_confirmation_ids_for_session(
             and not _pending_matches_delivery_target(
                 pending,
                 effective_delivery_target,
-                fallback_target=fallback_target,
             )
         ):
             continue
@@ -8789,11 +8788,7 @@ class SessionImplMixin(HandlerMixinBase):
                 elif (
                     is_internal_ingress
                     and delivery_target is not None
-                    and not _pending_matches_delivery_target(
-                        target_pending,
-                        delivery_target,
-                        fallback_target=stored_delivery_target,
-                    )
+                    and not _pending_matches_delivery_target(target_pending, delivery_target)
                 ):
                     return await _finalize_chat_confirmation_response(
                         response_text=_wrong_target_totp_confirmation_text(action="confirm"),
@@ -8940,11 +8935,7 @@ class SessionImplMixin(HandlerMixinBase):
                     and delivery_target is not None
                     and any(
                         _pending_uses_totp(pending)
-                        and not _pending_matches_delivery_target(
-                            pending,
-                            delivery_target,
-                            fallback_target=stored_delivery_target,
-                        )
+                        and not _pending_matches_delivery_target(pending, delivery_target)
                         for pending in selected_pending_rows
                     )
                 ):
@@ -9319,7 +9310,7 @@ class SessionImplMixin(HandlerMixinBase):
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
-            if _totp_pending_rows(pending_rows):
+            if _totp_pending_rows(pending_rows) or _targetless_pending_rows(pending_rows):
                 suppress_delivery_target_persist = True
 
         if early_response is None and session_mode == SessionMode.ADMIN_CLEANROOM:
