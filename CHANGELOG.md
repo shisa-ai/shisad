@@ -80,7 +80,8 @@ while the larger v0.8 polish work continues.
 
 - **Runtime environment examples avoid shell-quoting traps.** Runbook guidance
   now recommends comma-separated `runtime.env` values where bash-sourced
-  JSON-array examples can lose quotes. ([#43](https://github.com/shisa-ai/shisad/issues/43))
+  JSON-array examples can lose quotes.
+  ([#43](https://github.com/shisa-ai/shisad/issues/43))
 
 ### Fixed
 
@@ -133,15 +134,18 @@ while the larger v0.8 polish work continues.
 
 - **MCP tool execution reaches the control plane with the right action kind.**
   Chat-proposed MCP tool calls are no longer blocked as unknown control-plane
-  actions before normal policy evaluation. ([#82](https://github.com/shisa-ai/shisad/issues/82))
+  actions before normal policy evaluation.
+  ([#82](https://github.com/shisa-ai/shisad/issues/82))
 
 - **Policy blocks return a clearer denial.** When policy blocks a tool action,
   the response now surfaces the denial and reason instead of hedging or
-  entering another clarification loop. ([#84](https://github.com/shisa-ai/shisad/issues/84))
+  entering another clarification loop.
+  ([#84](https://github.com/shisa-ai/shisad/issues/84))
 
 - **The development implement self-check handles external directories.** The
   implement self-check no longer reports a false negative when an agent writes
-  to an external directory outside the shisad git repo. ([#80](https://github.com/shisa-ai/shisad/issues/80))
+  to an external directory outside the shisad git repo.
+  ([#80](https://github.com/shisa-ai/shisad/issues/80))
 
 ### Security
 
