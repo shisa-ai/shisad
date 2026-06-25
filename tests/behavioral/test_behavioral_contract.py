@@ -2191,31 +2191,132 @@ async def test_contract_first_principles_gates_survive_accumulated_state(
 
 @pytest.mark.asyncio
 async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown(
-    contract_harness: ContractHarness,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sid = await _create_session(contract_harness.client)
-    reply = await contract_harness.client.call(
-        "session.message",
-        {
-            "session_id": sid,
-            "content": "please run unknown tool probe now",
-        },
-    )
-    assert reply.get("lockdown_level") == "normal"
-    assert int(reply.get("blocked_actions", 0)) >= 1
-    assert int(reply.get("confirmation_required_actions", 0)) == 0
-    assert reply.get("planner_error") == "planner_output_invalid"
-    assert "planner_output_invalid" in str(reply.get("response", ""))
+    async def _always_unknown_tool_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        _ = (self, tools)
+        if (
+            messages
+            and messages[0].role == "system"
+            and _SUMMARIZER_SYSTEM_MARKER in messages[0].content
+        ):
+            return ProviderResponse(
+                message=Message(role="assistant", content='{"entries": []}'),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="",
+                tool_calls=[_tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
 
-    responses = await contract_harness.client.call(
-        "audit.query",
-        {"event_type": "SessionMessageResponded", "session_id": sid, "limit": 20},
-    )
-    assert responses["total"] >= 1
-    assert any(
-        int(event.get("data", {}).get("blocked_actions", 0)) >= 1
-        for event in responses.get("events", [])
-    )
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _always_unknown_tool_complete,
+            raising=True,
+        )
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "please run unknown tool probe now",
+            },
+        )
+        assert reply.get("lockdown_level") == "normal"
+        assert int(reply.get("blocked_actions", 0)) >= 1
+        assert int(reply.get("confirmation_required_actions", 0)) == 0
+        assert reply.get("planner_error") == "planner_output_invalid"
+        assert "planner_output_invalid" in str(reply.get("response", ""))
+
+        responses = await harness.client.call(
+            "audit.query",
+            {"event_type": "SessionMessageResponded", "session_id": sid, "limit": 20},
+        )
+        assert responses["total"] >= 1
+        assert any(
+            int(event.get("data", {}).get("blocked_actions", 0)) >= 1
+            for event in responses.get("events", [])
+        )
+
+
+@pytest.mark.asyncio
+async def test_contract_repaired_unknown_tool_call_can_return_safe_direct_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def _repair_to_direct_answer_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        nonlocal attempts
+        _ = (self, tools)
+        if (
+            messages
+            and messages[0].role == "system"
+            and _SUMMARIZER_SYSTEM_MARKER in messages[0].content
+        ):
+            return ProviderResponse(
+                message=Message(role="assistant", content='{"entries": []}'),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        attempts += 1
+        if attempts == 1:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[_tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(role="assistant", content="Hello."),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _repair_to_direct_answer_complete,
+            raising=True,
+        )
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+
+    assert attempts == 2
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert reply.get("planner_error") == ""
+    assert str(reply.get("response", "")).strip()
 
 
 @pytest.mark.asyncio

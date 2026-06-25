@@ -174,7 +174,6 @@ class PlannerResult:
     attempts: int
     provider_response: ProviderResponse | None = None
     messages_sent: tuple[Message, ...] = ()
-    recovered_output_error: str = ""
 
 
 class Planner:
@@ -236,7 +235,6 @@ class Planner:
             Message(role="user", content=user_content),
         ]
 
-        recovered_output_error = ""
         for attempt in range(self._max_retries + 1):
             response = await self._provider.complete(messages, tools)
             try:
@@ -268,11 +266,9 @@ class Planner:
                     attempts=attempt + 1,
                     provider_response=response,
                     messages_sent=tuple(messages),
-                    recovered_output_error=recovered_output_error,
                 )
             except PlannerOutputError as exc:
                 logger.warning("Planner returned invalid output: %s", exc)
-                recovered_output_error = str(exc)
                 if tainted_context:
                     raise PlannerOutputError("Planner output invalid in tainted context") from exc
                 if attempt >= self._max_retries:
