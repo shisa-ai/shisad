@@ -451,6 +451,7 @@ async def test_channel_chat_confirmation_rejects_proofless_batch_confirm(tmp_pat
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
     )
     harness._pending_actions[pending.confirmation_id] = pending
 
@@ -506,6 +507,7 @@ async def test_gh41_untrusted_channel_confirm_is_intercepted_without_planner(
         reason="manual",
         capabilities={Capability.MEMORY_WRITE},
         created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="slack", recipient="D1", workspace_hint="team-1"),
     )
     harness._pending_actions[pending.confirmation_id] = pending
 
@@ -1870,6 +1872,7 @@ async def test_lt2_chat_confirmation_typo_returns_suggestion_without_planner_pas
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
     )
     harness._pending_actions[pending.confirmation_id] = pending
 
@@ -2132,6 +2135,7 @@ async def test_u9_chat_totp_bare_code_confirms_trusted_internal_channel_ingress(
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
         selected_backend_id="totp.default",
         selected_backend_method="totp",
     )
@@ -2880,6 +2884,7 @@ async def test_u9_chat_internal_channel_ingress_allows_rejecting_totp_pending_ac
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
         selected_backend_id="totp.default",
         selected_backend_method="totp",
     )

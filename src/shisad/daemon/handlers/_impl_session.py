@@ -10671,8 +10671,12 @@ class SessionImplMixin(HandlerMixinBase):
             or TaintLabel.UNTRUSTED in planner_context.context.taint_labels
         )
         action_resolve_requires_explicit_intent = True
-        clean_trusted_input = _has_clean_trusted_turn_privileges(validated)
-        operator_owned_cli_input = _is_clean_direct_trusted_cli_turn(validated)
+        control_plane_trusted_input = (
+            validated.trusted_input and not validated.incoming_taint_labels
+        )
+        control_plane_operator_owned_cli_input = (
+            validated.operator_owned_cli_input and not validated.incoming_taint_labels
+        )
         explicit_memory_ingress_context: IngressContext | None = None
 
         def _explicit_memory_ingress_context() -> IngressContext | None:
@@ -11057,7 +11061,7 @@ class SessionImplMixin(HandlerMixinBase):
             monitor_decision = self._monitor.evaluate(
                 user_goal=validated.firewall_result.sanitized_text,
                 actions=[proposal],
-                operator_owned_cli_input=operator_owned_cli_input,
+                operator_owned_cli_input=control_plane_operator_owned_cli_input,
             )
             if monitor_decision.kind != MonitorDecisionType.REJECT:
                 self._monitor_reject_counts[sid] = 0
@@ -11098,8 +11102,8 @@ class SessionImplMixin(HandlerMixinBase):
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
                 session_tainted=session_tainted,
-                trusted_input=clean_trusted_input,
-                operator_owned_cli_input=operator_owned_cli_input,
+                trusted_input=control_plane_trusted_input,
+                operator_owned_cli_input=control_plane_operator_owned_cli_input,
                 raw_user_text=control_plane_user_text,
             )
             blocking_voters = [

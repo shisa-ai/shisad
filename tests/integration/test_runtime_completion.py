@@ -498,7 +498,8 @@ async def test_v0_3_1_session_message_limits_error_detail_in_untrusted_context(
             },
         )
         response_text = str(reply["response"]).lower()
-        assert "could not safely complete this request" in response_text
+        assert "could not safely execute the proposed action" in response_text
+        assert "planner_output_invalid" in response_text
         assert "actions.0" not in response_text
         assert "schema violation" not in response_text
         assert reply.get("trust_level") == "untrusted"
