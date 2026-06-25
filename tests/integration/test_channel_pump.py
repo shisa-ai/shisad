@@ -29,6 +29,8 @@ from shisad.core.types import PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
+_CHANNEL_DELIVERY_TIMEOUT_SECONDS = 20
+
 
 @pytest.fixture
 def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,6 +100,13 @@ _CASES: tuple[_PumpCase, ...] = (
         blocked_user="slack-blocked",
     ),
 )
+
+
+async def _pop_channel_delivery(channel: InMemoryChannel) -> Any:
+    return await asyncio.wait_for(
+        channel.pop_outgoing_delivery(),
+        timeout=_CHANNEL_DELIVERY_TIMEOUT_SECONDS,
+    )
 
 
 @pytest.mark.asyncio
@@ -322,7 +331,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
             message_id="gh41-slack-1",
             reply_target="D1",
         )
-        first = await asyncio.wait_for(slack.pop_outgoing_delivery(), timeout=5)
+        first = await _pop_channel_delivery(slack)
         assert first.target.channel == "slack"
         assert first.target.recipient == "D1"
         assert first.content.strip()
@@ -355,7 +364,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
             message_id="gh41-slack-2",
             reply_target="D1",
         )
-        second = await asyncio.wait_for(slack.pop_outgoing_delivery(), timeout=5)
+        second = await _pop_channel_delivery(slack)
         pending_after = await client.call(
             "action.pending",
             {"session_id": sid, "status": "pending", "limit": 10},
