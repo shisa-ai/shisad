@@ -595,14 +595,14 @@ def test_gh12_action_monitor_does_not_need_file_discovery_substring_matching() -
     assert decision.kind == MonitorDecisionType.APPROVE
 
 
-def test_m6_action_monitor_allows_non_suspicious_browser_navigation() -> None:
+def test_m6_action_monitor_allows_read_only_browser_navigation_over_http() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
-        user_goal="browser navigate https://localhost:8080/browser",
+        user_goal="browser navigate http://localhost:8080/browser",
         actions=[
             SimpleNamespace(
                 tool_name="browser.navigate",
-                arguments={"url": "https://localhost:8080/browser"},
+                arguments={"url": "http://localhost:8080/browser"},
                 reasoning="open the requested page",
             )
         ],
@@ -610,13 +610,13 @@ def test_m6_action_monitor_allows_non_suspicious_browser_navigation() -> None:
     assert decision.kind == MonitorDecisionType.APPROVE
 
 
-def test_gh55_action_monitor_does_not_treat_openai_as_open_browser_navigation() -> None:
+def test_gh55_action_monitor_still_flags_http_for_non_browser_tools() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="summarize the OpenAI release notes",
         actions=[
             SimpleNamespace(
-                tool_name="browser.navigate",
+                tool_name="http.request",
                 arguments={"url": "http://example.com"},
                 reasoning="Do not let substring cues skip suspicious URL review.",
             )
@@ -624,7 +624,7 @@ def test_gh55_action_monitor_does_not_treat_openai_as_open_browser_navigation() 
     )
 
     assert decision.kind == MonitorDecisionType.SUSPICIOUS
-    assert "browser.navigate:suspicious_destination" in decision.flags
+    assert "http.request:suspicious_destination" in decision.flags
 
 
 def test_m2_t10_rate_limiter_blocks_burst() -> None:

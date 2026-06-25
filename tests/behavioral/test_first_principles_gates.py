@@ -79,7 +79,7 @@ async def _assert_core_product_gates(harness: ContractHarness) -> None:
 
     multi = await harness.client.call(
         "session.message",
-        {"session_id": sid_later, "content": "read the README and search for related projects"},
+        {"session_id": sid_later, "content": "read the README and search for latest world news"},
     )
     _assert_normal_reply(multi)
     outputs = extract_tool_outputs(multi)

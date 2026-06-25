@@ -36,6 +36,12 @@ class ActionMonitor:
         "shisactl",
         "shisad",
     }
+    _READ_ONLY_BROWSER_TOOLS: ClassVar[set[str]] = {
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+        "browser.end_session",
+    }
     _LOCAL_DIAGNOSTIC_ARGUMENT_KEYS: ClassVar[frozenset[str]] = frozenset(
         {"command", "command_intent"}
     )
@@ -105,6 +111,9 @@ class ActionMonitor:
                 if diagnostic_decision == _DiagnosticShellCommandDecision.REJECT:
                     reject_flags.append(f"{tool}:local_diagnostic_shell_not_authorized")
                     continue
+
+            if tool in self._READ_ONLY_BROWSER_TOOLS:
+                continue
 
             if self._looks_suspicious_url(argument_text):
                 suspicious_flags.append(f"{tool}:suspicious_destination")
