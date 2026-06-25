@@ -40,9 +40,10 @@ reviewed bug fixes before the stable `v0.8.0` UX overhaul.
   flagged.
 
 - **Channel pending state is scoped by delivery target.** Channel chat now keeps
-  active pending ids, visible pending rows, planner context, continuations, and
-  summarizer memory scoped to the current delivery target so a different
-  channel target cannot bleed into the active chat context.
+  active pending ids, visible pending rows, planner transcript context,
+  continuations, and summarizer batching/cursors scoped to the current delivery
+  target. Durable memory recall remains scoped by owner/workspace rather than
+  channel target.
 
 - **Planner validation recovery is clearer.** Recovered planner tool-call
   validation failures and unknown-tool remediation now preserve actionable

@@ -594,6 +594,39 @@ def metadata_payload_current_turn_contained_omissions(
     return proofs
 
 
+def metadata_value_is_current_turn_anchored(
+    value: Any,
+    *,
+    normalized_current_turn: str,
+) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = " ".join(value.split()).casefold()
+    if not normalized:
+        return False
+    current_turn = str(normalized_current_turn or "").casefold()
+    start = 0
+    while True:
+        index = current_turn.find(normalized, start)
+        if index < 0:
+            return False
+        before_index = index - 1
+        after_index = index + len(normalized)
+        before_ok = before_index < 0 or not _current_turn_anchor_token_char(
+            current_turn[before_index]
+        )
+        after_ok = after_index >= len(current_turn) or not _current_turn_anchor_token_char(
+            current_turn[after_index]
+        )
+        if before_ok and after_ok:
+            return True
+        start = index + 1
+
+
+def _current_turn_anchor_token_char(char: str) -> bool:
+    return char.isalnum() or char in {"_", "-", ".", "@", "/", ":", "~"}
+
+
 def _collect_metadata_payload_omissions(
     value: Any,
     *,
@@ -684,10 +717,10 @@ def _metadata_value_is_current_turn_contained(
     *,
     normalized_current_turn: str,
 ) -> bool:
-    if not isinstance(value, str):
-        return False
-    normalized = " ".join(value.split()).casefold()
-    return bool(normalized) and normalized in normalized_current_turn
+    return metadata_value_is_current_turn_anchored(
+        value,
+        normalized_current_turn=normalized_current_turn,
+    )
 
 
 def normalize_workspace_path(value: str, *, workspace_roots: list[Path] | None = None) -> str:

@@ -9,7 +9,12 @@ from shisad.security.control_plane.consensus import (
     ConsensusInput,
     VoteKind,
 )
-from shisad.security.control_plane.schema import ActionKind, RiskTier, build_action
+from shisad.security.control_plane.schema import (
+    ActionKind,
+    RiskTier,
+    build_action,
+    metadata_payload_current_turn_contained_omissions,
+)
 from shisad.security.control_plane.trace import PlanVerificationResult
 
 
@@ -116,6 +121,64 @@ async def test_amv_flags_tainted_side_effect_when_argument_is_not_current_turn_a
 
 
 @pytest.mark.asyncio
+async def test_amv_flags_shell_arg_that_only_matches_inside_larger_token() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="shell.exec",
+        arguments={"command": ["rm", "foo"], "command_intent": "execute"},
+        origin={"session_id": "s-amv-anchor-subtoken-shell", "actor": "planner"},
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "confirm foo",
+                "action_arguments": {
+                    "command": ["rm", "foo"],
+                    "command_intent": "execute",
+                },
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_amv_flags_shell_arg_that_only_matches_inside_larger_host() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="shell.exec",
+        arguments={"command": ["curl", "example.com"], "command_intent": "execute"},
+        origin={"session_id": "s-amv-anchor-subtoken-host", "actor": "planner"},
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "curl notexample.com",
+                "action_arguments": {
+                    "command": ["curl", "example.com"],
+                    "command_intent": "execute",
+                },
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_amv_flags_tainted_side_effect_when_payload_field_was_stripped() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
@@ -140,6 +203,22 @@ async def test_amv_flags_tainted_side_effect_when_payload_field_was_stripped() -
     assert decision.decision == VoteKind.FLAG
     assert decision.risk_tier == RiskTier.HIGH
     assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+
+
+def test_omitted_field_proof_requires_current_turn_anchor_boundaries() -> None:
+    payload = {"body": "example.com"}
+
+    assert (
+        metadata_payload_current_turn_contained_omissions(
+            payload,
+            current_turn_text="send body to notexample.com",
+        )
+        == []
+    )
+    assert metadata_payload_current_turn_contained_omissions(
+        payload,
+        current_turn_text="send body to example.com",
+    ) == ["body"]
 
 
 @pytest.mark.asyncio

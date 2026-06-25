@@ -23,6 +23,7 @@ from shisad.security.control_plane.schema import (
     ControlPlaneAction,
     RiskTier,
     contains_freeform_text,
+    metadata_value_is_current_turn_anchored,
     risk_rank,
 )
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
@@ -380,7 +381,10 @@ class ActionMonitorVoter:
         candidate = cls._normalized_text(value)
         if not candidate:
             return True
-        return candidate.casefold() in user_text.casefold()
+        return metadata_value_is_current_turn_anchored(
+            candidate,
+            normalized_current_turn=user_text,
+        )
 
     @classmethod
     def _iter_anchor_argument_values(
