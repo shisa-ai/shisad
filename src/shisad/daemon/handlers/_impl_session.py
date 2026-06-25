@@ -2193,6 +2193,20 @@ def _trusted_cli_firewall_result_is_clean(firewall_result: FirewallResult) -> bo
     )
 
 
+_CONTROL_PLANE_DIRECT_CLI_RISK_FACTORS = frozenset({"command_chain"})
+
+
+def _trusted_cli_firewall_result_allows_control_plane_anchor(
+    firewall_result: FirewallResult,
+) -> bool:
+    if firewall_result.secret_findings or firewall_result.decode_reason_codes:
+        return False
+    factors = {str(item).strip() for item in firewall_result.risk_factors if str(item).strip()}
+    if not factors:
+        return firewall_result.risk_score < 0.35
+    return firewall_result.risk_score < 0.35 and factors <= _CONTROL_PLANE_DIRECT_CLI_RISK_FACTORS
+
+
 def _is_clean_direct_trusted_cli_turn(validated: SessionMessageValidationResult) -> bool:
     return (
         validated.operator_owned_cli_input
@@ -10671,12 +10685,19 @@ class SessionImplMixin(HandlerMixinBase):
             or TaintLabel.UNTRUSTED in planner_context.context.taint_labels
         )
         action_resolve_requires_explicit_intent = True
-        control_plane_trusted_input = (
-            validated.trusted_input and not validated.incoming_taint_labels
-        )
-        control_plane_operator_owned_cli_input = (
-            validated.operator_owned_cli_input and not validated.incoming_taint_labels
-        )
+        if validated.operator_owned_cli_input:
+            control_plane_operator_owned_cli_input = (
+                not validated.incoming_taint_labels
+                and _trusted_cli_firewall_result_allows_control_plane_anchor(
+                    validated.firewall_result
+                )
+            )
+            control_plane_trusted_input = control_plane_operator_owned_cli_input
+        else:
+            control_plane_trusted_input = (
+                validated.trusted_input and not validated.incoming_taint_labels
+            )
+            control_plane_operator_owned_cli_input = False
         explicit_memory_ingress_context: IngressContext | None = None
 
         def _explicit_memory_ingress_context() -> IngressContext | None:
