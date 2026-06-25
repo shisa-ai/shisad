@@ -10087,16 +10087,17 @@ class SessionImplMixin(HandlerMixinBase):
                 messages_sent=(),
             )
 
-        planner_result = _rewrite_plain_greeting_planner_result(
-            user_text=validated.firewall_result.sanitized_text,
-            planner_result=planner_result,
-        )
-        planner_result = _rewrite_explicit_memory_intent_planner_result(
-            user_text=validated.firewall_result.sanitized_text,
-            planner_result=planner_result,
-            pep=self._pep,
-            context=planner_context.context,
-        )
+        if not planner_failure_code:
+            planner_result = _rewrite_plain_greeting_planner_result(
+                user_text=validated.firewall_result.sanitized_text,
+                planner_result=planner_result,
+            )
+            planner_result = _rewrite_explicit_memory_intent_planner_result(
+                user_text=validated.firewall_result.sanitized_text,
+                planner_result=planner_result,
+                pep=self._pep,
+                context=planner_context.context,
+            )
         delegation_advisory = should_delegate_to_task(
             proposals=[item.proposal for item in planner_result.evaluated]
         )

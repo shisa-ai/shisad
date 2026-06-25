@@ -2189,39 +2189,40 @@ async def test_contract_first_principles_gates_survive_accumulated_state(
         assert "web.search" in outputs
 
 
+async def _always_unknown_tool_complete(
+    self: LocalPlannerProvider,
+    messages: list[Message],
+    tools: list[dict[str, Any]] | None = None,
+) -> ProviderResponse:
+    _ = (self, tools)
+    if (
+        messages
+        and messages[0].role == "system"
+        and _SUMMARIZER_SYSTEM_MARKER in messages[0].content
+    ):
+        return ProviderResponse(
+            message=Message(role="assistant", content='{"entries": []}'),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+    return ProviderResponse(
+        message=Message(
+            role="assistant",
+            content="",
+            tool_calls=[_tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")],
+        ),
+        model="behavioral-stub",
+        finish_reason="tool_calls",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+
 @pytest.mark.asyncio
 async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _always_unknown_tool_complete(
-        self: LocalPlannerProvider,
-        messages: list[Message],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> ProviderResponse:
-        _ = (self, tools)
-        if (
-            messages
-            and messages[0].role == "system"
-            and _SUMMARIZER_SYSTEM_MARKER in messages[0].content
-        ):
-            return ProviderResponse(
-                message=Message(role="assistant", content='{"entries": []}'),
-                model="behavioral-stub",
-                finish_reason="stop",
-                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            )
-        return ProviderResponse(
-            message=Message(
-                role="assistant",
-                content="",
-                tool_calls=[_tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")],
-            ),
-            model="behavioral-stub",
-            finish_reason="tool_calls",
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        )
-
     async with _contract_harness_context(tmp_path, monkeypatch) as harness:
         monkeypatch.setattr(
             LocalPlannerProvider,
@@ -2252,6 +2253,33 @@ async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown
             int(event.get("data", {}).get("blocked_actions", 0)) >= 1
             for event in responses.get("events", [])
         )
+
+
+@pytest.mark.asyncio
+async def test_contract_planner_validation_error_is_not_rewritten_as_greeting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _always_unknown_tool_complete,
+            raising=True,
+        )
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+
+    response_text = str(reply.get("response", ""))
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) >= 1
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert reply.get("planner_error") == "planner_output_invalid"
+    assert "planner_output_invalid" in response_text
+    assert "how can i help" not in response_text.lower()
 
 
 @pytest.mark.asyncio
