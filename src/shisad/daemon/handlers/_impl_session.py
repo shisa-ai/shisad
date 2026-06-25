@@ -8021,7 +8021,6 @@ def _active_pending_confirmation_ids_for_session(
         if (
             is_internal_ingress
             and effective_delivery_target is not None
-            and _pending_uses_totp(pending)
             and not _pending_matches_delivery_target(
                 pending,
                 effective_delivery_target,

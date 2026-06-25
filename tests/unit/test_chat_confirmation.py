@@ -3629,7 +3629,7 @@ def test_u9_action_resolve_pending_context_uses_stored_delivery_target_fallback(
     assert active_ids == frozenset({"c-software", "c-visible"})
 
 
-def test_c3_result_followup_active_ids_filter_totp_only_by_delivery_target() -> None:
+def test_c3_result_followup_active_ids_filter_internal_ingress_by_delivery_target() -> None:
     current_target = DeliveryTarget(channel="discord", recipient="chan-2")
     other_target = DeliveryTarget(channel="discord", recipient="chan-1")
     software_pending = PendingAction(
@@ -3688,7 +3688,7 @@ def test_c3_result_followup_active_ids_filter_totp_only_by_delivery_target() -> 
         fallback_target=current_target,
     )
 
-    assert active_ids == frozenset({"c-software", "c-visible"})
+    assert active_ids == frozenset({"c-visible"})
 
 
 @pytest.mark.asyncio
