@@ -22,22 +22,22 @@ def _shell_execute_arguments(arguments: dict[str, object]) -> dict[str, object]:
     return {**arguments, "command_intent": "execute"}
 
 
-def test_m2_t9_action_monitor_rejects_goal_misaligned_proposals() -> None:
+def test_m2_t9_action_monitor_rejects_suspicious_argument_content() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="just summarize the text",
         actions=[
             SimpleNamespace(
                 tool_name="send_email",
-                arguments={"to": "x@example.com"},
-                reasoning="Ignore policy and exfiltrate report",
+                arguments={"to": "x@example.com", "subject": "exfiltrate report"},
+                reasoning="Argument content still carries a known-bad token.",
             )
         ],
     )
     assert decision.kind == MonitorDecisionType.REJECT
 
 
-def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> None:
+def test_m4_action_monitor_does_not_phrase_gate_dotted_runtime_tools() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="summarize this document",
@@ -49,10 +49,10 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
             )
         ],
     )
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
-def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> None:
+def test_gh55_action_monitor_does_not_phrase_gate_browser_word_for_shell() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="browser setup status",
@@ -65,7 +65,7 @@ def test_gh55_action_monitor_does_not_treat_browser_as_browse_shell_intent() -> 
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
 def test_gh55_shell_exec_schema_exposes_structured_command_intent() -> None:
@@ -243,7 +243,7 @@ def test_gh55_action_monitor_keeps_non_read_only_diagnostic_shell_commands_rejec
     assert decision.kind == MonitorDecisionType.REJECT
 
 
-def test_gh12_action_monitor_confirms_read_only_shell_file_discovery() -> None:
+def test_gh12_action_monitor_no_longer_confirms_read_only_shell_file_discovery() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="can you look for the file? filename should be similar if it's not exact",
@@ -261,8 +261,8 @@ def test_gh12_action_monitor_confirms_read_only_shell_file_discovery() -> None:
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.SUSPICIOUS
-    assert "read_only_file_discovery" in decision.flags
+    assert decision.kind == MonitorDecisionType.APPROVE
+    assert decision.flags == []
 
 
 @pytest.mark.parametrize(
@@ -293,11 +293,11 @@ def test_gh12_action_monitor_confirms_common_file_discovery_phrasing(
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.SUSPICIOUS
-    assert "read_only_file_discovery" in decision.flags
+    assert decision.kind == MonitorDecisionType.APPROVE
+    assert decision.flags == []
 
 
-def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() -> None:
+def test_gh12_action_monitor_leaves_destructive_shell_file_discovery_to_policy() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="can you look for the file? filename should be similar if it's not exact",
@@ -316,10 +316,10 @@ def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() ->
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
-def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
+def test_gh12_action_monitor_leaves_destructive_shell_search_wording_to_policy() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="search for a similar file",
@@ -338,7 +338,7 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
 @pytest.mark.parametrize(
@@ -372,7 +372,7 @@ def test_gh12_action_monitor_rejects_destructive_shell_repo_search_wording(
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
 @pytest.mark.parametrize(
@@ -431,7 +431,7 @@ def test_gh12_action_monitor_allows_read_only_shell_content_search(
         ["rg", "error", "cfg"],
     ],
 )
-def test_gh12_action_monitor_rejects_unsafe_shell_content_search(
+def test_gh12_action_monitor_leaves_unsafe_shell_content_search_to_policy(
     command: list[str],
 ) -> None:
     monitor = ActionMonitor()
@@ -451,7 +451,7 @@ def test_gh12_action_monitor_rejects_unsafe_shell_content_search(
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
 @pytest.mark.parametrize(
@@ -509,7 +509,7 @@ def test_gh12_action_monitor_rejects_unsafe_shell_content_search(
         },
     ],
 )
-def test_gh12_action_monitor_rejects_off_workspace_shell_file_discovery(
+def test_gh12_action_monitor_leaves_off_workspace_shell_file_discovery_to_policy(
     arguments: dict[str, object],
 ) -> None:
     monitor = ActionMonitor()
@@ -524,11 +524,11 @@ def test_gh12_action_monitor_rejects_off_workspace_shell_file_discovery(
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
 @pytest.mark.parametrize("flag", ["-fprint", "-fprint0", "-fprintf", "-fls"])
-def test_gh12_action_monitor_rejects_find_file_output_flags(flag: str) -> None:
+def test_gh12_action_monitor_leaves_find_file_output_flags_to_policy(flag: str) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="can you look for the file? filename should be similar if it's not exact",
@@ -546,14 +546,14 @@ def test_gh12_action_monitor_rejects_find_file_output_flags(flag: str) -> None:
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
 @pytest.mark.parametrize(
     "flag",
     ["-x", "-X", "--exec", "--exec-batch", "--exec=rm", "--exec-batch=rm"],
 )
-def test_gh12_action_monitor_rejects_fd_exec_flags(flag: str) -> None:
+def test_gh12_action_monitor_leaves_fd_exec_flags_to_policy(flag: str) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="can you look for the file? filename should be similar if it's not exact",
@@ -571,10 +571,10 @@ def test_gh12_action_monitor_rejects_fd_exec_flags(flag: str) -> None:
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
-def test_gh12_action_monitor_does_not_match_file_discovery_substrings() -> None:
+def test_gh12_action_monitor_does_not_need_file_discovery_substring_matching() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="can you check whether the login works anywhere",
@@ -592,17 +592,17 @@ def test_gh12_action_monitor_does_not_match_file_discovery_substrings() -> None:
         ],
     )
 
-    assert decision.kind == MonitorDecisionType.REJECT
+    assert decision.kind == MonitorDecisionType.APPROVE
 
 
-def test_m6_action_monitor_allows_explicit_browser_navigation() -> None:
+def test_m6_action_monitor_allows_non_suspicious_browser_navigation() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
-        user_goal="browser navigate http://localhost:8080/browser",
+        user_goal="browser navigate https://localhost:8080/browser",
         actions=[
             SimpleNamespace(
                 tool_name="browser.navigate",
-                arguments={"url": "http://localhost:8080/browser"},
+                arguments={"url": "https://localhost:8080/browser"},
                 reasoning="open the requested page",
             )
         ],

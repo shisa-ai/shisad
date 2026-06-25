@@ -570,6 +570,126 @@ def sanitize_metadata_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def metadata_payload_omitted_fields(payload: dict[str, Any]) -> list[str]:
+    omitted: list[str] = []
+    _collect_metadata_payload_omissions(payload, prefix="", omitted=omitted)
+    return omitted
+
+
+def metadata_payload_current_turn_contained_omissions(
+    payload: dict[str, Any],
+    *,
+    current_turn_text: str,
+) -> list[str]:
+    normalized_current_turn = " ".join(str(current_turn_text or "").split()).casefold()
+    if not normalized_current_turn:
+        return []
+    proofs: list[str] = []
+    _collect_metadata_payload_omission_proofs(
+        payload,
+        prefix="",
+        normalized_current_turn=normalized_current_turn,
+        proofs=proofs,
+    )
+    return proofs
+
+
+def _collect_metadata_payload_omissions(
+    value: Any,
+    *,
+    prefix: str,
+    omitted: list[str],
+) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            field_path = f"{prefix}.{key_text}" if prefix else key_text
+            lowered_key = key_text.lower().strip()
+            if lowered_key in _BANNED_TEXT_FIELDS:
+                omitted.append(field_path)
+                continue
+            _collect_metadata_payload_omissions(item, prefix=field_path, omitted=omitted)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            field_path = f"{prefix}[{index}]" if prefix else f"[{index}]"
+            if isinstance(item, dict):
+                _collect_metadata_payload_omissions(item, prefix=field_path, omitted=omitted)
+            elif isinstance(item, str) and len(item) > 256:
+                omitted.append(field_path)
+        return
+    if isinstance(value, str) and len(value) > 256:
+        omitted.append(prefix)
+
+
+def _collect_metadata_payload_omission_proofs(
+    value: Any,
+    *,
+    prefix: str,
+    normalized_current_turn: str,
+    proofs: list[str],
+) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            field_path = f"{prefix}.{key_text}" if prefix else key_text
+            lowered_key = key_text.lower().strip()
+            if lowered_key in _BANNED_TEXT_FIELDS:
+                if _metadata_value_is_current_turn_contained(
+                    item,
+                    normalized_current_turn=normalized_current_turn,
+                ):
+                    proofs.append(field_path)
+                continue
+            _collect_metadata_payload_omission_proofs(
+                item,
+                prefix=field_path,
+                normalized_current_turn=normalized_current_turn,
+                proofs=proofs,
+            )
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            field_path = f"{prefix}[{index}]" if prefix else f"[{index}]"
+            if isinstance(item, dict):
+                _collect_metadata_payload_omission_proofs(
+                    item,
+                    prefix=field_path,
+                    normalized_current_turn=normalized_current_turn,
+                    proofs=proofs,
+                )
+            elif (
+                isinstance(item, str)
+                and len(item) > 256
+                and _metadata_value_is_current_turn_contained(
+                    item,
+                    normalized_current_turn=normalized_current_turn,
+                )
+            ):
+                proofs.append(field_path)
+        return
+    if (
+        isinstance(value, str)
+        and len(value) > 256
+        and _metadata_value_is_current_turn_contained(
+            value,
+            normalized_current_turn=normalized_current_turn,
+        )
+    ):
+        proofs.append(prefix)
+
+
+def _metadata_value_is_current_turn_contained(
+    value: Any,
+    *,
+    normalized_current_turn: str,
+) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = " ".join(value.split()).casefold()
+    return bool(normalized) and normalized in normalized_current_turn
+
+
 def normalize_workspace_path(value: str, *, workspace_roots: list[Path] | None = None) -> str:
     text = value.strip()
     if not text:

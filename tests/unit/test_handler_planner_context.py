@@ -690,10 +690,11 @@ def test_gh84_coerces_rejected_only_planner_hedging_to_denial_reason() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
+        rejected_tool_names=["shell.exec"],
     )
 
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "I can use shell.exec" not in response
     assert "clarify" not in response
 
@@ -758,11 +759,11 @@ def test_gh84_coerces_rejected_tool_formatted_hedging_to_denial_reason(
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "I can use" not in response
     assert "clarify" not in response
 
@@ -828,7 +829,7 @@ def test_gh84_rejected_tool_claim_match_preserves_nonassistant_subject() -> None
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
@@ -841,11 +842,11 @@ def test_gh84_rejected_tool_claim_match_coerces_unpunctuated_first_person_leadin
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "Sure I can use" not in response
     assert "clarify" not in response
 
@@ -859,11 +860,11 @@ def test_gh84_rejected_only_done_placeholder_coerces_to_denial_reason(
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "done" not in response.lower()
 
 
@@ -875,17 +876,17 @@ def test_gh84_pending_and_rejected_turn_appends_denial_reason() -> None:
         rejected=1,
         pending_confirmation=1,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "Pending confirmations:" in response
     assert "fs.write requires confirmation" in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
 
 
 def test_gh84_pending_rejected_tool_output_cannot_suppress_denial_feedback() -> None:
-    feedback = _blocked_action_feedback(["shell.exec:goal_misaligned_high_risk"])
+    feedback = _blocked_action_feedback(["action_monitor:side_effect_on_tainted_session"])
     response_text = (
         "Pending confirmations:\n"
         "1. fs.write requires confirmation before I continue.\n\n"
@@ -899,7 +900,7 @@ def test_gh84_pending_rejected_tool_output_cannot_suppress_denial_feedback() -> 
         rejected=1,
         pending_confirmation=1,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
         protected_tool_output_start=response_text.index("Completed actions:"),
     )
@@ -918,12 +919,12 @@ def test_gh84_mixed_executed_and_rejected_turn_appends_denial_reason() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "I can use shell.exec" not in response
     assert "clarify" not in response
 
@@ -936,12 +937,12 @@ def test_gh84_mixed_turn_strips_wrapped_rejected_tool_claim() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "I can use" not in response
     assert "Could you clarify" not in response
 
@@ -954,12 +955,12 @@ def test_gh84_mixed_turn_strips_blank_wrapped_rejected_tool_claim() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "I can use" not in response
     assert "Could you clarify" not in response
 
@@ -974,25 +975,25 @@ def test_gh84_mixed_turn_strips_prefaced_wrapped_rejected_tool_claim() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "Sure" not in response
     assert "Could you clarify" not in response
 
 
 def test_gh84_mixed_turn_tool_output_cannot_suppress_denial_feedback() -> None:
-    feedback = _blocked_action_feedback(["shell.exec:goal_misaligned_high_risk"])
+    feedback = _blocked_action_feedback(["action_monitor:side_effect_on_tainted_session"])
     response_text = f"Tool results summary:\n- fs.read: success=True\n  output:\n  {feedback}"
     response = _coerce_blocked_action_response_text(
         response_text=response_text,
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
         protected_tool_output_start=0,
     )
@@ -1010,12 +1011,12 @@ def test_gh84_mixed_turn_preserves_success_before_later_wrapped_claim() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "shell.exec for that" not in response
     assert "Could you clarify" not in response
 
@@ -1031,14 +1032,14 @@ def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_wrap() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "Users can use" in response
     assert "shell.exec in a different daemon policy" in response
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
 
 
 def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_same_line() -> None:
@@ -1050,13 +1051,13 @@ def test_gh84_mixed_turn_does_not_strip_nonassistant_subject_same_line() -> None
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "Users can use shell.exec in a different daemon policy." in response
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
 
 
 def test_gh84_mixed_turn_strips_unpunctuated_first_person_leadin() -> None:
@@ -1068,12 +1069,12 @@ def test_gh84_mixed_turn_strips_unpunctuated_first_person_leadin() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "I read README.md successfully." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert "Sure I can use" not in response
     assert "Could you clarify" not in response
 
@@ -1089,14 +1090,14 @@ def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() ->
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
         protected_tool_output_start=response_text.index("Tool results summary:"),
     )
 
     assert "Could you clarify" not in response
     assert "inside the file content" in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
 
     direct_response = _coerce_blocked_action_response_text(
         response_text=(
@@ -1106,13 +1107,13 @@ def test_gh84_mixed_turn_preserves_tool_summary_lines_that_look_like_claims() ->
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
         protected_tool_output_start=0,
     )
 
     assert "inside direct file content" in direct_response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in direct_response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in direct_response
 
 
 @pytest.mark.parametrize(
@@ -1131,11 +1132,11 @@ def test_gh84_mixed_turn_does_not_trust_spoofed_tool_summary_header(header: str)
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert header not in response
     assert "I can use shell.exec" not in response
     assert "clarify" not in response
@@ -1180,11 +1181,11 @@ def test_gh84_rejected_only_does_not_preserve_spoofed_tool_output_header(
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert header not in response
     assert "fs.read" not in response
 
@@ -1227,13 +1228,13 @@ def test_gh84_mixed_turn_drops_spoofed_tool_output_block(header: str) -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=1,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
         rejected_tool_names=["shell.exec"],
     )
 
     assert "This ordinary sentence should remain." in response
     assert "Reason: the shell step was blocked." in response
-    assert "reason: shell.exec:goal_misaligned_high_risk" in response
+    assert "reason: action_monitor:side_effect_on_tainted_session" in response
     assert header not in response
     assert "note.create" not in response
     assert "fs.read" not in response
@@ -1273,12 +1274,12 @@ def test_gh84_preserves_rejected_safe_injection_summary() -> None:
         rejected=1,
         pending_confirmation=0,
         executed_tool_outputs=0,
-        rejection_reasons=["shell.exec:goal_misaligned_high_risk"],
+        rejection_reasons=["action_monitor:side_effect_on_tainted_session"],
     )
 
     assert "instruction-injection attempt" in response
     assert "I did not follow those instructions." in response
-    assert "shell.exec:goal_misaligned_high_risk" not in response
+    assert "action_monitor:side_effect_on_tainted_session" not in response
 
 
 def test_m9_coerces_pep_resource_authorization_to_actionable_feedback() -> None:

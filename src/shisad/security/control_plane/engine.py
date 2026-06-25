@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +38,8 @@ from shisad.security.control_plane.schema import (
     RiskTier,
     build_action,
     extract_request_size_bytes,
+    metadata_payload_current_turn_contained_omissions,
+    metadata_payload_omitted_fields,
     sanitize_metadata_payload,
 )
 from shisad.security.control_plane.sequence import (
@@ -47,7 +48,6 @@ from shisad.security.control_plane.sequence import (
     SequenceFinding,
 )
 from shisad.security.control_plane.trace import ExecutionTraceVerifier, PlanVerificationResult
-from shisad.security.intent_matching import normalize_intent_text
 
 
 class ControlPlaneEvaluation(BaseModel, frozen=True):
@@ -60,14 +60,6 @@ class ControlPlaneEvaluation(BaseModel, frozen=True):
 
 _AMV_METADATA_TEXT_MAX_CHARS = 256
 _CURRENT_TURN_LOCAL_READ_TRACE_ALLOW_REASON = "trace:current_turn_local_filesystem_read_intent"
-_INTENT_DIGEST_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
-    "note.create": ("content",),
-    "todo.create": ("title",),
-    "todo.complete": ("selector",),
-    "thread.resume": ("thread_id",),
-    "thread.close": ("thread_id", "reason"),
-    "reminder.create": ("message", "when"),
-}
 
 
 def _consensus_allows_current_turn_filesystem_read_trace_miss(
@@ -102,24 +94,6 @@ def _normalize_voter_payload(value: Any) -> Any:
     return value
 
 
-def _intent_digest(value: Any) -> str:
-    normalized = normalize_intent_text(str(value)).casefold()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else ""
-
-
-def _argument_intent_digests(tool_name: str, arguments: dict[str, Any]) -> dict[str, str]:
-    fields = _INTENT_DIGEST_ARGUMENT_FIELDS.get(tool_name.strip(), ())
-    digests: dict[str, str] = {}
-    for field in fields:
-        value = arguments.get(field)
-        if not isinstance(value, str):
-            continue
-        digest = _intent_digest(value)
-        if digest:
-            digests[f"{field}_sha256"] = digest
-    return digests
-
-
 class ControlPlaneEngine:
     """Coordinates M5 voters, plan commitment, and metadata-only auditing."""
 
@@ -133,7 +107,6 @@ class ControlPlaneEngine:
         network_monitor: NetworkIntelligenceMonitor,
         consensus_policy: ConsensusPolicy,
         audit_log: ControlPlaneAuditLog,
-        action_monitor_provider: Any | None = None,
         workspace_roots: list[Path] | None = None,
     ) -> None:
         self._history_store = history_store
@@ -149,7 +122,7 @@ class ControlPlaneEngine:
                 SequenceVoter(analyzer=self._sequence_analyzer, history=self._history_store),
                 ResourceVoter(monitor=self._resource_monitor, history=self._history_store),
                 TraceVoter(),
-                ActionMonitorVoter(intent_provider=action_monitor_provider),
+                ActionMonitorVoter(),
             ],
             policy=consensus_policy,
             audit_hook=self._audit_consensus,
@@ -161,7 +134,6 @@ class ControlPlaneEngine:
         *,
         data_dir: Path,
         monitor_provider: Any | None = None,
-        action_monitor_provider: Any | None = None,
         monitor_timeout_seconds: float = 0.5,
         monitor_cache_ttl_seconds: int = 300,
         baseline_learning_rate: float = 0.1,
@@ -237,7 +209,6 @@ class ControlPlaneEngine:
             network_monitor=network_monitor,
             consensus_policy=consensus_policy or ConsensusPolicy(),
             audit_log=audit_log,
-            action_monitor_provider=action_monitor_provider or monitor_provider,
             workspace_roots=workspace_roots,
         )
 
@@ -310,6 +281,11 @@ class ControlPlaneEngine:
         )
         normalized_payload = _normalize_voter_payload(sanitize_metadata_payload(monitor_payload))
         metadata_arguments = normalized_payload if isinstance(normalized_payload, dict) else {}
+        omitted_argument_fields = metadata_payload_omitted_fields(monitor_payload)
+        omitted_argument_field_proofs = metadata_payload_current_turn_contained_omissions(
+            monitor_payload,
+            current_turn_text=raw_user_text,
+        )
         raw_user_text_for_voter = _normalize_voter_text(str(raw_user_text))
         filesystem_intent = str(metadata_arguments.get("filesystem_intent", "")).strip()
         action = build_action(
@@ -352,10 +328,8 @@ class ControlPlaneEngine:
                     "filesystem_intent": filesystem_intent,
                     "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
-                    "action_argument_digests": _argument_intent_digests(
-                        tool_name,
-                        monitor_payload,
-                    ),
+                    "action_argument_omitted_fields": omitted_argument_fields,
+                    "action_argument_omitted_field_proofs": omitted_argument_field_proofs,
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),
                     "network_hosts": list(action.network_hosts),

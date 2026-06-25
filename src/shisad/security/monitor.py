@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
 from enum import StrEnum
-from pathlib import PurePosixPath
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -34,26 +32,6 @@ class _DiagnosticShellCommandDecision(StrEnum):
 class ActionMonitor:
     """Deterministic M2 monitor with clean-room constraints."""
 
-    _READ_ONLY_BROWSER_TOOLS: ClassVar[set[str]] = {
-        "browser.navigate",
-        "browser.read_page",
-        "browser.screenshot",
-    }
-    _HIGH_RISK_TOOLS: ClassVar[set[str]] = {
-        "http.request",
-        "send_email",
-        "file.write",
-        "shell.exec",
-    }
-    _READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS: ClassVar[set[str]] = {
-        "fd",
-        "find",
-        "ls",
-    }
-    _READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS: ClassVar[set[str]] = {
-        "grep",
-        "rg",
-    }
     _LOCAL_DIAGNOSTIC_CLI_COMMANDS: ClassVar[set[str]] = {
         "shisactl",
         "shisad",
@@ -80,83 +58,6 @@ class ActionMonitor:
         ("lockdown", "status"): frozenset({"--session"}),
         ("status",): frozenset(),
     }
-    _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS: ClassVar[set[str]] = {
-        "&&",
-        "||",
-        ";",
-        "|",
-        ">",
-        ">>",
-        "-delete",
-        "-exec",
-        "-execdir",
-        "-fls",
-        "-files0-from",
-        "-fprint",
-        "-fprint0",
-        "-fprintf",
-        "-ok",
-        "-okdir",
-        "-follow",
-        "-x",
-        "--dereference",
-        "--exec",
-        "--exec-batch",
-        "--follow",
-    }
-    _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
-        "-files0-from=",
-        "--exec=",
-        "--exec-batch=",
-    )
-    _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKENS: ClassVar[set[str]] = {
-        "&&",
-        "||",
-        ";",
-        "|",
-        ">",
-        ">>",
-        "--dereference-recursive",
-        "--files",
-        "--follow",
-        "--pre",
-    }
-    _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = ("--pre=",)
-    _GREP_CONTENT_SEARCH_SAFE_SHORT_FLAGS: ClassVar[frozenset[str]] = frozenset(
-        {"E", "F", "P", "i", "n", "q", "r", "s", "v", "w", "x"}
-    )
-    _RG_CONTENT_SEARCH_SAFE_SHORT_FLAGS: ClassVar[frozenset[str]] = frozenset(
-        {"F", "S", "i", "n", "s", "v", "w", "x"}
-    )
-    _GREP_CONTENT_SEARCH_SAFE_LONG_OPTIONS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "--extended-regexp",
-            "--fixed-strings",
-            "--ignore-case",
-            "--line-number",
-            "--line-regexp",
-            "--no-messages",
-            "--perl-regexp",
-            "--quiet",
-            "--recursive",
-            "--word-regexp",
-        }
-    )
-    _RG_CONTENT_SEARCH_SAFE_LONG_OPTIONS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "--case-sensitive",
-            "--fixed-strings",
-            "--ignore-case",
-            "--line-number",
-            "--line-regexp",
-            "--no-heading",
-            "--quiet",
-            "--smart-case",
-            "--vimgrep",
-            "--with-filename",
-            "--word-regexp",
-        }
-    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -176,7 +77,7 @@ class ActionMonitor:
         if not actions:
             return MonitorDecision(kind=MonitorDecisionType.APPROVE)
 
-        goal_text = user_goal.lower()
+        _ = user_goal
         reject_flags: list[str] = []
         suspicious_flags: list[str] = []
 
@@ -204,26 +105,6 @@ class ActionMonitor:
                 if diagnostic_decision == _DiagnosticShellCommandDecision.REJECT:
                     reject_flags.append(f"{tool}:local_diagnostic_shell_not_authorized")
                     continue
-                if self._is_read_only_shell_file_discovery(
-                    goal_text=goal_text,
-                    arguments=arguments,
-                ):
-                    suspicious_flags.append("read_only_file_discovery")
-                    continue
-                if self._goal_mentions_file_discovery(
-                    goal_text
-                ) and not self._is_read_only_shell_content_search(arguments):
-                    reject_flags.append(f"{tool}:file_discovery_not_read_only")
-                    continue
-
-            if tool in self._HIGH_RISK_TOOLS and not self._goal_mentions_side_effect(goal_text):
-                reject_flags.append(f"{tool}:goal_misaligned_high_risk")
-                continue
-
-            if tool in self._READ_ONLY_BROWSER_TOOLS and self._goal_mentions_browser_navigation(
-                goal_text
-            ):
-                continue
 
             if self._looks_suspicious_url(argument_text):
                 suspicious_flags.append(f"{tool}:suspicious_destination")
@@ -242,124 +123,11 @@ class ActionMonitor:
             )
         return MonitorDecision(kind=MonitorDecisionType.APPROVE)
 
-    @classmethod
-    def _goal_mentions_side_effect(cls, goal_text: str) -> bool:
-        cues = (
-            "send",
-            "post",
-            "publish",
-            "email",
-            "write",
-            "update",
-            "save",
-            "search",
-            "fetch",
-            "browse",
-            "open",
-            "visit",
-            "look up",
-            "lookup",
-            "download",
-        )
-        return any(cls._cue_matches(goal_text, cue) for cue in cues)
-
-    @classmethod
-    def _goal_mentions_browser_navigation(cls, goal_text: str) -> bool:
-        cues = (
-            "browser",
-            "browse",
-            "open",
-            "visit",
-            "navigate",
-        )
-        return any(cls._cue_matches(goal_text, cue) for cue in cues)
-
-    @staticmethod
-    def _cue_matches(goal_text: str, cue: str) -> bool:
-        escaped_parts = [re.escape(part) for part in cue.split()]
-        pattern = r"\b" + r"\s+".join(escaped_parts) + r"\b"
-        return bool(re.search(pattern, goal_text, flags=re.IGNORECASE))
-
-    @classmethod
-    def _goal_mentions_file_discovery(cls, goal_text: str) -> bool:
-        file_cues = (
-            "directories",
-            "directory",
-            "file",
-            "files",
-            "filepath",
-            "filepaths",
-            "filename",
-            "filenames",
-            "folder",
-            "folders",
-            "log",
-            "logfile",
-            "logfiles",
-            "logs",
-            "path",
-            "paths",
-            "codebase",
-            "project",
-            "repo",
-            "repository",
-            "workspace",
-        )
-        discovery_cues = (
-            "find",
-            "list",
-            "locate",
-            "look for",
-            "search",
-            "show",
-            "similar",
-            "where",
-        )
-        return any(cls._cue_matches(goal_text, cue) for cue in file_cues) and any(
-            cls._cue_matches(goal_text, cue) for cue in discovery_cues
-        )
-
-    @staticmethod
-    def _workspace_relative_scope_value(value: str) -> bool:
-        text = value.strip()
-        if not text or "://" in text or "\\" in text or text.startswith(("~", "`")):
-            return False
-        path = PurePosixPath(text)
-        return not path.is_absolute() and ".." not in path.parts
-
-    @classmethod
-    def _shell_file_discovery_token_is_workspace_relative(cls, token: str) -> bool:
-        if token.startswith("-"):
-            if "=" not in token:
-                return "/" not in token and "\\" not in token
-            option, value = token.split("=", 1)
-            if "/" in option or "\\" in option:
-                return False
-            if "/" not in value and "\\" not in value and value not in {"..", "~"}:
-                return not value.startswith(("~", "`"))
-            return cls._workspace_relative_scope_value(value)
-        if "/" not in token and "\\" not in token:
-            return token not in {"..", "~"} and not token.startswith(("~", "`"))
-        return cls._workspace_relative_scope_value(token)
-
-    @staticmethod
-    def _is_current_directory_token(token: str) -> bool:
-        return token in {".", "./"}
-
-    @staticmethod
-    def _is_symlink_follow_token(token: str) -> bool:
-        lowered = token.lower()
-        return token.startswith(("-H", "-L")) or lowered in {"-follow", "--dereference", "--follow"}
-
     @staticmethod
     def _shell_command_name(token: str) -> str:
         if "/" in token or "\\" in token:
             return ""
         return token.lower()
-
-    @staticmethod
-    def _normalize_shell_command_text(text: str) -> str:
-        return " ".join(text.lower().split())
 
     @classmethod
     def _diagnostic_command_prefix(cls, command: list[str]) -> tuple[tuple[str, ...], int] | None:
@@ -476,222 +244,6 @@ class ActionMonitor:
         ):
             return _DiagnosticShellCommandDecision.REJECT
         return _DiagnosticShellCommandDecision.ALLOW
-
-    @staticmethod
-    def _grep_token_dereferences_recursively(token: str) -> bool:
-        if token == "--dereference-recursive":
-            return True
-        return token.startswith("-") and not token.startswith("--") and "R" in token
-
-    @staticmethod
-    def _rg_token_follows_symlinks(token: str) -> bool:
-        return token == "--follow" or (
-            token.startswith("-") and not token.startswith("--") and "L" in token
-        )
-
-    @classmethod
-    def _content_search_options_are_safe(
-        cls,
-        *,
-        command_name: str,
-        command: list[str],
-    ) -> bool:
-        if command_name == "grep":
-            safe_short = cls._GREP_CONTENT_SEARCH_SAFE_SHORT_FLAGS
-            safe_long = cls._GREP_CONTENT_SEARCH_SAFE_LONG_OPTIONS
-        elif command_name == "rg":
-            safe_short = cls._RG_CONTENT_SEARCH_SAFE_SHORT_FLAGS
-            safe_long = cls._RG_CONTENT_SEARCH_SAFE_LONG_OPTIONS
-        else:
-            return False
-
-        for token in command[1:]:
-            if not token.startswith("-"):
-                continue
-            if token == "-":
-                return False
-            if token.startswith("--"):
-                if "=" in token:
-                    return False
-                if token.lower() not in safe_long:
-                    return False
-                continue
-            if any(flag not in safe_short for flag in token[1:]):
-                return False
-        return True
-
-    @classmethod
-    def _shell_file_discovery_targets_current_directory(
-        cls,
-        *,
-        command_name: str,
-        command: list[str],
-    ) -> bool:
-        operands = command[1:]
-        if command_name == "find":
-            roots: list[str] = []
-            for token in operands:
-                if token.startswith("-") or token in {"!", "(", ")"}:
-                    break
-                roots.append(token)
-            return all(cls._is_current_directory_token(root) for root in roots)
-        if command_name == "ls":
-            targets = [token for token in operands if not token.startswith("-")]
-            return all(cls._is_current_directory_token(target) for target in targets)
-        if command_name == "fd":
-            targets = [token for token in operands if not token.startswith("-")]
-            if len(targets) <= 1:
-                return True
-            return all(cls._is_current_directory_token(target) for target in targets[1:])
-        return False
-
-    @classmethod
-    def _shell_file_discovery_scope_is_workspace_relative(
-        cls,
-        *,
-        command_name: str,
-        arguments: dict[str, Any],
-        command: list[str],
-    ) -> bool:
-        if any(cls._is_symlink_follow_token(token) for token in command[1:]):
-            return False
-        if not cls._shell_file_discovery_targets_current_directory(
-            command_name=command_name,
-            command=command,
-        ):
-            return False
-        cwd = arguments.get("cwd")
-        if cwd not in (None, "") and (
-            not isinstance(cwd, str) or not cls._is_current_directory_token(cwd)
-        ):
-            return False
-        read_paths = arguments.get("read_paths")
-        if read_paths not in (None, "", [], (), {}):
-            if not isinstance(read_paths, list):
-                return False
-            for read_path in read_paths:
-                if not isinstance(read_path, str):
-                    return False
-                if not cls._is_current_directory_token(read_path):
-                    return False
-        return all(
-            cls._shell_file_discovery_token_is_workspace_relative(token) for token in command[1:]
-        )
-
-    @classmethod
-    def _is_read_only_shell_file_discovery(
-        cls,
-        *,
-        goal_text: str,
-        arguments: Any,
-    ) -> bool:
-        if not cls._goal_mentions_file_discovery(goal_text):
-            return False
-        if not isinstance(arguments, dict):
-            return False
-        for risky_field in ("write_paths", "network_urls", "env"):
-            value = arguments.get(risky_field)
-            if value not in (None, "", [], {}, ()):
-                return False
-        command_raw = arguments.get("command")
-        if not isinstance(command_raw, list) or not command_raw:
-            return False
-        command: list[str] = []
-        for token in command_raw:
-            if not isinstance(token, str):
-                return False
-            stripped = token.strip()
-            if not stripped:
-                return False
-            command.append(stripped)
-        command_name = cls._shell_command_name(command[0])
-        if command_name not in cls._READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS:
-            return False
-        if not cls._shell_file_discovery_scope_is_workspace_relative(
-            command_name=command_name,
-            arguments=arguments,
-            command=command,
-        ):
-            return False
-        lowered_tokens = {token.lower() for token in command}
-        has_forbidden_prefix = any(
-            token.startswith(prefix)
-            for token in lowered_tokens
-            for prefix in cls._FORBIDDEN_FILE_DISCOVERY_SHELL_TOKEN_PREFIXES
-        )
-        if (
-            lowered_tokens.intersection(cls._FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS)
-            or has_forbidden_prefix
-        ):
-            return False
-        return not any("://" in token or token.startswith("`") for token in lowered_tokens)
-
-    @classmethod
-    def _is_read_only_shell_content_search(cls, arguments: Any) -> bool:
-        if not isinstance(arguments, dict):
-            return False
-        for risky_field in ("write_paths", "network_urls", "env"):
-            value = arguments.get(risky_field)
-            if value not in (None, "", [], {}, ()):
-                return False
-        command_raw = arguments.get("command")
-        if not isinstance(command_raw, list) or not command_raw:
-            return False
-        command: list[str] = []
-        for token in command_raw:
-            if not isinstance(token, str):
-                return False
-            stripped = token.strip()
-            if not stripped:
-                return False
-            command.append(stripped)
-        command_name = cls._shell_command_name(command[0])
-        if command_name not in cls._READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS:
-            return False
-        lowered_tokens = {token.lower() for token in command}
-        has_forbidden_prefix = any(
-            token.startswith(prefix)
-            for token in lowered_tokens
-            for prefix in cls._FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES
-        )
-        if (
-            lowered_tokens.intersection(cls._FORBIDDEN_CONTENT_SEARCH_SHELL_TOKENS)
-            or has_forbidden_prefix
-        ):
-            return False
-        if command_name == "grep" and any(
-            cls._grep_token_dereferences_recursively(token) for token in command[1:]
-        ):
-            return False
-        if command_name == "rg" and any(
-            cls._rg_token_follows_symlinks(token) for token in command[1:]
-        ):
-            return False
-        if not cls._content_search_options_are_safe(
-            command_name=command_name,
-            command=command,
-        ):
-            return False
-        if any(cls._is_symlink_follow_token(token) for token in command[1:]):
-            return False
-        cwd = arguments.get("cwd")
-        if cwd not in (None, "") and (
-            not isinstance(cwd, str) or not cls._is_current_directory_token(cwd)
-        ):
-            return False
-        read_paths = arguments.get("read_paths")
-        if read_paths not in (None, "", [], (), {}):
-            if not isinstance(read_paths, list):
-                return False
-            for read_path in read_paths:
-                if not isinstance(read_path, str):
-                    return False
-                if not cls._is_current_directory_token(read_path):
-                    return False
-        targets = [token for token in command[1:] if not token.startswith("-")]
-        if len(targets) != 2 or not cls._is_current_directory_token(targets[1]):
-            return False
-        return not any("://" in token or token.startswith("`") for token in lowered_tokens)
 
     @staticmethod
     def _flatten_arguments(arguments: Any) -> str:

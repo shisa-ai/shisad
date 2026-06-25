@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -12,7 +10,6 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from shisad.core.providers.base import Message
 from shisad.security.control_plane.history import SessionActionHistoryStore
 from shisad.security.control_plane.network import (
     NetworkIntelligenceMonitor,
@@ -31,8 +28,6 @@ from shisad.security.control_plane.schema import (
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
 from shisad.security.control_plane.trace import PlanVerificationResult
 from shisad.security.intent_matching import (
-    OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT,
-    has_follow_on_command,
     normalize_intent_text,
     strip_optional_greeting_prefix,
 )
@@ -337,7 +332,7 @@ def _strict_metadata_bool(value: Any, *, default: bool) -> bool:
 
 
 class ActionMonitorVoter:
-    """Taint-aware action monitor voter with optional isolated LLM classifier."""
+    """Taint-aware action monitor voter using structural current-turn anchoring."""
 
     _SIDE_EFFECT_KINDS: frozenset[ActionKind] = frozenset(
         {
@@ -347,340 +342,125 @@ class ActionMonitorVoter:
             ActionKind.MEMORY_WRITE,
             ActionKind.MESSAGE_SEND,
             ActionKind.MCP_EXTERNAL,
+            ActionKind.SHELL_EXEC,
+        }
+    )
+    _ANCHOR_IGNORED_ARGUMENT_FIELDS: frozenset[str] = frozenset(
+        {
+            "action_intent",
+            "command_intent",
+            "content_length",
+            "filesystem_intent",
+            "limit",
+            "max_bytes",
+            "max_results",
+            "mode",
+            "reminder_intent",
+            "request_bytes",
+            "request_size",
+            "timeout",
+            "timeout_seconds",
+            "top_k",
         }
     )
 
-    def __init__(self, *, intent_provider: Any | None = None) -> None:
-        self._intent_provider = intent_provider
-
-    @staticmethod
-    def _normalize_intent_text(text: str) -> str:
-        return normalize_intent_text(text)
-
     @classmethod
-    def _strip_optional_greeting_prefix(cls, text: str) -> str:
-        return strip_optional_greeting_prefix(text)
-
-    @classmethod
-    def _has_follow_on_command(cls, text: str) -> bool:
-        return has_follow_on_command(text)
-
-    @classmethod
-    def _matches_argument(cls, value: Any, expected: str) -> bool:
-        candidate = cls._normalize_intent_text(value)
-        return bool(candidate) and candidate.casefold() == expected.casefold()
-
-    @classmethod
-    def _intent_digest(cls, value: Any) -> str:
-        normalized = cls._normalize_intent_text(value).casefold()
-        return hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else ""
-
-    @classmethod
-    def _matches_argument_digest(
-        cls,
-        *,
-        action_argument_digests: dict[str, str],
-        field: str,
-        expected: str,
-    ) -> bool:
-        expected_digest = cls._intent_digest(expected)
-        return (
-            bool(expected_digest)
-            and action_argument_digests.get(f"{field}_sha256") == expected_digest
-        )
-
-    @classmethod
-    def _matches_argument_or_digest(
-        cls,
-        *,
-        action_arguments: dict[str, Any],
-        action_argument_digests: dict[str, str],
-        field: str,
-        expected: str,
-    ) -> bool:
-        return cls._matches_argument(
-            action_arguments.get(field),
-            expected,
-        ) or cls._matches_argument_digest(
-            action_argument_digests=action_argument_digests,
-            field=field,
-            expected=expected,
-        )
-
-    @classmethod
-    def _normalize_explicit_reminder_when(cls, prefix: str, when: str) -> str:
-        normalized = cls._normalize_intent_text(when).strip().strip("\"'")
-        if not normalized:
-            return ""
-        if normalized.lower().startswith(("in ", "at ")):
-            return normalized
-        if prefix.lower() == "at":
-            return f"at {normalized}"
-        relative = re.fullmatch(
-            r"(?P<value>\d+)\s+(?P<unit>seconds?|minutes?|hours?)(?:\s+from\s+now)?",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if relative is not None:
-            return f"in {relative.group('value')} {relative.group('unit')}"
-        return f"at {normalized}" if prefix.lower() == "for" else normalized
-
-    @staticmethod
-    def _command_boundary_pattern() -> str:
-        return r"(?:^|[.;,]\s*|\b(?:and|then|also)\s+)(?:please\s+)?"
-
-    @staticmethod
-    def _command_stop_pattern() -> str:
-        command_verbs = (
-            r"read|list|show|search|find|fetch|open|create|add|save|remember|"
-            r"mark|complete|finish|resume|reopen|close|resolve|remind"
-        )
-        return rf"(?=$|[.;,]|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
-
-    @staticmethod
-    def _terminal_message_stop_pattern() -> str:
-        command_verbs = (
-            r"read|list|show|search|find|fetch|open|create|add|save|remember|"
-            r"mark|complete|finish|resume|reopen|close|resolve|remind"
-        )
-        return rf"(?=$|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
-
-    @classmethod
-    def _iter_intent_values(cls, normalized_text: str, pattern: str) -> list[str]:
-        values: list[str] = []
-        for match in re.finditer(pattern, normalized_text, flags=re.IGNORECASE):
-            if not match.groups():
-                continue
-            value = cls._normalize_intent_text(match.group(1))
-            if value:
-                values.append(value.strip(" .;,"))
-        return values
-
-    @classmethod
-    def _any_expected_matches(
-        cls,
-        *,
-        normalized_text: str,
-        patterns: tuple[str, ...],
-        action_arguments: dict[str, Any],
-        action_argument_digests: dict[str, str],
-        field: str,
-    ) -> bool:
-        for pattern in patterns:
-            for expected in cls._iter_intent_values(normalized_text, pattern):
-                if cls._matches_argument_or_digest(
-                    action_arguments=action_arguments,
-                    action_argument_digests=action_argument_digests,
-                    field=field,
-                    expected=expected,
-                ):
-                    return True
-        return False
-
-    @classmethod
-    def _deterministic_memory_write_intent_match(
-        cls,
-        *,
-        user_text: str,
-        tool_name: str,
-        action_arguments: dict[str, Any],
-        action_argument_digests: dict[str, str] | None = None,
-    ) -> bool:
-        argument_digests = action_argument_digests or {}
-        normalized = cls._strip_optional_greeting_prefix(user_text)
-        if not normalized:
-            return False
-        boundary = cls._command_boundary_pattern()
-        stop = cls._command_stop_pattern()
-        terminal_message_stop = cls._terminal_message_stop_pattern()
+    def _anchor_ignored_fields_for_tool(cls, tool_name: str) -> frozenset[str]:
+        ignored = set(cls._ANCHOR_IGNORED_ARGUMENT_FIELDS)
         if tool_name == "note.create":
-            return cls._any_expected_matches(
-                normalized_text=normalized,
-                patterns=(
-                    rf"{boundary}(?:add|save)\s+(?:a\s+)?note:\s*(.+?){stop}",
-                    rf"{boundary}remember(?:\s+that)?\s+(.+?){stop}",
-                ),
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="content",
-            )
-        if tool_name == "todo.create":
-            return cls._any_expected_matches(
-                normalized_text=normalized,
-                patterns=(
-                    rf"{boundary}(?:add|create)\s+(?:a\s+)?(?:todo|task)"
-                    rf"(?:\s+called|\s+named|:)?\s+(.+?){stop}",
-                ),
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="title",
-            )
-        if tool_name == "todo.complete":
-            return cls._any_expected_matches(
-                normalized_text=normalized,
-                patterns=(
-                    rf"{boundary}(?:mark|complete|finish)\s+(?:the\s+)?(.+?)"
-                    rf"(?:\s+todo)?\s+(?:complete|done){stop}",
-                ),
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="selector",
-            )
-        if tool_name == "thread.resume":
-            return cls._any_expected_matches(
-                normalized_text=normalized,
-                patterns=(
-                    rf"{boundary}(?:resume|reopen|continue)\s+(?:the\s+)?"
-                    rf"(?:thread\s+)?(.+?){stop}",
-                ),
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="thread_id",
-            )
-        if tool_name == "thread.close":
-            return cls._any_expected_matches(
-                normalized_text=normalized,
-                patterns=(
-                    rf"{boundary}(?:close|resolve)\s+(?:the\s+)?(?:thread\s+)?"
-                    rf"([A-Za-z0-9][A-Za-z0-9_-]+)"
-                    rf"(?:\s+(?:because|reason:)\s+.+?)?{stop}",
-                ),
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="thread_id",
-            )
-        if tool_name == "reminder.create":
-            if cls._has_follow_on_command(normalized):
-                return False
-            pattern = rf"{boundary}remind me(?:\s+to)?\s+(.+?)\s+((?:in|at)\s+.+?){stop}"
-            for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
-                message = cls._normalize_intent_text(match.group(1)).strip(" .;,")
-                when = cls._normalize_intent_text(match.group(2)).strip(" .;,")
-                if cls._matches_argument_or_digest(
-                    action_arguments=action_arguments,
-                    action_argument_digests=argument_digests,
-                    field="message",
-                    expected=message,
-                ) and cls._matches_argument_or_digest(
-                    action_arguments=action_arguments,
-                    action_argument_digests=argument_digests,
-                    field="when",
-                    expected=when,
-                ):
-                    return True
-            set_pattern = (
-                rf"{boundary}{OPTIONAL_POLITE_REQUEST_PREFIX_FRAGMENT}"
-                rf"(?:set|create|add)\s+(?:a\s+)?reminder"
-                rf"\s+(?P<prefix>for|at)\s+(?P<when>.+?)\s+"
-                rf"(?:(?:to\s+)?say|saying|with\s+(?:message|text))"
-                rf"\s+(?P<message>.+?){terminal_message_stop}"
-            )
-            for match in re.finditer(set_pattern, normalized, flags=re.IGNORECASE):
-                message = cls._normalize_intent_text(match.group("message")).strip(" .;,\"'")
-                when = cls._normalize_explicit_reminder_when(
-                    match.group("prefix"),
-                    match.group("when"),
-                )
-                if cls._matches_argument_or_digest(
-                    action_arguments=action_arguments,
-                    action_argument_digests=argument_digests,
-                    field="message",
-                    expected=message,
-                ) and cls._matches_argument_or_digest(
-                    action_arguments=action_arguments,
-                    action_argument_digests=argument_digests,
-                    field="when",
-                    expected=when,
-                ):
-                    return True
-            return False
-        return False
+            ignored.add("key")
+        return frozenset(ignored)
+
+    @staticmethod
+    def _normalized_text(value: Any) -> str:
+        return normalize_intent_text(str(value or ""))
 
     @classmethod
-    def _deterministic_trusted_cli_intent_match(
-        cls,
-        *,
-        user_text: str,
-        tool_name: str,
-        action_arguments: dict[str, Any],
-        action_argument_digests: dict[str, str] | None = None,
-    ) -> bool:
-        normalized = cls._strip_optional_greeting_prefix(user_text)
-        if not normalized:
-            return False
-        if cls._deterministic_memory_write_intent_match(
-            user_text=user_text,
-            tool_name=tool_name,
-            action_arguments=action_arguments,
-            action_argument_digests=action_argument_digests,
-        ):
+    def _value_is_current_turn_contained(cls, *, user_text: str, value: Any) -> bool:
+        candidate = cls._normalized_text(value)
+        if not candidate:
             return True
+        return candidate.casefold() in user_text.casefold()
 
-        normalized_lower = normalized.lower()
-        if tool_name == "web.search":
-            query = str(action_arguments.get("query", "")).strip()
-            if not query:
-                return False
-            return bool(
-                re.search(
-                    r"\b(search|look up|find|latest news|news)\b",
-                    normalized_lower,
-                )
-            )
-
-        if tool_name == "web.fetch":
-            url = str(action_arguments.get("url", "")).strip()
-            if not url:
-                return False
-            return url.lower() in normalized_lower and bool(
-                re.search(r"\b(fetch|open|read|get)\b", normalized_lower)
-            )
-
-        return False
-
-    @staticmethod
-    def _build_classifier_messages(
+    @classmethod
+    def _iter_anchor_argument_values(
+        cls,
+        value: Any,
         *,
-        user_text: str,
-        tool_name: str,
-        action_arguments: dict[str, Any],
-    ) -> list[Message]:
-        proposed_arguments = json.dumps(action_arguments, ensure_ascii=True, sort_keys=True)
-        system_prompt = (
-            "You evaluate whether the user's message authorizes a proposed action. "
-            "Respond with strict JSON: "
-            '{"decision":"YES|NO|UNCLEAR","explanation":"one short sentence"}'
-        )
-        user_prompt = (
-            f"The user said: {user_text}\n"
-            f"The system proposes: {tool_name}({proposed_arguments})\n"
-            "Does the user's message express intent for this action?"
-        )
-        return [
-            Message(role="system", content=system_prompt),
-            Message(role="user", content=user_prompt),
-        ]
+        ignored_fields: frozenset[str],
+        field_name: str = "",
+    ) -> list[str]:
+        lowered_field = field_name.lower().strip()
+        if lowered_field in ignored_fields:
+            return []
+        if isinstance(value, dict):
+            values: list[str] = []
+            for key, item in value.items():
+                values.extend(
+                    cls._iter_anchor_argument_values(
+                        item,
+                        ignored_fields=ignored_fields,
+                        field_name=str(key),
+                    )
+                )
+            return values
+        if isinstance(value, list):
+            values = []
+            for item in value:
+                values.extend(
+                    cls._iter_anchor_argument_values(
+                        item,
+                        ignored_fields=ignored_fields,
+                        field_name=field_name,
+                    )
+                )
+            return values
+        if isinstance(value, str):
+            normalized = cls._normalized_text(value)
+            return [normalized] if normalized else []
+        return []
 
     @staticmethod
-    def _parse_classifier_response(content: str) -> tuple[str, str]:
-        text = content.strip()
-        if not text:
-            return "UNCLEAR", ""
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            match = re.search(r"\b(YES|NO|UNCLEAR)\b", text.upper())
-            if match is None:
-                return "UNCLEAR", text
-            decision = match.group(1)
-            return decision, text
-        if not isinstance(payload, dict):
-            return "UNCLEAR", text
-        decision = str(payload.get("decision", "")).strip().upper()
-        if decision not in {"YES", "NO", "UNCLEAR"}:
-            decision = "UNCLEAR"
-        explanation = str(payload.get("explanation", "")).strip()
-        return decision, explanation
+    def _omitted_argument_fields(payload: dict[str, Any]) -> set[str]:
+        omitted = payload.get("action_argument_omitted_fields")
+        if not isinstance(omitted, list):
+            return set()
+        return {str(item).strip() for item in omitted if str(item).strip()}
+
+    @classmethod
+    def _has_unproven_omitted_argument_fields(cls, payload: dict[str, Any]) -> bool:
+        omitted_fields = cls._omitted_argument_fields(payload)
+        if not omitted_fields:
+            return False
+        proofs = payload.get("action_argument_omitted_field_proofs")
+        if not isinstance(proofs, list):
+            return True
+        proven_fields = {str(item).strip() for item in proofs if str(item).strip()}
+        return not omitted_fields.issubset(proven_fields)
+
+    @classmethod
+    def _is_current_turn_anchored(cls, data: ConsensusInput, *, user_text: str) -> bool:
+        if cls._has_unproven_omitted_argument_fields(data.metadata_payload):
+            return False
+        action_arguments = data.metadata_payload.get("action_arguments", {})
+        if not isinstance(action_arguments, dict):
+            return False
+        values = cls._iter_anchor_argument_values(
+            action_arguments,
+            ignored_fields=cls._anchor_ignored_fields_for_tool(str(data.action.tool_name)),
+        )
+        if not values and not cls._omitted_argument_fields(data.metadata_payload):
+            return False
+        normalized_user_text = cls._normalized_text(user_text)
+        if not normalized_user_text:
+            return False
+        return all(
+            cls._value_is_current_turn_contained(
+                user_text=normalized_user_text,
+                value=value,
+            )
+            for value in values
+        )
 
     async def cast_vote(self, data: ConsensusInput) -> VoterDecision:
         session_tainted = _strict_metadata_bool(
@@ -726,91 +506,23 @@ class ActionMonitorVoter:
 
         if action.action_kind in self._SIDE_EFFECT_KINDS and session_tainted:
             user_text = str(data.metadata_payload.get("raw_user_text", "")).strip()
-            action_arguments = data.metadata_payload.get("action_arguments", {})
-            if not isinstance(action_arguments, dict):
-                action_arguments = {}
-            action_argument_digests = data.metadata_payload.get("action_argument_digests", {})
-            if not isinstance(action_argument_digests, dict):
-                action_argument_digests = {}
-            action_argument_digests = {
-                str(key): str(value)
-                for key, value in action_argument_digests.items()
-                if str(key).strip() and str(value).strip()
-            }
             if (
                 trusted_input
                 and operator_owned_cli_input
                 and user_text
-                and self._deterministic_trusted_cli_intent_match(
-                    user_text=user_text,
-                    tool_name=str(action.tool_name),
-                    action_arguments=action_arguments,
-                    action_argument_digests=action_argument_digests,
-                )
+                and self._is_current_turn_anchored(data, user_text=user_text)
             ):
                 return VoterDecision(
                     voter="ActionMonitorVoter",
                     decision=VoteKind.ALLOW,
                     risk_tier=RiskTier.LOW,
-                    reason_codes=["action_monitor:trusted_cli_current_turn_intent"],
-                )
-            if (
-                trusted_input
-                and action.action_kind == ActionKind.MEMORY_WRITE
-                and user_text
-                and self._deterministic_memory_write_intent_match(
-                    user_text=user_text,
-                    tool_name=str(action.tool_name),
-                    action_arguments=action_arguments,
-                    action_argument_digests=action_argument_digests,
-                )
-            ):
-                return VoterDecision(
-                    voter="ActionMonitorVoter",
-                    decision=VoteKind.ALLOW,
-                    risk_tier=RiskTier.LOW,
-                    reason_codes=["action_monitor:deterministic_intent_match"],
-                )
-            if self._intent_provider is None or not user_text:
-                return VoterDecision(
-                    voter="ActionMonitorVoter",
-                    decision=VoteKind.FLAG,
-                    risk_tier=RiskTier.HIGH,
-                    reason_codes=["action_monitor:side_effect_on_tainted_session"],
-                )
-            try:
-                provider_response = await self._intent_provider.complete(
-                    self._build_classifier_messages(
-                        user_text=user_text,
-                        tool_name=str(action.tool_name),
-                        action_arguments=action_arguments,
-                    ),
-                    tools=[],
-                )
-            except Exception:
-                return VoterDecision(
-                    voter="ActionMonitorVoter",
-                    decision=VoteKind.FLAG,
-                    risk_tier=RiskTier.HIGH,
-                    reason_codes=["action_monitor:classifier_unavailable"],
-                )
-            decision_value, explanation = self._parse_classifier_response(
-                str(provider_response.message.content)
-            )
-            if decision_value == "YES":
-                return VoterDecision(
-                    voter="ActionMonitorVoter",
-                    decision=VoteKind.ALLOW,
-                    risk_tier=RiskTier.LOW,
-                    reason_codes=["action_monitor:intent_match"],
-                    details={"explanation": explanation},
+                    reason_codes=["action_monitor:current_turn_anchored"],
                 )
             return VoterDecision(
                 voter="ActionMonitorVoter",
                 decision=VoteKind.FLAG,
                 risk_tier=RiskTier.HIGH,
-                reason_codes=["action_monitor:intent_mismatch"],
-                details={"explanation": explanation},
+                reason_codes=["action_monitor:side_effect_on_tainted_session"],
             )
         if action.action_kind in self._SIDE_EFFECT_KINDS and not trusted_input:
             return VoterDecision(

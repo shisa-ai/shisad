@@ -1928,10 +1928,6 @@ async def test_contract_direct_diagnostic_audit_command_executes_or_confirms_wit
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="Blocked on GH85 structured turn authorization replacing prose goal alignment",
-    strict=True,
-)
 async def test_gh61_ledger_demo_shell_command_queues_valid_argv_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2179,7 +2175,10 @@ async def test_contract_first_principles_gates_survive_accumulated_state(
 
         multi = await harness.client.call(
             "session.message",
-            {"session_id": sid_later, "content": "read the README and search for related projects"},
+            {
+                "session_id": sid_later,
+                "content": "read the README and search for latest world news",
+            },
         )
         assert multi.get("lockdown_level") == "normal"
         assert int(multi.get("blocked_actions", 0)) == 0

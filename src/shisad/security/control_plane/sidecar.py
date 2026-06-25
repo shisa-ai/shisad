@@ -253,7 +253,6 @@ def _build_control_plane_engine(
     return ControlPlaneEngine.build(
         data_dir=data_dir,
         monitor_provider=monitor_provider,
-        action_monitor_provider=monitor_provider,
         monitor_timeout_seconds=max(0.05, control_plane_policy.network.timeout_ms / 1000.0),
         monitor_cache_ttl_seconds=int(control_plane_policy.network.cache_ttl_seconds),
         baseline_learning_rate=float(control_plane_policy.network.baseline_learning_rate),

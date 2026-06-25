@@ -229,45 +229,48 @@ async def test_m5_t14_end_to_end_control_plane_happy_and_compromise_paths(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_m6_amv_tainted_session_yes_allows_side_effect(tmp_path: Path) -> None:
+async def test_m6_amv_current_turn_anchor_allows_tainted_side_effect_without_provider(
+    tmp_path: Path,
+) -> None:
     provider = _StubMonitorProvider(
-        content='{"decision":"YES","explanation":"User asked to write this file."}'
+        content='{"decision":"YES","explanation":"Provider must not authorize AMV."}'
     )
-    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-m6-yes", monitor_provider=provider)
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-m6-anchor", monitor_provider=provider)
     origin = Origin(
-        session_id="m6-amv-yes",
+        session_id="m6-amv-anchor",
         user_id="user-1",
         workspace_id="ws-1",
         actor="planner",
     )
     engine.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="write status.txt",
+        goal="search latest news",
         origin=origin,
         ttl_seconds=600,
         max_actions=10,
-        capabilities={Capability.FILE_WRITE},
+        capabilities={Capability.HTTP_REQUEST},
     )
     evaluation = await engine.evaluate_action(
-        tool_name="fs.write",
-        arguments={"path": "status.txt", "content": "ok"},
+        tool_name="web.search",
+        arguments={"query": "latest news"},
         origin=origin,
-        risk_tier=RiskTier.MEDIUM,
+        risk_tier=RiskTier.LOW,
         declared_domains=[],
         session_tainted=True,
         trusted_input=True,
-        raw_user_text="write status.txt with ok",
+        operator_owned_cli_input=True,
+        raw_user_text="search latest news",
     )
     assert evaluation.decision == ControlDecision.ALLOW
-    assert provider.calls == 1
+    assert provider.calls == 0
 
 
 @pytest.mark.asyncio
-async def test_m6_amv_tainted_session_no_blocks_when_h4_path_is_missing(
+async def test_m6_amv_unanchored_tainted_session_flags_when_h4_path_is_missing(
     tmp_path: Path,
 ) -> None:
     provider = _StubMonitorProvider(
-        content='{"decision":"NO","explanation":"User asked to summarize, not write files."}'
+        content='{"decision":"NO","explanation":"Provider must not authorize AMV."}'
     )
     engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-m6-no", monitor_provider=provider)
     origin = Origin(
@@ -292,15 +295,17 @@ async def test_m6_amv_tainted_session_no_blocks_when_h4_path_is_missing(
         declared_domains=[],
         session_tainted=True,
         trusted_input=True,
+        operator_owned_cli_input=True,
         raw_user_text="summarize docs",
     )
     assert evaluation.decision == ControlDecision.BLOCK
     assert "trace:tdg_dependency_path_missing" in evaluation.reason_codes
+    assert provider.calls == 0
     amv_vote = next(
         vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
     )
-    assert "action_monitor:intent_mismatch" in amv_vote.reason_codes
-    assert amv_vote.details.get("explanation")
+    assert "action_monitor:side_effect_on_tainted_session" in amv_vote.reason_codes
+    assert not amv_vote.details
 
 
 @pytest.mark.asyncio

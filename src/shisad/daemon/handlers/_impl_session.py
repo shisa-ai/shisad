@@ -10950,6 +10950,11 @@ class SessionImplMixin(HandlerMixinBase):
                             user_id=validated.user_id,
                             workspace_id=validated.workspace_id,
                             trust_level=validated.trust_level,
+                            is_internal_ingress=validated.is_internal_ingress,
+                            delivery_target=validated.delivery_target,
+                            stored_delivery_target=_stored_delivery_target_from_session(
+                                validated.session
+                            ),
                             continuation_user_goal=resolve_result.continuation_user_goal,
                             confirmed_tool_outputs=resolve_result.serialized_tool_outputs,
                             checkpoint_ids=resolve_result.checkpoint_ids,

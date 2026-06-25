@@ -882,33 +882,11 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         return dict(arguments)
 
 
-class _CapturingIntentProvider:
-    def __init__(self) -> None:
-        self.messages: list[list[Message]] = []
-
-    async def complete(
-        self,
-        messages: list[Message],
-        tools: list[dict[str, object]] | None = None,
-    ) -> ProviderResponse:
-        _ = tools
-        self.messages.append(list(messages))
-        return ProviderResponse(
-            message=Message(
-                role="assistant",
-                content='{"decision":"UNCLEAR","explanation":"needs confirmation"}',
-            ),
-            finish_reason="stop",
-            usage={},
-        )
-
-
 class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
     def __init__(self) -> None:
         super().__init__()
         self.events: list[object] = []
         self._event_bus = SimpleNamespace(publish=self._record_event)
-        self.intent_provider = _CapturingIntentProvider()
         self._registry = SimpleNamespace(
             get_tool=lambda _tool_name: ToolDefinition(
                 name=ToolName("browser.type_text"),
@@ -939,7 +917,7 @@ class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):
                 trust_level="trusted",
             ),
         )
-        vote = await ActionMonitorVoter(intent_provider=self.intent_provider).cast_vote(
+        vote = await ActionMonitorVoter().cast_vote(
             ConsensusInput(
                 action=action,
                 trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
@@ -1444,15 +1422,6 @@ async def test_gh33_sensitive_browser_text_redacted_before_control_plane_classif
         "description": "[sensitive text redacted]",
     }
     assert control_plane_call["raw_user_text"] == "[sensitive text redacted]"
-    assert harness.intent_provider.messages
-    classifier_prompt = "\n".join(
-        message.content
-        for conversation in harness.intent_provider.messages
-        for message in conversation
-    )
-    assert "The user said: [sensitive text redacted]" in classifier_prompt
-    assert sensitive_text not in classifier_prompt
-    assert "[sensitive text redacted]" in classifier_prompt
     assert len(harness.pending_action_calls) == 2
     sibling_pending_call = harness.pending_action_calls[0]
     assert sibling_pending_call["arguments"] == {"command": ["echo", sensitive_text]}

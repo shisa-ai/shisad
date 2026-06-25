@@ -1612,35 +1612,12 @@ def test_m5_t18_plan_lifecycle_expiry_cancel_amendment_semantics() -> None:
     assert first.plan_hash != second.plan_hash
 
 
-class _PromptCaptureProvider:
-    def __init__(self) -> None:
-        self.messages: list[list[Message]] = []
-
-    async def complete(
-        self,
-        messages: list[Message],
-        tools: list[dict[str, object]] | None = None,
-    ) -> ProviderResponse:
-        _ = tools
-        self.messages.append(list(messages))
-        return ProviderResponse(
-            message=Message(
-                role="assistant",
-                content='{"decision":"UNCLEAR","explanation":"needs confirmation"}',
-            ),
-            finish_reason="stop",
-            usage={},
-        )
-
-
 @pytest.mark.asyncio
 async def test_gh33_control_plane_uses_raw_action_and_redacted_monitor_payload(
     tmp_path: Path,
 ) -> None:
-    provider = _PromptCaptureProvider()
     engine = ControlPlaneEngine.build(
         data_dir=tmp_path / "cp-gh33-raw-action-redacted-monitor",
-        action_monitor_provider=provider,
     )
 
     evaluation = await engine.evaluate_action(
@@ -1657,13 +1634,12 @@ async def test_gh33_control_plane_uses_raw_action_and_redacted_monitor_payload(
 
     assert evaluation.action.action_kind == ActionKind.EGRESS
     assert evaluation.action.network_hosts == ["secret.example"]
-    assert provider.messages
-    classifier_prompt = "\n".join(
-        message.content for conversation in provider.messages for message in conversation
+    amv_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
     )
-    assert "The system proposes: shell.exec({})" in classifier_prompt
-    assert "secret.example" not in classifier_prompt
-    assert "curl" not in classifier_prompt
+    assert "action_monitor:side_effect_on_tainted_session" in amv_vote.reason_codes
+    assert "secret.example" not in json.dumps(amv_vote.details)
+    assert "curl" not in json.dumps(amv_vote.details)
 
 
 @pytest.mark.asyncio
@@ -1732,12 +1708,12 @@ async def test_m1_rlc7_action_monitor_voter_flags_tainted_side_effect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_monitor_allows_trusted_cli_search_intent_on_tainted_context() -> None:
+async def test_action_monitor_allows_current_turn_anchored_search_on_tainted_context() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="web.search",
         arguments={"query": "shisa.ai", "limit": 3},
-        origin=_origin("s-action-monitor-cli-search"),
+        origin=_origin("s-action-monitor-anchor-search"),
     )
     decision = await voter.cast_vote(
         ConsensusInput(
@@ -1754,22 +1730,42 @@ async def test_action_monitor_allows_trusted_cli_search_intent_on_tainted_contex
     )
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "raw_user_text",
-    [
-        'hello, please set a reminder for 1 minute from now to say "timer done"',
-        'please set a reminder for 1 minute from now to say "timer done"',
-        'can you set a reminder for 1 minute from now to say "timer done"',
-        'can you please set a reminder for 1 minute from now to say "timer done"',
-    ],
-)
-async def test_gh49_action_monitor_allows_bounded_set_reminder_intent(
-    raw_user_text: str,
-) -> None:
+async def test_action_monitor_allows_current_turn_anchored_shell_exec_on_tainted_context() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="shell.exec",
+        arguments={"command": ["echo", "Hello Ledger!"], "command_intent": "execute"},
+        origin=_origin("s-action-monitor-anchor-shell"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": 'echo "Hello Ledger!"',
+                "action_arguments": {
+                    "command": ["echo", "Hello Ledger!"],
+                    "command_intent": "execute",
+                },
+            },
+        )
+    )
+
+    assert action.action_kind == ActionKind.SHELL_EXEC
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_action_monitor_allows_current_turn_anchored_reminder_on_tainted_context() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
@@ -1788,7 +1784,7 @@ async def test_gh49_action_monitor_allows_bounded_set_reminder_intent(
                 "session_tainted": True,
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
-                "raw_user_text": raw_user_text,
+                "raw_user_text": 'remind me to say "timer done" in 1 minute',
                 "action_arguments": {
                     "message": "timer done",
                     "when": "in 1 minute",
@@ -1800,11 +1796,11 @@ async def test_gh49_action_monitor_allows_bounded_set_reminder_intent(
 
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_gh49_action_monitor_allows_for_clock_time_reminder_intent() -> None:
+async def test_action_monitor_allows_current_turn_anchored_clock_time_reminder() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
@@ -1823,7 +1819,7 @@ async def test_gh49_action_monitor_allows_for_clock_time_reminder_intent() -> No
                 "session_tainted": True,
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
-                "raw_user_text": 'please set a reminder for 3pm to say "timer done"',
+                "raw_user_text": 'remind me to say "timer done" at 3pm',
                 "action_arguments": {
                     "message": "timer done",
                     "when": "at 3pm",
@@ -1835,11 +1831,11 @@ async def test_gh49_action_monitor_allows_for_clock_time_reminder_intent() -> No
 
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_gh49_action_monitor_keeps_comma_inside_set_reminder_message() -> None:
+async def test_action_monitor_keeps_comma_inside_current_turn_anchored_value() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
@@ -1858,7 +1854,7 @@ async def test_gh49_action_monitor_keeps_comma_inside_set_reminder_message() -> 
                 "session_tainted": True,
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
-                "raw_user_text": ('please set a reminder for 3pm to say "timer done, check oven"'),
+                "raw_user_text": ('please set a reminder at 3pm to say "timer done, check oven"'),
                 "action_arguments": {
                     "message": "timer done, check oven",
                     "when": "at 3pm",
@@ -1870,73 +1866,11 @@ async def test_gh49_action_monitor_keeps_comma_inside_set_reminder_message() -> 
 
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("raw_user_text", "message"),
-    [
-        (
-            'please set a reminder for 3pm to say "timer done"; list my reminders',
-            'timer done"; list my reminders',
-        ),
-        (
-            'please set a reminder for 3pm to say "timer done";list my reminders',
-            'timer done";list my reminders',
-        ),
-        (
-            'please set a reminder for 3pm to say "timer done". list my reminders',
-            'timer done". list my reminders',
-        ),
-        (
-            'please set a reminder for 3pm to say "timer done".list my reminders',
-            'timer done".list my reminders',
-        ),
-        (
-            "please set a reminder for 3pm to say timer done;list my reminders",
-            "timer done;list my reminders",
-        ),
-    ],
-)
-async def test_gh49_action_monitor_rejects_follow_on_after_set_reminder(
-    raw_user_text: str,
-    message: str,
-) -> None:
-    voter = ActionMonitorVoter()
-    action = build_action(
-        tool_name="reminder.create",
-        arguments={
-            "message": message,
-            "when": "at 3pm",
-            "reminder_intent": "current_turn_reminder_create",
-        },
-        origin=_origin("s-action-monitor-cli-set-reminder-follow-on"),
-    )
-    decision = await voter.cast_vote(
-        ConsensusInput(
-            action=action,
-            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
-            metadata_payload={
-                "session_tainted": True,
-                "trusted_input": True,
-                "operator_owned_cli_input": True,
-                "raw_user_text": raw_user_text,
-                "action_arguments": {
-                    "message": message,
-                    "when": "at 3pm",
-                    "reminder_intent": "current_turn_reminder_create",
-                },
-            },
-        )
-    )
-
-    assert decision.decision == VoteKind.FLAG
-    assert "action_monitor:trusted_cli_current_turn_intent" not in decision.reason_codes
-
-
-@pytest.mark.asyncio
-async def test_gh49_action_monitor_keeps_set_inside_reminder_message() -> None:
+async def test_action_monitor_keeps_command_words_inside_current_turn_anchored_value() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="reminder.create",
@@ -1956,7 +1890,7 @@ async def test_gh49_action_monitor_keeps_set_inside_reminder_message() -> None:
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
                 "raw_user_text": (
-                    "can you set a reminder for 1 minute from now to say "
+                    "can you set a reminder in 1 minute to say "
                     "check the service and set DEBUG=1"
                 ),
                 "action_arguments": {
@@ -1970,7 +1904,7 @@ async def test_gh49_action_monitor_keeps_set_inside_reminder_message() -> None:
 
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
@@ -2052,12 +1986,12 @@ async def test_gh51_engine_honors_typed_current_turn_filesystem_read_trace_allow
 
 
 @pytest.mark.asyncio
-async def test_m1_action_monitor_allows_explicit_tainted_memory_write() -> None:
+async def test_action_monitor_allows_current_turn_anchored_memory_write() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="todo.complete",
         arguments={"selector": "review PRs"},
-        origin=_origin("s-action-monitor-tainted-memory-write"),
+        origin=_origin("s-action-monitor-anchor-memory-write"),
     )
     decision = await voter.cast_vote(
         ConsensusInput(
@@ -2066,6 +2000,7 @@ async def test_m1_action_monitor_allows_explicit_tainted_memory_write() -> None:
             metadata_payload={
                 "session_tainted": True,
                 "trusted_input": True,
+                "operator_owned_cli_input": True,
                 "raw_user_text": "mark the review PRs todo complete",
                 "action_arguments": {"selector": "review PRs"},
             },
@@ -2073,16 +2008,16 @@ async def test_m1_action_monitor_allows_explicit_tainted_memory_write() -> None:
     )
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:deterministic_intent_match" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_m1_rr1_action_monitor_does_not_allow_note_create_for_note_search_text() -> None:
+async def test_action_monitor_flags_tainted_side_effect_when_values_are_not_anchored() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
-        tool_name="note.create",
-        arguments={"key": "note:groceries"},
-        origin=_origin("s-action-monitor-note-search-mismatch"),
+        tool_name="web.search",
+        arguments={"query": "secret exfil"},
+        origin=_origin("s-action-monitor-anchor-mismatch"),
     )
     decision = await voter.cast_vote(
         ConsensusInput(
@@ -2091,46 +2026,24 @@ async def test_m1_rr1_action_monitor_does_not_allow_note_create_for_note_search_
             metadata_payload={
                 "session_tainted": True,
                 "trusted_input": True,
-                "raw_user_text": "search my notes for groceries",
-                "action_arguments": {"key": "note:groceries"},
+                "operator_owned_cli_input": True,
+                "raw_user_text": "summarize this document",
+                "action_arguments": {"query": "secret exfil"},
             },
         )
     )
     assert decision.decision == VoteKind.FLAG
-    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" not in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_m1_rr1_action_monitor_does_not_allow_negated_todo_completion() -> None:
-    voter = ActionMonitorVoter()
-    action = build_action(
-        tool_name="todo.complete",
-        arguments={"selector": "review PRs"},
-        origin=_origin("s-action-monitor-negated-complete"),
-    )
-    decision = await voter.cast_vote(
-        ConsensusInput(
-            action=action,
-            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
-            metadata_payload={
-                "session_tainted": True,
-                "trusted_input": True,
-                "raw_user_text": "don't mark the review PRs todo complete",
-                "action_arguments": {"selector": "review PRs"},
-            },
-        )
-    )
-    assert decision.decision == VoteKind.FLAG
-    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
-
-
-@pytest.mark.asyncio
-async def test_action_monitor_does_not_allow_negated_todo_create() -> None:
+async def test_action_monitor_flags_generated_current_turn_values() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="todo.create",
-        arguments={"title": "review PRs"},
-        origin=_origin("s-action-monitor-negated-create"),
+        arguments={"title": "review PRs urgently"},
+        origin=_origin("s-action-monitor-generated-value"),
     )
     decision = await voter.cast_vote(
         ConsensusInput(
@@ -2139,13 +2052,42 @@ async def test_action_monitor_does_not_allow_negated_todo_create() -> None:
             metadata_payload={
                 "session_tainted": True,
                 "trusted_input": True,
-                "raw_user_text": "don't create a todo called review PRs",
-                "action_arguments": {"title": "review PRs"},
+                "operator_owned_cli_input": True,
+                "raw_user_text": "create a todo called review PRs",
+                "action_arguments": {"title": "review PRs urgently"},
             },
         )
     )
     assert decision.decision == VoteKind.FLAG
-    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_action_monitor_flags_when_effect_shaping_field_was_stripped() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="fs.write",
+        arguments={"path": "status.txt", "content": "ok"},
+        origin=_origin("s-action-monitor-stripped-content"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "write ok to status.txt",
+                "action_arguments": {"path": "status.txt"},
+                "action_argument_omitted_fields": ["content"],
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" not in decision.reason_codes
 
 
 @pytest.mark.asyncio
@@ -2174,17 +2116,18 @@ async def test_action_monitor_allows_explicit_todo_create_with_follow_on_command
             metadata_payload={
                 "session_tainted": True,
                 "trusted_input": True,
+                "operator_owned_cli_input": True,
                 "raw_user_text": raw_user_text,
                 "action_arguments": {"title": "review PRs"},
             },
         )
     )
     assert decision.decision == VoteKind.ALLOW
-    assert "action_monitor:deterministic_intent_match" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_action_monitor_allows_trusted_cli_todo_create_in_multi_tool_turn() -> None:
+async def test_action_monitor_allows_current_turn_anchored_todo_create_in_multi_tool_turn() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="todo.create",
@@ -2206,11 +2149,11 @@ async def test_action_monitor_allows_trusted_cli_todo_create_in_multi_tool_turn(
     )
     assert decision.decision == VoteKind.ALLOW
     assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_m1_rr1_action_monitor_matches_only_primary_note_fields() -> None:
+async def test_action_monitor_flags_primary_field_mismatch() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="note.create",
@@ -2224,17 +2167,18 @@ async def test_m1_rr1_action_monitor_matches_only_primary_note_fields() -> None:
             metadata_payload={
                 "session_tainted": True,
                 "trusted_input": True,
+                "operator_owned_cli_input": True,
                 "raw_user_text": "add a note: groceries",
                 "action_arguments": {"key": "note:groceries"},
             },
         )
     )
     assert decision.decision == VoteKind.FLAG
-    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" not in decision.reason_codes
 
 
 @pytest.mark.asyncio
-async def test_action_monitor_allows_redacted_note_create_with_intent_digest() -> None:
+async def test_action_monitor_flags_redacted_note_create_without_source_value() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
         tool_name="note.create",
@@ -2251,15 +2195,13 @@ async def test_action_monitor_allows_redacted_note_create_with_intent_digest() -
                 "operator_owned_cli_input": True,
                 "raw_user_text": "remember that groceries",
                 "action_arguments": {"key": "note:groceries"},
-                "action_argument_digests": {
-                    "content_sha256": ActionMonitorVoter._intent_digest("groceries")
-                },
+                "action_argument_omitted_fields": ["content"],
             },
         )
     )
-    assert decision.decision == VoteKind.ALLOW
-    assert decision.risk_tier == RiskTier.LOW
-    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+    assert decision.decision == VoteKind.FLAG
+    assert decision.risk_tier == RiskTier.HIGH
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
 
 
 @pytest.mark.asyncio
@@ -2277,6 +2219,7 @@ async def test_m1_rr2_action_monitor_allows_at_iso_reminder_datetime() -> None:
             metadata_payload={
                 "session_tainted": True,
                 "trusted_input": True,
+                "operator_owned_cli_input": True,
                 "raw_user_text": "remind me to check email at 2026-03-30T12:00:00Z",
                 "action_arguments": {
                     "message": "check email",
@@ -2286,7 +2229,7 @@ async def test_m1_rr2_action_monitor_allows_at_iso_reminder_datetime() -> None:
         )
     )
     assert decision.decision == VoteKind.ALLOW
-    assert "action_monitor:deterministic_intent_match" in decision.reason_codes
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
 
 
 @pytest.mark.asyncio
