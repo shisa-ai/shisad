@@ -11,6 +11,37 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
+## [0.8.0b1] - 2026-06-25
+
+This beta checkpoint follows `0.8.0b0` and keeps the release line focused on
+reviewed bug fixes before the stable `v0.8.0` UX overhaul.
+
+### Fixed
+
+- **Structured turn authorization replaces prose goal matching.** The runtime
+  no longer rejects high-risk tool proposals because the user goal lacked a
+  hardcoded side-effect verb, and the tainted-side-effect LLM intent authorizer
+  is replaced by structural current-turn anchoring for self-contained operator
+  commands. Non-self-contained mixed-evidence side effects still route to
+  confirmation or block paths. ([#85](https://github.com/shisa-ai/shisad/issues/85))
+
+- **Ledger and explicit shell command requests reach clear execution paths.**
+  The Ledger shell demo now queues confirmation with valid command-token atoms,
+  and explicit shell command sequences such as `journalctl --disk-usage` reach
+  pending confirmation, clear resolver denial, or policy denial paths instead
+  of internal planner-validation messages.
+  ([#61](https://github.com/shisa-ai/shisad/issues/61),
+  [#77](https://github.com/shisa-ai/shisad/issues/77))
+
+- **Channel pending state is scoped by delivery target.** Channel chat now keeps
+  active pending ids, visible pending rows, planner context, continuations, and
+  summarizer memory scoped to the current delivery target so a different
+  channel target cannot bleed into the active chat context.
+
+- **Planner validation recovery is clearer.** Recovered planner tool-call
+  validation failures and unknown-tool remediation now preserve actionable
+  responses without collapsing into confusing generic validation errors.
+
 ## [0.8.0b0] - 2026-06-25
 
 This is a beta checkpoint before the stable `v0.8.0` UX overhaul. It publishes
@@ -1092,6 +1123,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.8.0b1]: https://github.com/shisa-ai/shisad/compare/v0.8.0b0...v0.8.0b1
 [0.8.0b0]: https://github.com/shisa-ai/shisad/compare/v0.7.4...v0.8.0b0
 [0.7.4]: https://github.com/shisa-ai/shisad/compare/v0.7.3.1...v0.7.4
 [0.7.3]: https://github.com/shisa-ai/shisad/compare/v0.7.2...v0.7.3
