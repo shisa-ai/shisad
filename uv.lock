@@ -2412,7 +2412,7 @@ wheels = [
 
 [[package]]
 name = "shisad"
-version = "0.8.0b0"
+version = "0.8.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
