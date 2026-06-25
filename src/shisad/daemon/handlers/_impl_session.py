@@ -3856,10 +3856,17 @@ def _normalize_context_role(role: str) -> str:
 
 _CONFIRMATION_REQUIRED_PREFIX = "[CONFIRMATION REQUIRED]"
 _PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
+_DISCORD_PENDING_CONFIRMATIONS_HEADER = "**Pending confirmations**"
+_PENDING_CONFIRMATIONS_HEADERS = (
+    _PENDING_CONFIRMATIONS_HEADER,
+    _DISCORD_PENDING_CONFIRMATIONS_HEADER,
+)
 _PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action list"
+_DISCORD_PENDING_CONFIRMATIONS_FOOTER = "Review all pending: `shisad action list`"
 _LEGACY_PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action pending"
 _PENDING_CONFIRMATIONS_FOOTERS = (
     _PENDING_CONFIRMATIONS_FOOTER,
+    _DISCORD_PENDING_CONFIRMATIONS_FOOTER,
     _LEGACY_PENDING_CONFIRMATIONS_FOOTER,
 )
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
@@ -3914,7 +3921,7 @@ def _is_mixed_pending_confirmation_context(text: str) -> bool:
     stripped = str(text or "").strip()
     if stripped.startswith(_CONFIRMATION_REQUIRED_PREFIX):
         stripped = stripped[len(_CONFIRMATION_REQUIRED_PREFIX) :].lstrip()
-    if not stripped.startswith(_PENDING_CONFIRMATIONS_HEADER):
+    if not _is_pending_confirmation_text(stripped):
         return False
 
     return _PENDING_COMPLETED_ACTIONS_RE.search(stripped) is not None
@@ -3995,7 +4002,7 @@ def _is_pending_confirmation_bridge_entry(entry: TranscriptEntry) -> bool:
     text = _pending_confirmation_text_after_prefixes(str(entry.content_preview or ""))
     if _is_mixed_pending_confirmation_context(text):
         return False
-    return text.startswith(_PENDING_CONFIRMATIONS_HEADER)
+    return _is_pending_confirmation_text(text)
 
 
 def _is_server_pending_confirmation_entry(entry: TranscriptEntry) -> bool:
@@ -4015,6 +4022,11 @@ def _pending_confirmation_text_after_prefixes(text: str) -> str:
         if separator:
             normalized = pending_text.lstrip()
     return normalized
+
+
+def _is_pending_confirmation_text(text: str) -> bool:
+    stripped = str(text or "").strip()
+    return any(stripped.startswith(header) for header in _PENDING_CONFIRMATIONS_HEADERS)
 
 
 def _output_confirmation_user_goal_for_response(
@@ -7941,8 +7953,16 @@ def _pending_confirmation_ids_in_text(text: str) -> frozenset[str]:
     for line in text.splitlines():
         if line != line.lstrip():
             continue
+        if line.startswith("#"):
+            continue
         if _PENDING_CONFIRMATION_RESULT_MARKER_RE.match(line):
             break
+        discord_id_match = re.match(r"^ID:\s+`?([^`\s,;]+)`?", line)
+        if discord_id_match is not None:
+            confirmation_id = discord_id_match.group(1).strip("`.,;:")
+            if confirmation_id:
+                ids.add(confirmation_id)
+            continue
         for match in re.finditer(r"(?:^|[\s:])\d+\.\s+([^\s,;]+)", line):
             confirmation_id = match.group(1).strip(".,;:")
             if confirmation_id:
@@ -7972,7 +7992,7 @@ def _mixed_pending_confirmation_result_portion(text: str) -> str | None:
 
 def _normalized_pending_confirmation_text(text: str) -> str | None:
     normalized = _pending_confirmation_text_after_prefixes(text)
-    if not normalized.startswith("[PENDING CONFIRMATIONS]"):
+    if not _is_pending_confirmation_text(normalized):
         return None
     return normalized
 

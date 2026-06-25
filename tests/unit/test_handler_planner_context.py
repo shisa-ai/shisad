@@ -2348,6 +2348,37 @@ def test_rc_lus_result_followup_stops_at_newer_pending_confirmation() -> None:
     )
 
 
+def test_gh63_result_followup_stops_at_newer_discord_pending_confirmation() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                (
+                    "**Pending confirmations**\n\n"
+                    "Queued for your approval.\n\n"
+                    "### 1. `fs.list`\n"
+                    "ID: `c-1`\n"
+                    "To reject in chat: `reject 1`\n\n"
+                    "Review all pending: `shisad action list`"
+                ),
+                metadata={"system_generated_pending_confirmations": True},
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"c-1"}),
+    )
+
+    assert response is not None
+    assert response.text == (
+        "I do not have confirmed results yet. There is still an action pending confirmation."
+    )
+
+
 def test_rc_lus_result_followup_skips_stale_pending_confirmation() -> None:
     response = _recent_result_followup_response(
         user_text="what did you find?",

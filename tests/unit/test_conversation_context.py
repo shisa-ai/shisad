@@ -200,6 +200,41 @@ def test_lt2_pending_confirmation_context_uses_system_provenance(tmp_path: Path)
     assert "assistant: [PENDING CONFIRMATIONS]" not in rendered
 
 
+def test_gh63_discord_pending_confirmation_context_uses_system_provenance(
+    tmp_path: Path,
+) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-gh63-pending")
+    store.append(sid, role="user", content="list files")
+    store.append(
+        sid,
+        role="assistant",
+        content=(
+            "**Pending confirmations**\n\n"
+            "Queued for your approval.\n\n"
+            "### 1. `fs.list`\n"
+            "ID: `c-1`\n"
+            "To reject in chat: `reject 1`\n\n"
+            "Review all pending: `shisad action list`"
+        ),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+        active_pending_confirmation_ids=frozenset({"c-1"}),
+    )
+
+    assert (
+        "system: I do not have confirmed results yet. There is still an action pending "
+        "confirmation."
+    ) in rendered
+    assert "**Pending confirmations**" not in rendered
+
+
 def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) -> None:
     store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
     sid = SessionId("sess-lt2-mixed-pending")
