@@ -2321,6 +2321,52 @@ async def test_u9_chat_totp_internal_ingress_scopes_targeted_confirmation_to_pen
 
 
 @pytest.mark.asyncio
+async def test_u9_chat_totp_internal_ingress_requires_current_delivery_target(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    hidden = PendingAction(
+        confirmation_id="c-hidden",
+        decision_nonce="nonce-hidden",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hidden"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-2"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[hidden.confirmation_id] = hidden
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=None,
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="confirm c-hidden 123456",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-hidden 123456",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-hidden"].status == "pending"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "content",
     [
