@@ -2003,6 +2003,177 @@ async def test_gh61_ledger_demo_shell_command_queues_valid_argv_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_gh77_explicit_shell_command_sequence_reaches_clear_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(
+        tmp_path,
+        monkeypatch,
+        policy_extra_lines=[
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+            "    confirmation:",
+            "      level: software",
+        ],
+    ) as harness:
+
+        async def _gh77_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = self, tools
+            if (
+                messages
+                and messages[0].role == "system"
+                and _SUMMARIZER_SYSTEM_MARKER in messages[0].content
+            ):
+                return ProviderResponse(
+                    message=Message(role="assistant", content='{"entries": []}'),
+                    model="behavioral-stub",
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+
+            planner_input = messages[-1].content if messages else ""
+            goal = _extract_user_goal(planner_input)
+            normalized_goal = " ".join(goal.lower().strip().split())
+            normalized_input = planner_input.replace("^", "").lower()
+            has_pending_actions = "pending actions (trusted control state)" in normalized_input
+            if has_pending_actions and normalized_goal in {
+                "run pls",
+                "yes",
+            }:
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content="Resolving the pending shell command.",
+                        tool_calls=[
+                            _tool_call(
+                                "action.resolve",
+                                {"decision": "confirm", "target": "1", "scope": "one"},
+                                call_id="t-gh77-confirm-shell",
+                            )
+                        ],
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+
+            command: list[str] = []
+            if normalized_goal == "show me journalctl --disk-usage":
+                command = ["journalctl", "--disk-usage"]
+            elif normalized_goal == "bash journalctl --disk-usage":
+                command = ["bash", "journalctl", "--disk-usage"]
+            if command:
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content="Preparing the explicit shell command.",
+                        tool_calls=[
+                            _tool_call(
+                                "shell.exec",
+                                {"command": command, "command_intent": "execute"},
+                                call_id=f"t-gh77-shell-{len(command)}",
+                            )
+                        ],
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+
+            return ProviderResponse(
+                message=Message(role="assistant", content="No pending shell command."),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _gh77_complete, raising=True)
+        sid = await _create_session(harness.client)
+
+        proposed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "show me journalctl --disk-usage"},
+        )
+        response_text = str(proposed.get("response", "")).lower()
+        assert proposed.get("lockdown_level") == "normal"
+        assert int(proposed.get("blocked_actions", 0)) == 0
+        assert int(proposed.get("executed_actions", 0)) == 0
+        assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+        assert "internal planner validation" not in response_text
+        assert "schema validation" not in response_text
+        pending_ids = proposed.get("pending_confirmation_ids")
+        assert isinstance(pending_ids, list)
+        assert pending_ids
+
+        pending = await harness.client.call(
+            "action.pending",
+            {"confirmation_id": str(pending_ids[0])},
+        )
+        actions = list(pending.get("actions", []))
+        assert actions
+        assert actions[0].get("tool_name") == "shell.exec"
+        arguments = dict(actions[0].get("arguments", {}))
+        assert arguments.get("command") == ["journalctl", "--disk-usage"]
+        assert "command_intent" not in arguments
+
+        confirmed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "run pls"},
+        )
+        confirmed_text = str(confirmed.get("response", "")).lower()
+        assert confirmed.get("lockdown_level") == "normal"
+        assert int(confirmed.get("confirmation_required_actions", 0)) == 0
+        assert "internal planner validation" not in confirmed_text
+        assert "schema validation" not in confirmed_text
+        if int(confirmed.get("blocked_actions", 0)):
+            assert "action.resolve rejected" in confirmed_text
+            assert "explicit current-turn confirmation intent required" in confirmed_text
+
+        yes = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "yes"},
+        )
+        yes_text = str(yes.get("response", "")).lower()
+        assert yes.get("lockdown_level") == "normal"
+        assert int(yes.get("blocked_actions", 0)) == 0
+        assert "internal planner validation" not in yes_text
+        assert "schema validation" not in yes_text
+
+        bash_proposed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "bash journalctl --disk-usage"},
+        )
+        bash_text = str(bash_proposed.get("response", "")).lower()
+        assert bash_proposed.get("lockdown_level") == "normal"
+        assert int(bash_proposed.get("blocked_actions", 0)) == 0
+        assert int(bash_proposed.get("executed_actions", 0)) == 0
+        assert int(bash_proposed.get("confirmation_required_actions", 0)) >= 1
+        assert "internal planner validation" not in bash_text
+        assert "schema validation" not in bash_text
+        bash_pending_ids = bash_proposed.get("pending_confirmation_ids")
+        assert isinstance(bash_pending_ids, list)
+        assert bash_pending_ids
+
+        bash_pending = await harness.client.call(
+            "action.pending",
+            {"confirmation_id": str(bash_pending_ids[0])},
+        )
+        bash_actions = list(bash_pending.get("actions", []))
+        assert bash_actions
+        assert bash_actions[0].get("tool_name") == "shell.exec"
+        bash_arguments = dict(bash_actions[0].get("arguments", {}))
+        assert bash_arguments.get("command") == ["bash", "journalctl", "--disk-usage"]
+        assert "command_intent" not in bash_arguments
+
+
+@pytest.mark.asyncio
 async def test_m3_long_clean_session_goal_not_truncated_for_planner(
     contract_harness: ContractHarness,
 ) -> None:
