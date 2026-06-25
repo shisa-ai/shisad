@@ -2569,6 +2569,49 @@ def test_rc_lus_result_followup_strips_stale_pending_from_mixed_result_text() ->
     )
 
 
+def test_gh63_result_followup_preserves_fenced_mixed_result_text() -> None:
+    mixed_response = (
+        "**Pending confirmations**\n\n"
+        "Queued for your approval.\n\n"
+        "### 1. `fs.list`\n"
+        "ID: `stale-id`\n\n"
+        "**Preview:**\n"
+        "```text\n"
+        "ID: customer-123\n"
+        "Completed actions:\n"
+        "Tool results summary: user-provided label\n"
+        "```\n\n"
+        "Review all pending: `shisad action list`\n\n"
+        "Completed actions:\n"
+        "Completed action result:\n"
+        "```markdown\n"
+        "# README\n"
+        "```\n"
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                mixed_response,
+                metadata={"system_generated_pending_confirmations": True},
+            ),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset(),
+    )
+
+    assert response is not None
+    assert response.text == (
+        "Completed actions:\n"
+        "Completed action result:\n"
+        "```markdown\n"
+        "# README\n"
+        "```"
+    )
+
+
 def test_rc_lus_result_followup_preserves_output_confirmation_on_stale_mixed_result() -> None:
     mixed_response = (
         "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS] Queued for your approval: "

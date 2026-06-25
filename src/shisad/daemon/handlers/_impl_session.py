@@ -8010,12 +8010,40 @@ _PENDING_CONFIRMATION_RESULT_MARKER_RE = re.compile(
 )
 
 
+def _pending_confirmation_result_marker_start(text: str) -> int | None:
+    fence_marker = ""
+    fence_length = 0
+    offset = 0
+    for line in str(text or "").splitlines(keepends=True):
+        content_line = line.rstrip("\r\n")
+        stripped = content_line.lstrip(" ")
+        leading_spaces = len(content_line) - len(stripped)
+        fence_match = re.match(r"(`{3,}|~{3,})(?:[A-Za-z0-9_.-]+)?\s*$", stripped)
+        if leading_spaces <= 3 and fence_match is not None:
+            fence = fence_match.group(1)
+            marker = fence[0]
+            length = len(fence)
+            if not fence_marker:
+                fence_marker = marker
+                fence_length = length
+                offset += len(line)
+                continue
+            if marker == fence_marker and length >= fence_length:
+                fence_marker = ""
+                fence_length = 0
+                offset += len(line)
+                continue
+        if not fence_marker and _PENDING_CONFIRMATION_RESULT_MARKER_RE.match(content_line):
+            return offset
+        offset += len(line)
+    return None
+
+
 def _mixed_pending_confirmation_result_portion(text: str) -> str | None:
-    structural = _pending_confirmation_structural_text(text)
-    match = _PENDING_CONFIRMATION_RESULT_MARKER_RE.search(structural)
-    if match is None:
+    marker_start = _pending_confirmation_result_marker_start(text)
+    if marker_start is None:
         return None
-    return structural[match.start() :].strip()
+    return str(text or "")[marker_start:].strip()
 
 
 def _normalized_pending_confirmation_text(text: str) -> str | None:
