@@ -1436,7 +1436,7 @@ async def test_u9_channel_ingest_scopes_totp_confirmation_to_pending_delivery_ta
 
         assert right_thread.executed_actions == 1
         assert right_thread.confirmation_required_actions == 0
-        assert right_thread.pending_confirmation_ids == [first_id]
+        assert right_thread.pending_confirmation_ids == []
         right_response = str(right_thread.response).lower()
         assert first_id.lower() not in right_response
         assert second_id.lower() not in right_response

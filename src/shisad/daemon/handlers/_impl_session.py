@@ -1764,6 +1764,24 @@ def _visible_pending_rows_for_delivery_target(
     ]
 
 
+def _result_pending_rows_for_delivery_target(
+    *,
+    pending_rows: Sequence[Any],
+    is_internal_ingress: bool,
+    delivery_target: DeliveryTarget | None,
+    fallback_target: DeliveryTarget | None = None,
+) -> list[Any]:
+    effective_delivery_target = delivery_target or fallback_target
+    if not is_internal_ingress or effective_delivery_target is None:
+        return list(pending_rows)
+    return [
+        pending
+        for pending in pending_rows
+        if (pending_target := _pending_delivery_target(pending)) is not None
+        and _delivery_targets_match(effective_delivery_target, pending_target)
+    ]
+
+
 def _stored_delivery_target_from_session(session: Any) -> DeliveryTarget | None:
     metadata = getattr(session, "metadata", None)
     if not isinstance(metadata, Mapping):
@@ -8520,10 +8538,20 @@ class SessionImplMixin(HandlerMixinBase):
                 for pending in _visible_pending_rows(all_pending_rows)
                 if str(getattr(pending, "confirmation_id", "")).strip()
             ]
+            result_pending_confirmation_ids = [
+                str(getattr(pending, "confirmation_id", "")).strip()
+                for pending in _result_pending_rows_for_delivery_target(
+                    pending_rows=all_pending_rows,
+                    is_internal_ingress=is_internal_ingress,
+                    delivery_target=delivery_target,
+                    fallback_target=stored_delivery_target,
+                )
+                if str(getattr(pending, "confirmation_id", "")).strip()
+            ]
             returned_pending_confirmation_ids = (
                 list(response_pending_confirmation_ids)
                 if response_pending_confirmation_ids is not None
-                else visible_pending_confirmation_ids
+                else result_pending_confirmation_ids
             )
             normalized_pending_response = _normalized_pending_confirmation_text(response_text)
             if returned_pending_confirmation_ids and system_generated_pending_confirmations:
@@ -9006,6 +9034,9 @@ class SessionImplMixin(HandlerMixinBase):
                 user_id=user_id,
                 workspace_id=workspace_id,
                 trust_level=trust_level,
+                is_internal_ingress=is_internal_ingress,
+                delivery_target=delivery_target,
+                stored_delivery_target=stored_delivery_target,
                 continuation_user_goal=continuation_user_goals[0],
                 confirmed_tool_outputs=confirmed_tool_outputs,
                 checkpoint_ids=checkpoint_ids,
@@ -12590,6 +12621,9 @@ class SessionImplMixin(HandlerMixinBase):
         user_id: UserId,
         workspace_id: WorkspaceId,
         trust_level: str,
+        is_internal_ingress: bool,
+        delivery_target: DeliveryTarget | None,
+        stored_delivery_target: DeliveryTarget | None,
         continuation_user_goal: str,
         confirmed_tool_outputs: Sequence[Mapping[str, Any]],
         checkpoint_ids: Sequence[str],
@@ -12601,6 +12635,7 @@ class SessionImplMixin(HandlerMixinBase):
         planner = getattr(self, "_planner", None)
         if session is None or planner is None:
             return None
+        continuation_delivery_target = delivery_target or stored_delivery_target
 
         confirmed_records = [
             _tool_output_record_from_serialized_dict(item)
@@ -12637,12 +12672,13 @@ class SessionImplMixin(HandlerMixinBase):
                 original_hash=hashlib.sha256(goal.encode("utf-8")).hexdigest(),
             ),
             incoming_taint_labels=set(),
-            is_internal_ingress=False,
+            is_internal_ingress=is_internal_ingress,
+            delivery_target=continuation_delivery_target,
             operator_owned_cli_input=_is_direct_trusted_cli_default_ingress(
                 channel=channel,
                 session_mode=session_mode,
                 trust_level=trust_level,
-                is_internal_ingress=False,
+                is_internal_ingress=is_internal_ingress,
             ),
         )
         planner_tool_allowlist = _planner_runtime_tool_allowlist(
@@ -12824,6 +12860,9 @@ class SessionImplMixin(HandlerMixinBase):
         user_id: UserId,
         workspace_id: WorkspaceId,
         trust_level: str,
+        is_internal_ingress: bool,
+        delivery_target: DeliveryTarget | None,
+        stored_delivery_target: DeliveryTarget | None,
         continuation_user_goal: str,
         confirmed_tool_outputs: Sequence[Mapping[str, Any]],
         checkpoint_ids: Sequence[str],
@@ -12835,6 +12874,9 @@ class SessionImplMixin(HandlerMixinBase):
             user_id=user_id,
             workspace_id=workspace_id,
             trust_level=trust_level,
+            is_internal_ingress=is_internal_ingress,
+            delivery_target=delivery_target,
+            stored_delivery_target=stored_delivery_target,
             continuation_user_goal=continuation_user_goal,
             confirmed_tool_outputs=confirmed_tool_outputs,
             checkpoint_ids=checkpoint_ids,
@@ -12867,7 +12909,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 except ValidationError:
                     stored_delivery_target = None
-            visible_pending_rows = _visible_pending_rows_for_delivery_target(
+            visible_pending_rows = _result_pending_rows_for_delivery_target(
                 pending_rows=pending_rows,
                 is_internal_ingress=validated.is_internal_ingress,
                 delivery_target=validated.delivery_target,
