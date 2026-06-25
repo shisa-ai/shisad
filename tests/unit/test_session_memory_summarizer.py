@@ -241,6 +241,71 @@ async def test_conversation_summarizer_filters_internal_ingress_by_delivery_targ
 
 
 @pytest.mark.asyncio
+async def test_conversation_summarizer_target_cursor_seeds_from_legacy_count(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        summarize_interval=1,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+        target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+        session = services.session_manager.create(
+            channel="discord",
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws1"),
+            metadata={"summarized_entry_count": 2},
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Target A was summarized before upgrade.",
+            metadata={"delivery_target": target_a.model_dump(mode="json")},
+        )
+        services.transcript_store.append(
+            session.id,
+            role="user",
+            content="Target B was summarized before upgrade.",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        )
+
+        async def _summarize(_entries):
+            raise AssertionError("legacy cursor should suppress already summarized target rows")
+
+        monkeypatch.setattr(impl._conversation_summarizer, "summarize_entries", _summarize)
+
+        await impl._maybe_run_conversation_summarizer(
+            sid=session.id,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            capabilities={Capability.MEMORY_WRITE},
+            validated=SimpleNamespace(
+                is_internal_ingress=True,
+                delivery_target=target_b,
+                session=session,
+            ),
+        )
+
+        assert services.memory_manager.list_entries(limit=10) == []
+        target_count_items = {
+            key: value
+            for key, value in session.metadata.items()
+            if str(key).startswith("summarized_entry_count:")
+        }
+        assert list(target_count_items.values()) == [1]
+        assert session.metadata["summarized_entry_count"] == 2
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_gh19_conversation_summarizer_respects_auto_extraction_disabled(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

@@ -15173,16 +15173,21 @@ class SessionImplMixin(HandlerMixinBase):
         entries = self._transcript_store.list_entries(sid)
         if not entries:
             return
-        conversational_entries = [
+        all_conversational_entries = [
             entry
             for entry in entries
             if _normalize_context_role(entry.role) in {"user", "assistant"}
             and not _entry_is_ephemeral_evidence_read(entry)
-            and (
-                validated is None
-                or _transcript_entry_visible_for_validated_turn(entry, validated=validated)
-            )
         ]
+        conversational_entries = (
+            all_conversational_entries
+            if validated is None
+            else [
+                entry
+                for entry in all_conversational_entries
+                if _transcript_entry_visible_for_validated_turn(entry, validated=validated)
+            ]
+        )
         if not conversational_entries:
             return
         summarized_count_key = _summarized_entry_count_metadata_key(validated)
@@ -15191,8 +15196,28 @@ class SessionImplMixin(HandlerMixinBase):
             summarized_count = int(summarized_count_raw)
         except (TypeError, ValueError):
             summarized_count = 0
+        seeded_from_legacy_count = False
+        if (
+            summarized_count_key != "summarized_entry_count"
+            and summarized_count_key not in session.metadata
+        ):
+            try:
+                legacy_count = int(session.metadata.get("summarized_entry_count", 0))
+            except (TypeError, ValueError):
+                legacy_count = 0
+            legacy_count = max(0, min(legacy_count, len(all_conversational_entries)))
+            if legacy_count:
+                summarized_count = sum(
+                    1
+                    for entry in all_conversational_entries[:legacy_count]
+                    if _transcript_entry_visible_for_validated_turn(entry, validated=validated)
+                )
+                seeded_from_legacy_count = True
         summarized_count = max(0, min(summarized_count, len(conversational_entries)))
         pending_entries = conversational_entries[summarized_count:]
+        if seeded_from_legacy_count:
+            session.metadata[summarized_count_key] = summarized_count
+            self._session_manager.persist(sid)
         if not self._config.memory_auto_extraction_enabled:
             if pending_entries:
                 session.metadata[summarized_count_key] = len(conversational_entries)
