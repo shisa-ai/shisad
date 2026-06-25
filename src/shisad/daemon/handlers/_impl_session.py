@@ -3924,7 +3924,8 @@ def _is_mixed_pending_confirmation_context(text: str) -> bool:
     if not _is_pending_confirmation_text(stripped):
         return False
 
-    return _PENDING_COMPLETED_ACTIONS_RE.search(stripped) is not None
+    structural = _pending_confirmation_structural_text(stripped)
+    return _PENDING_COMPLETED_ACTIONS_RE.search(structural) is not None
 
 
 def _is_tool_results_summary_only_response(text: str) -> bool:
@@ -7948,9 +7949,35 @@ def _looks_like_result_followup_answer(text: str) -> bool:
     )
 
 
+def _pending_confirmation_structural_text(text: str) -> str:
+    lines: list[str] = []
+    fence_marker = ""
+    fence_length = 0
+    for line in str(text or "").splitlines():
+        stripped = line.lstrip(" ")
+        leading_spaces = len(line) - len(stripped)
+        fence_match = re.match(r"(`{3,}|~{3,})(?:[A-Za-z0-9_.-]+)?\s*$", stripped)
+        if leading_spaces <= 3 and fence_match is not None:
+            fence = fence_match.group(1)
+            marker = fence[0]
+            length = len(fence)
+            if not fence_marker:
+                fence_marker = marker
+                fence_length = length
+                continue
+            if marker == fence_marker and length >= fence_length:
+                fence_marker = ""
+                fence_length = 0
+                continue
+        if fence_marker:
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _pending_confirmation_ids_in_text(text: str) -> frozenset[str]:
     ids: set[str] = set()
-    for line in text.splitlines():
+    for line in _pending_confirmation_structural_text(text).splitlines():
         if line != line.lstrip():
             continue
         if line.startswith("#"):
@@ -7984,10 +8011,11 @@ _PENDING_CONFIRMATION_RESULT_MARKER_RE = re.compile(
 
 
 def _mixed_pending_confirmation_result_portion(text: str) -> str | None:
-    match = _PENDING_CONFIRMATION_RESULT_MARKER_RE.search(text)
+    structural = _pending_confirmation_structural_text(text)
+    match = _PENDING_CONFIRMATION_RESULT_MARKER_RE.search(structural)
     if match is None:
         return None
-    return text[match.start() :].strip()
+    return structural[match.start() :].strip()
 
 
 def _normalized_pending_confirmation_text(text: str) -> str | None:

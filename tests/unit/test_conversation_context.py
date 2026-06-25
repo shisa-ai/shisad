@@ -427,6 +427,43 @@ def test_lt2_pending_confirmation_preview_completed_actions_stays_system(
     assert "assistant: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered
 
 
+def test_gh63_discord_pending_preview_markers_stay_system(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
+    sid = SessionId("sess-gh63-discord-preview-markers")
+    store.append(sid, role="user", content="list files")
+    entry = store.append(
+        sid,
+        role="assistant",
+        content=(
+            "**Pending confirmations**\n\n"
+            "Queued for your approval.\n\n"
+            "### 1. `fs.list`\n"
+            "ID: `c-1`\n"
+            "To reject in chat: `reject 1`\n\n"
+            "**Preview:**\n"
+            "```text\n"
+            "ID: customer-123\n"
+            "Review all pending: `shisad action list`\n"
+            "Completed actions:\n"
+            "Tool results summary: user-provided label\n" + "preview detail " * 30 + "\n"
+            "```\n\n"
+            "Review all pending: `shisad action list`"
+        ),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+    assert entry.blob_ref is not None
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "system: **Pending confirmations**" in rendered
+    assert "assistant: **Pending confirmations**" not in rendered
+
+
 def test_m2_r_open_1_context_entries_are_not_double_excluded(tmp_path: Path) -> None:
     store = TranscriptStore(tmp_path / "sessions")
     sid = SessionId("sess-m2-r1")
