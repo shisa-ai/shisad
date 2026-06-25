@@ -3238,6 +3238,7 @@ def _rewrite_plain_greeting_planner_result(
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
         messages_sent=planner_result.messages_sent,
+        recovered_output_error=planner_result.recovered_output_error,
     )
 
 
@@ -3787,6 +3788,7 @@ def _rewrite_explicit_memory_intent_planner_result(
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
         messages_sent=planner_result.messages_sent,
+        recovered_output_error=planner_result.recovered_output_error,
     )
 
 
@@ -10097,6 +10099,45 @@ class SessionImplMixin(HandlerMixinBase):
             pep=self._pep,
             context=planner_context.context,
         )
+        recovered_output_error = str(planner_result.recovered_output_error or "").strip()
+        normalized_recovered_error = recovered_output_error.lower().replace("_", " ")
+        recovered_tool_call_validation_error = (
+            "strict schema validation" in normalized_recovered_error
+            and "tool call" in normalized_recovered_error
+        )
+        if (
+            not planner_failure_code
+            and recovered_tool_call_validation_error
+            and not planner_result.evaluated
+            and not planner_result.output.actions
+        ):
+            planner_failure_code = "planner_output_invalid"
+            await self._event_bus.publish(
+                AnomalyReported(
+                    session_id=validated.sid,
+                    actor="planner",
+                    severity="warning",
+                    description=(
+                        "Planner tool-call output validation failed and no valid action "
+                        "survived repair."
+                    ),
+                    recommended_action="retry_request_or_review_model_route",
+                )
+            )
+            planner_result = PlannerResult(
+                output=PlannerOutput(
+                    actions=[],
+                    assistant_response=(
+                        "Assistant planner error (planner_output_invalid). "
+                        "Please retry your request."
+                    ),
+                ),
+                evaluated=[],
+                attempts=planner_result.attempts,
+                provider_response=planner_result.provider_response,
+                messages_sent=planner_result.messages_sent,
+                recovered_output_error=planner_result.recovered_output_error,
+            )
 
         delegation_advisory = should_delegate_to_task(
             proposals=[item.proposal for item in planner_result.evaluated]
@@ -10582,6 +10623,25 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_confirmation=0,
                 executed=0,
                 rejection_reasons_for_user=["session_missing"],
+                checkpoint_ids=[],
+                pending_confirmation_ids=[],
+                executed_tool_outputs=[],
+                cleanroom_proposals=[],
+                cleanroom_block_reasons=[],
+                action_resolve_summaries=[],
+                trace_tool_calls=trace_tool_calls,
+            )
+
+        if (
+            planner_dispatch.planner_failure_code == "planner_output_invalid"
+            and not planner_result.evaluated
+        ):
+            return SessionMessageExecutionResult(
+                planner_dispatch=planner_dispatch,
+                rejected=1,
+                pending_confirmation=0,
+                executed=0,
+                rejection_reasons_for_user=["planner_output_invalid"],
                 checkpoint_ids=[],
                 pending_confirmation_ids=[],
                 executed_tool_outputs=[],

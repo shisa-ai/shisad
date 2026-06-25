@@ -2202,9 +2202,20 @@ async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown
         },
     )
     assert reply.get("lockdown_level") == "normal"
-    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("blocked_actions", 0)) >= 1
     assert int(reply.get("confirmation_required_actions", 0)) == 0
-    assert str(reply.get("response", "")).strip()
+    assert reply.get("planner_error") == "planner_output_invalid"
+    assert "planner_output_invalid" in str(reply.get("response", ""))
+
+    responses = await contract_harness.client.call(
+        "audit.query",
+        {"event_type": "SessionMessageResponded", "session_id": sid, "limit": 20},
+    )
+    assert responses["total"] >= 1
+    assert any(
+        int(event.get("data", {}).get("blocked_actions", 0)) >= 1
+        for event in responses.get("events", [])
+    )
 
 
 @pytest.mark.asyncio
