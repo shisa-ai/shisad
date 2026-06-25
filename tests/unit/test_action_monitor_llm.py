@@ -179,6 +179,31 @@ async def test_amv_flags_shell_arg_that_only_matches_inside_larger_host() -> Non
 
 
 @pytest.mark.asyncio
+async def test_amv_allows_current_turn_anchor_with_sentence_final_punctuation() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="web.search",
+        arguments={"query": "shisa.ai"},
+        origin={"session_id": "s-amv-anchor-trailing-punctuation", "actor": "planner"},
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "search the web for shisa.ai.",
+                "action_arguments": {"query": "shisa.ai"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.ALLOW
+    assert "action_monitor:current_turn_anchored" in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_amv_flags_tainted_side_effect_when_payload_field_was_stripped() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
@@ -217,7 +242,7 @@ def test_omitted_field_proof_requires_current_turn_anchor_boundaries() -> None:
     )
     assert metadata_payload_current_turn_contained_omissions(
         payload,
-        current_turn_text="send body to example.com",
+        current_turn_text="send body to example.com.",
     ) == ["body"]
 
 

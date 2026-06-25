@@ -615,8 +615,9 @@ def metadata_value_is_current_turn_anchored(
         before_ok = before_index < 0 or not _current_turn_anchor_token_char(
             current_turn[before_index]
         )
-        after_ok = after_index >= len(current_turn) or not _current_turn_anchor_token_char(
-            current_turn[after_index]
+        after_ok = after_index >= len(current_turn) or _current_turn_anchor_after_boundary_ok(
+            current_turn,
+            after_index,
         )
         if before_ok and after_ok:
             return True
@@ -625,6 +626,16 @@ def metadata_value_is_current_turn_anchored(
 
 def _current_turn_anchor_token_char(char: str) -> bool:
     return char.isalnum() or char in {"_", "-", ".", "@", "/", ":", "~"}
+
+
+def _current_turn_anchor_after_boundary_ok(text: str, index: int) -> bool:
+    char = text[index]
+    if not _current_turn_anchor_token_char(char):
+        return True
+    if char not in {".", ":"}:
+        return False
+    next_index = index + 1
+    return next_index >= len(text) or not _current_turn_anchor_token_char(text[next_index])
 
 
 def _collect_metadata_payload_omissions(
