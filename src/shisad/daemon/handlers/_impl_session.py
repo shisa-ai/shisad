@@ -9463,7 +9463,10 @@ class SessionImplMixin(HandlerMixinBase):
         else:
             context_entries = transcript_entries[:-1] if transcript_entries else []
             context_entries = [
-                entry for entry in context_entries if not _entry_is_ephemeral_evidence_read(entry)
+                entry
+                for entry in context_entries
+                if not _entry_is_ephemeral_evidence_read(entry)
+                and _transcript_entry_visible_for_validated_turn(entry, validated=validated)
             ]
         episode_snapshot = _build_episode_snapshot(context_entries)
         if episode_snapshot is None and not zero_context_session:

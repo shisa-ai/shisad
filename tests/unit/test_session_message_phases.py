@@ -443,6 +443,49 @@ async def test_build_context_for_planner_trusts_title_instruction_for_replayed_m
 
 
 @pytest.mark.asyncio
+async def test_build_context_for_planner_filters_internal_ingress_by_delivery_target(
+    tmp_path: Path,
+) -> None:
+    harness = _PlannerContextBuildHarness(tmp_path)
+    sid = SessionId("sess-g1")
+    target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+    target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+    harness._transcript_store.append(
+        sid,
+        role="assistant",
+        content="Target A result should stay isolated.",
+        metadata={"delivery_target": target_a.model_dump(mode="json")},
+    )
+    harness._transcript_store.append(
+        sid,
+        role="assistant",
+        content="Target B result is visible.",
+        metadata={"delivery_target": target_b.model_dump(mode="json")},
+    )
+    current_turn = harness._transcript_store.append(
+        sid,
+        role="user",
+        content="continue in target b",
+        metadata={"delivery_target": target_b.model_dump(mode="json")},
+    )
+    validated = _validation_result(
+        params={"session_id": str(sid), "content": "continue in target b"},
+        sanitized_text="continue in target b",
+        user_transcript_entry=current_turn,
+    )
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = target_b
+
+    planner_context = await SessionImplMixin._build_context_for_planner(harness, validated)
+
+    assert "Target B result is visible." in planner_context.conversation_context
+    assert "Target A result should stay isolated." not in planner_context.conversation_context
+    episode_snapshot = validated.session.metadata["episode_snapshot"]
+    assert sum(int(item["message_count"]) for item in episode_snapshot["episodes"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_gh30_same_session_destination_anchor_reaches_trace_roots(tmp_path: Path) -> None:
     harness = _PlannerContextBuildHarness(tmp_path)
     sid = SessionId("sess-g1")
