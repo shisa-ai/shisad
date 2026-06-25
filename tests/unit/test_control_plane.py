@@ -1890,8 +1890,7 @@ async def test_action_monitor_keeps_command_words_inside_current_turn_anchored_v
                 "trusted_input": True,
                 "operator_owned_cli_input": True,
                 "raw_user_text": (
-                    "can you set a reminder in 1 minute to say "
-                    "check the service and set DEBUG=1"
+                    "can you set a reminder in 1 minute to say check the service and set DEBUG=1"
                 ),
                 "action_arguments": {
                     "message": "check the service and set DEBUG=1",
