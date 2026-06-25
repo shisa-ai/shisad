@@ -107,6 +107,12 @@ while the larger v0.8 polish work continues.
 
 ### Security
 
+- **Release dependency audit blockers were remediated.** The release lock now
+  resolves patched versions of `aiohttp`, `cryptography`,
+  `pydantic-settings`, `pyjwt`, `python-multipart`, `starlette`, and `torch`,
+  and the `cryptography` runtime dependency range now targets the patched 48.x
+  line.
+
 - **Ledger signer registration rejects corrupted or wrong public keys.**
   Ledger signer setup now fails fast when a public-key file is not valid PEM,
   uses the wrong key type, uses the wrong elliptic curve, or requests an

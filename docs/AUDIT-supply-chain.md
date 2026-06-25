@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-06-03 (Codex ACP adapter refresh evidence)*
+*Updated: 2026-06-25 (v0.8.0b0 release-audit dependency refresh)*
 *Status: In Progress*  
-*Snapshot basis: code/dependency state at the v0.7.4 release target for the 2026-05-21 Python audit review; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.7.3.1 release evidence is retained where explicitly labeled.*
+*Snapshot basis: code/dependency state at the v0.8.0b0 release target for the 2026-06-25 Python audit review; `shisad@a16c15a` for the 2026-05-07 Dependabot 21 Ledger bridge remediation; and the 2026-06-03 Codex ACP adapter refresh to `@zed-industries/codex-acp@0.15.0`. Historical v0.7.0-v0.7.4 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07; Codex ACP adapter provenance is recorded for `0.15.0`; the current full coding-adapter npm audit reports `3` moderate vulnerability rows through one advisory in the unchanged Claude adapter chain |
+| Current risk summary | Base Python install remains low risk; the v0.8.0b0 Python release audit passes after refreshing affected locked dependencies; optional Ledger bridge resolves transitive axios to `1.15.2` and transitive Ledger SDK `uuid` to patched `11.1.1`; full and production npm audits for `contrib/ledger-bridge/` are clean as of 2026-05-07; Codex ACP adapter provenance is recorded for `0.15.0`; the current full coding-adapter npm audit reports `3` moderate vulnerability rows through one advisory in the unchanged Claude adapter chain |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,32 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-06-25 — v0.8.0b0 release-audit dependency refresh
+
+- Scope: remediate Python dependency-audit blockers found while publishing the
+  v0.8.0b0 beta checkpoint across the frozen `uv export --all-groups`
+  dependency set.
+- Audit result:
+  - The publish workflow initially reported advisories in locked `aiohttp
+    3.13.5`, `cryptography 46.0.7`, `pydantic-settings 2.12.0`, `pyjwt
+    2.12.1`, `python-multipart 0.0.27`, `starlette 1.0.0`, and `torch
+    2.11.0`.
+  - `uv --no-config lock --upgrade-package aiohttp --upgrade-package
+    cryptography --upgrade-package pydantic-settings --upgrade-package pyjwt
+    --upgrade-package python-multipart --upgrade-package starlette
+    --upgrade-package torch` resolved patched versions:
+    `aiohttp 3.14.1`, `cryptography 48.0.1`, `pydantic-settings 2.14.2`,
+    `pyjwt 2.13.0`, `python-multipart 0.0.32`, `starlette 1.3.1`, and
+    `torch 2.12.1`.
+  - `pyproject.toml` now declares `cryptography>=48.0.1,<49`; the previous
+    `<47` cap blocked the patched release line.
+  - The publish-workflow `pip-audit` command then returned `No known
+    vulnerabilities found`.
+- Risk disposition:
+  - No new ignore was added for this release-audit batch.
+  - The existing no-fix exception set remains limited to the advisory IDs
+    already listed in the publish workflow.
 
 ### 2026-05-21 — v0.7.4 pip-audit no-fix exception review
 
@@ -638,11 +664,11 @@ sed -n '1,140p' docs/DEPLOY.md
 | --- | --- | --- | --- |
 | `agent-client-protocol` | `==0.8.1` | `0.8.1` | Exact |
 | `click` | `>=8.1,<9` | `8.3.1` | Range in spec, exact in lock |
-| `cryptography` | `>=46.0.7,<47` | `46.0.7` | Range in spec, exact in lock |
+| `cryptography` | `>=48.0.1,<49` | `48.0.1` | Range in spec, exact in lock |
 | `fido2` | `>=2.1,<3` | `2.1.1` | Range in spec, exact in lock |
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
-| `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
+| `pydantic-settings` | `>=2.7,<3` | `2.14.2` | Range in spec, exact in lock |
 | `python-dotenv` | `>=1.2.2,<2` | `1.2.2` | Range in spec, exact in lock |
 | `qrcode` | `>=8.2,<9` | `8.2` | Range in spec, exact in lock |
 | `pyyaml` | `>=6.0,<7` | `6.0.3` | Range in spec, exact in lock |
@@ -685,7 +711,7 @@ The full locked package set (third-party only) at snapshot time:
 agent-client-protocol==0.8.1
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
-aiohttp==3.13.5
+aiohttp==3.14.1
 aiohttp-socks==0.11.0
 aiosignal==1.4.0
 annotated-doc==0.0.4
@@ -700,7 +726,7 @@ cffi==2.0.0
 click==8.3.1
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
-cryptography==46.0.7
+cryptography==48.0.1
 cuda-bindings==13.2.0 ; sys_platform == 'linux'
 cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
 cuda-toolkit==13.0.2 ; sys_platform == 'linux'
@@ -744,14 +770,14 @@ nvidia-cublas==13.1.0.3 ; sys_platform == 'linux'
 nvidia-cuda-cupti==13.0.85 ; sys_platform == 'linux'
 nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
 nvidia-cuda-runtime==13.0.96 ; sys_platform == 'linux'
-nvidia-cudnn-cu13==9.19.0.56 ; sys_platform == 'linux'
+nvidia-cudnn-cu13==9.20.0.48 ; sys_platform == 'linux'
 nvidia-cufft==12.0.0.61 ; sys_platform == 'linux'
 nvidia-cufile==1.15.1.6 ; sys_platform == 'linux'
 nvidia-curand==10.4.0.35 ; sys_platform == 'linux'
 nvidia-cusolver==12.0.4.66 ; sys_platform == 'linux'
 nvidia-cusparse==12.6.3.3 ; sys_platform == 'linux'
-nvidia-cusparselt-cu13==0.8.0 ; sys_platform == 'linux'
-nvidia-nccl-cu13==2.28.9 ; sys_platform == 'linux'
+nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux'
+nvidia-nccl-cu13==2.29.7 ; sys_platform == 'linux'
 nvidia-nvjitlink==13.0.88 ; sys_platform == 'linux'
 nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
 nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
@@ -770,14 +796,14 @@ pycparser==3.0 ; implementation_name != 'PyPy'
 pycryptodome==3.23.0
 pydantic==2.12.5
 pydantic-core==2.41.5
-pydantic-settings==2.12.0
+pydantic-settings==2.14.2
 pygments==2.20.0
-pyjwt==2.12.1
+pyjwt==2.13.0
 pytest==9.0.3
 pytest-asyncio==1.3.0
 pytest-cov==6.3.0
 python-dotenv==1.2.2
-python-multipart==0.0.27
+python-multipart==0.0.32
 python-olm==3.2.16
 python-socks==2.8.0
 python-telegram-bot==21.11.1
@@ -796,15 +822,15 @@ shellingham==1.5.4
 slack-bolt==1.27.0
 slack-sdk==3.40.0
 sse-starlette==3.3.4
-starlette==1.0.0
+starlette==1.3.1
 sympy==1.14.0
 textguard==1.0.0
 textual==0.89.1
 tokenizers==0.22.2
-torch==2.11.0
+torch==2.12.1
 tqdm==4.67.3
 transformers==5.5.3
-triton==3.6.0 ; sys_platform == 'linux'
+triton==3.7.1 ; sys_platform == 'linux'
 typer==0.24.1
 types-pyyaml==6.0.12.20250915
 typing-extensions==4.15.0
@@ -828,7 +854,7 @@ aiofiles==24.1.0
     # via matrix-nio
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.5
+aiohttp==3.14.1
     # via
     #   aiohttp-socks
     #   discord-py
@@ -880,7 +906,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   tqdm
 coverage==7.13.4
     # via pytest-cov
-cryptography==46.0.7
+cryptography==48.0.1
     # via
     #   fido2
     #   pyjwt
@@ -1003,7 +1029,7 @@ nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
     # via cuda-toolkit
 nvidia-cuda-runtime==13.0.96 ; sys_platform == 'linux'
     # via cuda-toolkit
-nvidia-cudnn-cu13==9.19.0.56 ; sys_platform == 'linux'
+nvidia-cudnn-cu13==9.20.0.48 ; sys_platform == 'linux'
     # via torch
 nvidia-cufft==12.0.0.61 ; sys_platform == 'linux'
     # via cuda-toolkit
@@ -1017,9 +1043,9 @@ nvidia-cusparse==12.6.3.3 ; sys_platform == 'linux'
     # via
     #   cuda-toolkit
     #   nvidia-cusolver
-nvidia-cusparselt-cu13==0.8.0 ; sys_platform == 'linux'
+nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux'
     # via torch
-nvidia-nccl-cu13==2.28.9 ; sys_platform == 'linux'
+nvidia-nccl-cu13==2.29.7 ; sys_platform == 'linux'
     # via torch
 nvidia-nvjitlink==13.0.88 ; sys_platform == 'linux'
     # via
@@ -1077,7 +1103,7 @@ pydantic==2.12.5
     #   shisad
 pydantic-core==2.41.5
     # via pydantic
-pydantic-settings==2.12.0
+pydantic-settings==2.14.2
     # via
     #   mcp
     #   shisad
@@ -1085,7 +1111,7 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
-pyjwt==2.12.1
+pyjwt==2.13.0
     # via mcp
 pytest==9.0.3
     # via
@@ -1095,7 +1121,7 @@ pytest-asyncio==1.3.0
 pytest-cov==6.3.0
 python-dotenv==1.2.2
     # via pydantic-settings
-python-multipart==0.0.27
+python-multipart==0.0.32
     # via mcp
 python-olm==3.2.16
     # via matrix-nio
@@ -1138,7 +1164,7 @@ slack-sdk==3.40.0
     # via slack-bolt
 sse-starlette==3.3.4
     # via mcp
-starlette==1.0.0
+starlette==1.3.1
     # via
     #   mcp
     #   sse-starlette
@@ -1152,14 +1178,14 @@ textguard==1.0.0
 textual==0.89.1
 tokenizers==0.22.2
     # via transformers
-torch==2.11.0
+torch==2.12.1
 tqdm==4.67.3
     # via
     #   huggingface-hub
     #   transformers
 transformers==5.5.3
     # via textguard
-triton==3.6.0 ; sys_platform == 'linux'
+triton==3.7.1 ; sys_platform == 'linux'
     # via torch
 typer==0.24.1
     # via
