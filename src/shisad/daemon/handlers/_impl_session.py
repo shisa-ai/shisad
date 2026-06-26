@@ -5610,7 +5610,7 @@ def _daemon_pending_confirmation_response_text(
             pending_public_preview_by_id=pending_public_preview_by_id,
             totp_guidance_ids=totp_guidance_ids,
             single_totp_confirmation_id=single_totp_confirmation_id,
-            allow_chat_approval=allow_chat_approval,
+            allow_chat_approval=False,
         )
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
         pending_number = index

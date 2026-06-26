@@ -6783,6 +6783,10 @@ async def test_finalize_response_formats_discord_pending_summary() -> None:
     assert "[PENDING CONFIRMATIONS]" not in text
     assert "### 1. `fs.list`" in text
     assert "ID: `c-1`" in text
+    assert "confirm 1" not in text
+    assert "approve with" not in text.lower()
+    assert "To reject in chat: `reject 1`" in text
+    assert "Confirm from CLI: `shisad action confirm c-1`" in text
     assert "**Warnings:**" in text
     assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\n  path: .\n```" in text
 

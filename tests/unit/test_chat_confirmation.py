@@ -367,6 +367,37 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert response.endswith("Review all pending: `shisad action list`")
 
 
+def test_gh64_discord_pending_response_never_advertises_proofless_confirm() -> None:
+    plain_pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "."},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-1"],
+        pending_actions={"c-1": plain_pending},
+        pending_index_by_id={"c-1": 1},
+        pending_public_preview_by_id={"c-1": plain_pending.safe_preview},
+        binding_pending_rows=[plain_pending],
+        allow_chat_approval=True,
+        delivery_channel="discord",
+    )
+
+    assert "confirm 1" not in response
+    assert "approve with" not in response.lower()
+    assert "To reject in chat: `reject 1`" in response
+    assert "Confirm from CLI: `shisad action confirm c-1`" in response
+
+
 class _ChatConfirmationHarness(SessionImplMixin):
     def __init__(self, tmp_path) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
