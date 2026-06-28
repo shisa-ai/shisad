@@ -41,6 +41,7 @@ from shisad.core.approval import (
     IntentPolicyContext,
     LedgerSignerBackend,
     LocalFido2Backend,
+    ResolvedConfirmationBackend,
     SignerConfirmationAdapter,
     SoftwareConfirmationBackend,
     TOTPBackend,
@@ -2843,6 +2844,43 @@ class HandlerImplementation(
                 return value
         return ""
 
+    def _channel_usable_confirmation_backend(
+        self,
+        *,
+        requirement: ConfirmationRequirement,
+        user_id: str,
+        delivery_target: DeliveryTarget | None,
+    ) -> ResolvedConfirmationBackend | None:
+        channel = ""
+        if delivery_target is not None:
+            channel = str(getattr(delivery_target, "channel", "")).strip().lower()
+        if not channel:
+            return None
+        if requirement.methods and "totp" not in requirement.methods:
+            return None
+        backend = self._confirmation_backend_registry.get_backend("totp.default")
+        if backend is None:
+            return None
+        if backend.level.priority < requirement.level.priority:
+            return None
+        if not backend.is_available_for(user_id=user_id):
+            return None
+        if not backend.capabilities.covers(requirement.require_capabilities):
+            return None
+        if requirement.allowed_principals:
+            if not backend.capabilities.principal_binding:
+                return None
+            if not (
+                set(requirement.allowed_principals)
+                & backend.principals_for_user(user_id=user_id)
+            ):
+                return None
+        if requirement.allowed_credentials and not (
+            set(requirement.allowed_credentials) & backend.credentials_for_user(user_id=user_id)
+        ):
+            return None
+        return ResolvedConfirmationBackend(backend=backend, fallback_used=False)
+
     def _queue_pending_action(
         self,
         *,
@@ -2881,10 +2919,17 @@ class HandlerImplementation(
             raise ApprovalRoutingError(
                 requirement.route_reason or "confirmation_requirement_conflict"
             )
-        backend_resolution = self._confirmation_backend_registry.resolve(
-            requirement,
-            user_id=str(user_id),
+        normalized_user_id = str(user_id)
+        backend_resolution = self._channel_usable_confirmation_backend(
+            requirement=requirement,
+            user_id=normalized_user_id,
+            delivery_target=delivery_target,
         )
+        if backend_resolution is None:
+            backend_resolution = self._confirmation_backend_registry.resolve(
+                requirement,
+                user_id=normalized_user_id,
+            )
         if backend_resolution is None:
             raise ApprovalRoutingError("confirmation_backend_unavailable")
         if public_arguments is not None:

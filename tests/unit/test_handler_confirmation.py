@@ -25,6 +25,7 @@ from shisad.core.approval import (
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
+    ConfirmationRequirement,
     IntentAction,
     IntentEnvelope,
     IntentPolicyContext,
@@ -405,7 +406,12 @@ class _QueuePendingHarness(HandlerImplementation):
         self._pending_actions_file = tmp_path / "pending_actions.json"
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._credential_store = InMemoryCredentialStore()
+        self._credential_store.set_approval_store_path(tmp_path / "approval-factors.json")
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
+        self._confirmation_backend_registry.register(
+            TOTPBackend(credential_store=self._credential_store)
+        )
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
         self._leak_detector = CrossThreadLeakDetector()
         self._daemon_id = "test-daemon"
@@ -548,6 +554,72 @@ def test_gh49_current_turn_reminder_confirmation_drops_false_provenance_warnings
     assert "Unusual action for this user" not in pending.warnings
     assert pending.leak_check.get("detected") is False
     assert "reminder_intent" not in pending.safe_preview
+
+
+def test_gh64_discord_pending_prefers_totp_backend_when_available(tmp_path: Path) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-gh64"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "discord approvals"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+    )
+
+    assert pending.selected_backend_id == "totp.default"
+    assert pending.selected_backend_method == "totp"
+    assert pending.required_level == ConfirmationLevel.SOFTWARE
+    assert pending.required_methods == []
+
+
+def test_gh64_discord_pending_keeps_software_when_totp_unavailable(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-gh64"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "discord approvals"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+    )
+
+    assert pending.selected_backend_id == "software.default"
+    assert pending.selected_backend_method == "software"
+
+
+def test_gh64_discord_pending_respects_explicit_non_totp_method_constraint(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-gh64"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "discord approvals"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        confirmation_requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.SOFTWARE,
+            methods=["software"],
+        ),
+    )
+
+    assert pending.selected_backend_id == "software.default"
+    assert pending.selected_backend_method == "software"
 
 
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
