@@ -179,6 +179,16 @@ Recovery-code approval is still a CLI flow:
 shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
 ```
 
+> **Command-channel parity (direction of travel).** The goal is that every
+> approval is completable on the channel where it originated — you should not
+> have to switch to the CLI to approve a routine action. TOTP confirmation
+> already works in chat. Recovery-code approval, and click-to-confirm on
+> channels that do not yet expose an interactive approve/reject affordance, are
+> currently CLI-only — a present surface limitation, not a security requirement.
+> Bringing every command channel to parity (inline approve/reject plus
+> in-channel step-up entry) is planned. The CLI stays a first-class path; it is
+> just never the only one for an ongoing approval.
+
 ### Behavior details
 
 | Property | Value |

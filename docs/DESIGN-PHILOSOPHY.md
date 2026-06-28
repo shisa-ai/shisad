@@ -69,6 +69,14 @@ Personal recall in the `user_curated` collection is scoped at recall time by the
 
 Same-scope clean personal recall is framed as `MEMORY CONTEXT (same-scope recall; derived from this operator's own prior session memory)`, not as untrusted external evidence. Direct retrieval without a complete owner tuple still returns public/unowned collection rows, but it does not return owner-private rows. Records that carry an injection taint label stay in the untrusted-data framing regardless of owner scope, and pre-migration owner-private rows with NULL owner fields are excluded from default recall; `include_unowned=True` is reserved for maintenance and diagnostic callers with an explicit owner tuple.
 
+### The Chosen Channel Is the Product Surface
+
+A user must be able to complete all regular interactions through their command channel (Discord/Slack/Telegram/Matrix, the TUI, or the CLI). Any interaction the agent asks the user to complete — approving or rejecting a pending action, recovering from lockdown, checking status, resolving a prompt — must be completable on the channel where it originated, at the proof tier the action actually requires. The CLI is a first-class surface, never the *mandatory* one for ongoing interaction.
+
+Pointing a channel user at the CLI as the only way to proceed is a disabled feature for that channel, not a security control. If a channel identity is trusted to drive the agent, it is trusted to carry the deliberate, proof-bound resolution for an action that channel originated. Forcing that resolution to a different surface adds no security against a compromised channel identity — that identity could already drive the agent — while breaking the flow for every legitimate user who lives in the channel. The proof requirement may be *carried* by the surface; it may not be *skipped*, and it may not force the user elsewhere as the only way to proceed.
+
+**Exception:** one-time system setup and credential enrollment (daemon config, factor registration, approval-origin setup) may require the CLI; that is setup, not interaction.
+
 ### The Test
 
 For any security mechanism, ask:
