@@ -647,6 +647,32 @@ def test_gh64_discord_pending_respects_ordered_method_preference(
     assert pending.selected_backend_method == "software"
 
 
+def test_gh64_discord_pending_uses_later_totp_when_earlier_method_ineligible(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-gh64"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "discord approvals"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        confirmation_requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.SOFTWARE,
+            methods=["software", "totp"],
+            allowed_principals=["ops-laptop"],
+        ),
+    )
+
+    assert pending.selected_backend_id == "totp.default"
+    assert pending.selected_backend_method == "totp"
+
+
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")

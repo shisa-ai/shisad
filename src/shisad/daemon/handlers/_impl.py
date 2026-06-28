@@ -2856,8 +2856,6 @@ class HandlerImplementation(
             channel = str(getattr(delivery_target, "channel", "")).strip().lower()
         if not channel:
             return None
-        if requirement.methods and requirement.methods[0] != "totp":
-            return None
         backend = self._confirmation_backend_registry.get_backend("totp.default")
         if backend is None:
             return None
@@ -2879,6 +2877,14 @@ class HandlerImplementation(
             set(requirement.allowed_credentials) & backend.credentials_for_user(user_id=user_id)
         ):
             return None
+        if requirement.methods:
+            first_selectable_method = self._confirmation_backend_registry.first_selectable_method(
+                requirement,
+                user_id=user_id,
+                allow_stronger_level=True,
+            )
+            if first_selectable_method != "totp":
+                return None
         return ResolvedConfirmationBackend(backend=backend, fallback_used=False)
 
     def _queue_pending_action(

@@ -2234,6 +2234,49 @@ class ConfirmationBackendRegistry:
                 return ResolvedConfirmationBackend(backend=selected, fallback_used=False)
         return None
 
+    def first_selectable_method(
+        self,
+        requirement: ConfirmationRequirement,
+        *,
+        user_id: str,
+        allow_stronger_level: bool = False,
+    ) -> str | None:
+        if not requirement.methods:
+            return None
+        candidates = [
+            backend
+            for backend in self._backends.values()
+            if (
+                backend.level.priority >= requirement.level.priority
+                if allow_stronger_level
+                else backend.level == requirement.level
+            )
+            and backend.is_available_for(user_id=user_id)
+            and backend.capabilities.covers(requirement.require_capabilities)
+            and (
+                not requirement.allowed_principals
+                or (
+                    backend.capabilities.principal_binding
+                    and bool(
+                        set(requirement.allowed_principals)
+                        & backend.principals_for_user(user_id=user_id)
+                    )
+                )
+            )
+            and (
+                not requirement.allowed_credentials
+                or bool(
+                    set(requirement.allowed_credentials)
+                    & backend.credentials_for_user(user_id=user_id)
+                )
+            )
+        ]
+        for method in requirement.methods:
+            matching = [backend for backend in candidates if backend.method == method]
+            if matching:
+                return method
+        return None
+
     @staticmethod
     def _select_backend(
         candidates: list[ConfirmationBackend],
