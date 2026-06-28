@@ -2856,7 +2856,7 @@ class HandlerImplementation(
             channel = str(getattr(delivery_target, "channel", "")).strip().lower()
         if not channel:
             return None
-        if requirement.methods and "totp" not in requirement.methods:
+        if requirement.methods and requirement.methods[0] != "totp":
             return None
         backend = self._confirmation_backend_registry.get_backend("totp.default")
         if backend is None:
