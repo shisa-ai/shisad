@@ -250,7 +250,7 @@ def load_theme(
         if path is not None:
             return parse_btop_theme(path.read_text(encoding="utf-8"), name=path.stem)
         return get_builtin_theme(name or fallback_name)
-    except (OSError, ThemeValidationError):
+    except (OSError, UnicodeDecodeError, ThemeValidationError):
         return fallback_theme
 
 

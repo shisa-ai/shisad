@@ -36,12 +36,15 @@ def test_u1_unknown_or_invalid_theme_load_falls_back_safely(tmp_path: Path) -> N
     invalid_theme.write_text('theme[main_fg]="not-a-color"\n', encoding="utf-8")
     empty_theme = tmp_path / "empty.theme"
     empty_theme.write_text("# no btop color entries\n", encoding="utf-8")
+    undecodable_theme = tmp_path / "undecodable.theme"
+    undecodable_theme.write_bytes(b"\xff\xfe\xfa")
     missing_theme = tmp_path / "missing.theme"
 
     assert load_theme("missing-theme").name == "shisa-dark"
     assert load_theme(path=invalid_theme).name == "shisa-dark"
     assert load_theme(name="shisa-light", path=invalid_theme).name == "shisa-light"
     assert load_theme(name="shisa-light", path=empty_theme).name == "shisa-light"
+    assert load_theme(name="shisa-light", path=undecodable_theme).name == "shisa-light"
     assert load_theme(name="shisa-light", path=missing_theme).name == "shisa-light"
 
 
