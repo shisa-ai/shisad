@@ -73,6 +73,49 @@ def _normalize_hex(value: object, *, key: str) -> str:
     return color.lower()
 
 
+def _normalize_btop_color(value: object, *, key: str) -> str:
+    color = str(value).strip()
+    if len(color) == 7 and color.startswith("#"):
+        return _normalize_hex(color, key=key)
+    if len(color) == 3 and color.startswith("#"):
+        grayscale = color[1:]
+        if any(character not in _HEX_DIGITS for character in grayscale):
+            raise ThemeValidationError(f"{key} must be a valid btop color")
+        return f"#{grayscale}{grayscale}{grayscale}".lower()
+    channels = color.split()
+    if len(channels) == 3:
+        try:
+            values = [int(channel, 10) for channel in channels]
+        except ValueError as exc:
+            raise ThemeValidationError(f"{key} must be a valid btop color") from exc
+        if all(0 <= channel <= 255 for channel in values):
+            return "#{:02x}{:02x}{:02x}".format(*values)
+    raise ThemeValidationError(f"{key} must be a valid btop color")
+
+
+def _extract_btop_value(raw_value: str, *, key: str) -> str | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+    if value[0] in {"'", '"'}:
+        quote = value[0]
+        end = value.find(quote, 1)
+        if end == -1:
+            raise ThemeValidationError(f"{key} has an unterminated quoted value")
+        value = value[1:end].strip()
+    else:
+        tokens = value.split()
+        if tokens and tokens[0].startswith("#"):
+            value = tokens[0]
+        elif len(tokens) >= 3:
+            value = " ".join(tokens[:3])
+        elif tokens:
+            value = tokens[0]
+    if not value:
+        return None
+    return _normalize_btop_color(value, key=key)
+
+
 def _validate_colors(values: Mapping[str, object], *, semantic: bool = False) -> dict[str, str]:
     required = SEMANTIC_ALIASES if semantic else BASE16_SLOTS
     missing = [key for key in required if key not in values]
@@ -202,12 +245,24 @@ def load_theme(
     fallback_name: str = "shisa-dark",
 ) -> ThemePalette:
     """Load a theme by built-in name or btop file path, falling back safely."""
+    fallback_theme = _load_builtin_fallback(name or fallback_name, fallback_name)
     try:
         if path is not None:
             return parse_btop_theme(path.read_text(encoding="utf-8"), name=path.stem)
         return get_builtin_theme(name or fallback_name)
     except (OSError, ThemeValidationError):
-        return get_builtin_theme(fallback_name)
+        return fallback_theme
+
+
+def _load_builtin_fallback(primary_name: str | None, fallback_name: str) -> ThemePalette:
+    for candidate in (primary_name, fallback_name, "shisa-dark"):
+        if not candidate:
+            continue
+        try:
+            return get_builtin_theme(candidate)
+        except ThemeValidationError:
+            continue
+    return get_builtin_theme("shisa-dark")
 
 
 def parse_btop_theme(text: str, *, name: str = "btop") -> ThemePalette:
@@ -225,11 +280,16 @@ def parse_btop_theme(text: str, *, name: str = "btop") -> ThemePalette:
         remainder = line[key_end + 1 :].strip()
         if not key or not remainder.startswith("="):
             continue
-        value = remainder[1:].strip().strip('"').strip("'")
-        if key == "main_bg" and value == "":
+        value = _extract_btop_value(remainder[1:], key=key)
+        if key == "main_bg" and value is None:
             transparent_background = True
             continue
-        raw_values[key] = _normalize_hex(value, key=key)
+        if value is None:
+            continue
+        raw_values[key] = value
+
+    if not raw_values:
+        raise ThemeValidationError("theme file did not contain btop color entries")
 
     base16 = dict(_SHISA_DARK_BASE16)
 

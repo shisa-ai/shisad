@@ -44,6 +44,8 @@ This surface is large. That is now documented, but it should be simplified in a 
 | `SHISAD_SELFMOD_ALLOWED_SIGNERS_PATH` | Trusted SSH `allowed_signers` file for self-mod artifacts |
 | `SHISAD_LOG_LEVEL` | Daemon log level |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
+| `SHISAD_UI_THEME` | Built-in theme name for optional UI renderers; defaults to `shisa-dark` |
+| `SHISAD_UI_THEME_PATH` | Optional btop-compatible `.theme` file path for UI renderers; invalid or missing files fall back to `SHISAD_UI_THEME` |
 | `SHISAD_TRACE_ENABLED` | Enable trace recording |
 | `SHISAD_REQUIRE_LOCAL_ADAPTERS` | Require pre-installed coding-agent binaries; disallow runtime `npx` fetches (`1`/`true`/`yes`) |
 

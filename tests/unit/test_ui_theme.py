@@ -34,9 +34,15 @@ def test_u1_builtin_themes_have_complete_base16_and_semantic_slots() -> None:
 def test_u1_unknown_or_invalid_theme_load_falls_back_safely(tmp_path: Path) -> None:
     invalid_theme = tmp_path / "broken.theme"
     invalid_theme.write_text('theme[main_fg]="not-a-color"\n', encoding="utf-8")
+    empty_theme = tmp_path / "empty.theme"
+    empty_theme.write_text("# no btop color entries\n", encoding="utf-8")
+    missing_theme = tmp_path / "missing.theme"
 
     assert load_theme("missing-theme").name == "shisa-dark"
     assert load_theme(path=invalid_theme).name == "shisa-dark"
+    assert load_theme(name="shisa-light", path=invalid_theme).name == "shisa-light"
+    assert load_theme(name="shisa-light", path=empty_theme).name == "shisa-light"
+    assert load_theme(name="shisa-light", path=missing_theme).name == "shisa-light"
 
 
 def test_u1_btop_theme_import_maps_machine_keys_to_palette() -> None:
@@ -71,6 +77,31 @@ def test_u1_btop_theme_import_maps_machine_keys_to_palette() -> None:
 def test_u1_btop_theme_import_rejects_invalid_machine_values() -> None:
     with pytest.raises(ThemeValidationError):
         parse_btop_theme('theme[main_bg]="blue-ish"\n', name="bad")
+
+
+def test_u1_btop_theme_import_accepts_standard_btop_value_forms() -> None:
+    palette = parse_btop_theme(
+        """
+        theme[main_bg]="#00"
+        theme[main_fg]="255 255 255"
+        theme[inactive_fg]="#30"
+        theme[meter_bg]="#202a31"
+        theme[div_line]="#3a4650"
+        theme[title]="#A6E22E" # inline comment
+        theme[hi_fg]="#ff"
+        theme[temp_start]="#50"
+        theme[temp_mid]=""
+        theme[temp_end]="#F92672"
+        """,
+        name="btop-standard",
+    )
+
+    assert palette.base16["base00"] == "#000000"
+    assert palette.base16["base05"] == "#ffffff"
+    assert palette.semantic["muted"] == "#303030"
+    assert palette.semantic["accent"] == "#a6e22e"
+    assert palette.semantic["focus"] == "#ffffff"
+    assert palette.semantic["danger"] == "#f92672"
 
 
 def test_u1_theme_bridge_outputs_and_no_color_suppression() -> None:
