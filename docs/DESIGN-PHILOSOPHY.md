@@ -71,11 +71,9 @@ Same-scope clean personal recall is framed as `MEMORY CONTEXT (same-scope recall
 
 ### The Chosen Channel Is the Product Surface
 
-A user must be able to complete all regular interactions through their command channel (Discord/Slack/Telegram/Matrix, the TUI, or the CLI). Any interaction the agent asks the user to complete — approving or rejecting a pending action, recovering from lockdown, checking status, resolving a prompt — must be completable on the channel where it originated, at the proof tier the action actually requires. The CLI is a first-class surface, never the *mandatory* one for ongoing interaction.
+A user must be able to complete all regular interactions through their chosen command channel (Discord/Slack/Telegram/Matrix/TUI or the CLI). Any interaction the agent asks the user to complete — approving or rejecting a pending action, recovering from lockdown, checking status, resolving a prompt — must be completable on the channel where it originated. The CLI is a first-class surface, but never the *mandatory* one for ongoing interaction.
 
-Pointing a channel user at the CLI as the only way to proceed is a disabled feature for that channel, not a security control. If a channel identity is trusted to drive the agent, it is trusted to carry the deliberate, proof-bound resolution for an action that channel originated. Forcing that resolution to a different surface adds no security against a compromised channel identity — that identity could already drive the agent — while breaking the flow for every legitimate user who lives in the channel. The proof requirement may be *carried* by the surface; it may not be *skipped*, and it may not force the user elsewhere as the only way to proceed.
-
-**Exception:** one-time system setup and credential enrollment (daemon config, factor registration, approval-origin setup) may require the CLI; that is setup, not interaction.
+**Exceptions:** one-time system setup and credential enrollment (daemon config, factor registration, approval-origin setup) may require the CLI; that is setup, not interaction.
 
 ### The Test
 
