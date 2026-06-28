@@ -273,6 +273,14 @@ class DaemonConfig(BaseSettings):
         default="before_side_effects",
         description="When to create checkpoints during tool execution.",
     )
+    ui_theme: str = Field(
+        default="shisa-dark",
+        description="Theme name for optional UI renderers.",
+    )
+    ui_theme_path: Path | None = Field(
+        default=None,
+        description="Optional btop-compatible theme file for UI renderers.",
+    )
 
     # Trace recording
     trace_enabled: bool = Field(

@@ -34,6 +34,17 @@ def test_gh33_web_and_browser_allowed_domains_still_accept_json_arrays(
     assert config.browser_allowed_domains == ["browser.example.com"]
 
 
+def test_u1_ui_theme_env_surface(tmp_path: Path, monkeypatch) -> None:
+    theme_path = tmp_path / "theme.theme"
+    monkeypatch.setenv("SHISAD_UI_THEME", "shisa-light")
+    monkeypatch.setenv("SHISAD_UI_THEME_PATH", str(theme_path))
+
+    config = DaemonConfig(data_dir=tmp_path / "data")
+
+    assert config.ui_theme == "shisa-light"
+    assert config.ui_theme_path == theme_path
+
+
 def test_gh50_default_socket_uses_xdg_runtime_dir(
     tmp_path: Path,
     monkeypatch,

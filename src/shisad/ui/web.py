@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from shisad.core.api.transport import ControlClient
+from shisad.ui.theme import ThemePalette, get_builtin_theme, web_css_variables
 
 
 async def fetch_web_snapshot(socket_path: Path) -> dict[str, Any]:
@@ -29,9 +30,10 @@ async def fetch_web_snapshot(socket_path: Path) -> dict[str, Any]:
     }
 
 
-def render_web_snapshot(snapshot: dict[str, Any]) -> str:
+def render_web_snapshot(snapshot: dict[str, Any], *, theme: ThemePalette | None = None) -> str:
     """Render static HTML using snapshot data from control API."""
     payload = html.escape(json.dumps(snapshot, indent=2, sort_keys=True))
+    css_variables = web_css_variables(theme or get_builtin_theme())
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -39,19 +41,11 @@ def render_web_snapshot(snapshot: dict[str, Any]) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>shisad security dashboard</title>
   <style>
-    :root {{
-      --bg: #f4f7fb;
-      --panel: #ffffff;
-      --ink: #173145;
-      --muted: #557083;
-      --accent: #0b8f6b;
-      --warn: #af5f00;
-      --border: #c8d8e4;
-    }}
+    {css_variables}
     body {{
       margin: 0;
       font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at 80% 0%, #d7eef8 0, #f4f7fb 42%);
+      background: var(--bg);
       color: var(--ink);
     }}
     header {{
