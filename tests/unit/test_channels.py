@@ -740,6 +740,54 @@ async def test_discord_send_falls_back_to_text_when_component_view_is_invalid(
     assert sent == [("pending", {})]
 
 
+def test_discord_component_view_requires_added_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeView:
+        def __init__(self) -> None:
+            self.items: list[object] = []
+
+        def add_item(self, item: object) -> None:
+            self.items.append(item)
+
+    class _FakeButton:
+        def __init__(self, **_kwargs: object) -> None:
+            raise TypeError("button constructor unavailable")
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1, red=2, primary=3),
+        ),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+
+    assert (
+        channel.can_build_view_from_metadata(
+            {
+                "discord_components": [
+                    {
+                        "type": "button",
+                        "label": "Approve",
+                        "style": "success",
+                        "custom_id": discord_approval_custom_id(
+                            action="confirm",
+                            confirmation_id="c-1",
+                            decision_nonce="nonce-1",
+                        ),
+                    }
+                ]
+            }
+        )
+        is False
+    )
+
+
 def test_discord_component_support_distinguishes_totp_modal_support(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

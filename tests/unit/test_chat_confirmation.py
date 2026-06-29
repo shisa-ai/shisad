@@ -616,6 +616,51 @@ def test_discord_pending_response_degrades_when_component_view_is_invalid(
     assert "Discord rejection fallback: reply with `reject c-plain`." in response
 
 
+def test_discord_pending_response_degrades_for_ids_omitted_by_component_budget() -> None:
+    pending_actions: dict[str, PendingAction] = {}
+    attached_ids = {f"c-{index}" for index in range(12)}
+    for index in range(13):
+        confirmation_id = f"c-{index}"
+        pending_actions[confirmation_id] = PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce=f"nonce-{index}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("fs.list"),
+            arguments={"path": "."},
+            reason="manual",
+            capabilities={Capability.FILE_READ},
+            created_at=datetime.now(UTC),
+        )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=list(pending_actions),
+        pending_actions=pending_actions,
+        pending_index_by_id={
+            confirmation_id: index
+            for index, confirmation_id in enumerate(pending_actions, start=1)
+        },
+        binding_pending_rows=list(pending_actions.values()),
+        delivery_channel="discord",
+        discord_component_confirmation_ids=attached_ids,
+        discord_approval_confirmation_ids=attached_ids,
+        discord_reject_confirmation_ids=attached_ids,
+    )
+
+    first_section = response.split("ID: `c-0`", 1)[1].split("---", 1)[0]
+    omitted_section = response.split("ID: `c-12`", 1)[1]
+    assert "Approve button when shown" in first_section
+    assert "Reject button when shown" in first_section
+    assert "Approve button" not in omitted_section
+    assert "Reject button" not in omitted_section
+    assert "Discord components unavailable; approval buttons were not attached." in (
+        omitted_section
+    )
+    assert "Discord rejection fallback: reply with `reject c-12`." in omitted_section
+    assert "CLI fallback: `shisad action confirm c-12`" in omitted_section
+
+
 def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> None:
     webauthn_pending = PendingAction(
         confirmation_id="c-web",

@@ -2086,11 +2086,29 @@ class AdminImplMixin(HandlerMixinBase):
         if not isinstance(raw_ids, list):
             return {}
         components: list[dict[str, Any]] = []
+        attached_confirmation_ids: list[str] = []
+        approval_confirmation_ids: list[str] = []
+        totp_modal_confirmation_ids: list[str] = []
+        reject_confirmation_ids: list[str] = []
 
-        def _append_components_for_pending(items: list[dict[str, Any]]) -> bool:
+        def _append_components_for_pending(
+            items: list[dict[str, Any]],
+            *,
+            confirmation_id: str,
+        ) -> bool:
             if len(components) + len(items) > DISCORD_VIEW_COMPONENT_LIMIT:
                 return False
             components.extend(items)
+            attached_confirmation_ids.append(confirmation_id)
+            for item in items:
+                custom_id = str(item.get("custom_id") or "")
+                if f":confirm:{confirmation_id}:" in custom_id:
+                    approval_confirmation_ids.append(confirmation_id)
+                elif f":totp:{confirmation_id}:" in custom_id:
+                    approval_confirmation_ids.append(confirmation_id)
+                    totp_modal_confirmation_ids.append(confirmation_id)
+                elif f":reject:{confirmation_id}:" in custom_id:
+                    reject_confirmation_ids.append(confirmation_id)
             return True
 
         selected_backend_available = getattr(self, "_pending_selected_backend_available", None)
@@ -2155,9 +2173,20 @@ class AdminImplMixin(HandlerMixinBase):
                     ),
                 }
             )
-            if not _append_components_for_pending(pending_components):
+            if not _append_components_for_pending(
+                pending_components,
+                confirmation_id=confirmation_id,
+            ):
                 break
-        return {"discord_components": components} if components else {}
+        if not components:
+            return {}
+        return {
+            "discord_components": components,
+            "discord_component_confirmation_ids": attached_confirmation_ids,
+            "discord_approval_confirmation_ids": approval_confirmation_ids,
+            "discord_totp_modal_confirmation_ids": totp_modal_confirmation_ids,
+            "discord_reject_confirmation_ids": reject_confirmation_ids,
+        }
 
     async def do_channel_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
         message = ChannelMessage.model_validate(params.get("message", {}))

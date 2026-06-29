@@ -120,12 +120,16 @@ class DiscordChannel(InMemoryChannel):
 
     @property
     def supports_totp_modal(self) -> bool:
-        if discord is None:
-            return False
-        ui = getattr(discord, "ui", None)
-        modal_ctor = getattr(ui, "Modal", None) if ui is not None else None
-        text_input_ctor = getattr(ui, "TextInput", None) if ui is not None else None
-        return callable(modal_ctor) and callable(text_input_ctor)
+        return (
+            self._totp_modal(
+                DiscordApprovalInteraction(
+                    action="totp",
+                    confirmation_id="probe",
+                    decision_nonce="probe",
+                )
+            )
+            is not None
+        )
 
     async def connect(self) -> None:
         await super().connect()
@@ -626,6 +630,7 @@ class DiscordChannel(InMemoryChannel):
         add_item = getattr(view, "add_item", None)
         if not callable(add_item):
             return None
+        added_button = False
         for component in components:
             if not isinstance(component, Mapping):
                 continue
@@ -650,7 +655,8 @@ class DiscordChannel(InMemoryChannel):
                 add_item(button)
             except (TypeError, ValueError):
                 return None
-        return view
+            added_button = True
+        return view if added_button else None
 
     def can_build_view_from_metadata(self, metadata: Mapping[str, Any]) -> bool:
         return self._view_from_delivery_metadata(metadata) is not None

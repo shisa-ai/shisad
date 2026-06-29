@@ -1292,6 +1292,9 @@ def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
     assert any("c-11" in custom_id for custom_id in custom_ids)
     assert all("c-12" not in custom_id for custom_id in custom_ids)
     assert all(custom_id.strip() for custom_id in custom_ids)
+    assert metadata["discord_component_confirmation_ids"] == [f"c-{index}" for index in range(12)]
+    assert metadata["discord_approval_confirmation_ids"] == [f"c-{index}" for index in range(12)]
+    assert metadata["discord_reject_confirmation_ids"] == [f"c-{index}" for index in range(12)]
 
 
 def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability() -> None:
