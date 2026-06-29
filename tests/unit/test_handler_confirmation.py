@@ -956,6 +956,41 @@ async def test_a1_chat_notifications_skip_webauthn_link_when_expired(
     assert delivery.messages == []
 
 
+@pytest.mark.asyncio
+async def test_a1_action_pending_suppresses_local_fido2_helper_when_expired(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    calls: list[str] = []
+
+    def local_fido2_helper(pending: PendingAction) -> dict[str, object]:
+        calls.append(pending.confirmation_id)
+        return {
+            "ok": True,
+            "origin": "http://127.0.0.1:8765",
+            "rp_id": "127.0.0.1",
+            "public_key": {"challenge": "test"},
+        }
+
+    monkeypatch.setattr(harness, "_local_fido2_approval_context", local_fido2_helper)
+    pending = _webauthn_pending_action(nonce="expected")
+    pending.selected_backend_id = "approver.local_fido2"
+    pending.selected_backend_method = "local_fido2"
+    pending.required_methods = ["local_fido2"]
+    pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    action = result["actions"][0]
+    assert "helper_origin" not in action
+    assert "helper_rp_id" not in action
+    assert "helper_public_key" not in action
+    assert calls == []
+
+
 def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(
     tmp_path: Path,
 ) -> None:
