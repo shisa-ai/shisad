@@ -8866,6 +8866,14 @@ class SessionImplMixin(HandlerMixinBase):
                 or intent.action != "confirm"
             ):
                 return False
+            normalized_content = " ".join(content.strip().lower().split())
+            if not (
+                normalized_content.startswith("confirm ")
+                or normalized_content.startswith("approve ")
+            ):
+                return False
+            if intent.target not in {"id", "index"}:
+                return False
             principal_id = str(user_id).strip()
             if not principal_id:
                 return False

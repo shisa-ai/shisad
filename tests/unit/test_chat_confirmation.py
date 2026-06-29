@@ -1735,6 +1735,51 @@ async def test_channel_chat_confirmation_bound_software_confirm_uses_typed_fallb
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["yes", "ok", "go ahead", "yes to all"])
+async def test_channel_chat_confirmation_bound_software_confirm_rejects_shorthand(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "/tmp", "recursive": False},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=target,
+    )
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=target,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert "not accepted without proof" in str(result["response"]).lower()
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_channel_chat_confirmation_typed_confirm_rejects_unbound_principal(
     tmp_path,
 ) -> None:
