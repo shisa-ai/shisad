@@ -469,6 +469,54 @@ def test_discord_pending_response_degrades_for_unavailable_backend() -> None:
     assert "Discord rejection: use the Reject button when shown on this message." in response
 
 
+def test_discord_pending_response_degrades_when_components_unavailable() -> None:
+    plain_pending = PendingAction(
+        confirmation_id="c-plain",
+        decision_nonce="nonce-plain",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "."},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .",
+    )
+    totp_pending = PendingAction(
+        confirmation_id="c-totp",
+        decision_nonce="nonce-totp",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-plain", "c-totp"],
+        pending_actions={"c-plain": plain_pending, "c-totp": totp_pending},
+        pending_index_by_id={"c-plain": 1, "c-totp": 2},
+        binding_pending_rows=[plain_pending, totp_pending],
+        delivery_channel="discord",
+        discord_components_available=False,
+    )
+
+    assert "Approve button" not in response
+    assert "Reject button" not in response
+    assert "Discord components unavailable; approval buttons were not attached." in response
+    assert "Discord components unavailable; TOTP modal was not attached." in response
+    assert "Discord rejection fallback: reply with `reject c-plain`." in response
+    assert "Discord rejection fallback: reply with `reject c-totp`." in response
+    assert "CLI fallback: `shisad action confirm c-plain`" in response
+    assert "TOTP fallback: reply with `confirm c-totp 123456`" in response
+
+
 def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> None:
     webauthn_pending = PendingAction(
         confirmation_id="c-web",
