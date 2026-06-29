@@ -931,6 +931,11 @@ async def test_behavioral_task_status_snapshot_renders_waiting_on_approval(
 ) -> None:
     daemon_task, client, config = await _start_daemon(tmp_path)
     try:
+        operator_session = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        operator_session_id = str(operator_session["session_id"])
         created = await client.call(
             "task.create",
             {
@@ -953,7 +958,7 @@ async def test_behavioral_task_status_snapshot_renders_waiting_on_approval(
 
         status_snapshot = await client.call(
             "task.status_snapshot",
-            {"limit": 20},
+            {"session_id": operator_session_id, "limit": 20},
         )
         task_row = next(
             row

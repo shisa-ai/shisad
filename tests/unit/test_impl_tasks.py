@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shisad.core.types import UserId, WorkspaceId
+from shisad.core.types import SessionId, SessionMode, SessionRole, SessionState, UserId, WorkspaceId
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
@@ -80,12 +80,49 @@ class _ActiveSessionRegistry:
     def __init__(self, *sessions: SimpleNamespace) -> None:
         self._sessions = list(sessions)
 
-    def list_active(self) -> list[SimpleNamespace]:
-        return list(self._sessions)
+    def get(self, session_id: SessionId) -> SimpleNamespace | None:
+        for session in self._sessions:
+            if str(session.id) == str(session_id):
+                return session
+        return None
 
 
-def _active_session(user_id: str, workspace_id: str) -> SimpleNamespace:
-    return SimpleNamespace(user_id=UserId(user_id), workspace_id=WorkspaceId(workspace_id))
+def _operator_session(
+    session_id: str,
+    user_id: str,
+    workspace_id: str,
+    *,
+    peer_uid: int = 1000,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=SessionId(session_id),
+        user_id=UserId(user_id),
+        workspace_id=WorkspaceId(workspace_id),
+        channel="cli",
+        state=SessionState.ACTIVE,
+        role=SessionRole.ORCHESTRATOR,
+        mode=SessionMode.DEFAULT,
+        metadata={
+            "operator_owned_cli": True,
+            "created_rpc_peer": {"uid": peer_uid, "pid": 1234, "gid": peer_uid},
+        },
+    )
+
+
+def _task_session(session_id: str, user_id: str, workspace_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=SessionId(session_id),
+        user_id=UserId(user_id),
+        workspace_id=WorkspaceId(workspace_id),
+        channel="task",
+        state=SessionState.ACTIVE,
+        role=SessionRole.SUBAGENT,
+        mode=SessionMode.TASK,
+        metadata={
+            "operator_owned_cli": False,
+            "created_rpc_peer": {"uid": 1000, "pid": 1234, "gid": 1000},
+        },
+    )
 
 
 class _TaskStatusSnapshotHarness(TasksImplMixin):
@@ -153,12 +190,18 @@ async def test_t2_do_task_status_snapshot_binds_to_active_session_scope_and_reda
     scheduler = _ScopedSnapshotScheduler()
     harness = _TaskStatusSnapshotHarness(
         scheduler,
-        _ActiveSessionRegistry(_active_session("alice", "ws1")),
+        _ActiveSessionRegistry(_operator_session("operator-session", "alice", "ws1")),
     )
 
     payload = await TasksImplMixin.do_task_status_snapshot(
         harness,  # type: ignore[arg-type]
-        {"user_id": "mallory", "workspace_id": "other-workspace", "limit": 5},
+        {
+            "session_id": "operator-session",
+            "user_id": "mallory",
+            "workspace_id": "other-workspace",
+            "limit": 5,
+            "_rpc_peer": {"uid": 1000, "pid": 9999, "gid": 1000},
+        },
     )
 
     assert scheduler.snapshot_calls == [{"limit": 5, "created_by": "alice", "workspace_id": "ws1"}]
@@ -190,12 +233,12 @@ async def test_t2_do_task_status_snapshot_requires_bound_scope() -> None:
     scheduler = _ScopedSnapshotScheduler()
     harness = _TaskStatusSnapshotHarness(
         scheduler,
-        _ActiveSessionRegistry(_active_session("alice", "")),
+        _ActiveSessionRegistry(_operator_session("operator-session", "alice", "")),
     )
 
     payload = await TasksImplMixin.do_task_status_snapshot(
         harness,  # type: ignore[arg-type]
-        {"user_id": "alice", "workspace_id": "ws1", "limit": 5},
+        {"session_id": "operator-session", "limit": 5, "_rpc_peer": {"uid": 1000}},
     )
 
     assert payload["tasks"] == []
@@ -206,19 +249,36 @@ async def test_t2_do_task_status_snapshot_requires_bound_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t2_do_task_status_snapshot_requires_unique_active_scope() -> None:
+async def test_t2_do_task_status_snapshot_requires_matching_rpc_peer() -> None:
     scheduler = _ScopedSnapshotScheduler()
     harness = _TaskStatusSnapshotHarness(
         scheduler,
-        _ActiveSessionRegistry(
-            _active_session("alice", "ws1"),
-            _active_session("bob", "ws1"),
-        ),
+        _ActiveSessionRegistry(_operator_session("operator-session", "alice", "ws1")),
     )
 
     payload = await TasksImplMixin.do_task_status_snapshot(
         harness,  # type: ignore[arg-type]
-        {"limit": 5},
+        {"session_id": "operator-session", "limit": 5, "_rpc_peer": {"uid": 2000}},
+    )
+
+    assert payload["tasks"] == []
+    assert payload["count"] == 0
+    assert payload["scope_status"] == "missing_scope"
+    assert scheduler.snapshot_calls == []
+    assert scheduler.pending_calls == []
+
+
+@pytest.mark.asyncio
+async def test_t2_do_task_status_snapshot_rejects_task_session_scope() -> None:
+    scheduler = _ScopedSnapshotScheduler()
+    harness = _TaskStatusSnapshotHarness(
+        scheduler,
+        _ActiveSessionRegistry(_task_session("task-session", "alice", "ws1")),
+    )
+
+    payload = await TasksImplMixin.do_task_status_snapshot(
+        harness,  # type: ignore[arg-type]
+        {"session_id": "task-session", "limit": 5, "_rpc_peer": {"uid": 1000}},
     )
 
     assert payload["tasks"] == []

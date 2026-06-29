@@ -5611,9 +5611,7 @@ def _discord_pending_guidance_lines(
                     "Discord TOTP approval button was not attached for this confirmation."
                 )
         elif not discord_totp_modal_available:
-            approval_line = (
-                "Discord TOTP modal unavailable; TOTP approval button was not attached."
-            )
+            approval_line = "Discord TOTP modal unavailable; TOTP approval button was not attached."
         else:
             approval_line = "Discord approval: use Approve when shown to open the TOTP modal."
         return [
@@ -5621,8 +5619,7 @@ def _discord_pending_guidance_lines(
             _discord_rejection_guidance(),
             "TOTP fallback: reply with "
             f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}.",
-            "CLI fallback: "
-            f"{_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}",
+            f"CLI fallback: {_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}",
         ]
     if selected_method == "recovery_code":
         return [
@@ -5835,8 +5832,7 @@ def _daemon_pending_confirmation_response_text(
                 lines.append(f"   To approve: {_totp_cli_confirm_command(confirmation_id)}")
         elif pending is not None and _pending_uses_recovery_code(pending):
             lines.append(
-                f"   Recovery-code approval pending: reply with 'reject {pending_number}' "
-                "to reject"
+                f"   Recovery-code approval pending: reply with 'reject {pending_number}' to reject"
             )
             lines.append(f"   To approve: {_recovery_code_cli_confirm_command(confirmation_id)}")
         else:
@@ -8928,8 +8924,7 @@ class SessionImplMixin(HandlerMixinBase):
                 selected_pending_rows = [
                     pending
                     for pending in displayed_pending_rows
-                    if str(getattr(pending, "confirmation_id", "")).strip().lower()
-                    == target_id
+                    if str(getattr(pending, "confirmation_id", "")).strip().lower() == target_id
                 ]
             else:
                 selected_pending_rows = [
@@ -9672,6 +9667,13 @@ class SessionImplMixin(HandlerMixinBase):
         if not is_internal_ingress and channel == "cli" and session_mode == SessionMode.DEFAULT:
             trust_level = "trusted"
             metadata["operator_owned_cli"] = True
+            rpc_peer = params.get("_rpc_peer")
+            if isinstance(rpc_peer, Mapping):
+                metadata["created_rpc_peer"] = {
+                    str(key): value
+                    for key, value in rpc_peer.items()
+                    if isinstance(key, str) and isinstance(value, int)
+                }
         metadata["trust_level"] = trust_level
         metadata["session_mode"] = session_mode.value
         metadata.setdefault(_COMMAND_CONTEXT_STATUS_KEY, "clean")
@@ -10923,9 +10925,7 @@ class SessionImplMixin(HandlerMixinBase):
                 rejected += 1
                 rejection_reasons.append("recovery_code_required")
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): recovery_code_required")
-                outcome_lines.append(
-                    "Recovery-code approvals cannot be completed from chat text."
-                )
+                outcome_lines.append("Recovery-code approvals cannot be completed from chat text.")
                 outcome_lines.append(
                     f"CLI fallback: run '{_recovery_code_cli_confirm_command(confirmation_id)}'."
                 )
@@ -13656,13 +13656,13 @@ class SessionImplMixin(HandlerMixinBase):
                 discord_totp_modal_confirmation_ids = set()
                 discord_channel = getattr(self, "_discord_channel", None)
                 supports_components = bool(getattr(discord_channel, "supports_components", False))
-                supports_totp_modal = bool(
-                    getattr(discord_channel, "supports_totp_modal", False)
-                )
+                supports_totp_modal = bool(getattr(discord_channel, "supports_totp_modal", False))
                 build_delivery_metadata = getattr(self, "_discord_pending_delivery_metadata", None)
                 can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
-                if supports_components and callable(build_delivery_metadata) and callable(
-                    can_build_view
+                if (
+                    supports_components
+                    and callable(build_delivery_metadata)
+                    and callable(can_build_view)
                 ):
                     candidate_metadata = build_delivery_metadata(
                         {"pending_confirmation_ids": visible_pending_confirmation_ids},

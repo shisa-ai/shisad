@@ -153,20 +153,32 @@ def _task_enabled(row: Mapping[str, Any]) -> bool:
     return _task_status(row) == "enabled"
 
 
-def _task_scope_from_sessions(raw_sessions: Any) -> tuple[str, str] | None:
+def _task_scope_from_sessions(raw_sessions: Any) -> tuple[str, str, str] | None:
     if not isinstance(raw_sessions, list):
         return None
-    scopes: set[tuple[str, str]] = set()
+    scoped_sessions: list[tuple[str, str, str]] = []
     for raw in raw_sessions:
         if not isinstance(raw, Mapping):
+            continue
+        session_id = str(raw.get("id", "")).strip()
+        if not session_id:
+            continue
+        if str(raw.get("state", "")).strip().lower() not in {"", "active"}:
+            continue
+        if str(raw.get("role", "")).strip().lower() not in {"", "orchestrator"}:
+            continue
+        if str(raw.get("channel", "")).strip().lower() != "cli":
+            continue
+        if str(raw.get("mode", "")).strip().lower() not in {"", "default"}:
             continue
         user_id = str(raw.get("user_id", "")).strip()
         workspace_id = str(raw.get("workspace_id", "")).strip()
         if user_id and workspace_id:
-            scopes.add((user_id, workspace_id))
+            scoped_sessions.append((session_id, user_id, workspace_id))
+    scopes = {(user_id, workspace_id) for _session_id, user_id, workspace_id in scoped_sessions}
     if len(scopes) != 1:
         return None
-    return next(iter(scopes))
+    return scoped_sessions[0] if scoped_sessions else None
 
 
 def _pending_actions_by_confirmation_id(
@@ -441,11 +453,18 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         plan_steps_result = await _safe_call("plan.steps", {"limit": 20}, default={"steps": []})
         task_scope = _task_scope_from_sessions(raw_sessions)
         if task_scope is not None:
+            task_session_id, task_user_id, task_workspace_id = task_scope
             tasks_result = await _safe_call(
                 "task.status_snapshot",
-                {"limit": 20},
+                {"session_id": task_session_id, "limit": 20},
                 default={"tasks": []},
             )
+            if (
+                str(tasks_result.get("scope_status", "")).strip() != "scoped"
+                or str(tasks_result.get("user_id", "")).strip() != task_user_id
+                or str(tasks_result.get("workspace_id", "")).strip() != task_workspace_id
+            ):
+                tasks_result = {"tasks": []}
         else:
             tasks_result = {"tasks": []}
         raw_task_rows = [item for item in tasks_result.get("tasks", [])]

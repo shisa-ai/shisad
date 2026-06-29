@@ -12,6 +12,22 @@ from shisad.ui.tui import TuiSnapshot, render_plain
 from shisad.ui.web import render_web_snapshot
 
 
+def _operator_session_row(
+    session_id: str = "s1",
+    user_id: str = "u1",
+    workspace_id: str = "ws1",
+) -> dict[str, object]:
+    return {
+        "id": session_id,
+        "state": "active",
+        "role": "orchestrator",
+        "channel": "cli",
+        "mode": "default",
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    }
+
+
 def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     snapshot = TuiSnapshot(
         sessions=[{"id": "s1", "user_id": "u1", "lockdown_level": "normal"}],
@@ -358,9 +374,7 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
         ) -> dict[str, object]:
             self.calls.append((method, params))
             mapping = {
-                "session.list": {
-                    "sessions": [{"id": "s1", "user_id": "u1", "workspace_id": "ws1"}]
-                },
+                "session.list": {"sessions": [_operator_session_row()]},
                 "action.pending": {
                     "actions": [
                         {
@@ -405,6 +419,8 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
                         }
                     ],
                     "count": 1,
+                    "user_id": "u1",
+                    "workspace_id": "ws1",
                     "scope_status": "scoped",
                 },
                 "daemon.status": {
@@ -458,9 +474,69 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert created[0].closed is True
     assert (
         "task.status_snapshot",
-        {"limit": 20},
+        {"session_id": "s1", "limit": 20},
     ) in created[0].calls
     assert all(method != "task.list" for method, _params in created[0].calls)
+
+
+@pytest.mark.asyncio
+async def test_t2_tui_fetch_snapshot_rejects_mismatched_task_snapshot_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeClient:
+        def __init__(self, socket_path: Path) -> None:
+            self.socket_path = socket_path
+            self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(
+            self, method: str, params: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            if method == "session.list":
+                return {"sessions": [_operator_session_row("s1", "u1", "ws1")]}
+            if method == "action.pending":
+                return {"actions": []}
+            if method == "plan.steps":
+                return {"steps": []}
+            if method == "task.status_snapshot":
+                return {
+                    "tasks": [{"task_id": "task-racy", "status": "enabled"}],
+                    "count": 1,
+                    "user_id": "u2",
+                    "workspace_id": "ws1",
+                    "scope_status": "scoped",
+                }
+            if method == "daemon.status":
+                return {"channels": {}}
+            if method == "dashboard.alerts":
+                return {"alerts": []}
+            if method == "dashboard.audit_explorer":
+                return {"events": []}
+            raise AssertionError(f"unexpected TUI call: {method}")
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("shisad.ui.tui.ControlClient", _factory)
+    from shisad.ui.tui import fetch_snapshot
+
+    snapshot = await fetch_snapshot(Path("/tmp/control.sock"))
+
+    assert snapshot.tasks == []
+    assert (
+        "task.status_snapshot",
+        {"session_id": "s1", "limit": 20},
+    ) in created[0].calls
 
 
 @pytest.mark.asyncio
@@ -480,7 +556,7 @@ async def test_t2_tui_fetch_snapshot_enriches_visible_task_confirmation_metadata
         ) -> dict[str, object]:
             self.calls.append((method, params))
             if method == "session.list":
-                return {"sessions": [{"id": "s1", "user_id": "u1", "workspace_id": "ws1"}]}
+                return {"sessions": [_operator_session_row()]}
             if method == "action.pending":
                 if params and params.get("confirmation_id") == "c-task-visible":
                     return {
@@ -524,6 +600,9 @@ async def test_t2_tui_fetch_snapshot_enriches_visible_task_confirmation_metadata
                         }
                     ],
                     "count": 1,
+                    "user_id": "u1",
+                    "workspace_id": "ws1",
+                    "scope_status": "scoped",
                 }
             if method == "daemon.status":
                 return {"channels": {}}
@@ -584,7 +663,7 @@ async def test_t2_tui_fetch_snapshot_bounds_task_confirmation_metadata_enrichmen
         ) -> dict[str, object]:
             self.calls.append((method, params))
             if method == "session.list":
-                return {"sessions": [{"id": "s1", "user_id": "u1", "workspace_id": "ws1"}]}
+                return {"sessions": [_operator_session_row()]}
             if method == "action.pending":
                 confirmation_id = str((params or {}).get("confirmation_id", "")).strip()
                 if confirmation_id:
@@ -622,6 +701,9 @@ async def test_t2_tui_fetch_snapshot_bounds_task_confirmation_metadata_enrichmen
                         }
                     ],
                     "count": 1,
+                    "user_id": "u1",
+                    "workspace_id": "ws1",
+                    "scope_status": "scoped",
                 }
             if method == "daemon.status":
                 return {"channels": {}}
@@ -915,8 +997,8 @@ async def test_t2_tui_fetch_snapshot_fails_closed_without_unique_task_scope(
             if method == "session.list":
                 return {
                     "sessions": [
-                        {"id": "s1", "user_id": "u1", "workspace_id": "ws1"},
-                        {"id": "s2", "user_id": "u2", "workspace_id": "ws1"},
+                        _operator_session_row("s1", "u1", "ws1"),
+                        _operator_session_row("s2", "u2", "ws1"),
                     ]
                 }
             if method == "action.pending":

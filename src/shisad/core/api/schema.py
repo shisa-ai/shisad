@@ -1700,6 +1700,7 @@ class TaskPendingConfirmationsParams(_StrictParams):
 
 
 class TaskStatusSnapshotParams(_StrictParams):
+    session_id: str = ""
     user_id: str = ""
     workspace_id: str = ""
     limit: int = Field(default=20, ge=0, le=100)

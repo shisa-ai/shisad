@@ -21,6 +21,8 @@ from shisad.core.types import (
     PEPDecisionKind,
     SessionId,
     SessionMode,
+    SessionRole,
+    SessionState,
     TaintLabel,
     ToolName,
     UserId,
@@ -661,29 +663,75 @@ class TasksImplMixin(HandlerMixinBase):
         pending = self._scheduler.pending_confirmations(task_id)
         return {"task_id": task_id, "pending": pending, "count": len(pending)}
 
-    def _task_status_snapshot_scope(self) -> tuple[str, str] | None:
+    @staticmethod
+    def _peer_uid(peer: Any) -> int | None:
+        if not isinstance(peer, Mapping):
+            return None
+        value = peer.get("uid")
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        return None
+
+    @staticmethod
+    def _operator_session_matches_peer(session: Any, rpc_peer: Any) -> bool:
+        peer_uid = TasksImplMixin._peer_uid(rpc_peer)
+        if peer_uid is None:
+            return False
+        metadata = getattr(session, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return False
+        created_peer = metadata.get("created_rpc_peer")
+        created_uid = TasksImplMixin._peer_uid(created_peer)
+        return created_uid is not None and created_uid == peer_uid
+
+    def _task_status_snapshot_scope(
+        self,
+        *,
+        session_id: str,
+        rpc_peer: Any,
+    ) -> tuple[str, str] | None:
+        if not session_id:
+            return None
         session_manager = getattr(self, "_session_manager", None)
-        list_active = getattr(session_manager, "list_active", None)
-        if not callable(list_active):
+        get_session = getattr(session_manager, "get", None)
+        if not callable(get_session):
             return None
         try:
-            active_sessions = list(list_active())
+            session = get_session(SessionId(session_id))
         except (OSError, RuntimeError, TypeError, ValueError):
             return None
-
-        scopes: set[tuple[str, str]] = set()
-        for session in active_sessions:
-            user_id = optional_string(getattr(session, "user_id", ""))
-            workspace_id = optional_string(getattr(session, "workspace_id", ""))
-            if user_id and workspace_id:
-                scopes.add((user_id, workspace_id))
-        if len(scopes) != 1:
+        if session is None:
             return None
-        return next(iter(scopes))
+        metadata = getattr(session, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return None
+        if getattr(session, "state", None) != SessionState.ACTIVE:
+            return None
+        if getattr(session, "role", None) != SessionRole.ORCHESTRATOR:
+            return None
+        if getattr(session, "mode", None) != SessionMode.DEFAULT:
+            return None
+        if optional_string(getattr(session, "channel", "")).lower() != "cli":
+            return None
+        if metadata.get("operator_owned_cli") is not True:
+            return None
+        if not self._operator_session_matches_peer(session, rpc_peer):
+            return None
+
+        user_id = optional_string(getattr(session, "user_id", ""))
+        workspace_id = optional_string(getattr(session, "workspace_id", ""))
+        if not user_id or not workspace_id:
+            return None
+        return user_id, workspace_id
 
     async def do_task_status_snapshot(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(0, int(params.get("limit", 20) or 20))
-        scope = self._task_status_snapshot_scope()
+        scope = self._task_status_snapshot_scope(
+            session_id=optional_string(params.get("session_id", "")),
+            rpc_peer=params.get("_rpc_peer"),
+        )
         if scope is None:
             return {
                 "tasks": [],
