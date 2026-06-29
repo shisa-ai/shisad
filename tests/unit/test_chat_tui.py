@@ -323,6 +323,33 @@ async def test_u2_chat_turns_render_role_labels_and_muted_timestamps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_u2_chat_evidence_refs_get_semantic_message_class() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._append_assistant_message(
+            "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com "
+            'taint=UNTRUSTED size=88 summary="Example Domain" '
+            'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
+            'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'
+        )
+        await pilot.pause()
+        rendered_markdown = list(app.query(Markdown))[-1]
+
+    assert rendered_markdown.has_class("evidence-message")
+    assert "[Evidence ev-61f3d4c48f54ff92]" in rendered_markdown._markdown
+
+
+@pytest.mark.asyncio
 async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),

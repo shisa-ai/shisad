@@ -326,6 +326,9 @@ class ChatApp(App[None]):
     .assistant-message {{
         height: auto;
     }}
+    .evidence-message {{
+        color: {THEME.semantic["info"]};
+    }}
     #chat-input {{
         height: 3;
         max-height: 8;
@@ -668,7 +671,7 @@ class ChatApp(App[None]):
                 markup=False,
                 classes="turn-meta assistant-meta",
             ),
-            Markdown(rendered, classes="assistant-message"),
+            Markdown(rendered, classes=self._assistant_message_classes(rendered)),
             classes="assistant-turn",
         )
 
@@ -694,6 +697,13 @@ class ChatApp(App[None]):
 
     def _format_turn_label(self, role: str) -> str:
         return f"{role} | {self._turn_timestamp()}"
+
+    @staticmethod
+    def _assistant_message_classes(rendered: str) -> str:
+        classes = ["assistant-message"]
+        if "[Evidence " in rendered:
+            classes.append("evidence-message")
+        return " ".join(classes)
 
     @staticmethod
     def _turn_timestamp() -> str:
