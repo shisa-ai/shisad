@@ -121,7 +121,14 @@ class TelegramChannel(InMemoryChannel):
         self._application = None
         await super().disconnect()
 
-    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
+    async def send(
+        self,
+        message: str,
+        *,
+        target: DeliveryTarget | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        _ = metadata
         if self._application is not None:
             bot = getattr(self._application, "bot", None)
             send_message = getattr(bot, "send_message", None) if bot is not None else None

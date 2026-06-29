@@ -34,7 +34,13 @@ class ChannelDeliveryService:
     def __init__(self, channels: Mapping[str, Channel]) -> None:
         self._channels: dict[str, Channel] = dict(channels)
 
-    async def send(self, *, target: DeliveryTarget, message: str) -> DeliveryResult:
+    async def send(
+        self,
+        *,
+        target: DeliveryTarget,
+        message: str,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> DeliveryResult:
         channel = self._channels.get(target.channel)
         if channel is None:
             return DeliveryResult(
@@ -68,7 +74,10 @@ class ChannelDeliveryService:
                 target=target,
             )
         try:
-            await channel.send(message, target=target)
+            if metadata:
+                await channel.send(message, target=target, metadata=dict(metadata))
+            else:
+                await channel.send(message, target=target)
             logger.info(
                 "Outbound channel delivery succeeded (channel=%s, recipient=%s)",
                 target.channel,

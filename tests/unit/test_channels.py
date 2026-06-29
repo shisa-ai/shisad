@@ -11,7 +11,11 @@ import pytest
 
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
 from shisad.channels.delivery import ChannelDeliveryService
-from shisad.channels.discord import DiscordChannel, DiscordConfig
+from shisad.channels.discord import (
+    DiscordChannel,
+    DiscordConfig,
+    discord_approval_custom_id,
+)
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelRule
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
@@ -538,6 +542,147 @@ async def test_discord_channel_registers_dispatchable_on_message_handler(
     assert received.reply_target == "c-1"
     # Bot mention tag should be stripped from content.
     assert received.content == "hello"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_approval_component_enqueues_bound_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch_interaction(self, interaction: object) -> None:
+            handler = getattr(self, "on_interaction", None)
+            if handler is not None:
+                await handler(interaction)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    interaction = SimpleNamespace(
+        id="i-1",
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="confirm",
+                confirmation_id="c-1",
+                decision_nonce="nonce-1",
+            )
+        },
+        user=SimpleNamespace(id="u-1", bot=False),
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="chan-1"),
+    )
+
+    await channel._client.dispatch_interaction(interaction)
+
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.channel == "discord"
+    assert received.external_user_id == "u-1"
+    assert received.workspace_hint == "g-1"
+    assert received.reply_target == "chan-1"
+    assert received.content == "confirm c-1"
+    assert received.metadata["interaction_type"] == "approval_component"
+    assert received.metadata["approval_component_action"] == "confirm"
+    assert received.metadata["approval_confirmation_id"] == "c-1"
+    assert received.metadata["approval_decision_nonce"] == "nonce-1"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_approval_modal_enqueues_totp_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch_interaction(self, interaction: object) -> None:
+            handler = getattr(self, "on_interaction", None)
+            if handler is not None:
+                await handler(interaction)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    interaction = SimpleNamespace(
+        id="i-2",
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="totp_submit",
+                confirmation_id="c-2",
+                decision_nonce="nonce-2",
+            ),
+            "components": [
+                {
+                    "components": [
+                        {"custom_id": "totp_code", "value": "123456"},
+                    ]
+                }
+            ],
+        },
+        user=SimpleNamespace(id="u-1", bot=False),
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="chan-1"),
+    )
+
+    await channel._client.dispatch_interaction(interaction)
+
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.content == "confirm c-2 123456"
+    assert received.metadata["interaction_type"] == "approval_modal"
+    assert received.metadata["approval_component_action"] == "totp_submit"
+    assert received.metadata["approval_confirmation_id"] == "c-2"
+    assert received.metadata["approval_decision_nonce"] == "nonce-2"
     await channel.disconnect()
 
 

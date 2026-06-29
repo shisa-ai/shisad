@@ -20,6 +20,15 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
                 "confirmation_id": "c1",
                 "tool_name": "http_request",
                 "status": "pending",
+                "risk_level": "high",
+                "required_proof_tier": "T1_stepup",
+                "selected_backend_method": "totp",
+                "channel_capability": {
+                    "approval_route": "host_cli",
+                    "can_carry": True,
+                    "requires_second_factor": True,
+                },
+                "safe_preview": "ACTION CONFIRMATION\nAction: http_request",
             }
         ],
         tasks=[
@@ -44,6 +53,9 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     rendered = render_plain(snapshot)
     assert "PENDING CONFIRMATIONS" in rendered
     assert "c1 tool=http_request status=pending" in rendered
+    assert "risk=high proof=T1_stepup method=totp route=host_cli" in rendered
+    assert "approve: c c1 <totp-code>" in rendered
+    assert "preview: ACTION CONFIRMATION" in rendered
     assert "TASKS:" in rendered
     assert "CHANNEL HEALTH:" in rendered
 
@@ -80,7 +92,24 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
             self.calls.append((method, params))
             mapping = {
                 "session.list": {"sessions": [{"id": "s1"}]},
-                "action.pending": {"actions": [{"confirmation_id": "c1", "status": "pending"}]},
+                "action.pending": {
+                    "actions": [
+                        {
+                            "confirmation_id": "c1",
+                            "action_id": "c1",
+                            "status": "pending",
+                            "risk_level": "medium",
+                            "required_proof_tier": "T0_identity",
+                            "selected_backend_method": "software",
+                            "channel_capability": {
+                                "approval_route": "host_cli",
+                                "can_carry": True,
+                            },
+                            "safe_preview": "ACTION CONFIRMATION",
+                            "warnings": ["Contains tainted data"],
+                        }
+                    ]
+                },
                 "task.list": {
                     "tasks": [
                         {
@@ -116,6 +145,10 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert snapshot.sessions[0]["id"] == "s1"
     assert snapshot.pending_actions[0]["confirmation_id"] == "c1"
     assert snapshot.pending_actions[0]["status"] == "pending"
+    assert snapshot.pending_actions[0]["required_proof_tier"] == "T0_identity"
+    assert snapshot.pending_actions[0]["selected_backend_method"] == "software"
+    assert snapshot.pending_actions[0]["channel_capability"]["can_carry"] is True
+    assert snapshot.pending_actions[0]["warnings"] == ["Contains tainted data"]
     assert snapshot.tasks[0]["id"] == "t1"
     assert snapshot.tasks[0]["schedule_kind"] == "interval"
     assert snapshot.channel_health[0]["channel"] == "discord"
@@ -421,6 +454,68 @@ async def test_tui_decision_confirm_uses_single_allowed_channel_principal(
             "confirmation_id": "conf-1",
             "decision_nonce": "nonce-1",
             "principal_id": "alice",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_tui_decision_confirm_can_send_totp_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-1",
+                            "decision_nonce": "nonce-1",
+                            "selected_backend_method": "totp",
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": True, "method": method, "payload": payload}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-1",
+        totp_code="123456",
+    )
+    assert created[0].calls[-1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "conf-1",
+            "decision_nonce": "nonce-1",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
         },
     )
 

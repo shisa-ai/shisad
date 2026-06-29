@@ -97,7 +97,14 @@ class MatrixChannel(InMemoryChannel):
 
         await super().disconnect()
 
-    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
+    async def send(
+        self,
+        message: str,
+        *,
+        target: DeliveryTarget | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        _ = metadata
         if self._client is not None:
             room_send = getattr(self._client, "room_send", None)
             if callable(room_send):

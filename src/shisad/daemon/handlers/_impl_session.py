@@ -552,6 +552,7 @@ class SessionMessageValidationResult:
     operator_owned_cli_input: bool = False
     delivery_target: DeliveryTarget | None = None
     channel_message_id: str = ""
+    channel_metadata: dict[str, Any] = field(default_factory=dict)
     tool_allowlist: set[ToolName] | None = None
     explicit_memory_ingress_context: IngressContext | None = None
     user_transcript_entry: TranscriptEntry | None = None
@@ -1686,6 +1687,48 @@ def _parse_chat_totp_submission(text: str) -> ChatTotpSubmission | None:
 
 def _pending_uses_totp(pending: Any) -> bool:
     return str(getattr(pending, "selected_backend_method", "")).strip() == "totp"
+
+
+def _approval_metadata_value(metadata: Mapping[str, Any] | None, key: str) -> str:
+    if metadata is None:
+        return ""
+    return str(metadata.get(key) or "").strip()
+
+
+def _structured_channel_approval_nonce(
+    *,
+    metadata: Mapping[str, Any] | None,
+    expected_action: str,
+    confirmation_id: str,
+) -> str:
+    action = _approval_metadata_value(metadata, "approval_component_action").lower()
+    metadata_confirmation_id = _approval_metadata_value(metadata, "approval_confirmation_id")
+    nonce = _approval_metadata_value(metadata, "approval_decision_nonce")
+    if not action or not metadata_confirmation_id or not nonce:
+        return ""
+    expected = expected_action.strip().lower()
+    if action != expected:
+        return ""
+    if metadata_confirmation_id.casefold() != confirmation_id.strip().casefold():
+        return ""
+    return nonce
+
+
+def _structured_channel_approval_allows_intent(
+    *,
+    metadata: Mapping[str, Any] | None,
+    intent: ChatConfirmationIntent,
+    explicit_target_id: str,
+) -> bool:
+    if intent.target != "id" or intent.action not in {"confirm", "reject"}:
+        return False
+    return bool(
+        _structured_channel_approval_nonce(
+            metadata=metadata,
+            expected_action=intent.action,
+            confirmation_id=explicit_target_id,
+        )
+    )
 
 
 def _pending_confirmation_is_expired(pending: Any) -> bool:
@@ -5465,6 +5508,53 @@ def _markdown_fenced_block(text: str, *, language: str = "text") -> str:
     return f"{fence}\n{stripped}\n{fence}"
 
 
+def _discord_pending_guidance_lines(
+    *,
+    pending: Any | None,
+    confirmation_id: str,
+) -> list[str]:
+    selected_method = (
+        str(getattr(pending, "selected_backend_method", "") if pending is not None else "")
+        .strip()
+        .lower()
+        or "software"
+    )
+    if selected_method == "software":
+        return [
+            "Discord approval: use the Approve button on this message.",
+            "Discord rejection: use the Reject button on this message.",
+            f"CLI fallback: {_markdown_code_span(f'shisad action confirm {confirmation_id}')}",
+        ]
+    if selected_method == "totp":
+        return [
+            "Discord approval: use Approve to open the TOTP modal.",
+            "Discord rejection: use the Reject button on this message.",
+            "TOTP fallback: reply with "
+            f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}.",
+            "CLI fallback: "
+            f"{_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}",
+        ]
+    if selected_method in {"webauthn", "local_fido2"}:
+        label = "WebAuthn" if selected_method == "webauthn" else "Local FIDO2"
+        return [
+            f"{label} approval required; Discord cannot carry this proof.",
+            "Discord rejection: use the Reject button on this message.",
+            f"Approval route: {_markdown_code_span('browser')}",
+        ]
+    if selected_method in {"kms", "ledger"}:
+        return [
+            "External signer approval required "
+            f"({_markdown_code_span(selected_method)}); Discord cannot carry this proof.",
+            "Discord rejection: use the Reject button on this message.",
+            f"Approval route: {_markdown_code_span('external_signer')}",
+        ]
+    return [
+        "Selected approval method cannot be carried by Discord.",
+        "Discord rejection: use the Reject button on this message.",
+        f"Approval method: {_markdown_code_span(selected_method)}",
+    ]
+
+
 def _discord_pending_confirmation_response_text(
     *,
     indexed_confirmation_ids: Sequence[str],
@@ -5498,48 +5588,13 @@ def _discord_pending_confirmation_response_text(
                 f"ID: {_markdown_code_span(confirmation_id)}",
             ]
         )
-        if pending is not None and _pending_uses_totp(pending):
-            if confirmation_id in totp_guidance_ids:
-                if (
-                    single_totp_confirmation_id == confirmation_id
-                    and len(indexed_confirmation_ids) == 1
-                ):
-                    lines.append("TOTP in chat: reply with the 6-digit code.")
-                else:
-                    lines.append(
-                        "TOTP in chat: reply with "
-                        f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}."
-                    )
-                lines.append(
-                    f"To reject in chat: {_markdown_code_span(f'reject {pending_number}')}"
-                )
-                lines.append(
-                    "CLI fallback: "
-                    f"{_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}"
-                )
-            else:
-                lines.append(
-                    "TOTP approval pending; reject in chat with "
-                    f"{_markdown_code_span(f'reject {pending_number}')}."
-                )
-                lines.append(
-                    f"To approve: {_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}"
-                )
-        else:
-            if allow_chat_approval:
-                lines.append(
-                    "In chat: approve with "
-                    f"{_markdown_code_span(f'confirm {pending_number}')} or reject with "
-                    f"{_markdown_code_span(f'reject {pending_number}')}"
-                )
-            else:
-                lines.append(
-                    f"To reject in chat: {_markdown_code_span(f'reject {pending_number}')}"
-                )
-            lines.append(
-                "Confirm from CLI: "
-                f"{_markdown_code_span(f'shisad action confirm {confirmation_id}')}"
+        _ = pending_number, allow_chat_approval, totp_guidance_ids, single_totp_confirmation_id
+        lines.extend(
+            _discord_pending_guidance_lines(
+                pending=pending,
+                confirmation_id=confirmation_id,
             )
+        )
 
         warnings = list(getattr(pending, "warnings", []) or []) if pending is not None else []
         warning_lines = [str(warning).strip() for warning in warnings if str(warning).strip()]
@@ -8615,6 +8670,7 @@ class SessionImplMixin(HandlerMixinBase):
         stored_delivery_target: DeliveryTarget | None = None,
         content: str,
         firewall_result: FirewallResult,
+        channel_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         allow_channel_ingress_confirmation = is_internal_ingress and delivery_target is not None
         allow_direct_trusted_cli_confirmation = _is_direct_trusted_cli_default_ingress(
@@ -8678,6 +8734,15 @@ class SessionImplMixin(HandlerMixinBase):
             intent, intent_explicit_target_id = _classify_action_resolve_current_turn_intent(
                 content
             )
+        structured_channel_approval = (
+            _structured_channel_approval_allows_intent(
+                metadata=channel_metadata,
+                intent=intent,
+                explicit_target_id=intent_explicit_target_id,
+            )
+            if intent is not None
+            else False
+        )
 
         def _confirmation_result_status_text(
             result: Mapping[str, Any],
@@ -8886,7 +8951,7 @@ class SessionImplMixin(HandlerMixinBase):
 
         if is_internal_ingress and totp_submission is None:
             assert intent is not None
-            if intent.action != "reject":
+            if intent.action != "reject" and not structured_channel_approval:
                 error_text = _chat_confirmation_command_error_text(
                     content,
                     allowed_actions={"reject"},
@@ -9034,7 +9099,12 @@ class SessionImplMixin(HandlerMixinBase):
             if target_pending is not None:
                 payload = {
                     "confirmation_id": target_pending.confirmation_id,
-                    "decision_nonce": target_pending.decision_nonce,
+                    "decision_nonce": _structured_channel_approval_nonce(
+                        metadata=channel_metadata,
+                        expected_action="totp_submit",
+                        confirmation_id=str(target_pending.confirmation_id),
+                    )
+                    or target_pending.decision_nonce,
                     "approval_method": "totp",
                     "proof": {"totp_code": totp_submission.code},
                     "reason": "chat_totp_confirmation",
@@ -9178,7 +9248,12 @@ class SessionImplMixin(HandlerMixinBase):
                         continue
                     payload = {
                         "confirmation_id": pending.confirmation_id,
-                        "decision_nonce": pending.decision_nonce,
+                        "decision_nonce": _structured_channel_approval_nonce(
+                            metadata=channel_metadata,
+                            expected_action=intent.action,
+                            confirmation_id=str(pending.confirmation_id),
+                        )
+                        or pending.decision_nonce,
                         "reason": "chat_confirmation",
                     }
                     if intent.action == "confirm":
@@ -9501,6 +9576,7 @@ class SessionImplMixin(HandlerMixinBase):
         delivery_target: DeliveryTarget | None = None
         stored_delivery_target: DeliveryTarget | None = None
         channel_message_id = ""
+        channel_metadata: dict[str, Any] = {}
         if is_internal_ingress:
             raw_delivery_target = params.get("_delivery_target")
             if isinstance(raw_delivery_target, dict):
@@ -9509,6 +9585,13 @@ class SessionImplMixin(HandlerMixinBase):
                 except ValidationError:
                     delivery_target = None
             channel_message_id = str(params.get("_channel_message_id", "")).strip()
+            raw_channel_metadata = params.get("_channel_metadata")
+            if isinstance(raw_channel_metadata, Mapping):
+                channel_metadata = {
+                    str(key): str(value).strip()
+                    for key, value in raw_channel_metadata.items()
+                    if str(key).strip() and str(value).strip()
+                }
         raw_stored_delivery_target = session.metadata.get("delivery_target")
         if isinstance(raw_stored_delivery_target, dict):
             try:
@@ -9601,6 +9684,7 @@ class SessionImplMixin(HandlerMixinBase):
                 is_internal_ingress=is_internal_ingress,
                 delivery_target=delivery_target,
                 stored_delivery_target=stored_delivery_target,
+                channel_metadata=channel_metadata,
                 content=content,
                 firewall_result=firewall_result,
             )
@@ -9662,6 +9746,7 @@ class SessionImplMixin(HandlerMixinBase):
             operator_owned_cli_input=operator_owned_cli_input,
             delivery_target=delivery_target,
             channel_message_id=channel_message_id,
+            channel_metadata=channel_metadata,
             tool_allowlist=tool_allowlist,
             explicit_memory_ingress_context=explicit_memory_ingress_context,
             user_transcript_entry=user_transcript_entry,

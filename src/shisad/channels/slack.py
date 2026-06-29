@@ -114,7 +114,14 @@ class SlackChannel(InMemoryChannel):
         self._app = None
         await super().disconnect()
 
-    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
+    async def send(
+        self,
+        message: str,
+        *,
+        target: DeliveryTarget | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        _ = metadata
         if self._app is not None:
             client = getattr(self._app, "client", None)
             chat_post = getattr(client, "chat_postMessage", None) if client is not None else None

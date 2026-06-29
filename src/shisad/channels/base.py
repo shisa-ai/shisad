@@ -26,6 +26,7 @@ class DeliveryEnvelope(BaseModel):
 
     target: DeliveryTarget
     content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     sent_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -46,7 +47,13 @@ class Channel(Protocol):
 
     async def disconnect(self) -> None: ...
 
-    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None: ...
+    async def send(
+        self,
+        message: str,
+        *,
+        target: DeliveryTarget | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
 
     async def receive(self) -> ChannelMessage: ...
 
@@ -88,7 +95,13 @@ class InMemoryChannel:
     async def disconnect(self) -> None:
         self._connected = False
 
-    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
+    async def send(
+        self,
+        message: str,
+        *,
+        target: DeliveryTarget | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         envelope = DeliveryEnvelope(
             target=target
             or DeliveryTarget(
@@ -96,6 +109,7 @@ class InMemoryChannel:
                 recipient="default",
             ),
             content=message,
+            metadata=dict(metadata or {}),
         )
         if not self._connected:
             self._offline_outgoing.append(envelope)

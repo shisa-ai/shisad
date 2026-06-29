@@ -15,6 +15,7 @@ from typing import Any, ClassVar, cast
 from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
+from shisad.channels.discord import discord_approval_custom_id
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
 from shisad.core.events import (
     AnomalyReported,
@@ -131,6 +132,22 @@ def _metadata_float(
     if upper is not None:
         value = min(upper, value)
     return value
+
+
+def _approval_interaction_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "approval_interaction_type",
+        "approval_component_action",
+        "approval_confirmation_id",
+        "approval_decision_nonce",
+        "discord_interaction_id",
+    }
+    payload: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            payload[key] = value
+    return payload
 
 
 def _is_owner_curated_channel_entry(entry: Any | None) -> bool:
@@ -2055,6 +2072,67 @@ class AdminImplMixin(HandlerMixinBase):
             "applied": False,
         }
 
+    def _discord_pending_delivery_metadata(self, response: Mapping[str, Any]) -> dict[str, Any]:
+        raw_ids = response.get("pending_confirmation_ids")
+        if not isinstance(raw_ids, list):
+            return {}
+        components: list[dict[str, Any]] = []
+        for raw_confirmation_id in raw_ids:
+            confirmation_id = str(raw_confirmation_id).strip()
+            if not confirmation_id:
+                continue
+            pending = getattr(self, "_pending_actions", {}).get(confirmation_id)
+            if pending is None or str(getattr(pending, "status", "")).strip() != "pending":
+                continue
+            decision_nonce = str(getattr(pending, "decision_nonce", "")).strip()
+            if not decision_nonce:
+                continue
+            selected_method = (
+                str(getattr(pending, "selected_backend_method", "") or "software")
+                .strip()
+                .lower()
+                or "software"
+            )
+            if selected_method == "software":
+                components.append(
+                    {
+                        "type": "button",
+                        "label": "Approve",
+                        "style": "success",
+                        "custom_id": discord_approval_custom_id(
+                            action="confirm",
+                            confirmation_id=confirmation_id,
+                            decision_nonce=decision_nonce,
+                        ),
+                    }
+                )
+            elif selected_method == "totp":
+                components.append(
+                    {
+                        "type": "button",
+                        "label": "Approve",
+                        "style": "primary",
+                        "custom_id": discord_approval_custom_id(
+                            action="totp",
+                            confirmation_id=confirmation_id,
+                            decision_nonce=decision_nonce,
+                        ),
+                    }
+                )
+            components.append(
+                {
+                    "type": "button",
+                    "label": "Reject",
+                    "style": "danger",
+                    "custom_id": discord_approval_custom_id(
+                        action="reject",
+                        confirmation_id=confirmation_id,
+                        decision_nonce=decision_nonce,
+                    ),
+                }
+            )
+        return {"discord_components": components} if components else {}
+
     async def do_channel_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
         message = ChannelMessage.model_validate(params.get("message", {}))
         metadata = dict(message.metadata or {})
@@ -2393,6 +2471,9 @@ class AdminImplMixin(HandlerMixinBase):
             "_delivery_target": delivery_target.model_dump(mode="json"),
             "_channel_message_id": message.message_id,
         }
+        approval_metadata = _approval_interaction_metadata(metadata)
+        if approval_metadata:
+            session_message_payload["_channel_metadata"] = approval_metadata
         if explicit_memory_ingress_context is not None:
             session_message_payload["_explicit_memory_ingress_context"] = (
                 explicit_memory_ingress_context.handle_id
@@ -2403,10 +2484,22 @@ class AdminImplMixin(HandlerMixinBase):
             response_text = str(response.get("response", "")).strip()
             if response_text and not response_text.startswith(marker):
                 response["response"] = f"{marker} {response_text}"
-        delivery_result = await self._delivery.send(
-            target=delivery_target,
-            message=str(response.get("response", "")),
+        delivery_metadata = (
+            self._discord_pending_delivery_metadata(response)
+            if message.channel == "discord"
+            else {}
         )
+        if delivery_metadata:
+            delivery_result = await self._delivery.send(
+                target=delivery_target,
+                message=str(response.get("response", "")),
+                metadata=delivery_metadata,
+            )
+        else:
+            delivery_result = await self._delivery.send(
+                target=delivery_target,
+                message=str(response.get("response", "")),
+            )
         if proactive:
             self._channel_proactive_last_sent_at[cooldown_key] = datetime.now(UTC)
         response["delivery"] = delivery_result.as_dict()

@@ -6,6 +6,7 @@ import html
 import math
 import shlex
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -135,6 +136,55 @@ def render_structured_confirmation(
         for warning in warnings:
             lines.append(f"  - {warning}")
     return "\n".join(lines)
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _first_line(value: Any, *, max_len: int = 120) -> str:
+    line = str(value or "").strip().splitlines()[0].strip() if str(value or "").strip() else ""
+    if len(line) <= max_len:
+        return line
+    return f"{line[:max_len]}..."
+
+
+def render_pending_action(action: Mapping[str, Any]) -> str:
+    """Render a compact pending-action row from structured daemon state."""
+    confirmation_id = str(action.get("confirmation_id", "")).strip()
+    tool_name = str(action.get("tool_name", "")).strip() or "pending action"
+    status = str(action.get("status", "")).strip() or "pending"
+    risk_level = str(action.get("risk_level", "")).strip() or "unknown"
+    proof_tier = str(action.get("required_proof_tier", "")).strip() or "unknown"
+    selected_method = str(action.get("selected_backend_method", "")).strip() or "software"
+    capability = _mapping(action.get("channel_capability"))
+    route = str(capability.get("approval_route", "")).strip() or "unknown"
+    can_carry = bool(capability.get("can_carry", False))
+    can_reject = bool(capability.get("can_reject", True))
+    requires_second_factor = bool(
+        capability.get("requires_second_factor", False)
+    ) or selected_method in {"totp", "recovery_code"}
+    lines = [
+        f"{confirmation_id} tool={tool_name} status={status}",
+        f"risk={risk_level} proof={proof_tier} method={selected_method} route={route}",
+    ]
+    if can_carry:
+        if requires_second_factor:
+            lines.append(f"approve: c {confirmation_id} <totp-code>")
+        else:
+            lines.append(f"approve: c {confirmation_id}")
+    else:
+        reason = str(capability.get("cannot_carry_reason", "")).strip() or "surface_cannot_carry"
+        lines.append(f"approve: cannot carry on this surface ({reason})")
+    if can_reject:
+        lines.append(f"reject: x {confirmation_id}")
+    preview = _first_line(action.get("safe_preview"))
+    if preview:
+        lines.append(f"preview: {preview}")
+    warnings = action.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.append(f"warnings={len(warnings)}")
+    return "\n    ".join(lines)
 
 
 class ConfirmationWarningGenerator:

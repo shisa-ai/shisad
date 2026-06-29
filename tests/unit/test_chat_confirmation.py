@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from shisad.channels.base import DeliveryTarget
+from shisad.core.approval import ConfirmationLevel
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import (
     Capability,
@@ -354,20 +355,22 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert "[PENDING CONFIRMATIONS]" not in response
     assert "### 1. `fs.list`" in response
     assert "ID: `c-1`" in response
-    assert "To reject in chat: `reject 1`" in response
-    assert "Confirm from CLI: `shisad action confirm c-1`" in response
+    assert "Discord approval: use the Approve button on this message." in response
+    assert "Discord rejection: use the Reject button on this message." in response
+    assert "CLI fallback: `shisad action confirm c-1`" in response
     assert "**Warnings:**" in response
     assert "- Contains tainted data" in response
     assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .\n```" in response
     assert "---" in response
     assert "### 2. `web.search`" in response
     assert "ID: `c-2`" in response
-    assert "TOTP in chat: reply with `confirm c-2 123456`" in response
+    assert "Discord approval: use Approve to open the TOTP modal." in response
+    assert "TOTP fallback: reply with `confirm c-2 123456`" in response
     assert "CLI fallback: `shisad action confirm c-2 --totp-code 123456`" in response
     assert response.endswith("Review all pending: `shisad action list`")
 
 
-def test_gh64_discord_pending_response_never_advertises_proofless_confirm() -> None:
+def test_gh64_discord_pending_response_advertises_bounded_approval() -> None:
     plain_pending = PendingAction(
         confirmation_id="c-1",
         decision_nonce="nonce-1",
@@ -392,10 +395,59 @@ def test_gh64_discord_pending_response_never_advertises_proofless_confirm() -> N
         delivery_channel="discord",
     )
 
-    assert "confirm 1" not in response
-    assert "approve with" not in response.lower()
-    assert "To reject in chat: `reject 1`" in response
-    assert "Confirm from CLI: `shisad action confirm c-1`" in response
+    assert "Discord approval: use the Approve button on this message." in response
+    assert "Discord rejection: use the Reject button on this message." in response
+    assert "button-only T1" not in response
+    assert "Confirm from CLI:" not in response
+    assert "CLI fallback: `shisad action confirm c-1`" in response
+
+
+def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> None:
+    webauthn_pending = PendingAction(
+        confirmation_id="c-web",
+        decision_nonce="nonce-web",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+        required_level=ConfirmationLevel.BOUND_APPROVAL,
+        selected_backend_id="webauthn.default",
+        selected_backend_method="webauthn",
+    )
+    kms_pending = PendingAction(
+        confirmation_id="c-kms",
+        decision_nonce="nonce-kms",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.write"),
+        arguments={"path": "secret.txt", "content": "x"},
+        reason="manual",
+        capabilities={Capability.FILE_WRITE},
+        created_at=datetime.now(UTC),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+        required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+        selected_backend_id="kms.default",
+        selected_backend_method="kms",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-web", "c-kms"],
+        pending_actions={"c-web": webauthn_pending, "c-kms": kms_pending},
+        pending_index_by_id={"c-web": 1, "c-kms": 2},
+        binding_pending_rows=[webauthn_pending, kms_pending],
+        delivery_channel="discord",
+    )
+
+    assert "WebAuthn approval required; Discord cannot carry this proof." in response
+    assert "External signer approval required (`kms`); Discord cannot carry this proof." in response
+    assert "use the Approve button" not in response
+    assert "open the TOTP modal" not in response
 
 
 class _ChatConfirmationHarness(SessionImplMixin):
@@ -529,6 +581,114 @@ async def test_channel_chat_confirmation_rejects_proofless_confirm_shorthand(
     assert "not accepted without proof" in response
     assert harness.confirm_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_discord_component_confirm_uses_supplied_decision_nonce(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="server-nonce",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "."},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        allowed_channel_principals=["alice"],
+        selected_backend_method="software",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="confirm c-1",
+        firewall_result=FirewallResult(sanitized_text="confirm c-1", original_hash="0" * 64),
+        channel_metadata={
+            "approval_interaction_type": "discord_component",
+            "approval_component_action": "confirm",
+            "approval_confirmation_id": "c-1",
+            "approval_decision_nonce": "component-nonce",
+        },
+    )
+
+    assert result is not None
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "component-nonce",
+            "reason": "chat_confirmation",
+            "principal_id": "alice",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discord_totp_modal_confirm_uses_supplied_decision_nonce(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="server-nonce",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="confirm c-2 123456",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-2 123456",
+            original_hash="0" * 64,
+        ),
+        channel_metadata={
+            "approval_interaction_type": "discord_modal",
+            "approval_component_action": "totp_submit",
+            "approval_confirmation_id": "c-2",
+            "approval_decision_nonce": "component-nonce",
+        },
+    )
+
+    assert result is not None
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-2",
+            "decision_nonce": "component-nonce",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
+            "reason": "chat_totp_confirmation",
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from shisad.core.api.transport import ControlClient
+from shisad.ui.confirmation import render_pending_action
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,45 @@ def _safe_channel_rows(raw_channels: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _safe_pending_action_rows(raw_actions: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in raw_actions:
+        if not isinstance(item, Mapping):
+            continue
+        capability = item.get("channel_capability", {})
+        rows.append(
+            {
+                "confirmation_id": str(item.get("confirmation_id", "")),
+                "action_id": str(item.get("action_id", "")),
+                "tool_name": str(item.get("tool_name", "")),
+                "status": str(item.get("status", "")),
+                "created_at": str(item.get("created_at", "")),
+                "risk_level": str(item.get("risk_level", "")),
+                "required_proof_tier": str(item.get("required_proof_tier", "")),
+                "required_level": str(item.get("required_level", "")),
+                "selected_backend_id": str(item.get("selected_backend_id", "")),
+                "selected_backend_method": str(item.get("selected_backend_method", "")),
+                "channel_capability": dict(capability) if isinstance(capability, Mapping) else {},
+                "allowed_channel_principals": [
+                    str(value).strip()
+                    for value in item.get("allowed_channel_principals", [])
+                    if str(value).strip()
+                ]
+                if isinstance(item.get("allowed_channel_principals", []), list)
+                else [],
+                "safe_preview": str(item.get("safe_preview", "")),
+                "warnings": [
+                    str(value).strip()
+                    for value in item.get("warnings", [])
+                    if str(value).strip()
+                ]
+                if isinstance(item.get("warnings", []), list)
+                else [],
+            }
+        )
+    return rows
+
+
 async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
     """Fetch a multi-panel snapshot from daemon control API."""
     client = ControlClient(socket_path)
@@ -113,16 +153,9 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         sessions=[
             dict(item) for item in sessions_result.get("sessions", []) if isinstance(item, Mapping)
         ],
-        pending_actions=[
-            {
-                "confirmation_id": str(item.get("confirmation_id", "")),
-                "tool_name": str(item.get("tool_name", "")),
-                "status": str(item.get("status", "")),
-                "created_at": str(item.get("created_at", "")),
-            }
-            for item in pending_result.get("actions", [])
-            if isinstance(item, Mapping)
-        ],
+        pending_actions=_safe_pending_action_rows(
+            [item for item in pending_result.get("actions", [])]
+        ),
         tasks=_safe_task_rows([item for item in tasks_result.get("tasks", [])]),
         channel_health=_safe_channel_rows(
             status_result.get("channels", {})
@@ -155,12 +188,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     if not snapshot.pending_actions:
         lines.append("  (none)")
     for row in snapshot.pending_actions:
-        lines.append(
-            "  "
-            f"{row.get('confirmation_id', '')} "
-            f"tool={row.get('tool_name', '')} "
-            f"status={row.get('status', '')}"
-        )
+        lines.append("  " + render_pending_action(row))
     lines.append("TASKS:")
     if not snapshot.tasks:
         lines.append("  (none)")
@@ -231,14 +259,16 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     pending.add_column("Confirmation")
     pending.add_column("Tool")
     pending.add_column("Status")
+    pending.add_column("Proof")
     for row in snapshot.pending_actions:
         pending.add_row(
             str(row.get("confirmation_id", "")),
             str(row.get("tool_name", "")),
             str(row.get("status", "")),
+            str(row.get("required_proof_tier", "")),
         )
     if not snapshot.pending_actions:
-        pending.add_row("(none)", "", "")
+        pending.add_row("(none)", "", "", "")
 
     tasks = Table(title="Tasks", show_lines=False)
     tasks.add_column("Task")
@@ -317,7 +347,7 @@ async def run_interactive(socket_path: Path) -> None:
         snapshot = await fetch_snapshot(socket_path)
         print(render_plain(snapshot))
         print("")
-        print("[r]efresh  [c]onfirm <id>  [x] reject <id>  [q]uit")
+        print("[r]efresh  [c]onfirm <id> [totp-code]  [x] reject <id>  [q]uit")
         command = input("> ").strip()
         if not command:
             continue
@@ -326,8 +356,18 @@ async def run_interactive(socket_path: Path) -> None:
         if command.lower() == "r":
             continue
         if command.startswith("c "):
-            confirmation_id = command.split(" ", 1)[1].strip()
-            await _decision(socket_path, "action.confirm", confirmation_id)
+            parts = command.split()
+            confirmation_id = parts[1].strip() if len(parts) > 1 else ""
+            totp_code = parts[2].strip() if len(parts) > 2 else ""
+            if totp_code:
+                await _decision(
+                    socket_path,
+                    "action.confirm",
+                    confirmation_id,
+                    totp_code=totp_code,
+                )
+            else:
+                await _decision(socket_path, "action.confirm", confirmation_id)
             continue
         if command.startswith("x "):
             confirmation_id = command.split(" ", 1)[1].strip()
@@ -336,7 +376,13 @@ async def run_interactive(socket_path: Path) -> None:
         print("Unknown command")
 
 
-async def _decision(socket_path: Path, method: str, confirmation_id: str) -> None:
+async def _decision(
+    socket_path: Path,
+    method: str,
+    confirmation_id: str,
+    *,
+    totp_code: str = "",
+) -> None:
     if not confirmation_id:
         print("confirmation_id required")
         return
@@ -356,6 +402,7 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
             )
             decision_nonce = ""
             channel_principal_id = ""
+            selected_backend_method = ""
             if isinstance(pending_payload, Mapping):
                 actions = pending_payload.get("actions", [])
                 if isinstance(actions, list):
@@ -365,6 +412,9 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
                         if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
                             continue
                         decision_nonce = str(raw.get("decision_nonce", "")).strip()
+                        selected_backend_method = str(
+                            raw.get("selected_backend_method", "")
+                        ).strip()
                         allowed_channel_principals_raw = raw.get(
                             "allowed_channel_principals",
                             [],
@@ -387,6 +437,12 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
             payload["decision_nonce"] = decision_nonce
             if method == "action.confirm" and channel_principal_id:
                 payload["principal_id"] = channel_principal_id
+            if method == "action.confirm" and totp_code.strip():
+                payload["approval_method"] = "totp"
+                payload["proof"] = {"totp_code": totp_code.strip()}
+            elif method == "action.confirm" and selected_backend_method == "totp":
+                print("totp_code required for this confirmation")
+                return
         result = await client.call(
             method,
             payload,

@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,10 @@ discord: Any | None = _discord
 
 logger = logging.getLogger(__name__)
 
+_DISCORD_APPROVAL_CUSTOM_ID_PREFIX = "shisad:approval:v1"
+_DISCORD_APPROVAL_ACTIONS = {"confirm", "reject", "totp", "totp_submit"}
+_DISCORD_TOTP_CODE_FIELD_ID = "totp_code"
+
 
 @dataclass(slots=True)
 class DiscordConfig:
@@ -37,6 +42,56 @@ class DiscordConfig:
     guild_workspace_map: dict[str, str] | None = None
     trusted_users: set[str] | None = None
     channel_rules: list[DiscordChannelRule] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiscordApprovalInteraction:
+    action: str
+    confirmation_id: str
+    decision_nonce: str
+
+
+def discord_approval_custom_id(
+    *,
+    action: str,
+    confirmation_id: str,
+    decision_nonce: str,
+) -> str:
+    normalized_action = action.strip().lower()
+    normalized_confirmation_id = confirmation_id.strip()
+    normalized_nonce = decision_nonce.strip()
+    if normalized_action not in _DISCORD_APPROVAL_ACTIONS:
+        raise ValueError("unsupported Discord approval action")
+    if (
+        not normalized_confirmation_id
+        or not normalized_nonce
+        or ":" in normalized_confirmation_id
+        or ":" in normalized_nonce
+    ):
+        raise ValueError("Discord approval custom id requires id and nonce")
+    return (
+        f"{_DISCORD_APPROVAL_CUSTOM_ID_PREFIX}:"
+        f"{normalized_action}:{normalized_confirmation_id}:{normalized_nonce}"
+    )
+
+
+def parse_discord_approval_custom_id(custom_id: str) -> DiscordApprovalInteraction | None:
+    parts = custom_id.strip().split(":")
+    prefix_parts = _DISCORD_APPROVAL_CUSTOM_ID_PREFIX.split(":")
+    if len(parts) != len(prefix_parts) + 3:
+        return None
+    if parts[: len(prefix_parts)] != prefix_parts:
+        return None
+    action = parts[len(prefix_parts)].strip().lower()
+    confirmation_id = parts[len(prefix_parts) + 1].strip()
+    decision_nonce = parts[len(prefix_parts) + 2].strip()
+    if action not in _DISCORD_APPROVAL_ACTIONS or not confirmation_id or not decision_nonce:
+        return None
+    return DiscordApprovalInteraction(
+        action=action,
+        confirmation_id=confirmation_id,
+        decision_nonce=decision_nonce,
+    )
 
 
 class DiscordChannel(InMemoryChannel):
@@ -293,7 +348,44 @@ class DiscordChannel(InMemoryChannel):
                     )
                 )
 
+            async def on_interaction(interaction: Any) -> None:
+                data = getattr(interaction, "data", None)
+                if not isinstance(data, Mapping):
+                    return
+                parsed = parse_discord_approval_custom_id(str(data.get("custom_id") or ""))
+                if parsed is None:
+                    return
+                if parsed.action == "totp":
+                    await self._open_totp_modal(interaction, parsed)
+                    return
+                if parsed.action == "totp_submit":
+                    code = self._interaction_totp_code(data)
+                    if not code:
+                        await self._acknowledge_approval_interaction(
+                            interaction,
+                            message="TOTP code is required.",
+                        )
+                        return
+                    enqueued = await self._enqueue_approval_interaction(
+                        interaction=interaction,
+                        parsed=parsed,
+                        content=f"confirm {parsed.confirmation_id} {code}",
+                        interaction_type="approval_modal",
+                    )
+                elif parsed.action in {"confirm", "reject"}:
+                    enqueued = await self._enqueue_approval_interaction(
+                        interaction=interaction,
+                        parsed=parsed,
+                        content=f"{parsed.action} {parsed.confirmation_id}",
+                        interaction_type="approval_component",
+                    )
+                else:
+                    return
+                if enqueued:
+                    await self._acknowledge_approval_interaction(interaction)
+
             event_decorator(on_message)
+            event_decorator(on_interaction)
 
         start = getattr(self._client, "start", None)
         if callable(start):
@@ -315,7 +407,13 @@ class DiscordChannel(InMemoryChannel):
         self._client = None
         await super().disconnect()
 
-    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
+    async def send(
+        self,
+        message: str,
+        *,
+        target: DeliveryTarget | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         if self._client is not None:
             recipient = (target.recipient if target is not None else "").strip()
             if not recipient:
@@ -337,9 +435,213 @@ class DiscordChannel(InMemoryChannel):
                     if channel_obj is not None:
                         send = getattr(channel_obj, "send", None)
                         if callable(send):
-                            await send(message)
+                            kwargs: dict[str, Any] = {}
+                            view = self._view_from_delivery_metadata(metadata or {})
+                            if view is not None:
+                                kwargs["view"] = view
+                            await send(message, **kwargs)
                             return
-        await super().send(message, target=target)
+        await super().send(message, target=target, metadata=metadata)
+
+    async def _enqueue_approval_interaction(
+        self,
+        *,
+        interaction: Any,
+        parsed: DiscordApprovalInteraction,
+        content: str,
+        interaction_type: str,
+    ) -> bool:
+        user = getattr(interaction, "user", None)
+        if user is None or bool(getattr(user, "bot", False)):
+            return False
+        user_id = str(getattr(user, "id", "")).strip()
+        if not user_id:
+            return False
+        guild = getattr(interaction, "guild", None)
+        guild_id = str(getattr(guild, "id", "")).strip() if guild is not None else ""
+        channel_obj = getattr(interaction, "channel", None)
+        channel_id = (
+            str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
+        )
+        interaction_id = str(getattr(interaction, "id", "")).strip()
+        message_id = (
+            f"discord-interaction:{interaction_id}:{parsed.action}:{parsed.confirmation_id}"
+            if interaction_id
+            else ""
+        )
+        await self._incoming.put(
+            ChannelMessage(
+                channel="discord",
+                external_user_id=user_id,
+                workspace_hint=self.workspace_for_guild(guild_id),
+                content=content.strip(),
+                message_id=message_id,
+                reply_target=channel_id,
+                metadata={
+                    "discord_guild_id": guild_id,
+                    "discord_channel_id": channel_id,
+                    "addressed": True,
+                    "interaction_type": interaction_type,
+                    "approval_interaction_type": interaction_type,
+                    "approval_component_action": parsed.action,
+                    "approval_confirmation_id": parsed.confirmation_id,
+                    "approval_decision_nonce": parsed.decision_nonce,
+                    "engagement_mode": "approval-interaction",
+                    "proactive_eligible": False,
+                },
+            )
+        )
+        return True
+
+    async def _open_totp_modal(
+        self,
+        interaction: Any,
+        parsed: DiscordApprovalInteraction,
+    ) -> None:
+        response = getattr(interaction, "response", None)
+        send_modal = getattr(response, "send_modal", None) if response is not None else None
+        modal = self._totp_modal(parsed)
+        if modal is not None and callable(send_modal):
+            result = send_modal(modal)
+            if asyncio.iscoroutine(result):
+                await result
+            return
+        await self._acknowledge_approval_interaction(
+            interaction,
+            message=(
+                "TOTP approval requires a code. "
+                f"Reply with `confirm {parsed.confirmation_id} 123456`."
+            ),
+        )
+
+    async def _acknowledge_approval_interaction(
+        self,
+        interaction: Any,
+        *,
+        message: str = "Approval response received.",
+    ) -> None:
+        response = getattr(interaction, "response", None)
+        if response is None:
+            return
+        send_message = getattr(response, "send_message", None)
+        if callable(send_message):
+            with contextlib.suppress(TypeError, RuntimeError, OSError):
+                result = send_message(message, ephemeral=True)
+                if asyncio.iscoroutine(result):
+                    await result
+                return
+        defer = getattr(response, "defer", None)
+        if callable(defer):
+            with contextlib.suppress(TypeError, RuntimeError, OSError):
+                result = defer(ephemeral=True)
+                if asyncio.iscoroutine(result):
+                    await result
+
+    def _totp_modal(self, parsed: DiscordApprovalInteraction) -> Any | None:
+        if discord is None:
+            return None
+        ui = getattr(discord, "ui", None)
+        modal_ctor = getattr(ui, "Modal", None) if ui is not None else None
+        text_input_ctor = getattr(ui, "TextInput", None) if ui is not None else None
+        if not callable(modal_ctor) or not callable(text_input_ctor):
+            return None
+        try:
+            modal = modal_ctor(
+                title="TOTP approval",
+                custom_id=discord_approval_custom_id(
+                    action="totp_submit",
+                    confirmation_id=parsed.confirmation_id,
+                    decision_nonce=parsed.decision_nonce,
+                ),
+            )
+            text_input = text_input_ctor(
+                label="TOTP code",
+                custom_id=_DISCORD_TOTP_CODE_FIELD_ID,
+                min_length=6,
+                max_length=6,
+                required=True,
+            )
+            add_item = getattr(modal, "add_item", None)
+            if callable(add_item):
+                add_item(text_input)
+            return modal
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _interaction_totp_code(data: Mapping[str, Any]) -> str:
+        def _walk(value: Any) -> str:
+            if isinstance(value, Mapping):
+                custom_id = str(value.get("custom_id") or "").strip()
+                if custom_id == _DISCORD_TOTP_CODE_FIELD_ID:
+                    return str(value.get("value") or "").strip()
+                for nested in value.values():
+                    found = _walk(nested)
+                    if found:
+                        return found
+            elif isinstance(value, list):
+                for item in value:
+                    found = _walk(item)
+                    if found:
+                        return found
+            return ""
+
+        code = _walk(data)
+        return code if re.fullmatch(r"\d{6}", code) else ""
+
+    def _view_from_delivery_metadata(self, metadata: Mapping[str, Any]) -> Any | None:
+        if discord is None:
+            return None
+        components = metadata.get("discord_components")
+        if not isinstance(components, list) or not components:
+            return None
+        ui = getattr(discord, "ui", None)
+        view_ctor = getattr(ui, "View", None) if ui is not None else None
+        button_ctor = getattr(ui, "Button", None) if ui is not None else None
+        if not callable(view_ctor) or not callable(button_ctor):
+            return None
+        try:
+            view = view_ctor()
+        except TypeError:
+            return None
+        add_item = getattr(view, "add_item", None)
+        if not callable(add_item):
+            return None
+        for component in components:
+            if not isinstance(component, Mapping):
+                continue
+            custom_id = str(component.get("custom_id") or "").strip()
+            label = str(component.get("label") or "").strip()
+            if not custom_id or not label:
+                continue
+            kwargs: dict[str, Any] = {"label": label, "custom_id": custom_id}
+            style = self._button_style(str(component.get("style") or "").strip())
+            if style is not None:
+                kwargs["style"] = style
+            button: Any | None = None
+            try:
+                button = button_ctor(**kwargs)
+            except TypeError:
+                kwargs.pop("style", None)
+                with contextlib.suppress(TypeError):
+                    button = button_ctor(**kwargs)
+            if button is None:
+                continue
+            add_item(button)
+        return view
+
+    @staticmethod
+    def _button_style(style_name: str) -> Any | None:
+        if discord is None:
+            return None
+        style_container = getattr(discord, "ButtonStyle", None)
+        if style_container is None:
+            return None
+        normalized = style_name.strip().lower()
+        for candidate in (normalized, {"success": "green", "danger": "red"}.get(normalized, "")):
+            if candidate and hasattr(style_container, candidate):
+                return getattr(style_container, candidate)
+        return None
 
     def workspace_for_guild(self, guild_id: str) -> str:
         mapping = self._config.guild_workspace_map or {}
