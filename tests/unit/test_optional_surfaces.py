@@ -370,6 +370,62 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
 
 
 @pytest.mark.asyncio
+async def test_tui_decision_confirm_uses_single_allowed_channel_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-1",
+                            "decision_nonce": "nonce-1",
+                            "allowed_channel_principals": ["alice"],
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": True, "method": method, "payload": payload}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(Path("/tmp/control.sock"), "action.confirm", "conf-1")
+    assert created[0].calls[-1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "conf-1",
+            "decision_nonce": "nonce-1",
+            "principal_id": "alice",
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_tui_decision_reject_fetches_decision_nonce(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -396,6 +452,7 @@ async def test_tui_decision_reject_fetches_decision_nonce(
                         {
                             "confirmation_id": "conf-2",
                             "decision_nonce": "nonce-2",
+                            "allowed_channel_principals": ["alice"],
                         }
                     ],
                     "count": 1,

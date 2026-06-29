@@ -4173,6 +4173,62 @@ def test_action_confirm_includes_totp_proof_payload(
     )
 
 
+def test_action_confirm_auto_binds_single_allowed_channel_principal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "action.pending":
+            payload = {
+                "actions": [
+                    {
+                        "confirmation_id": "c-1",
+                        "decision_nonce": "n-1",
+                        "status": "pending",
+                        "tool_name": "web.search",
+                        "reason": "manual",
+                        "selected_backend_method": "software",
+                        "allowed_channel_principals": ["alice"],
+                    }
+                ],
+                "count": 1,
+            }
+        else:
+            assert method == "action.confirm"
+            payload = {"confirmed": True, "confirmation_id": "c-1", "status": "approved"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "confirm", "c-1"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "n-1",
+            "reason": "",
+            "principal_id": "alice",
+        },
+    )
+
+
 def test_action_confirm_renders_confirmed_tool_output_for_humans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -355,6 +355,7 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
                 },
             )
             decision_nonce = ""
+            channel_principal_id = ""
             if isinstance(pending_payload, Mapping):
                 actions = pending_payload.get("actions", [])
                 if isinstance(actions, list):
@@ -364,11 +365,28 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
                         if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
                             continue
                         decision_nonce = str(raw.get("decision_nonce", "")).strip()
+                        allowed_channel_principals_raw = raw.get(
+                            "allowed_channel_principals",
+                            [],
+                        )
+                        allowed_channel_principals = (
+                            [
+                                str(value).strip()
+                                for value in allowed_channel_principals_raw
+                                if str(value).strip()
+                            ]
+                            if isinstance(allowed_channel_principals_raw, list)
+                            else []
+                        )
+                        if len(allowed_channel_principals) == 1:
+                            channel_principal_id = allowed_channel_principals[0]
                         break
             if not decision_nonce:
                 print("decision_nonce not found for confirmation_id")
                 return
             payload["decision_nonce"] = decision_nonce
+            if method == "action.confirm" and channel_principal_id:
+                payload["principal_id"] = channel_principal_id
         result = await client.call(
             method,
             payload,

@@ -2045,6 +2045,15 @@ def _resolve_pending_decision_nonce(
     return (pending.decision_nonce or "").strip() if pending is not None else ""
 
 
+def _single_allowed_channel_principal(row: ActionPendingEntry | None) -> str:
+    if row is None:
+        return ""
+    principals = [
+        str(value).strip() for value in row.allowed_channel_principals if str(value).strip()
+    ]
+    return principals[0] if len(principals) == 1 else ""
+
+
 def _synthetic_pending_confirm_result(row: ActionPendingEntry) -> ActionConfirmResult:
     return ActionConfirmResult(
         confirmed=row.status == "approved",
@@ -2349,6 +2358,10 @@ def action_confirm(
     )
     if principal_value:
         payload["principal_id"] = principal_value
+    else:
+        channel_principal = _single_allowed_channel_principal(pending_row)
+        if channel_principal:
+            payload["principal_id"] = channel_principal
     if credential_value:
         payload["credential_id"] = credential_value
     if totp_code.strip():
