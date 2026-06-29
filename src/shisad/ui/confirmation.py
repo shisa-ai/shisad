@@ -164,6 +164,10 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
     capability = _mapping(action.get("channel_capability"))
     route = str(capability.get("approval_route", "")).strip() or "unknown"
     can_carry = bool(capability.get("can_carry", False))
+    can_collect_inline_totp = (
+        bool(capability.get("can_collect_selected_method", False))
+        and selected_method == "totp"
+    )
     can_reject = bool(capability.get("can_reject", True))
     requires_second_factor = bool(
         capability.get("requires_second_factor", False)
@@ -172,7 +176,7 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
         f"{confirmation_id} tool={tool_name} status={status}",
         f"risk={risk_level} proof={proof_tier} method={selected_method} route={route}",
     ]
-    if can_carry:
+    if can_carry or can_collect_inline_totp:
         if requires_second_factor:
             lines.append(f"approve: c {confirmation_id} <totp-code>")
         else:

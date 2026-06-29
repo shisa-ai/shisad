@@ -284,6 +284,31 @@ def test_pending_action_renderer_surfaces_warning_details_after_preview_truncati
     assert "approve: c c1 <totp-code>" in rendered
 
 
+def test_pending_action_renderer_shows_selected_totp_collection_for_t0_fallback() -> None:
+    rendered = render_pending_action(
+        {
+            "confirmation_id": "c1",
+            "tool_name": "web.fetch",
+            "status": "pending",
+            "risk_level": "high",
+            "required_proof_tier": "T0_identity",
+            "selected_backend_method": "totp",
+            "channel_capability": {
+                "approval_route": "host_cli",
+                "can_carry": False,
+                "can_collect_selected_method": True,
+                "can_carry_t1_stepup": True,
+                "requires_second_factor": True,
+                "cannot_carry_reason": "selected_method_requires_T1_stepup",
+            },
+        }
+    )
+
+    assert "risk=high proof=T0_identity method=totp route=host_cli" in rendered
+    assert "approve: c c1 <totp-code>" in rendered
+    assert "approve: cannot carry" not in rendered
+
+
 def test_m6_t4_confirmation_analytics_detects_rubber_stamping() -> None:
     analytics = ConfirmationAnalytics()
     base = datetime.now(UTC) - timedelta(minutes=10)

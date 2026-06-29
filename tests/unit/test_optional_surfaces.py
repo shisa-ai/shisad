@@ -21,12 +21,15 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
                 "tool_name": "http_request",
                 "status": "pending",
                 "risk_level": "high",
-                "required_proof_tier": "T1_stepup",
+                "required_proof_tier": "T0_identity",
                 "selected_backend_method": "totp",
                 "channel_capability": {
                     "approval_route": "host_cli",
-                    "can_carry": True,
+                    "can_carry": False,
+                    "can_collect_selected_method": True,
+                    "can_carry_t1_stepup": True,
                     "requires_second_factor": True,
+                    "cannot_carry_reason": "selected_method_requires_T1_stepup",
                 },
                 "safe_preview": (
                     "ACTION CONFIRMATION\n"
@@ -59,8 +62,9 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     rendered = render_plain(snapshot)
     assert "PENDING CONFIRMATIONS" in rendered
     assert "c1 tool=http_request status=pending" in rendered
-    assert "risk=high proof=T1_stepup method=totp route=host_cli" in rendered
+    assert "risk=high proof=T0_identity method=totp route=host_cli" in rendered
     assert "approve: c c1 <totp-code>" in rendered
+    assert "approve: cannot carry" not in rendered
     assert "Action: http_request" in rendered
     assert "url: https://example.test" in rendered
     assert "warnings=1: Contains tainted data" in rendered
@@ -229,12 +233,15 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
                 "tool_name": "http_request",
                 "status": "pending",
                 "risk_level": "high",
-                "required_proof_tier": "T1_stepup",
+                "required_proof_tier": "T0_identity",
                 "selected_backend_method": "totp",
                 "channel_capability": {
                     "approval_route": "host_cli",
-                    "can_carry": True,
+                    "can_carry": False,
+                    "can_collect_selected_method": True,
+                    "can_carry_t1_stepup": True,
                     "requires_second_factor": True,
+                    "cannot_carry_reason": "selected_method_requires_T1_stepup",
                 },
                 "safe_preview": "ACTION CONFIRMATION\nAction: http_request\nPARAMETERS:\n  q: hi",
                 "warnings": ["Contains tainted data"],
@@ -274,8 +281,9 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
         table for table in panel_tables if getattr(table, "title", "") == "Pending Confirmations"
     )
     pending_text = "\n".join(" ".join(row) for row in pending_table.rows)
-    assert "risk=high proof=T1_stepup method=totp route=host_cli" in pending_text
+    assert "risk=high proof=T0_identity method=totp route=host_cli" in pending_text
     assert "approve: c c1 <totp-code>" in pending_text
+    assert "approve: cannot carry" not in pending_text
     assert "Action: http_request" in pending_text
     assert "warnings=1: Contains tainted data" in pending_text
 
@@ -612,7 +620,14 @@ async def test_tui_decision_reject_fetches_decision_nonce(
                 "include_ui": False,
             },
         ),
-        ("action.reject", {"confirmation_id": "conf-2", "decision_nonce": "nonce-2"}),
+        (
+            "action.reject",
+            {
+                "confirmation_id": "conf-2",
+                "decision_nonce": "nonce-2",
+                "principal_id": "alice",
+            },
+        ),
     ]
     assert not any("decision_nonce not found" in line for line in printed)
 

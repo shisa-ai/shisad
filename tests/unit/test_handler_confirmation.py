@@ -2718,6 +2718,44 @@ async def test_m6_s8_reject_requires_valid_decision_nonce(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a2_reject_requires_bound_channel_principal(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    missing = await harness.do_action_reject(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+    assert missing["rejected"] is False
+    assert missing["reason"] == "missing_channel_principal"
+    assert pending.status == "pending"
+
+    wrong = await harness.do_action_reject(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "principal_id": "bob",
+        }
+    )
+    assert wrong["rejected"] is False
+    assert wrong["reason"] == "channel_principal_not_allowed"
+    assert pending.status == "pending"
+
+    valid = await harness.do_action_reject(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "principal_id": "alice",
+        }
+    )
+    assert valid["rejected"] is True
+    assert valid["status"] == "rejected"
+    assert pending.status == "rejected"
+
+
+@pytest.mark.asyncio
 async def test_m1_pf11_confirmation_cooldown_active_and_expired(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     harness._pending_actions["c-1"] = _pending_action(

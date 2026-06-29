@@ -83,6 +83,25 @@ _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
 )
 
 
+def _channel_principal_rejection_reason(
+    pending: Any,
+    params: Mapping[str, Any],
+) -> str:
+    allowed_channel_principals = [
+        str(item).strip()
+        for item in getattr(pending, "allowed_channel_principals", ())
+        if str(item).strip()
+    ]
+    if not allowed_channel_principals:
+        return ""
+    principal_id = str(params.get("principal_id", "")).strip()
+    if not principal_id:
+        return "missing_channel_principal"
+    if principal_id not in set(allowed_channel_principals):
+        return "channel_principal_not_allowed"
+    return ""
+
+
 def _validate_signer_public_key(public_key_pem: str, *, algorithm: str) -> str:
     try:
         public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
@@ -2121,6 +2140,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "rejected": False,
                 "confirmation_id": confirmation_id,
                 "reason": f"already_{pending.status}",
+            }
+        channel_principal_reason = _channel_principal_rejection_reason(pending, params)
+        if channel_principal_reason:
+            return {
+                "rejected": False,
+                "confirmation_id": confirmation_id,
+                "reason": channel_principal_reason,
             }
         pending.status = "rejected"
         pending.status_reason = reason

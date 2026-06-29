@@ -437,7 +437,7 @@ async def _decision(
                 print("decision_nonce not found for confirmation_id")
                 return
             payload["decision_nonce"] = decision_nonce
-            if method == "action.confirm" and channel_principal_id:
+            if method in {"action.confirm", "action.reject"} and channel_principal_id:
                 payload["principal_id"] = channel_principal_id
             if method == "action.confirm" and totp_code.strip():
                 payload["approval_method"] = "totp"
