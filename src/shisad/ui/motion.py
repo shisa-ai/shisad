@@ -171,8 +171,13 @@ def _env_flag(env: Mapping[str, str], key: str) -> bool:
 
 
 def _unicode_supported(env: Mapping[str, str]) -> bool:
-    locale = " ".join(
-        _env_value(env, key).lower() for key in ("LC_ALL", "LC_CTYPE", "LANG")
+    locale = next(
+        (
+            value.lower()
+            for value in (_env_value(env, key) for key in ("LC_ALL", "LC_CTYPE", "LANG"))
+            if value
+        ),
+        "",
     )
     return "utf-8" in locale or "utf8" in locale
 

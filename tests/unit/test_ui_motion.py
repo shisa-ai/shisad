@@ -47,6 +47,21 @@ def test_u5_terminal_capabilities_collapse_dumb_or_no_color_output() -> None:
     assert progress_bar(5, 10, width=5, capabilities=caps) == "[##---] 50%"
 
 
+def test_u5_terminal_capabilities_respect_locale_precedence_for_unicode() -> None:
+    caps = TerminalCapabilities.from_env(
+        {
+            "TERM": "xterm-256color",
+            "LC_ALL": "C",
+            "LC_CTYPE": "en_US.UTF-8",
+            "LANG": "en_US.UTF-8",
+        },
+        isatty=True,
+    )
+
+    assert caps.unicode is False
+    assert glyph("success", caps) == "OK"
+
+
 def test_u5_reduce_motion_uses_static_spinner_but_keeps_capabilities() -> None:
     caps = TerminalCapabilities.from_env(
         {
