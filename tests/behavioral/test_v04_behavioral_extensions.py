@@ -928,14 +928,71 @@ async def test_behavioral_out_of_scope_background_action_routes_to_confirmation(
 @pytest.mark.asyncio
 async def test_behavioral_task_status_snapshot_renders_waiting_on_approval(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    daemon_task, client, config = await _start_daemon(tmp_path)
+    policy_text = "\n".join(
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "tools:",
+            "  fs.read:",
+            "    capabilities_required:",
+            "      - file.read",
+            "    confirmation:",
+            "      level: software",
+            "      methods:",
+            "        - software",
+        ]
+    )
+
+    async def _planner_fs_read(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (user_content, tools, persona_tone_override)
+        proposal = ActionProposal(
+            action_id="t3-task-surface-plan-step",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": str(README_PATH), "max_bytes": 1024},
+            reasoning="exercise task surface structured plan step",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="waiting for approval"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_fs_read)
+    daemon_task, client, config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text + "\n",
+        config_overrides={"assistant_fs_roots": [REPO_ROOT]},
+    )
     try:
         operator_session = await client.call(
             "session.create",
             {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
         )
         operator_session_id = str(operator_session["session_id"])
+        plan_reply = await client.call(
+            "session.message",
+            {
+                "session_id": operator_session_id,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "read the release notes",
+            },
+        )
+        plan_steps = await client.call("plan.steps", {"limit": 20})
         created = await client.call(
             "task.create",
             {
@@ -973,6 +1030,15 @@ async def test_behavioral_task_status_snapshot_renders_waiting_on_approval(
         tui_snapshot = await fetch_snapshot(config.socket_path)
         rendered = render_plain(tui_snapshot)
 
+        assert plan_reply["confirmation_required_actions"] >= 1
+        assert any(
+            str(row.get("session_id", "")) == operator_session_id
+            and str(row.get("status", "")) == "blocked"
+            and bool(row.get("current", False))
+            for row in plan_steps["steps"]
+        )
+        assert "WORK BREAKDOWN:" in rendered
+        assert "  > [blocked] 1. Current request" in rendered
         assert confirmation_id in task_confirmation_ids
         assert f"waiting_on_approval confirmation={confirmation_id}" in rendered
         assert "reject_hint=x " + confirmation_id in rendered

@@ -193,6 +193,98 @@ def test_t2_task_approval_hint_labels_recovery_code_truthfully() -> None:
     assert "<totp-code>" not in rendered
 
 
+def test_t3_plain_task_panels_are_basic_terminal_safe_and_structured() -> None:
+    snapshot = TuiSnapshot(
+        pending_actions=[
+            {
+                "confirmation_id": "c-task-identity",
+                "tool_name": "message.send",
+                "status": "pending",
+                "required_proof_tier": "T0_identity",
+                "selected_backend_method": "software",
+                "channel_capability": {
+                    "approval_route": "host_cli",
+                    "can_carry": True,
+                    "can_collect_selected_method": True,
+                    "can_reject": True,
+                },
+            },
+            {
+                "confirmation_id": "c-task-stepup",
+                "tool_name": "fs.read",
+                "status": "pending",
+                "required_proof_tier": "T1_stepup",
+                "selected_backend_method": "totp",
+                "channel_capability": {
+                    "approval_route": "host_cli",
+                    "can_carry": True,
+                    "can_collect_selected_method": True,
+                    "requires_second_factor": True,
+                    "can_reject": True,
+                },
+            },
+        ],
+        plan_steps=[
+            {
+                "id": "step-1",
+                "order": 1,
+                "title": "Inspect state",
+                "status": "done",
+            },
+            {
+                "id": "step-2",
+                "order": 2,
+                "title": "Approve task action",
+                "status": "blocked",
+                "current": True,
+                "blocked_reason": "pending_confirmation",
+                "depends_on": ["step-1"],
+            },
+        ],
+        tasks=[
+            {
+                "id": "task-visible",
+                "status": "enabled",
+                "schedule_kind": "event",
+                "schedule_summary": "event-triggered: message.received",
+                "delivery_channel": "discord",
+                "pending_confirmations": [
+                    {
+                        "confirmation_id": "c-task-identity",
+                        "task_id": "task-visible",
+                        "tool_name": "message.send",
+                        "trigger_payload": "do not render raw trigger payload",
+                    },
+                    {
+                        "confirmation_id": "c-task-stepup",
+                        "task_id": "task-visible",
+                        "tool_name": "fs.read",
+                    },
+                ],
+                "pending_confirmation_count": 2,
+            }
+        ],
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert "\x1b[" not in rendered
+    assert "WORK BREAKDOWN:" in rendered
+    assert "  [done] 1. Inspect state" in rendered
+    assert (
+        "  > [blocked] 2. Approve task action depends_on=step-1 blocked=pending_confirmation"
+    ) in rendered
+    assert "TASKS:" in rendered
+    assert "task-visible status=enabled enabled=True schedule=event delivery=discord" in rendered
+    assert "summary=event-triggered: message.received" in rendered
+    assert "waiting_on_approval confirmation=c-task-identity" in rendered
+    assert "approve_hint=c c-task-identity" in rendered
+    assert "waiting_on_approval confirmation=c-task-stepup" in rendered
+    assert "approve_hint=c c-task-stepup <totp-code>" in rendered
+    assert "reject_hint=x c-task-stepup" in rendered
+    assert "do not render raw trigger payload" not in rendered
+
+
 def test_t1_tui_plain_renderer_uses_structured_plan_step_rows() -> None:
     snapshot = TuiSnapshot(
         plan_steps=[
@@ -1072,6 +1164,89 @@ async def test_tui_interactive_command_routing(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_t3_tui_interactive_task_approval_carries_identity_and_stepup_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    async def _fake_fetch_snapshot(_socket_path: Path) -> TuiSnapshot:
+        return TuiSnapshot(
+            pending_actions=[
+                {
+                    "confirmation_id": "c-task-identity",
+                    "status": "pending",
+                    "required_proof_tier": "T0_identity",
+                    "selected_backend_method": "software",
+                    "channel_capability": {
+                        "approval_route": "host_cli",
+                        "can_carry": True,
+                        "can_reject": True,
+                    },
+                },
+                {
+                    "confirmation_id": "c-task-stepup",
+                    "status": "pending",
+                    "required_proof_tier": "T1_stepup",
+                    "selected_backend_method": "totp",
+                    "channel_capability": {
+                        "approval_route": "host_cli",
+                        "can_carry": True,
+                        "can_collect_selected_method": True,
+                        "requires_second_factor": True,
+                        "can_reject": True,
+                    },
+                },
+            ],
+            tasks=[
+                {
+                    "id": "task-visible",
+                    "status": "enabled",
+                    "schedule_kind": "event",
+                    "pending_confirmations": [
+                        {"confirmation_id": "c-task-identity"},
+                        {"confirmation_id": "c-task-stepup"},
+                    ],
+                    "pending_confirmation_count": 2,
+                }
+            ],
+        )
+
+    decisions: list[tuple[str, str, str]] = []
+
+    async def _fake_decision(
+        _socket_path: Path,
+        method: str,
+        confirmation_id: str,
+        *,
+        proof_code: str = "",
+        totp_code: str = "",
+    ) -> None:
+        decisions.append((method, confirmation_id, proof_code or totp_code))
+
+    inputs = iter(["c c-task-identity", "c c-task-stepup 654321", "x c-task-identity", "q"])
+    printed: list[str] = []
+    monkeypatch.setattr(tui_module, "fetch_snapshot", _fake_fetch_snapshot)
+    monkeypatch.setattr(tui_module, "_decision", _fake_decision)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    await tui_module.run_interactive(Path("/tmp/control.sock"))
+
+    assert decisions == [
+        ("action.confirm", "c-task-identity", ""),
+        ("action.confirm", "c-task-stepup", "654321"),
+        ("action.reject", "c-task-identity", ""),
+    ]
+    output = "\n".join(printed)
+    assert "[r]efresh  [c]onfirm <id> [proof-code]  [x] reject <id>  [q]uit" in output
+    assert "waiting_on_approval confirmation=c-task-stepup" in output
+    assert "approve_hint=c c-task-stepup <totp-code>" in output
+
+
+@pytest.mark.asyncio
 async def test_tui_decision_handles_missing_and_present_confirmation_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1318,6 +1493,87 @@ async def test_tui_decision_confirm_can_send_recovery_code_proof(
             "proof": {"recovery_code": "ABCD-EFGH"},
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_t3_task_inline_approval_uses_workstream_a_for_identity_and_stepup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                confirmation_id = str(payload.get("confirmation_id", ""))
+                selected_method = "totp" if confirmation_id == "c-task-stepup" else "software"
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": confirmation_id,
+                            "decision_nonce": f"nonce-{confirmation_id}",
+                            "selected_backend_method": selected_method,
+                            "allowed_channel_principals": ["alice"],
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": True, "method": method, "payload": payload}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "c-task-identity",
+    )
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "c-task-stepup",
+        proof_code="654321",
+    )
+
+    assert created[0].calls[-1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "c-task-identity",
+            "decision_nonce": "nonce-c-task-identity",
+            "principal_id": "alice",
+        },
+    )
+    assert created[1].calls[-1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "c-task-stepup",
+            "decision_nonce": "nonce-c-task-stepup",
+            "principal_id": "alice",
+            "approval_method": "totp",
+            "proof": {"totp_code": "654321"},
+        },
+    )
+    assert all(method != "task.confirm" for client in created for method, _payload in client.calls)
 
 
 @pytest.mark.asyncio
