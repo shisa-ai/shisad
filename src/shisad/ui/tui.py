@@ -201,6 +201,24 @@ def _task_pending_approval_summaries(
         )
         proof = str(action.get("required_proof_tier", "")).strip()
         method = str(action.get("selected_backend_method", "")).strip()
+        has_action_metadata = isinstance(action, Mapping) and bool(action)
+        can_carry = (
+            bool(capability.get("can_carry", False)) if isinstance(capability, Mapping) else False
+        )
+        can_collect_inline_totp = (
+            bool(capability.get("can_collect_selected_method", False))
+            and method == "totp"
+            if isinstance(capability, Mapping)
+            else False
+        )
+        can_reject = (
+            bool(capability.get("can_reject", True)) if isinstance(capability, Mapping) else True
+        )
+        requires_second_factor = (
+            bool(capability.get("requires_second_factor", False))
+            if isinstance(capability, Mapping)
+            else False
+        ) or method in {"totp", "recovery_code"}
         parts = [f"confirmation={confirmation_id}"]
         if proof:
             parts.append(f"proof={proof}")
@@ -208,11 +226,24 @@ def _task_pending_approval_summaries(
             parts.append(f"method={method}")
         if route:
             parts.append(f"route={route}")
-        if method == "totp":
-            parts.append(f"approve_hint=c {confirmation_id} <totp-code>")
+        if has_action_metadata and (can_carry or can_collect_inline_totp):
+            if requires_second_factor:
+                parts.append(f"approve_hint=c {confirmation_id} <totp-code>")
+            else:
+                parts.append(f"approve_hint=c {confirmation_id}")
         else:
-            parts.append(f"approve_hint=c {confirmation_id}")
-        parts.append(f"reject_hint=x {confirmation_id}")
+            reason = (
+                str(capability.get("cannot_carry_reason", "")).strip()
+                if isinstance(capability, Mapping)
+                else ""
+            ) or (
+                "surface_cannot_carry"
+                if has_action_metadata
+                else "confirmation_metadata_unavailable"
+            )
+            parts.append(f"approve_unavailable={reason}")
+        if can_reject:
+            parts.append(f"reject_hint=x {confirmation_id}")
         summaries.append(" ".join(parts))
     if summaries:
         return summaries
@@ -735,6 +766,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     tasks.add_column("Schedule")
     tasks.add_column("Delivery")
     tasks.add_column("Last")
+    tasks.add_column("Next")
     tasks.add_column("Approval")
     for row in snapshot.tasks:
         approval = "; ".join(_task_pending_approval_summaries(row, pending_by_id))
@@ -744,11 +776,12 @@ def render_rich(snapshot: TuiSnapshot) -> str:
             str(row.get("schedule_kind", "")),
             str(row.get("delivery_channel", "")),
             str(row.get("last_triggered_at", "")),
+            str(row.get("next_run_at", "")),
             approval,
             style=_enabled_style(_task_enabled(row)),
         )
     if not snapshot.tasks:
-        tasks.add_row("(none)", "", "", "", "", "")
+        tasks.add_row("(none)", "", "", "", "", "", "")
 
     channels = Table(title="Channel Health", show_lines=False, row_styles=["", "dim"])
     channels.add_column("Channel")

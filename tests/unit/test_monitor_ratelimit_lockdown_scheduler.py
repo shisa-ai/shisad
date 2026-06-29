@@ -1142,6 +1142,55 @@ def test_m4_task_status_snapshot_scopes_to_owner_and_workspace() -> None:
     assert rows[0]["workspace_id"] == "ws1"
 
 
+def test_t2_task_status_snapshot_includes_next_interval_run() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="interval-task",
+        goal="send reminder",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    base = datetime(2026, 6, 29, 12, 0, 0, tzinfo=UTC)
+    task.created_at = base
+
+    rows = scheduler.task_status_snapshot(
+        limit=10,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        now=base + timedelta(seconds=15),
+    )
+
+    assert rows[0]["task_id"] == task.id
+    assert rows[0]["next_run_at"] == "2026-06-29T12:01:00+00:00"
+
+
+def test_t2_task_status_snapshot_includes_next_cron_run() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="cron-task",
+        goal="send reminder",
+        schedule=Schedule(kind="cron", expression="*/5 * * * *"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    now = datetime(2026, 6, 29, 12, 1, 30, tzinfo=UTC)
+
+    rows = scheduler.task_status_snapshot(
+        limit=10,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        now=now,
+    )
+
+    assert rows[0]["task_id"] == task.id
+    assert rows[0]["next_run_at"] == "2026-06-29T12:05:00+00:00"
+
+
 def test_gh59_task_status_snapshot_renders_one_shot_interval_without_recurring_wording() -> None:
     scheduler = SchedulerManager()
     task = scheduler.create_task(

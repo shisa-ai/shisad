@@ -334,6 +334,36 @@ class _PlannerContextControlPlane:
         return self._active_plan_hash
 
 
+def test_t2_task_ledger_snapshot_forwards_next_run_at() -> None:
+    class _Scheduler:
+        def task_status_snapshot(self, **_kwargs: object) -> list[dict[str, object]]:
+            return [
+                {
+                    "task_id": "task-1",
+                    "title": "Task one",
+                    "status": "enabled",
+                    "schedule_kind": "recurring_interval",
+                    "schedule_summary": "every 1 minute",
+                    "created_at": "2026-06-29T12:00:00+00:00",
+                    "last_triggered_at": "",
+                    "next_run_at": "2026-06-29T12:01:00+00:00",
+                    "created_by": "alice",
+                    "workspace_id": "ws1",
+                }
+            ]
+
+    harness = SimpleNamespace(_scheduler=_Scheduler())
+
+    snapshot = SessionImplMixin._build_task_ledger_snapshot(
+        harness,  # type: ignore[arg-type]
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    assert snapshot is not None
+    assert snapshot["tasks"][0]["next_run_at"] == "2026-06-29T12:01:00+00:00"
+
+
 @pytest.mark.asyncio
 async def test_g1_do_session_message_runs_new_phase_methods_in_order() -> None:
     harness = _PhaseHarness()

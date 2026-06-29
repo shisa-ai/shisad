@@ -8578,6 +8578,7 @@ class SessionImplMixin(HandlerMixinBase):
                     "schedule_summary": str(row.get("schedule_summary", "")),
                     "created_at": str(row.get("created_at", "")),
                     "last_triggered_at": str(row.get("last_triggered_at", "")),
+                    "next_run_at": str(row.get("next_run_at", "")),
                     "confirmation_needed": bool(row.get("confirmation_needed", False)),
                     "pending_confirmation_count": int(
                         row.get("pending_confirmation_count", 0) or 0

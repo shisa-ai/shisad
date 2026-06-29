@@ -106,6 +106,43 @@ def test_u3_tui_plain_renderer_includes_summary_and_explicit_empty_states() -> N
     assert "AUDIT EVENTS:\n  no recent audit events" in rendered
 
 
+def test_t2_task_approval_hint_respects_surface_carry_gate() -> None:
+    snapshot = TuiSnapshot(
+        pending_actions=[
+            {
+                "confirmation_id": "c-browser",
+                "tool_name": "message.send",
+                "status": "pending",
+                "required_proof_tier": "bound_approval",
+                "selected_backend_method": "webauthn",
+                "channel_capability": {
+                    "approval_route": "browser",
+                    "can_carry": False,
+                    "can_collect_selected_method": False,
+                    "can_reject": True,
+                    "cannot_carry_reason": "browser_ceremony_required",
+                },
+            }
+        ],
+        tasks=[
+            {
+                "id": "task-browser",
+                "status": "enabled",
+                "schedule_kind": "event",
+                "pending_confirmations": [{"confirmation_id": "c-browser"}],
+                "pending_confirmation_count": 1,
+            }
+        ],
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert "waiting_on_approval confirmation=c-browser" in rendered
+    assert "approve_unavailable=browser_ceremony_required" in rendered
+    assert "approve_hint=c c-browser" not in rendered
+    assert "reject_hint=x c-browser" in rendered
+
+
 def test_t1_tui_plain_renderer_uses_structured_plan_step_rows() -> None:
     snapshot = TuiSnapshot(
         plan_steps=[
@@ -489,6 +526,7 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
                 "enabled": True,
                 "schedule_kind": "interval",
                 "delivery_channel": "discord",
+                "next_run_at": "2026-06-29T12:01:00+00:00",
                 "pending_confirmations": [{"confirmation_id": "c1"}],
                 "pending_confirmation_count": 1,
             }
@@ -572,6 +610,7 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     plan_text = "\n".join(" ".join(row) for row in plan_table.rows)
     task_text = "\n".join(" ".join(row) for row in tasks_table.rows)
     assert "step-1 1 Current request blocked yes pending_confirmation" in plan_text
+    assert "2026-06-29T12:01:00+00:00" in task_text
     assert "confirmation=c1 proof=T0_identity method=totp route=host_cli" in task_text
     assert sessions_table.styles == ["green"]
     assert pending_table.styles == ["yellow"]

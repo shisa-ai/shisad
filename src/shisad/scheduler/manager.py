@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -328,7 +328,9 @@ class SchedulerManager:
         limit: int = 8,
         created_by: UserId | None = None,
         workspace_id: WorkspaceId | None = None,
+        now: datetime | None = None,
     ) -> list[dict[str, Any]]:
+        current = now or datetime.now(UTC)
         tasks = sorted(
             self._tasks.values(),
             key=lambda item: (item.created_at, item.id),
@@ -360,6 +362,7 @@ class SchedulerManager:
                         if task.last_triggered_at is not None
                         else ""
                     ),
+                    "next_run_at": self._next_run_at(task, now=current),
                     "confirmation_needed": pending > 0,
                     "pending_confirmation_count": pending,
                     "trigger_count": int(task.trigger_count),
@@ -372,6 +375,57 @@ class SchedulerManager:
                 }
             )
         return rows
+
+    def _next_run_at(self, task: ScheduledTask, *, now: datetime) -> str:
+        if not task.enabled:
+            return ""
+        if task.schedule.kind == ScheduleKind.EVENT:
+            return ""
+        if task.max_runs > 0 and task.trigger_count >= task.max_runs:
+            return ""
+        try:
+            if task.schedule.kind == ScheduleKind.INTERVAL:
+                interval_seconds = self._parse_interval_seconds(task.schedule.expression)
+                due_at = (task.last_triggered_at or task.created_at) + timedelta(
+                    seconds=interval_seconds
+                )
+                if due_at <= now:
+                    missed_runs = int((now - due_at).total_seconds() // interval_seconds) + 1
+                    due_at += timedelta(seconds=interval_seconds * missed_runs)
+                return due_at.isoformat()
+            if task.schedule.kind == ScheduleKind.CRON:
+                next_cron = self._next_cron_run(
+                    task.schedule.expression,
+                    now=now,
+                    last_triggered_at=task.last_triggered_at,
+                )
+                return next_cron.isoformat() if next_cron is not None else ""
+        except ValueError:
+            return ""
+        return ""
+
+    def _next_cron_run(
+        self,
+        expression: str,
+        *,
+        now: datetime,
+        last_triggered_at: datetime | None,
+    ) -> datetime | None:
+        start = now.replace(second=0, microsecond=0)
+        if now.second or now.microsecond:
+            start += timedelta(minutes=1)
+        last_minute = (
+            last_triggered_at.replace(second=0, microsecond=0)
+            if last_triggered_at is not None
+            else None
+        )
+        for minute_offset in range(0, 366 * 24 * 60):
+            candidate = start + timedelta(minutes=minute_offset)
+            if candidate == last_minute:
+                continue
+            if self._cron_matches(expression, candidate):
+                return candidate
+        return None
 
     def _prune_confirmation_rows(self, task_id: str) -> None:
         rows = list(self._pending_confirmations.get(task_id, []))
