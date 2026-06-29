@@ -845,15 +845,25 @@ def test_discord_totp_modal_support_requires_text_input_attachment(
 async def test_discord_totp_modal_send_failure_falls_back_to_typed_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeDiscordException(Exception):
+        pass
+
     sent_messages: list[tuple[str, dict[str, object]]] = []
 
     class _FakeResponse:
         def send_modal(self, _modal: object) -> None:
-            raise RuntimeError("modal rejected")
+            raise _FakeDiscordException("modal rejected")
 
         def send_message(self, message: str, **kwargs: object) -> None:
             sent_messages.append((message, dict(kwargs)))
 
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(DiscordException=_FakeDiscordException),
+    )
     channel = DiscordChannel(DiscordConfig(bot_token="token"))
     monkeypatch.setattr(channel, "_totp_modal", lambda _parsed: object())
 
@@ -867,6 +877,43 @@ async def test_discord_totp_modal_send_failure_falls_back_to_typed_guidance(
             "TOTP approval requires a code. Reply with `confirm c-totp 123456`.",
             {"ephemeral": True},
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discord_acknowledgement_suppresses_discord_response_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeDiscordException(Exception):
+        pass
+
+    events: list[object] = []
+
+    class _FakeResponse:
+        def send_message(self, _message: str, **kwargs: object) -> None:
+            events.append(("send_message", dict(kwargs)))
+            raise _FakeDiscordException("message rejected")
+
+        def defer(self, **kwargs: object) -> None:
+            events.append(("defer", dict(kwargs)))
+            raise _FakeDiscordException("defer rejected")
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(DiscordException=_FakeDiscordException),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+
+    await channel._acknowledge_approval_interaction(
+        SimpleNamespace(response=_FakeResponse()),
+    )
+
+    assert events == [
+        ("send_message", {"ephemeral": True}),
+        ("defer", {"ephemeral": True}),
     ]
 
 

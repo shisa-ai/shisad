@@ -34,6 +34,11 @@ _DISCORD_APPROVAL_CUSTOM_ID_PREFIX = "shisad:approval:v1"
 _DISCORD_APPROVAL_ACTIONS = {"confirm", "reject", "totp", "totp_submit"}
 _DISCORD_TOTP_CODE_FIELD_ID = "totp_code"
 DISCORD_VIEW_COMPONENT_LIMIT = 25
+_DISCORD_RESPONSE_FALLBACK_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    TypeError,
+    RuntimeError,
+    OSError,
+)
 
 
 @dataclass(slots=True)
@@ -50,6 +55,16 @@ class DiscordApprovalInteraction:
     action: str
     confirmation_id: str
     decision_nonce: str
+
+
+def _discord_response_exceptions() -> tuple[type[BaseException], ...]:
+    discord_exception = getattr(discord, "DiscordException", None)
+    if isinstance(discord_exception, type) and issubclass(
+        discord_exception,
+        BaseException,
+    ):
+        return (*_DISCORD_RESPONSE_FALLBACK_EXCEPTIONS, discord_exception)
+    return _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS
 
 
 def discord_approval_custom_id(
@@ -525,7 +540,7 @@ class DiscordChannel(InMemoryChannel):
         send_modal = getattr(response, "send_modal", None) if response is not None else None
         modal = self._totp_modal(parsed)
         if modal is not None and callable(send_modal):
-            with contextlib.suppress(TypeError, RuntimeError, OSError):
+            with contextlib.suppress(*_discord_response_exceptions()):
                 result = send_modal(modal)
                 if asyncio.iscoroutine(result):
                     await result
@@ -549,14 +564,14 @@ class DiscordChannel(InMemoryChannel):
             return
         send_message = getattr(response, "send_message", None)
         if callable(send_message):
-            with contextlib.suppress(TypeError, RuntimeError, OSError):
+            with contextlib.suppress(*_discord_response_exceptions()):
                 result = send_message(message, ephemeral=True)
                 if asyncio.iscoroutine(result):
                     await result
                 return
         defer = getattr(response, "defer", None)
         if callable(defer):
-            with contextlib.suppress(TypeError, RuntimeError, OSError):
+            with contextlib.suppress(*_discord_response_exceptions()):
                 result = defer(ephemeral=True)
                 if asyncio.iscoroutine(result):
                     await result
