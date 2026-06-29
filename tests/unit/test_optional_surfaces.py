@@ -78,7 +78,7 @@ def test_u3_tui_plain_renderer_includes_summary_and_explicit_empty_states() -> N
     assert "SUMMARY:" in rendered
     assert (
         "sessions=0 lockdown=0 pending_confirmations=0 tasks=0 enabled_tasks=0 "
-        "channels=0 connected_channels=0 alerts=0 audit_events=0"
+        "channels=0 connected_channels=0 alerts=0 acknowledged_alerts=0 audit_events=0"
     ) in rendered
     assert "SESSIONS:\n  no active sessions" in rendered
     assert "PENDING CONFIRMATIONS:\n  no pending confirmations" in rendered
@@ -103,10 +103,13 @@ def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
             {"id": "t2", "enabled": False, "schedule_kind": "manual"},
         ],
         channel_health=[
-            {"channel": "discord", "connected": True},
-            {"channel": "slack", "connected": False},
+            {"channel": "discord", "enabled": True, "connected": True, "status": "ok"},
+            {"channel": "slack", "enabled": True, "connected": False, "status": "degraded"},
         ],
-        alerts=[{"event_type": "AnomalyReported"}],
+        alerts=[
+            {"event_type": "AnomalyReported", "acknowledged_reason": ""},
+            {"event_type": "AlertRaised", "acknowledged_reason": "known false positive"},
+        ],
         audit_events=[{"event_type": "SessionMessageReceived"}],
     )
 
@@ -114,11 +117,53 @@ def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
 
     assert (
         "sessions=2 lockdown=1 pending_confirmations=2 tasks=2 enabled_tasks=1 "
-        "channels=2 connected_channels=1 alerts=1 audit_events=1"
+        "channels=2 connected_channels=1 alerts=1 acknowledged_alerts=1 audit_events=1"
     ) in rendered
     assert "s2 user=u2 lockdown=caution" in rendered
     assert "t2 enabled=False schedule=manual" in rendered
-    assert "slack enabled=False available=False connected=False" in rendered
+    assert "slack enabled=True available=False connected=False status=degraded" in rendered
+    assert "active AnomalyReported ack=" in rendered
+    assert "acknowledged AlertRaised ack=known false positive" in rendered
+
+
+def test_u3_tui_plain_treats_disabled_channels_and_acknowledged_alerts_as_inactive() -> None:
+    snapshot = TuiSnapshot(
+        channel_health=[
+            {
+                "channel": "discord",
+                "enabled": False,
+                "available": False,
+                "connected": False,
+                "status": "disabled",
+            },
+            {
+                "channel": "slack",
+                "enabled": False,
+                "available": False,
+                "connected": False,
+                "status": "disabled",
+            },
+        ],
+        alerts=[
+            {
+                "event_type": "AlertRaised",
+                "acknowledged_reason": "known false positive",
+            }
+        ],
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert (
+        "sessions=0 lockdown=0 pending_confirmations=0 tasks=0 enabled_tasks=0 "
+        "channels=0 connected_channels=0 alerts=0 acknowledged_alerts=1 audit_events=0"
+    ) in rendered
+    assert "CHANNEL HEALTH:\n  no configured channels" in rendered
+    assert "discord enabled=False" not in rendered
+    assert (
+        "ALERTS:\n  no active alerts\n  acknowledged AlertRaised ack=known false positive"
+        in rendered
+    )
 
 
 def test_web_snapshot_renderer_includes_key_sections() -> None:
@@ -182,7 +227,14 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
                     ]
                 },
                 "daemon.status": {
-                    "channels": {"discord": {"enabled": True, "available": True, "connected": True}}
+                    "channels": {
+                        "discord": {
+                            "enabled": True,
+                            "available": True,
+                            "connected": True,
+                            "status": "ok",
+                        }
+                    }
                 },
                 "dashboard.alerts": {"alerts": [{"event_type": "AlertRaised"}]},
                 "dashboard.audit_explorer": {"events": [{"event_type": "AuditLogged"}]},
@@ -214,6 +266,7 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert snapshot.tasks[0]["schedule_kind"] == "interval"
     assert snapshot.channel_health[0]["channel"] == "discord"
     assert snapshot.channel_health[0]["connected"] is True
+    assert snapshot.channel_health[0]["status"] == "ok"
     assert snapshot.alerts[0]["event_type"] == "AlertRaised"
     assert snapshot.audit_events[0]["event_type"] == "AuditLogged"
     assert created[0].connected is True
@@ -312,9 +365,34 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
                 "enabled": True,
                 "available": True,
                 "connected": True,
+                "status": "ok",
+            },
+            {
+                "channel": "matrix",
+                "enabled": True,
+                "available": True,
+                "connected": False,
+                "status": "degraded",
+            },
+            {
+                "channel": "telegram",
+                "enabled": True,
+                "available": False,
+                "connected": False,
+                "status": "misconfigured",
+            },
+            {
+                "channel": "slack",
+                "enabled": False,
+                "available": False,
+                "connected": False,
+                "status": "disabled",
             }
         ],
-        alerts=[{"event_type": "AlertRaised", "acknowledged_reason": ""}],
+        alerts=[
+            {"event_type": "AlertRaised", "acknowledged_reason": ""},
+            {"event_type": "AlertRaised", "acknowledged_reason": "known false positive"},
+        ],
         audit_events=[
             {
                 "timestamp": "2026-02-15T00:00:00+00:00",
@@ -344,7 +422,10 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     )
     summary_text = "\n".join(" ".join(row) for row in summary_table.rows)
     assert "pending_confirmations 1" in summary_text
+    assert "channels 3" in summary_text
     assert "connected_channels 1" in summary_text
+    assert "alerts 1" in summary_text
+    assert "acknowledged_alerts 1" in summary_text
     pending_text = "\n".join(" ".join(row) for row in pending_table.rows)
     assert "risk=high proof=T0_identity method=totp route=host_cli" in pending_text
     assert "approve: c c1 <totp-code>" in pending_text
@@ -354,8 +435,8 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert sessions_table.styles == ["green"]
     assert pending_table.styles == ["yellow"]
     assert tasks_table.styles == ["green"]
-    assert channels_table.styles == ["green"]
-    assert alerts_table.styles == ["red"]
+    assert channels_table.styles == ["green", "yellow", "red"]
+    assert alerts_table.styles == ["red", "dim"]
 
 
 @pytest.mark.asyncio

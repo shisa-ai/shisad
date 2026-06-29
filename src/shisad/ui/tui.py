@@ -171,8 +171,42 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
     )
 
 
+def _channel_status(row: Mapping[str, Any]) -> str:
+    return str(row.get("status", "")).strip().lower()
+
+
+def _channel_is_configured(row: Mapping[str, Any]) -> bool:
+    status = _channel_status(row)
+    if status == "disabled":
+        return False
+    if status in {"ok", "degraded", "misconfigured"}:
+        return True
+    if bool(row.get("enabled", False)):
+        return True
+    return bool(row.get("available", False)) or bool(row.get("connected", False))
+
+
+def _configured_channel_rows(snapshot: TuiSnapshot) -> list[dict[str, Any]]:
+    return [row for row in snapshot.channel_health if _channel_is_configured(row)]
+
+
+def _alert_acknowledged(row: Mapping[str, Any]) -> bool:
+    return bool(str(row.get("acknowledged_reason", "")).strip())
+
+
+def _active_alert_rows(snapshot: TuiSnapshot) -> list[dict[str, Any]]:
+    return [row for row in snapshot.alerts if not _alert_acknowledged(row)]
+
+
+def _acknowledged_alert_rows(snapshot: TuiSnapshot) -> list[dict[str, Any]]:
+    return [row for row in snapshot.alerts if _alert_acknowledged(row)]
+
+
 def render_plain(snapshot: TuiSnapshot) -> str:
     """Render a deterministic plaintext dashboard for non-rich terminals."""
+    channel_rows = _configured_channel_rows(snapshot)
+    active_alerts = _active_alert_rows(snapshot)
+    acknowledged_alerts = _acknowledged_alert_rows(snapshot)
     lines: list[str] = []
     lines.append("SHISAD TUI SNAPSHOT")
     lines.append("SUMMARY:")
@@ -203,21 +237,30 @@ def render_plain(snapshot: TuiSnapshot) -> str:
             f"delivery={row.get('delivery_channel', '')}"
         )
     lines.append("CHANNEL HEALTH:")
-    if not snapshot.channel_health:
+    if not channel_rows:
         lines.append("  no configured channels")
-    for row in snapshot.channel_health:
+    for row in channel_rows:
         lines.append(
             "  "
             f"{row.get('channel', '')} "
             f"enabled={row.get('enabled', False)} "
             f"available={row.get('available', False)} "
-            f"connected={row.get('connected', False)}"
+            f"connected={row.get('connected', False)} "
+            f"status={row.get('status', '')}"
         )
     lines.append("ALERTS:")
-    if not snapshot.alerts:
+    if not active_alerts:
         lines.append("  no active alerts")
-    for row in snapshot.alerts:
-        lines.append(f"  {row.get('event_type', '')} ack={row.get('acknowledged_reason', '')}")
+    for row in active_alerts:
+        lines.append(
+            f"  active {row.get('event_type', '')} ack={row.get('acknowledged_reason', '')}"
+        )
+    for row in acknowledged_alerts:
+        lines.append(
+            "  "
+            f"acknowledged {row.get('event_type', '')} "
+            f"ack={row.get('acknowledged_reason', '')}"
+        )
     lines.append("AUDIT EVENTS:")
     if not snapshot.audit_events:
         lines.append("  no recent audit events")
@@ -231,6 +274,9 @@ def render_plain(snapshot: TuiSnapshot) -> str:
 
 
 def _summary_counts(snapshot: TuiSnapshot) -> dict[str, int]:
+    channel_rows = _configured_channel_rows(snapshot)
+    active_alerts = _active_alert_rows(snapshot)
+    acknowledged_alerts = _acknowledged_alert_rows(snapshot)
     return {
         "sessions": len(snapshot.sessions),
         "lockdown": sum(
@@ -241,11 +287,10 @@ def _summary_counts(snapshot: TuiSnapshot) -> dict[str, int]:
         "pending_confirmations": len(snapshot.pending_actions),
         "tasks": len(snapshot.tasks),
         "enabled_tasks": sum(1 for row in snapshot.tasks if bool(row.get("enabled", False))),
-        "channels": len(snapshot.channel_health),
-        "connected_channels": sum(
-            1 for row in snapshot.channel_health if bool(row.get("connected", False))
-        ),
-        "alerts": len(snapshot.alerts),
+        "channels": len(channel_rows),
+        "connected_channels": sum(1 for row in channel_rows if bool(row.get("connected", False))),
+        "alerts": len(active_alerts),
+        "acknowledged_alerts": len(acknowledged_alerts),
         "audit_events": len(snapshot.audit_events),
     }
 
@@ -261,6 +306,7 @@ def _summary_counts_line(snapshot: TuiSnapshot) -> str:
         f"channels={summary['channels']} "
         f"connected_channels={summary['connected_channels']} "
         f"alerts={summary['alerts']} "
+        f"acknowledged_alerts={summary['acknowledged_alerts']} "
         f"audit_events={summary['audit_events']}"
     )
 
@@ -289,12 +335,29 @@ def _enabled_style(value: object) -> str:
     return "green" if bool(value) else "dim"
 
 
-def _connected_style(value: object) -> str:
-    return "green" if bool(value) else "red"
+def _channel_style(row: Mapping[str, Any]) -> str:
+    status = _channel_status(row)
+    if status == "ok":
+        return "green"
+    if status == "degraded":
+        return "yellow"
+    if status == "misconfigured":
+        return "red"
+    if status == "disabled":
+        return "dim"
+    if bool(row.get("enabled", False)) and not bool(row.get("available", False)):
+        return "red"
+    if bool(row.get("enabled", False)) and not bool(row.get("connected", False)):
+        return "yellow"
+    if bool(row.get("connected", False)):
+        return "green"
+    return "dim"
 
 
-def _alert_style(event_type: object) -> str:
-    return "red" if str(event_type or "").strip() else "dim"
+def _alert_style(row: Mapping[str, Any]) -> str:
+    if _alert_acknowledged(row):
+        return "dim"
+    return "red" if str(row.get("event_type", "")).strip() else "dim"
 
 
 def render_rich(snapshot: TuiSnapshot) -> str:
@@ -310,6 +373,9 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     Table = rich_table.Table
 
     console = Console(record=True)
+    channel_rows = _configured_channel_rows(snapshot)
+    active_alerts = _active_alert_rows(snapshot)
+    acknowledged_alerts = _acknowledged_alert_rows(snapshot)
 
     summary = Table(title="Summary", show_lines=False, row_styles=["", "dim"])
     summary.add_column("Metric")
@@ -370,28 +436,39 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     channels.add_column("Enabled")
     channels.add_column("Available")
     channels.add_column("Connected")
-    for row in snapshot.channel_health:
+    channels.add_column("Status")
+    for row in channel_rows:
         channels.add_row(
             str(row.get("channel", "")),
             str(row.get("enabled", False)),
             str(row.get("available", False)),
             str(row.get("connected", False)),
-            style=_connected_style(row.get("connected", False)),
+            str(row.get("status", "")),
+            style=_channel_style(row),
         )
-    if not snapshot.channel_health:
-        channels.add_row("(none)", "", "", "")
+    if not channel_rows:
+        channels.add_row("(none)", "", "", "", "")
 
     alerts = Table(title="Alerts", show_lines=False, row_styles=["", "dim"])
+    alerts.add_column("Status")
     alerts.add_column("Event")
     alerts.add_column("Ack")
-    for row in snapshot.alerts:
+    for row in active_alerts:
         alerts.add_row(
+            "active",
             str(row.get("event_type", "")),
             str(row.get("acknowledged_reason", "")),
-            style=_alert_style(row.get("event_type", "")),
+            style=_alert_style(row),
         )
-    if not snapshot.alerts:
-        alerts.add_row("(none)", "")
+    for row in acknowledged_alerts:
+        alerts.add_row(
+            "acknowledged",
+            str(row.get("event_type", "")),
+            str(row.get("acknowledged_reason", "")),
+            style=_alert_style(row),
+        )
+    if not active_alerts and not acknowledged_alerts:
+        alerts.add_row("(none)", "", "")
 
     audit = Table(title="Audit Events", show_lines=False, row_styles=["", "dim"])
     audit.add_column("Timestamp")
