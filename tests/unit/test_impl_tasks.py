@@ -76,6 +76,28 @@ class _ScopedSnapshotScheduler:
         ]
 
 
+class _ActiveSessionRegistry:
+    def __init__(self, *sessions: SimpleNamespace) -> None:
+        self._sessions = list(sessions)
+
+    def list_active(self) -> list[SimpleNamespace]:
+        return list(self._sessions)
+
+
+def _active_session(user_id: str, workspace_id: str) -> SimpleNamespace:
+    return SimpleNamespace(user_id=UserId(user_id), workspace_id=WorkspaceId(workspace_id))
+
+
+class _TaskStatusSnapshotHarness(TasksImplMixin):
+    def __init__(
+        self,
+        scheduler: _ScopedSnapshotScheduler,
+        session_manager: _ActiveSessionRegistry,
+    ) -> None:
+        self._scheduler = scheduler
+        self._session_manager = session_manager
+
+
 def test_m1_task_delivery_arguments_normalize_none_optional_strings() -> None:
     task = SimpleNamespace(
         delivery_target={
@@ -127,18 +149,19 @@ async def test_m1_do_task_create_normalizes_none_delivery_target_values(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_t2_do_task_status_snapshot_scopes_and_redacts_pending_rows() -> None:
+async def test_t2_do_task_status_snapshot_binds_to_active_session_scope_and_redacts() -> None:
     scheduler = _ScopedSnapshotScheduler()
-    harness = SimpleNamespace(_scheduler=scheduler)
+    harness = _TaskStatusSnapshotHarness(
+        scheduler,
+        _ActiveSessionRegistry(_active_session("alice", "ws1")),
+    )
 
     payload = await TasksImplMixin.do_task_status_snapshot(
         harness,  # type: ignore[arg-type]
-        {"user_id": "alice", "workspace_id": "ws1", "limit": 5},
+        {"user_id": "mallory", "workspace_id": "other-workspace", "limit": 5},
     )
 
-    assert scheduler.snapshot_calls == [
-        {"limit": 5, "created_by": "alice", "workspace_id": "ws1"}
-    ]
+    assert scheduler.snapshot_calls == [{"limit": 5, "created_by": "alice", "workspace_id": "ws1"}]
     assert scheduler.pending_calls == ["task-visible"]
     assert payload["scope_status"] == "scoped"
     assert payload["count"] == 1
@@ -163,13 +186,39 @@ async def test_t2_do_task_status_snapshot_scopes_and_redacts_pending_rows() -> N
 
 
 @pytest.mark.asyncio
-async def test_t2_do_task_status_snapshot_requires_complete_scope() -> None:
+async def test_t2_do_task_status_snapshot_requires_bound_scope() -> None:
     scheduler = _ScopedSnapshotScheduler()
-    harness = SimpleNamespace(_scheduler=scheduler)
+    harness = _TaskStatusSnapshotHarness(
+        scheduler,
+        _ActiveSessionRegistry(_active_session("alice", "")),
+    )
 
     payload = await TasksImplMixin.do_task_status_snapshot(
         harness,  # type: ignore[arg-type]
-        {"user_id": "alice", "workspace_id": "", "limit": 5},
+        {"user_id": "alice", "workspace_id": "ws1", "limit": 5},
+    )
+
+    assert payload["tasks"] == []
+    assert payload["count"] == 0
+    assert payload["scope_status"] == "missing_scope"
+    assert scheduler.snapshot_calls == []
+    assert scheduler.pending_calls == []
+
+
+@pytest.mark.asyncio
+async def test_t2_do_task_status_snapshot_requires_unique_active_scope() -> None:
+    scheduler = _ScopedSnapshotScheduler()
+    harness = _TaskStatusSnapshotHarness(
+        scheduler,
+        _ActiveSessionRegistry(
+            _active_session("alice", "ws1"),
+            _active_session("bob", "ws1"),
+        ),
+    )
+
+    payload = await TasksImplMixin.do_task_status_snapshot(
+        harness,  # type: ignore[arg-type]
+        {"limit": 5},
     )
 
     assert payload["tasks"] == []

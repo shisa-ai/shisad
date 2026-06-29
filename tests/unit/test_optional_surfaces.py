@@ -248,10 +248,7 @@ def test_t1_tui_plain_renderer_scopes_multiple_session_plan_rows() -> None:
     rendered = render_plain(snapshot)
 
     assert "  > [in_progress] 1. First session session=sess-a" in rendered
-    assert (
-        "  > [blocked] 1. Second session session=sess-b blocked=pending_confirmation"
-        in rendered
-    )
+    assert "  > [blocked] 1. Second session session=sess-b blocked=pending_confirmation" in rendered
 
 
 def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
@@ -461,7 +458,7 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert created[0].closed is True
     assert (
         "task.status_snapshot",
-        {"user_id": "u1", "workspace_id": "ws1", "limit": 20},
+        {"limit": 20},
     ) in created[0].calls
     assert all(method != "task.list" for method, _params in created[0].calls)
 
@@ -788,7 +785,7 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
                 "available": False,
                 "connected": False,
                 "status": "disabled",
-            }
+            },
         ],
         alerts=[
             {"event_type": "AlertRaised", "acknowledged_reason": ""},

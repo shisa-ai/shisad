@@ -953,7 +953,7 @@ async def test_behavioral_task_status_snapshot_renders_waiting_on_approval(
 
         status_snapshot = await client.call(
             "task.status_snapshot",
-            {"user_id": "alice", "workspace_id": "ws1", "limit": 20},
+            {"limit": 20},
         )
         task_row = next(
             row

@@ -200,12 +200,12 @@ async def test_task_list_validates_count_shape() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t2_task_status_snapshot_forwards_scope_to_impl() -> None:
+async def test_t2_task_status_snapshot_ignores_caller_supplied_scope() -> None:
     impl = _ProgrammableImpl()
     handlers = _handlers(impl)
 
     snapshot = await handlers.handle_task_status_snapshot(
-        TaskStatusSnapshotParams(user_id="alice", workspace_id="ws1", limit=5),
+        TaskStatusSnapshotParams(user_id="mallory", workspace_id="other-workspace", limit=5),
         RequestContext(),
     )
 
@@ -213,7 +213,7 @@ async def test_t2_task_status_snapshot_forwards_scope_to_impl() -> None:
     assert snapshot.tasks[0].task_id == "task-1"
     assert impl.payloads[-1] == (
         "status_snapshot",
-        {"user_id": "alice", "workspace_id": "ws1", "limit": 5},
+        {"limit": 5},
     )
 
 

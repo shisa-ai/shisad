@@ -57,8 +57,7 @@ def _safe_plan_step_rows(raw_steps: list[Any]) -> list[dict[str, Any]]:
                 "order": max(1, order_value),
                 "title": str(raw.get("title", "") or "Current request").strip(),
                 "status": status,
-                "current": bool(raw.get("current", False))
-                and status in {"in_progress", "blocked"},
+                "current": bool(raw.get("current", False)) and status in {"in_progress", "blocked"},
                 "depends_on": depends_on,
                 "blocked_reason": str(raw.get("blocked_reason", "")).strip()
                 if status == "blocked"
@@ -111,8 +110,7 @@ def _safe_task_rows(raw_tasks: list[Any]) -> list[dict[str, Any]]:
                 "delivery_channel": delivery_channel,
                 "pending_confirmations": pending,
                 "pending_confirmation_count": max(pending_count, len(pending)),
-                "confirmation_needed": bool(raw.get("confirmation_needed", False))
-                or bool(pending),
+                "confirmation_needed": bool(raw.get("confirmation_needed", False)) or bool(pending),
             }
         )
     return rows
@@ -260,8 +258,7 @@ def _task_pending_approval_summaries(
             bool(capability.get("can_carry", False)) if isinstance(capability, Mapping) else False
         )
         can_collect_inline_totp = (
-            bool(capability.get("can_collect_selected_method", False))
-            and method == "totp"
+            bool(capability.get("can_collect_selected_method", False)) and method == "totp"
             if isinstance(capability, Mapping)
             else False
         )
@@ -318,11 +315,7 @@ def _task_pending_approval_summaries(
 
 
 def _show_plan_step_sessions(rows: list[dict[str, Any]]) -> bool:
-    session_ids = {
-        str(row.get("session_id", "")).strip()
-        for row in rows
-        if row.get("session_id")
-    }
+    session_ids = {str(row.get("session_id", "")).strip() for row in rows if row.get("session_id")}
     return len(session_ids) > 1
 
 
@@ -400,9 +393,7 @@ def _safe_pending_action_rows(raw_actions: list[Any]) -> list[dict[str, Any]]:
                 else [],
                 "safe_preview": str(item.get("safe_preview", "")),
                 "warnings": [
-                    str(value).strip()
-                    for value in item.get("warnings", [])
-                    if str(value).strip()
+                    str(value).strip() for value in item.get("warnings", []) if str(value).strip()
                 ]
                 if isinstance(item.get("warnings", []), list)
                 else [],
@@ -436,9 +427,7 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         await client.connect()
         sessions_result = await _safe_call("session.list", default={"sessions": []})
         raw_sessions = [
-            dict(item)
-            for item in sessions_result.get("sessions", [])
-            if isinstance(item, Mapping)
+            dict(item) for item in sessions_result.get("sessions", []) if isinstance(item, Mapping)
         ]
         pending_result = await _safe_call(
             "action.pending",
@@ -452,14 +441,9 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         plan_steps_result = await _safe_call("plan.steps", {"limit": 20}, default={"steps": []})
         task_scope = _task_scope_from_sessions(raw_sessions)
         if task_scope is not None:
-            task_user_id, task_workspace_id = task_scope
             tasks_result = await _safe_call(
                 "task.status_snapshot",
-                {
-                    "user_id": task_user_id,
-                    "workspace_id": task_workspace_id,
-                    "limit": 20,
-                },
+                {"limit": 20},
                 default={"tasks": []},
             )
         else:
@@ -648,9 +632,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
         )
     for row in acknowledged_alerts:
         lines.append(
-            "  "
-            f"acknowledged {row.get('event_type', '')} "
-            f"ack={row.get('acknowledged_reason', '')}"
+            f"  acknowledged {row.get('event_type', '')} ack={row.get('acknowledged_reason', '')}"
         )
     lines.append("AUDIT EVENTS:")
     if not snapshot.audit_events:

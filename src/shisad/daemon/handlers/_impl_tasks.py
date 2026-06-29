@@ -661,10 +661,39 @@ class TasksImplMixin(HandlerMixinBase):
         pending = self._scheduler.pending_confirmations(task_id)
         return {"task_id": task_id, "pending": pending, "count": len(pending)}
 
+    def _task_status_snapshot_scope(self) -> tuple[str, str] | None:
+        session_manager = getattr(self, "_session_manager", None)
+        list_active = getattr(session_manager, "list_active", None)
+        if not callable(list_active):
+            return None
+        try:
+            active_sessions = list(list_active())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+
+        scopes: set[tuple[str, str]] = set()
+        for session in active_sessions:
+            user_id = optional_string(getattr(session, "user_id", ""))
+            workspace_id = optional_string(getattr(session, "workspace_id", ""))
+            if user_id and workspace_id:
+                scopes.add((user_id, workspace_id))
+        if len(scopes) != 1:
+            return None
+        return next(iter(scopes))
+
     async def do_task_status_snapshot(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        user_id = optional_string(params.get("user_id", ""))
-        workspace_id = optional_string(params.get("workspace_id", ""))
         limit = max(0, int(params.get("limit", 20) or 20))
+        scope = self._task_status_snapshot_scope()
+        if scope is None:
+            return {
+                "tasks": [],
+                "count": 0,
+                "user_id": "",
+                "workspace_id": "",
+                "scope_status": "missing_scope",
+            }
+
+        user_id, workspace_id = scope
         if not user_id or not workspace_id:
             return {
                 "tasks": [],

@@ -98,6 +98,8 @@ class TaskHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        payload.pop("user_id", None)
+        payload.pop("workspace_id", None)
         return TaskStatusSnapshotResult.model_validate(
             await self._impl.do_task_status_snapshot(payload)
         )
