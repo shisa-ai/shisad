@@ -802,6 +802,18 @@ def confirmation_backend_satisfies_constraints(
             )
         except Exception:
             return False
+    matching_signer_keys = getattr(backend, "_matching_signer_keys", None)
+    if callable(matching_signer_keys):
+        try:
+            return bool(
+                matching_signer_keys(
+                    user_id=user_id,
+                    pending_action=probe,
+                    requested_credential_id="",
+                )
+            )
+        except Exception:
+            return False
     matching_signer_key = getattr(backend, "_matching_signer_key", None)
     if callable(matching_signer_key):
         try:
@@ -814,6 +826,8 @@ def confirmation_backend_satisfies_constraints(
         except Exception:
             return False
 
+    if principals and credentials:
+        return False
     if principals and not (set(principals) & backend.principals_for_user(user_id=user_id)):
         return False
     return not credentials or bool(set(credentials) & backend.credentials_for_user(user_id=user_id))
@@ -1523,18 +1537,40 @@ class SignerConfirmationAdapter:
         pending_action: Any,
         requested_credential_id: str,
     ) -> SignerKeyInfo:
-        active = self._signer_backend.list_registered_keys(user_id=user_id)
         revoked = self._signer_backend.list_registered_keys(user_id=user_id, include_revoked=True)
         revoked_ids = {item.key_id for item in revoked if item.revoked}
+        candidates = self._matching_signer_keys(
+            user_id=user_id,
+            pending_action=pending_action,
+            requested_credential_id=requested_credential_id,
+        )
+        allowed_credentials = _normalized_constraint_values(
+            getattr(pending_action, "allowed_credentials", ())
+        )
+        if not candidates:
+            if requested_credential_id and requested_credential_id in revoked_ids:
+                raise ConfirmationVerificationError("signer_key_revoked")
+            if allowed_credentials and set(allowed_credentials) & revoked_ids:
+                raise ConfirmationVerificationError("signer_key_revoked")
+            raise ConfirmationVerificationError("confirmation_credential_missing")
+        if len(candidates) > 1:
+            raise ConfirmationVerificationError("confirmation_credential_ambiguous")
+        return candidates[0]
+
+    def _matching_signer_keys(
+        self,
+        *,
+        user_id: str,
+        pending_action: Any,
+        requested_credential_id: str,
+    ) -> list[SignerKeyInfo]:
+        candidates = list(self._signer_backend.list_registered_keys(user_id=user_id))
         allowed_credentials = [
             item.strip()
             for item in getattr(pending_action, "allowed_credentials", ())
             if str(item).strip()
         ]
-        candidates = list(active)
         if requested_credential_id:
-            if requested_credential_id in revoked_ids:
-                raise ConfirmationVerificationError("signer_key_revoked")
             candidates = [item for item in candidates if item.key_id == requested_credential_id]
         if allowed_credentials:
             allowed = set(allowed_credentials)
@@ -1547,13 +1583,7 @@ class SignerConfirmationAdapter:
         if allowed_principals:
             allowed = set(allowed_principals)
             candidates = [item for item in candidates if item.principal_id in allowed]
-        if not candidates:
-            if allowed_credentials and set(allowed_credentials) & revoked_ids:
-                raise ConfirmationVerificationError("signer_key_revoked")
-            raise ConfirmationVerificationError("confirmation_credential_missing")
-        if len(candidates) > 1:
-            raise ConfirmationVerificationError("confirmation_credential_ambiguous")
-        return candidates[0]
+        return candidates
 
 
 class SoftwareConfirmationBackend:

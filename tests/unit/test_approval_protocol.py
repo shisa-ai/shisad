@@ -20,11 +20,13 @@ from shisad.core.approval import (
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
     ConfirmationVerificationError,
+    EnterpriseKmsSignerBackend,
     IntentAction,
     IntentEnvelope,
     IntentPolicyContext,
     LocalFido2Backend,
     ReviewSurface,
+    SignerConfirmationAdapter,
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
@@ -34,6 +36,7 @@ from shisad.core.approval import (
     approval_envelope_hash,
     canonical_json_dumps,
     compute_action_digest,
+    confirmation_backend_satisfies_constraints,
     confirmation_evidence_satisfies_requirement,
     confirmation_requirement_payload,
     generate_totp_code,
@@ -48,8 +51,10 @@ from shisad.security.credentials import (
     ApprovalFactorRecord,
     InMemoryCredentialStore,
     RecoveryCodeRecord,
+    SignerKeyRecord,
 )
 from tests.helpers.approval import make_pending_action
+from tests.helpers.signer import generate_ed25519_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
@@ -520,6 +525,108 @@ def test_registry_rejects_principal_restricted_software_backend() -> None:
         )
     )
     assert resolved is None
+
+
+def test_combined_constraints_fail_closed_without_candidate_level_matching() -> None:
+    class CoarseBackend:
+        backend_id = "custom.default"
+        method = "custom"
+        level = ConfirmationLevel.BOUND_APPROVAL
+        binding_scope = BindingScope.FULL_INTENT
+        review_surface = ReviewSurface.HOST_RENDERED
+        capabilities = ConfirmationCapabilities(principal_binding=True)
+        third_party_verifiable = False
+
+        def __init__(self) -> None:
+            self.available_principals: set[str] = set()
+            self.available_credentials: set[str] = set()
+
+        def is_available_for(self, *, user_id: str) -> bool:
+            return user_id == "alice"
+
+        def principals_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return {"finance-owner"}
+
+        def credentials_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return {"cred-1"}
+
+    backend = CoarseBackend()
+
+    assert confirmation_backend_satisfies_constraints(
+        backend,
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(principal_binding=True),
+        allowed_principals=["finance-owner"],
+    )
+    assert confirmation_backend_satisfies_constraints(
+        backend,
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(principal_binding=True),
+        allowed_credentials=["cred-1"],
+    )
+    assert not confirmation_backend_satisfies_constraints(
+        backend,
+        user_id="alice",
+        required_capabilities=ConfirmationCapabilities(principal_binding=True),
+        allowed_principals=["finance-owner"],
+        allowed_credentials=["cred-1"],
+    )
+
+
+def test_registry_keeps_signer_backend_selectable_with_multiple_matching_principal_keys() -> None:
+    store = InMemoryCredentialStore()
+    private_key = generate_ed25519_private_key()
+    backup_private_key = generate_ed25519_private_key()
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="kms:finance-primary",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="ledger-enterprise",
+            public_key_pem=public_key_pem(private_key),
+        )
+    )
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="kms:finance-backup",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="ledger-enterprise",
+            public_key_pem=public_key_pem(backup_private_key),
+        )
+    )
+    backend = SignerConfirmationAdapter(
+        EnterpriseKmsSignerBackend(
+            credential_store=store,
+            endpoint_url="http://127.0.0.1:9/sign",
+            request_timeout=timedelta(seconds=1),
+        )
+    )
+    registry = ConfirmationBackendRegistry()
+    registry.register(backend)
+
+    resolved = registry.resolve(
+        ConfirmationRequirement(
+            level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            methods=["kms"],
+            allowed_principals=["finance-owner"],
+            require_capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+            ),
+        ),
+        user_id="alice",
+    )
+
+    assert resolved is not None
+    assert resolved.backend is backend
 
 
 def test_software_backend_requires_approval_envelope_hash() -> None:
