@@ -49,6 +49,7 @@ from shisad.core.approval import (
     approval_audit_fields,
     approval_envelope_hash,
     compute_action_digest,
+    confirmation_backend_satisfies_constraints,
     intent_envelope_hash,
     legacy_software_confirmation_requirement,
     new_approval_nonce,
@@ -3019,56 +3020,17 @@ class HandlerImplementation(
         selected_method = str(getattr(pending, "selected_backend_method", "")).strip()
         if selected_method and str(getattr(backend, "method", "")).strip() != selected_method:
             return False
-        user_id = str(getattr(pending, "user_id", ""))
-        is_available_for = getattr(backend, "is_available_for", None)
-        if callable(is_available_for):
-            try:
-                if not bool(is_available_for(user_id=user_id)):
-                    return False
-            except Exception:
-                return False
-        allowed_principals = [
-            str(value).strip()
-            for value in getattr(pending, "allowed_principals", ())
-            if str(value).strip()
-        ]
-        if allowed_principals:
-            capabilities = getattr(backend, "capabilities", None)
-            if not bool(getattr(capabilities, "principal_binding", False)):
-                return False
-            principals_for_user = getattr(backend, "principals_for_user", None)
-            if not callable(principals_for_user):
-                return False
-            try:
-                available_principals = {
-                    str(value).strip()
-                    for value in principals_for_user(user_id=user_id)
-                    if str(value).strip()
-                }
-            except Exception:
-                return False
-            if not (set(allowed_principals) & available_principals):
-                return False
-        allowed_credentials = [
-            str(value).strip()
-            for value in getattr(pending, "allowed_credentials", ())
-            if str(value).strip()
-        ]
-        if allowed_credentials:
-            credentials_for_user = getattr(backend, "credentials_for_user", None)
-            if not callable(credentials_for_user):
-                return False
-            try:
-                available_credentials = {
-                    str(value).strip()
-                    for value in credentials_for_user(user_id=user_id)
-                    if str(value).strip()
-                }
-            except Exception:
-                return False
-            if not (set(allowed_credentials) & available_credentials):
-                return False
-        return True
+        return confirmation_backend_satisfies_constraints(
+            backend,
+            user_id=str(getattr(pending, "user_id", "")),
+            required_capabilities=getattr(
+                pending,
+                "required_capabilities",
+                ConfirmationCapabilities(),
+            ),
+            allowed_principals=getattr(pending, "allowed_principals", ()),
+            allowed_credentials=getattr(pending, "allowed_credentials", ()),
+        )
 
     @staticmethod
     def _is_high_risk_confirmation(tool_name: ToolName, arguments: dict[str, Any]) -> bool:
@@ -3114,20 +3076,12 @@ class HandlerImplementation(
             return None
         if backend.level.priority < requirement.level.priority:
             return None
-        if not backend.is_available_for(user_id=user_id):
-            return None
-        if not backend.capabilities.covers(requirement.require_capabilities):
-            return None
-        if requirement.allowed_principals:
-            if not backend.capabilities.principal_binding:
-                return None
-            if not (
-                set(requirement.allowed_principals)
-                & backend.principals_for_user(user_id=user_id)
-            ):
-                return None
-        if requirement.allowed_credentials and not (
-            set(requirement.allowed_credentials) & backend.credentials_for_user(user_id=user_id)
+        if not confirmation_backend_satisfies_constraints(
+            backend,
+            user_id=user_id,
+            required_capabilities=requirement.require_capabilities,
+            allowed_principals=requirement.allowed_principals,
+            allowed_credentials=requirement.allowed_credentials,
         ):
             return None
         if requirement.methods:

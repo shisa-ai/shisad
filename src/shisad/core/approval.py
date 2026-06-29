@@ -757,6 +757,68 @@ class ConfirmationBackend(Protocol):
     ) -> ConfirmationEvidence: ...
 
 
+@dataclass(slots=True)
+class _PendingConstraintProbe:
+    allowed_principals: list[str]
+    allowed_credentials: list[str]
+
+
+def _normalized_constraint_values(values: Any) -> list[str]:
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def confirmation_backend_satisfies_constraints(
+    backend: ConfirmationBackend,
+    *,
+    user_id: str,
+    required_capabilities: ConfirmationCapabilities,
+    allowed_principals: Any = (),
+    allowed_credentials: Any = (),
+) -> bool:
+    if not backend.is_available_for(user_id=user_id):
+        return False
+    if not backend.capabilities.covers(required_capabilities):
+        return False
+    principals = _normalized_constraint_values(allowed_principals)
+    credentials = _normalized_constraint_values(allowed_credentials)
+    if not principals and not credentials:
+        return True
+    if principals and not backend.capabilities.principal_binding:
+        return False
+
+    probe = _PendingConstraintProbe(
+        allowed_principals=principals,
+        allowed_credentials=credentials,
+    )
+    matching_factors = getattr(backend, "_matching_factors", None)
+    if callable(matching_factors):
+        try:
+            return bool(
+                matching_factors(
+                    user_id=user_id,
+                    pending_action=probe,
+                    requested_credential_id="",
+                )
+            )
+        except Exception:
+            return False
+    matching_signer_key = getattr(backend, "_matching_signer_key", None)
+    if callable(matching_signer_key):
+        try:
+            matching_signer_key(
+                user_id=user_id,
+                pending_action=probe,
+                requested_credential_id="",
+            )
+            return True
+        except Exception:
+            return False
+
+    if principals and not (set(principals) & backend.principals_for_user(user_id=user_id)):
+        return False
+    return not credentials or bool(set(credentials) & backend.credentials_for_user(user_id=user_id))
+
+
 class SignerKeyInfo(BaseModel):
     """Registered signer metadata exposed to signer backends."""
 
@@ -2221,24 +2283,12 @@ class ConfirmationBackendRegistry:
                 backend
                 for backend in self._backends.values()
                 if backend.level == level
-                and backend.is_available_for(user_id=user_id)
-                and backend.capabilities.covers(requirement.require_capabilities)
-                and (
-                    not requirement.allowed_principals
-                    or (
-                        backend.capabilities.principal_binding
-                        and bool(
-                            set(requirement.allowed_principals)
-                            & backend.principals_for_user(user_id=user_id)
-                        )
-                    )
-                )
-                and (
-                    not requirement.allowed_credentials
-                    or bool(
-                        set(requirement.allowed_credentials)
-                        & backend.credentials_for_user(user_id=user_id)
-                    )
+                and confirmation_backend_satisfies_constraints(
+                    backend,
+                    user_id=user_id,
+                    required_capabilities=requirement.require_capabilities,
+                    allowed_principals=requirement.allowed_principals,
+                    allowed_credentials=requirement.allowed_credentials,
                 )
             ]
             selected = self._select_backend(candidates, methods=requirement.methods)
@@ -2263,24 +2313,12 @@ class ConfirmationBackendRegistry:
                 if allow_stronger_level
                 else backend.level == requirement.level
             )
-            and backend.is_available_for(user_id=user_id)
-            and backend.capabilities.covers(requirement.require_capabilities)
-            and (
-                not requirement.allowed_principals
-                or (
-                    backend.capabilities.principal_binding
-                    and bool(
-                        set(requirement.allowed_principals)
-                        & backend.principals_for_user(user_id=user_id)
-                    )
-                )
-            )
-            and (
-                not requirement.allowed_credentials
-                or bool(
-                    set(requirement.allowed_credentials)
-                    & backend.credentials_for_user(user_id=user_id)
-                )
+            and confirmation_backend_satisfies_constraints(
+                backend,
+                user_id=user_id,
+                required_capabilities=requirement.require_capabilities,
+                allowed_principals=requirement.allowed_principals,
+                allowed_credentials=requirement.allowed_credentials,
             )
         ]
         for method in requirement.methods:

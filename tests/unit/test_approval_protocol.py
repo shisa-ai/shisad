@@ -656,6 +656,36 @@ def test_registry_only_routes_totp_for_users_with_enrolled_factor(tmp_path) -> N
     assert resolved.fallback_used is False
 
 
+def test_registry_requires_same_factor_for_principal_and_credential(tmp_path) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    store.register_approval_factor(
+        _approval_factor(
+            user_id="alice",
+            principal_id="ops-laptop",
+            credential_id="totp-1",
+        )
+    )
+    store.register_approval_factor(
+        _approval_factor(
+            user_id="alice",
+            principal_id="backup-laptop",
+            credential_id="totp-2",
+        )
+    )
+    registry = ConfirmationBackendRegistry()
+    registry.register(TOTPBackend(credential_store=store))
+    requirement = ConfirmationRequirement(
+        level=ConfirmationLevel.REAUTHENTICATED,
+        methods=["totp"],
+        allowed_principals=["ops-laptop"],
+        allowed_credentials=["totp-2"],
+    )
+
+    assert registry.resolve(requirement, user_id="alice") is None
+    assert registry.first_selectable_method(requirement, user_id="alice") is None
+
+
 def test_totp_backend_rejects_same_window_reuse_across_pending_actions(tmp_path) -> None:
     store = InMemoryCredentialStore()
     store.set_approval_store_path(tmp_path / "credentials.json")

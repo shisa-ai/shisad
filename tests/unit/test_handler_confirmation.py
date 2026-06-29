@@ -948,6 +948,37 @@ async def test_a1_action_pending_backend_availability_respects_pending_credentia
 
 
 @pytest.mark.asyncio
+async def test_a1_action_pending_backend_availability_requires_same_factor(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+    harness._credential_store.register_approval_factor(
+        ApprovalFactorRecord(
+            credential_id="totp-2",
+            user_id="alice",
+            method="totp",
+            principal_id="backup-laptop",
+            secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+        )
+    )
+    pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
+    pending.required_level = ConfirmationLevel.SOFTWARE
+    pending.allowed_principals = ["ops-laptop"]
+    pending.allowed_credentials = ["totp-2"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    entry = ActionPendingEntry.model_validate(result["actions"][0])
+    capability = entry.channel_capability
+    assert capability["backend_available"] is False
+    assert capability["can_approve"] is False
+    assert capability["cannot_carry_reason"] == "confirmation_backend_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_a1_action_pending_suppresses_webauthn_link_when_expired(
     tmp_path: Path,
 ) -> None:
