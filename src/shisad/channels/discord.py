@@ -118,6 +118,15 @@ class DiscordChannel(InMemoryChannel):
         button_ctor = getattr(ui, "Button", None) if ui is not None else None
         return callable(view_ctor) and callable(button_ctor)
 
+    @property
+    def supports_totp_modal(self) -> bool:
+        if discord is None:
+            return False
+        ui = getattr(discord, "ui", None)
+        modal_ctor = getattr(ui, "Modal", None) if ui is not None else None
+        text_input_ctor = getattr(ui, "TextInput", None) if ui is not None else None
+        return callable(modal_ctor) and callable(text_input_ctor)
+
     async def connect(self) -> None:
         await super().connect()
         if discord is None or not self._config.bot_token:
@@ -642,6 +651,9 @@ class DiscordChannel(InMemoryChannel):
             except (TypeError, ValueError):
                 return None
         return view
+
+    def can_build_view_from_metadata(self, metadata: Mapping[str, Any]) -> bool:
+        return self._view_from_delivery_metadata(metadata) is not None
 
     @staticmethod
     def _button_style(style_name: str) -> Any | None:

@@ -517,6 +517,105 @@ def test_discord_pending_response_degrades_when_components_unavailable() -> None
     assert "TOTP fallback: reply with `confirm c-totp 123456`" in response
 
 
+def test_discord_pending_response_degrades_when_totp_modal_unavailable() -> None:
+    totp_pending = PendingAction(
+        confirmation_id="c-totp",
+        decision_nonce="nonce-totp",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-totp"],
+        pending_actions={"c-totp": totp_pending},
+        pending_index_by_id={"c-totp": 1},
+        binding_pending_rows=[totp_pending],
+        delivery_channel="discord",
+        discord_components_available=True,
+        discord_totp_modal_available=False,
+    )
+
+    assert "open the TOTP modal" not in response
+    assert "Discord TOTP modal unavailable; TOTP approval button was not attached." in response
+    assert "Discord rejection: use the Reject button when shown on this message." in response
+    assert "TOTP fallback: reply with `confirm c-totp 123456`" in response
+
+
+def test_discord_pending_response_degrades_when_component_view_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+    from shisad.channels.discord import DiscordChannel, DiscordConfig, discord_approval_custom_id
+
+    class _FakeView:
+        def add_item(self, _item: object) -> None:
+            raise ValueError("too many components")
+
+    class _FakeButton:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1, red=2, primary=3),
+        ),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    metadata = {
+        "discord_components": [
+            {
+                "type": "button",
+                "label": "Approve",
+                "style": "success",
+                "custom_id": discord_approval_custom_id(
+                    action="confirm",
+                    confirmation_id="c-plain",
+                    decision_nonce="nonce-plain",
+                ),
+            }
+        ]
+    }
+    assert channel.supports_components is True
+    assert channel.can_build_view_from_metadata(metadata) is False
+
+    pending = PendingAction(
+        confirmation_id="c-plain",
+        decision_nonce="nonce-plain",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "."},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-plain"],
+        pending_actions={"c-plain": pending},
+        pending_index_by_id={"c-plain": 1},
+        binding_pending_rows=[pending],
+        delivery_channel="discord",
+        discord_components_available=channel.can_build_view_from_metadata(metadata),
+    )
+
+    assert "Approve button" not in response
+    assert "Reject button" not in response
+    assert "Discord components unavailable; approval buttons were not attached." in response
+    assert "Discord rejection fallback: reply with `reject c-plain`." in response
+
+
 def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> None:
     webauthn_pending = PendingAction(
         confirmation_id="c-web",

@@ -740,6 +740,26 @@ async def test_discord_send_falls_back_to_text_when_component_view_is_invalid(
     assert sent == [("pending", {})]
 
 
+def test_discord_component_support_distinguishes_totp_modal_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=object, Button=object),
+            ButtonStyle=SimpleNamespace(green=1, red=2, primary=3),
+        ),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+
+    assert channel.supports_components is True
+    assert channel.supports_totp_modal is False
+
+
 @pytest.mark.asyncio
 async def test_discord_channel_ignores_guild_messages_without_mention(
     monkeypatch: pytest.MonkeyPatch,

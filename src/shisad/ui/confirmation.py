@@ -142,11 +142,15 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _first_line(value: Any, *, max_len: int = 120) -> str:
-    line = str(value or "").strip().splitlines()[0].strip() if str(value or "").strip() else ""
-    if len(line) <= max_len:
-        return line
-    return f"{line[:max_len]}..."
+def _preview_excerpt(value: Any, *, max_len: int = 320, max_lines: int = 8) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    excerpt = " | ".join(lines[:max_lines])
+    if len(excerpt) <= max_len:
+        return excerpt
+    return f"{excerpt[:max_len]}..."
 
 
 def render_pending_action(action: Mapping[str, Any]) -> str:
@@ -178,7 +182,7 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
         lines.append(f"approve: cannot carry on this surface ({reason})")
     if can_reject:
         lines.append(f"reject: x {confirmation_id}")
-    preview = _first_line(action.get("safe_preview"))
+    preview = _preview_excerpt(action.get("safe_preview"))
     if preview:
         lines.append(f"preview: {preview}")
     warnings = action.get("warnings")

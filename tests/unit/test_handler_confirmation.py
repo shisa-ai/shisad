@@ -1324,6 +1324,27 @@ def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability
     assert sum("c-live" in custom_id for custom_id in custom_ids) == 2
 
 
+def test_a2_discord_pending_delivery_metadata_skips_totp_approve_without_modal_support() -> None:
+    harness = object.__new__(HandlerImplementation)
+    pending = _totp_pending_action(nonce="totp-nonce", required_methods=["totp"])
+    pending.confirmation_id = "c-totp"
+    pending.selected_backend_id = "totp.default"
+    pending.selected_backend_method = "totp"
+    harness._pending_actions = {pending.confirmation_id: pending}
+    harness._pending_selected_backend_available = lambda _pending: True
+
+    metadata = HandlerImplementation._discord_pending_delivery_metadata(
+        harness,
+        {"pending_confirmation_ids": ["c-totp"]},
+        supports_totp_modal=False,
+    )
+
+    components = metadata["discord_components"]
+    assert len(components) == 1
+    assert components[0]["label"] == "Reject"
+    assert "reject:c-totp" in str(components[0]["custom_id"])
+
+
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")

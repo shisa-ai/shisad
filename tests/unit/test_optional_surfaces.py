@@ -28,7 +28,12 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
                     "can_carry": True,
                     "requires_second_factor": True,
                 },
-                "safe_preview": "ACTION CONFIRMATION\nAction: http_request",
+                "safe_preview": (
+                    "ACTION CONFIRMATION\n"
+                    "Action: http_request\n"
+                    "PARAMETERS:\n"
+                    "  url: https://example.test"
+                ),
             }
         ],
         tasks=[
@@ -55,7 +60,8 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     assert "c1 tool=http_request status=pending" in rendered
     assert "risk=high proof=T1_stepup method=totp route=host_cli" in rendered
     assert "approve: c c1 <totp-code>" in rendered
-    assert "preview: ACTION CONFIRMATION" in rendered
+    assert "Action: http_request" in rendered
+    assert "url: https://example.test" in rendered
     assert "TASKS:" in rendered
     assert "CHANNEL HEALTH:" in rendered
 
@@ -216,7 +222,21 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     snapshot = TuiSnapshot(
         sessions=[{"id": "s1", "user_id": "u1", "lockdown_level": "normal"}],
         pending_actions=[
-            {"confirmation_id": "c1", "tool_name": "http_request", "status": "pending"}
+            {
+                "confirmation_id": "c1",
+                "tool_name": "http_request",
+                "status": "pending",
+                "risk_level": "high",
+                "required_proof_tier": "T1_stepup",
+                "selected_backend_method": "totp",
+                "channel_capability": {
+                    "approval_route": "host_cli",
+                    "can_carry": True,
+                    "requires_second_factor": True,
+                },
+                "safe_preview": "ACTION CONFIRMATION\nAction: http_request\nPARAMETERS:\n  q: hi",
+                "warnings": ["Contains tainted data"],
+            }
         ],
         tasks=[
             {
@@ -248,6 +268,14 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert len(created_consoles) == 1
     panel_tables = [panel[1] for panel in created_consoles[0].panels if isinstance(panel, tuple)]
     assert any(getattr(table, "title", "") == "Audit Events" for table in panel_tables)
+    pending_table = next(
+        table for table in panel_tables if getattr(table, "title", "") == "Pending Confirmations"
+    )
+    pending_text = "\n".join(" ".join(row) for row in pending_table.rows)
+    assert "risk=high proof=T1_stepup method=totp route=host_cli" in pending_text
+    assert "approve: c c1 <totp-code>" in pending_text
+    assert "Action: http_request" in pending_text
+    assert "warnings=1" in pending_text
 
 
 @pytest.mark.asyncio

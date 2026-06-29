@@ -260,15 +260,17 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     pending.add_column("Tool")
     pending.add_column("Status")
     pending.add_column("Proof")
+    pending.add_column("Details")
     for row in snapshot.pending_actions:
         pending.add_row(
             str(row.get("confirmation_id", "")),
             str(row.get("tool_name", "")),
             str(row.get("status", "")),
             str(row.get("required_proof_tier", "")),
+            render_pending_action(row),
         )
     if not snapshot.pending_actions:
-        pending.add_row("(none)", "", "", "")
+        pending.add_row("(none)", "", "", "", "")
 
     tasks = Table(title="Tasks", show_lines=False)
     tasks.add_column("Task")

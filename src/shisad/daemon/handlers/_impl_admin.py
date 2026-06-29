@@ -2076,7 +2076,12 @@ class AdminImplMixin(HandlerMixinBase):
             "applied": False,
         }
 
-    def _discord_pending_delivery_metadata(self, response: Mapping[str, Any]) -> dict[str, Any]:
+    def _discord_pending_delivery_metadata(
+        self,
+        response: Mapping[str, Any],
+        *,
+        supports_totp_modal: bool = True,
+    ) -> dict[str, Any]:
         raw_ids = response.get("pending_confirmation_ids")
         if not isinstance(raw_ids, list):
             return {}
@@ -2125,7 +2130,7 @@ class AdminImplMixin(HandlerMixinBase):
                         ),
                     }
                 )
-            elif backend_available and selected_method == "totp":
+            elif backend_available and selected_method == "totp" and supports_totp_modal:
                 pending_components.append(
                     {
                         "type": "button",
@@ -2505,14 +2510,21 @@ class AdminImplMixin(HandlerMixinBase):
             response_text = str(response.get("response", "")).strip()
             if response_text and not response_text.startswith(marker):
                 response["response"] = f"{marker} {response_text}"
-        delivery_metadata = (
-            self._discord_pending_delivery_metadata(response)
-            if message.channel == "discord"
-            and bool(
-                getattr(getattr(self, "_discord_channel", None), "supports_components", False)
-            )
-            else {}
-        )
+        delivery_metadata: dict[str, Any] = {}
+        if message.channel == "discord":
+            discord_channel = getattr(self, "_discord_channel", None)
+            if bool(getattr(discord_channel, "supports_components", False)):
+                candidate_metadata = self._discord_pending_delivery_metadata(
+                    response,
+                    supports_totp_modal=bool(
+                        getattr(discord_channel, "supports_totp_modal", False)
+                    ),
+                )
+                can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
+                if candidate_metadata and callable(can_build_view) and bool(
+                    can_build_view(candidate_metadata)
+                ):
+                    delivery_metadata = candidate_metadata
         if delivery_metadata:
             delivery_result = await self._delivery.send(
                 target=delivery_target,

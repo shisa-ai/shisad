@@ -5514,6 +5514,7 @@ def _discord_pending_guidance_lines(
     confirmation_id: str,
     channel_capability: Mapping[str, Any] | None = None,
     discord_components_available: bool = True,
+    discord_totp_modal_available: bool = True,
 ) -> list[str]:
     def _discord_rejection_guidance() -> str:
         if discord_components_available:
@@ -5561,11 +5562,14 @@ def _discord_pending_guidance_lines(
             f"CLI fallback: {_markdown_code_span(f'shisad action confirm {confirmation_id}')}",
         ]
     if selected_method == "totp":
-        approval_line = (
-            "Discord approval: use Approve when shown to open the TOTP modal."
-            if discord_components_available
-            else "Discord components unavailable; TOTP modal was not attached."
-        )
+        if not discord_components_available:
+            approval_line = "Discord components unavailable; TOTP modal was not attached."
+        elif not discord_totp_modal_available:
+            approval_line = (
+                "Discord TOTP modal unavailable; TOTP approval button was not attached."
+            )
+        else:
+            approval_line = "Discord approval: use Approve when shown to open the TOTP modal."
         return [
             approval_line,
             _discord_rejection_guidance(),
@@ -5606,6 +5610,7 @@ def _discord_pending_confirmation_response_text(
     allow_chat_approval: bool,
     pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     discord_components_available: bool = True,
+    discord_totp_modal_available: bool = True,
 ) -> str:
     lines = [
         "**Pending confirmations**",
@@ -5641,6 +5646,7 @@ def _discord_pending_confirmation_response_text(
                     else None
                 ),
                 discord_components_available=discord_components_available,
+                discord_totp_modal_available=discord_totp_modal_available,
             )
         )
 
@@ -5676,6 +5682,7 @@ def _daemon_pending_confirmation_response_text(
     delivery_channel: str = "",
     pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     discord_components_available: bool = True,
+    discord_totp_modal_available: bool = True,
 ) -> str:
     binding_rows = list(binding_pending_rows or ())
     totp_guidance_ids = {
@@ -5718,6 +5725,7 @@ def _daemon_pending_confirmation_response_text(
             allow_chat_approval=False,
             pending_channel_capability_by_id=pending_channel_capability_by_id,
             discord_components_available=discord_components_available,
+            discord_totp_modal_available=discord_totp_modal_available,
         )
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
         pending_number = index
@@ -13419,14 +13427,30 @@ class SessionImplMixin(HandlerMixinBase):
                 if str(getattr(pending, "confirmation_id", "")).strip()
             ]
             discord_components_available = True
+            discord_totp_modal_available = True
             if validated.channel == "discord":
-                discord_components_available = bool(
-                    getattr(
-                        getattr(self, "_discord_channel", None),
-                        "supports_components",
-                        False,
-                    )
+                discord_components_available = False
+                discord_totp_modal_available = False
+                discord_channel = getattr(self, "_discord_channel", None)
+                supports_components = bool(getattr(discord_channel, "supports_components", False))
+                supports_totp_modal = bool(
+                    getattr(discord_channel, "supports_totp_modal", False)
                 )
+                build_delivery_metadata = getattr(self, "_discord_pending_delivery_metadata", None)
+                can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
+                if supports_components and callable(build_delivery_metadata) and callable(
+                    can_build_view
+                ):
+                    candidate_metadata = build_delivery_metadata(
+                        {"pending_confirmation_ids": visible_pending_confirmation_ids},
+                        supports_totp_modal=supports_totp_modal,
+                    )
+                    discord_components_available = bool(candidate_metadata) and bool(
+                        can_build_view(candidate_metadata)
+                    )
+                    discord_totp_modal_available = (
+                        supports_totp_modal and discord_components_available
+                    )
             pending_index_by_id = {
                 str(getattr(pending, "confirmation_id", "")).strip(): index
                 for index, pending in enumerate(visible_pending_rows, start=1)
@@ -13473,6 +13497,7 @@ class SessionImplMixin(HandlerMixinBase):
                 delivery_channel=validated.channel,
                 pending_channel_capability_by_id=pending_channel_capability_by_id,
                 discord_components_available=discord_components_available,
+                discord_totp_modal_available=discord_totp_modal_available,
             )
             system_generated_pending_confirmation_response = True
             if fallback_notice:
