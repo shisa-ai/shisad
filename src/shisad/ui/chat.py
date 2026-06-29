@@ -12,6 +12,7 @@ import contextlib
 import json
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,10 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
+from shisad import __version__
 from shisad.core.transcript import derive_legacy_transcript_entry_id
 from shisad.ui.evidence import render_evidence_refs_for_terminal
+from shisad.ui.theme import get_builtin_theme, textual_theme_css
 
 _INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
 _INLINE_LIST_BULLET_CONT_RE = re.compile(r"(?<!\d)\s+(?P<marker>[-*+])\s+(?=\S)")
@@ -277,46 +280,67 @@ def _is_session_id_validation_error(lowered_message: str) -> bool:
 class ChatApp(App[None]):
     """Interactive chat with the shisad daemon."""
 
-    TITLE = "shisad chat"
+    TITLE = f"shisad {__version__}"
     PROMPT_INPUT_MIN_HEIGHT = 3
     PROMPT_INPUT_MAX_HEIGHT = 8
     PROMPT_INPUT_CHROME_ROWS = 2
     PROMPT_INPUT_HORIZONTAL_CHROME = 4
     TRANSCRIPT_REPLAY_LIMIT = 50
+    THEME = get_builtin_theme()
 
-    CSS = """
-    Screen {
+    CSS = (
+        textual_theme_css(THEME)
+        + f"""
+    Screen {{
         layout: vertical;
-    }
-    #chat-log {
-        height: 1fr;
-        border: solid $panel;
+    }}
+    #chat-status {{
+        height: 1;
         padding: 0 1;
-    }
-    .chat-turn {
+        background: {THEME.semantic["panel"]};
+        color: {THEME.semantic["muted"]};
+    }}
+    #chat-log {{
+        height: 1fr;
+        border: round {THEME.semantic["border"]};
+        padding: 0 1;
+    }}
+    .chat-turn {{
         height: auto;
         margin: 0 0 1 0;
-    }
-    .speaker {
+    }}
+    .turn-meta {{
+        color: {THEME.semantic["muted"]};
         text-style: bold;
-    }
-    .assistant-message {
+        height: 1;
+    }}
+    .user-meta {{
+        color: {THEME.semantic["accent"]};
+    }}
+    .assistant-meta {{
+        color: {THEME.semantic["success"]};
+    }}
+    .status-meta {{
+        color: {THEME.semantic["muted"]};
+    }}
+    .assistant-message {{
         height: auto;
-    }
-    #chat-input {
+    }}
+    #chat-input {{
         height: 3;
         max-height: 8;
         margin: 0 0;
-        border: solid $panel;
+        border: round {THEME.semantic["border"]};
         padding: 0 1;
-    }
-    #chat-log:focus {
-        border: heavy $accent;
-    }
-    #chat-input:focus {
-        border: heavy $accent;
-    }
+    }}
+    #chat-log:focus {{
+        border: heavy {THEME.semantic["focus"]};
+    }}
+    #chat-input:focus {{
+        border: heavy {THEME.semantic["focus"]};
+    }}
     """
+    )
 
     BINDINGS = [  # noqa: RUF012
         Binding("ctrl+c", "quit", "Quit", show=True),
@@ -350,15 +374,23 @@ class ChatApp(App[None]):
         self._prompt_draft = ""
         self._displayed_transcript_entry_ids: set[str] = set()
         self._transcript_poll_task: asyncio.Task[None] | None = None
+        self._connection_state = "disconnected"
+        self._channel = "cli"
+        self._lockdown_level = "normal"
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield VerticalScroll(id="chat-log", can_focus=True)
+        yield Static(self._format_status_bar(), id="chat-status", classes="shisa-muted")
+        history = VerticalScroll(id="chat-log", can_focus=True, classes="shisa-panel")
+        history.border_title = "Transcript"
+        history.border_subtitle = "latest"
+        yield history
         prompt = TextArea(
             id="chat-input",
             soft_wrap=True,
             tab_behavior="focus",
             show_line_numbers=False,
+            classes="shisa-panel",
         )
         prompt.border_title = "Message"
         prompt.border_subtitle = "Enter sends"
@@ -366,6 +398,7 @@ class ChatApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
+        self._set_connection_state("connecting")
         self._append_history("Connecting to daemon...")
         try:
             client = await self._connect()
@@ -373,6 +406,7 @@ class ChatApp(App[None]):
                 await self._ensure_session(client)
             finally:
                 await client.close()
+            self._set_connection_state("connected")
             self._append_history("Connected.")
             self._append_current_session_status()
             self._replay_recent_transcript_history_best_effort()
@@ -387,6 +421,7 @@ class ChatApp(App[None]):
             self._poll_transcript_for_async_messages_best_effort()
             self.sub_title = "connected"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._set_connection_state("error")
             self._append_history(_format_error(f"Could not connect to daemon: {exc}"))
             self._append_history("Is the daemon running? Try: shisad start --foreground")
         self.query_one("#chat-input", TextArea).focus()
@@ -474,6 +509,9 @@ class ChatApp(App[None]):
             if existing_session_id:
                 self._session_id = existing_session_id
                 normalized_lockdown = lockdown_level.strip().lower()
+                self._channel = "cli"
+                self._lockdown_level = normalized_lockdown or "normal"
+                self._refresh_status_bar()
                 if normalized_lockdown and normalized_lockdown != "normal":
                     self._append_history(
                         f"info: reusing existing session in lockdown state ({normalized_lockdown})."
@@ -495,6 +533,9 @@ class ChatApp(App[None]):
         if not sid:
             raise RuntimeError("session.create returned invalid session_id")
         self._session_id = sid
+        self._channel = "cli"
+        self._lockdown_level = "normal"
+        self._refresh_status_bar()
 
     async def _find_bound_session(self, client: Any) -> tuple[str, str]:
         """Resolve an existing active CLI session by user/workspace binding."""
@@ -593,12 +634,19 @@ class ChatApp(App[None]):
     def _append_history(self, line: str) -> None:
         """Append a plain status/error line to the history pane."""
         self._append_turn(
-            Static(line, markup=False, classes="status-message"), classes="status-turn"
+            Static(
+                self._format_turn_label("status"),
+                markup=False,
+                classes="turn-meta status-meta",
+            ),
+            Static(line, markup=False, classes="status-message"),
+            classes="status-turn",
         )
 
     def _append_user_message(self, content: str) -> None:
         """Append a user message as literal text."""
         self._append_turn(
+            Static(self._format_turn_label("you"), markup=False, classes="turn-meta user-meta"),
             Static(format_user_message(content), markup=False, classes="user-message"),
             classes="user-turn",
         )
@@ -615,10 +663,41 @@ class ChatApp(App[None]):
             preserve_pending_preview_escapes=preserve_pending_preview_escapes,
         )
         self._append_turn(
-            Static("shisad:", markup=False, classes="speaker assistant-speaker"),
+            Static(
+                self._format_turn_label("shisad"),
+                markup=False,
+                classes="turn-meta assistant-meta",
+            ),
             Markdown(rendered, classes="assistant-message"),
             classes="assistant-turn",
         )
+
+    def _format_status_bar(self) -> str:
+        session_id = self._active_session_id() or "unbound"
+        lockdown = self._lockdown_level.strip().lower() or "normal"
+        channel = self._channel.strip().lower() or "cli"
+        connection = self._connection_state.strip().lower() or "disconnected"
+        return (
+            f"shisad {__version__} | connection={connection} | session={session_id} | "
+            f"channel={channel} | lockdown={lockdown} | user={self._user_id} | "
+            f"workspace={self._workspace_id}"
+        )
+
+    def _set_connection_state(self, state: str) -> None:
+        self._connection_state = state.strip().lower() or "disconnected"
+        self._refresh_status_bar()
+
+    def _refresh_status_bar(self) -> None:
+        for widget in self.query("#chat-status"):
+            if isinstance(widget, Static):
+                widget.update(self._format_status_bar())
+
+    def _format_turn_label(self, role: str) -> str:
+        return f"{role} | {self._turn_timestamp()}"
+
+    @staticmethod
+    def _turn_timestamp() -> str:
+        return datetime.now(UTC).strftime("%H:%M:%SZ")
 
     def _append_current_session_status(self) -> None:
         session_id = self._active_session_id()

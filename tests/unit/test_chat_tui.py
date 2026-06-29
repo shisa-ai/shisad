@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from textual.widgets import Markdown, TextArea
+from textual.widgets import Markdown, Static, TextArea
 
+from shisad import __version__
 from shisad.core.api.transport import JsonRpcCallError
 from shisad.ui.chat import ChatApp, format_assistant_message, format_user_message
 
@@ -239,6 +240,117 @@ def test_chat_app_with_existing_session() -> None:
 def test_chat_app_bindings_include_new_session_hotkey() -> None:
     keys = {(binding.key, binding.action) for binding in ChatApp.BINDINGS}
     assert ("ctrl+n", "new_session") in keys
+
+
+def test_u2_chat_status_bar_formats_structured_state() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="alice",
+        workspace_id="prod",
+        session_id="sess-structured",
+    )
+    app._connection_state = "connected"
+    app._channel = "cli"
+    app._lockdown_level = "caution"
+
+    assert app._format_status_bar() == (
+        f"shisad {__version__} | connection=connected | session=sess-structured | "
+        "channel=cli | lockdown=caution | user=alice | workspace=prod"
+    )
+
+
+@pytest.mark.asyncio
+async def test_u2_chat_mount_renders_structured_status_and_theme_classes() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(
+        return_value={
+            "sessions": [
+                {
+                    "id": "active-sid",
+                    "state": "active",
+                    "channel": "cli",
+                    "user_id": "ops",
+                    "workspace_id": "prod",
+                    "lockdown_level": "caution",
+                }
+            ]
+        }
+    )
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        status_bar = app.query_one("#chat-status", Static)
+        chat_log = app.query_one("#chat-log")
+        chat_input = app.query_one("#chat-input")
+
+    assert str(status_bar.renderable) == (
+        f"shisad {__version__} | connection=connected | session=active-sid | "
+        "channel=cli | lockdown=caution | user=ops | workspace=prod"
+    )
+    assert chat_log.has_class("shisa-panel")
+    assert chat_input.has_class("shisa-panel")
+
+
+@pytest.mark.asyncio
+async def test_u2_chat_turns_render_role_labels_and_muted_timestamps() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._turn_timestamp = lambda: "12:34:56Z"  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._append_user_message("hello")
+        app._append_assistant_message("hi")
+        await pilot.pause()
+        user_labels = _rendered_static_texts(app, ".user-meta")
+        assistant_labels = _rendered_static_texts(app, ".assistant-meta")
+
+    assert user_labels[-1] == "you | 12:34:56Z"
+    assert assistant_labels[-1] == "shisad | 12:34:56Z"
+
+
+@pytest.mark.asyncio
+async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(return_value={"response": "Hello from shisad!"})
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#chat-input", TextArea)
+        input_widget.focus()
+        input_widget.load_text("hello")
+        await app.action_submit_prompt()
+        await pilot.pause()
+        user_messages = _rendered_static_texts(app, ".user-message")
+        assistant_messages = [widget._markdown for widget in app.query(Markdown)]
+
+    fake_client.call.assert_awaited_once_with(
+        "session.message",
+        params={"session_id": "sess-1", "content": "hello"},
+    )
+    assert user_messages[-1] == "you: hello"
+    assert assistant_messages[-1] == "Hello from shisad!"
 
 
 def test_chat_app_prompt_history_cycles_through_previous_prompts() -> None:
