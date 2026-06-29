@@ -355,8 +355,8 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert "[PENDING CONFIRMATIONS]" not in response
     assert "### 1. `fs.list`" in response
     assert "ID: `c-1`" in response
-    assert "Discord approval: use the Approve button on this message." in response
-    assert "Discord rejection: use the Reject button on this message." in response
+    assert "Discord approval: use the Approve button when shown on this message." in response
+    assert "Discord rejection: use the Reject button when shown on this message." in response
     assert "CLI fallback: `shisad action confirm c-1`" in response
     assert "**Warnings:**" in response
     assert "- Contains tainted data" in response
@@ -364,7 +364,7 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert "---" in response
     assert "### 2. `web.search`" in response
     assert "ID: `c-2`" in response
-    assert "Discord approval: use Approve to open the TOTP modal." in response
+    assert "Discord approval: use Approve when shown to open the TOTP modal." in response
     assert "TOTP fallback: reply with `confirm c-2 123456`" in response
     assert "CLI fallback: `shisad action confirm c-2 --totp-code 123456`" in response
     assert response.endswith("Review all pending: `shisad action list`")
@@ -395,11 +395,78 @@ def test_gh64_discord_pending_response_advertises_bounded_approval() -> None:
         delivery_channel="discord",
     )
 
-    assert "Discord approval: use the Approve button on this message." in response
-    assert "Discord rejection: use the Reject button on this message." in response
+    assert "Discord approval: use the Approve button when shown on this message." in response
+    assert "Discord rejection: use the Reject button when shown on this message." in response
     assert "button-only T1" not in response
     assert "Confirm from CLI:" not in response
     assert "CLI fallback: `shisad action confirm c-1`" in response
+
+
+def test_discord_pending_response_degrades_for_expired_action() -> None:
+    expired_pending = PendingAction(
+        confirmation_id="c-expired",
+        decision_nonce="nonce-expired",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "."},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC) - timedelta(minutes=10),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        safe_preview="ACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\npath: .",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-expired"],
+        pending_actions={"c-expired": expired_pending},
+        pending_index_by_id={"c-expired": 1},
+        pending_public_preview_by_id={"c-expired": expired_pending.safe_preview},
+        binding_pending_rows=[expired_pending],
+        delivery_channel="discord",
+    )
+
+    assert "Approval is no longer pending: `approval_expired`." in response
+    assert "use the Approve button" not in response
+    assert "open the TOTP modal" not in response
+    assert "Discord rejection:" not in response
+
+
+def test_discord_pending_response_degrades_for_unavailable_backend() -> None:
+    totp_pending = PendingAction(
+        confirmation_id="c-totp",
+        decision_nonce="nonce-totp",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-totp"],
+        pending_actions={"c-totp": totp_pending},
+        pending_index_by_id={"c-totp": 1},
+        binding_pending_rows=[totp_pending],
+        delivery_channel="discord",
+        pending_channel_capability_by_id={
+            "c-totp": {
+                "can_approve": False,
+                "can_reject": True,
+                "cannot_carry_reason": "confirmation_backend_unavailable",
+            }
+        },
+    )
+
+    assert "Approval route unavailable: `confirmation_backend_unavailable`." in response
+    assert "open the TOTP modal" not in response
+    assert "Discord rejection: use the Reject button when shown on this message." in response
 
 
 def test_discord_pending_response_does_not_flatten_method_specific_proofs() -> None:
@@ -650,6 +717,7 @@ async def test_discord_totp_modal_confirm_uses_supplied_decision_nonce(tmp_path)
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
         delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        allowed_channel_principals=["alice"],
         selected_backend_id="totp.default",
         selected_backend_method="totp",
     )
@@ -687,6 +755,7 @@ async def test_discord_totp_modal_confirm_uses_supplied_decision_nonce(tmp_path)
             "approval_method": "totp",
             "proof": {"totp_code": "123456"},
             "reason": "chat_totp_confirmation",
+            "principal_id": "alice",
         }
     ]
 
@@ -2420,6 +2489,7 @@ async def test_u9_chat_totp_bare_code_confirms_trusted_internal_channel_ingress(
             "approval_method": "totp",
             "proof": {"totp_code": "123456"},
             "reason": "chat_totp_confirmation",
+            "principal_id": "alice",
         }
     ]
 
@@ -2572,6 +2642,7 @@ async def test_u9_chat_totp_internal_ingress_scopes_targeted_confirmation_to_pen
             "approval_method": "totp",
             "proof": {"totp_code": "123456"},
             "reason": "chat_totp_confirmation",
+            "principal_id": "alice",
         }
     ]
     assert harness._pending_actions["c-1"].status == "pending"

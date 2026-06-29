@@ -1266,6 +1266,64 @@ async def test_a1_software_channel_confirmation_accepts_bound_principal(
     assert evidence.approver_principal_id == "alice"
 
 
+def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
+    harness = object.__new__(HandlerImplementation)
+    pending_actions: dict[str, PendingAction] = {}
+    pending_ids: list[str] = []
+    for index in range(13):
+        confirmation_id = f"c-{index}"
+        pending = _pending_action(nonce=f"nonce-{index}")
+        pending.confirmation_id = confirmation_id
+        pending.decision_nonce = f"nonce-{index}"
+        pending_actions[confirmation_id] = pending
+        pending_ids.append(confirmation_id)
+    harness._pending_actions = pending_actions
+    harness._pending_selected_backend_available = lambda _pending: True
+
+    metadata = HandlerImplementation._discord_pending_delivery_metadata(
+        harness,
+        {"pending_confirmation_ids": pending_ids},
+    )
+
+    components = metadata["discord_components"]
+    assert len(components) == 24
+    assert components[-1]["label"] == "Reject"
+    custom_ids = [str(component["custom_id"]) for component in components]
+    assert any("c-11" in custom_id for custom_id in custom_ids)
+    assert all("c-12" not in custom_id for custom_id in custom_ids)
+    assert all(custom_id.strip() for custom_id in custom_ids)
+
+
+def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability() -> None:
+    harness = object.__new__(HandlerImplementation)
+    expired = _pending_action(nonce="expired-nonce")
+    expired.confirmation_id = "c-expired"
+    expired.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    unavailable = _totp_pending_action(nonce="unavailable-nonce", required_methods=["totp"])
+    unavailable.confirmation_id = "c-unavailable"
+    unavailable.selected_backend_id = "totp.default"
+    unavailable.selected_backend_method = "totp"
+    live = _pending_action(nonce="live-nonce")
+    live.confirmation_id = "c-live"
+    harness._pending_actions = {
+        expired.confirmation_id: expired,
+        unavailable.confirmation_id: unavailable,
+        live.confirmation_id: live,
+    }
+    harness._pending_selected_backend_available = lambda pending: pending is not unavailable
+
+    metadata = HandlerImplementation._discord_pending_delivery_metadata(
+        harness,
+        {"pending_confirmation_ids": ["c-expired", "c-unavailable", "c-live"]},
+    )
+
+    custom_ids = [str(component["custom_id"]) for component in metadata["discord_components"]]
+    assert all("c-expired" not in custom_id for custom_id in custom_ids)
+    assert sum("c-unavailable" in custom_id for custom_id in custom_ids) == 1
+    assert any("reject" in custom_id and "c-unavailable" in custom_id for custom_id in custom_ids)
+    assert sum("c-live" in custom_id for custom_id in custom_ids) == 2
+
+
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")

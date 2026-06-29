@@ -687,6 +687,60 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
 
 
 @pytest.mark.asyncio
+async def test_discord_send_falls_back_to_text_when_component_view_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeView:
+        def add_item(self, _item: object) -> None:
+            raise ValueError("too many components")
+
+    class _FakeButton:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(View=_FakeView, Button=_FakeButton),
+            ButtonStyle=SimpleNamespace(green=1, red=2, primary=3),
+        ),
+    )
+
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeChannel:
+        async def send(self, message: str, **kwargs: object) -> None:
+            sent.append((message, dict(kwargs)))
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    channel._client = SimpleNamespace(get_channel=lambda _channel_id: _FakeChannel())
+
+    await channel.send(
+        "pending",
+        target=DeliveryTarget(channel="discord", recipient="123"),
+        metadata={
+            "discord_components": [
+                {
+                    "type": "button",
+                    "label": "Approve",
+                    "style": "success",
+                    "custom_id": discord_approval_custom_id(
+                        action="confirm",
+                        confirmation_id="c-1",
+                        decision_nonce="nonce-1",
+                    ),
+                }
+            ]
+        },
+    )
+
+    assert sent == [("pending", {})]
+
+
+@pytest.mark.asyncio
 async def test_discord_channel_ignores_guild_messages_without_mention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

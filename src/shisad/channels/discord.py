@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 _DISCORD_APPROVAL_CUSTOM_ID_PREFIX = "shisad:approval:v1"
 _DISCORD_APPROVAL_ACTIONS = {"confirm", "reject", "totp", "totp_submit"}
 _DISCORD_TOTP_CODE_FIELD_ID = "totp_code"
+DISCORD_VIEW_COMPONENT_LIMIT = 25
 
 
 @dataclass(slots=True)
@@ -107,6 +108,15 @@ class DiscordChannel(InMemoryChannel):
     @property
     def available(self) -> bool:
         return discord is not None
+
+    @property
+    def supports_components(self) -> bool:
+        if discord is None:
+            return False
+        ui = getattr(discord, "ui", None)
+        view_ctor = getattr(ui, "View", None) if ui is not None else None
+        button_ctor = getattr(ui, "Button", None) if ui is not None else None
+        return callable(view_ctor) and callable(button_ctor)
 
     async def connect(self) -> None:
         await super().connect()
@@ -627,7 +637,10 @@ class DiscordChannel(InMemoryChannel):
                     button = button_ctor(**kwargs)
             if button is None:
                 continue
-            add_item(button)
+            try:
+                add_item(button)
+            except (TypeError, ValueError):
+                return None
         return view
 
     @staticmethod

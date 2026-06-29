@@ -829,6 +829,55 @@ def test_totp_backend_rejects_same_window_reuse_across_pending_actions(tmp_path)
         )
 
 
+def test_totp_backend_requires_allowed_channel_principal(tmp_path) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    factor = _approval_factor()
+    store.register_approval_factor(factor)
+    backend = TOTPBackend(credential_store=store)
+    now = datetime(2026, 4, 6, 12, 0, 0, tzinfo=UTC)
+    code = generate_totp_code(factor.secret_b32, now=now)
+    pending = _pending_action(confirmation_id="c-1")
+    pending.allowed_channel_principals = ["alice"]
+
+    with pytest.raises(ConfirmationVerificationError, match="missing_channel_principal"):
+        backend.verify(
+            pending_action=pending,
+            params={
+                "decision_nonce": "nonce-1",
+                "approval_method": "totp",
+                "proof": {"totp_code": code},
+            },
+            now=now,
+        )
+
+    with pytest.raises(ConfirmationVerificationError, match="channel_principal_not_allowed"):
+        backend.verify(
+            pending_action=pending,
+            params={
+                "decision_nonce": "nonce-1",
+                "approval_method": "totp",
+                "principal_id": "bob",
+                "proof": {"totp_code": code},
+            },
+            now=now,
+        )
+
+    evidence = backend.verify(
+        pending_action=pending,
+        params={
+            "decision_nonce": "nonce-1",
+            "approval_method": "totp",
+            "principal_id": "alice",
+            "proof": {"totp_code": code},
+        },
+        now=now,
+    )
+
+    assert evidence.approver_principal_id == factor.principal_id
+    assert evidence.evidence_payload["channel_principal_id"] == "alice"
+
+
 def test_totp_backend_consumes_recovery_codes_once(tmp_path) -> None:
     store = InMemoryCredentialStore()
     store.set_approval_store_path(tmp_path / "credentials.json")

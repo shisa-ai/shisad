@@ -15,7 +15,10 @@ from typing import Any, ClassVar, cast
 from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
-from shisad.channels.discord import discord_approval_custom_id
+from shisad.channels.discord import (
+    DISCORD_VIEW_COMPONENT_LIMIT,
+    discord_approval_custom_id,
+)
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
 from shisad.core.events import (
     AnomalyReported,
@@ -35,6 +38,7 @@ from shisad.core.soul import (
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.types import Capability, SessionId, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._pending_approval import pending_action_is_live_pending
 from shisad.devloop import assess_milestone_readiness
 from shisad.executors.sandbox import SandboxType
 from shisad.governance.scopes import ScopedPolicy, ScopedPolicyCompiler, ScopeLevel
@@ -2077,24 +2081,39 @@ class AdminImplMixin(HandlerMixinBase):
         if not isinstance(raw_ids, list):
             return {}
         components: list[dict[str, Any]] = []
+
+        def _append_components_for_pending(items: list[dict[str, Any]]) -> bool:
+            if len(components) + len(items) > DISCORD_VIEW_COMPONENT_LIMIT:
+                return False
+            components.extend(items)
+            return True
+
+        selected_backend_available = getattr(self, "_pending_selected_backend_available", None)
         for raw_confirmation_id in raw_ids:
             confirmation_id = str(raw_confirmation_id).strip()
             if not confirmation_id:
                 continue
             pending = getattr(self, "_pending_actions", {}).get(confirmation_id)
-            if pending is None or str(getattr(pending, "status", "")).strip() != "pending":
+            if pending is None or not pending_action_is_live_pending(pending):
                 continue
             decision_nonce = str(getattr(pending, "decision_nonce", "")).strip()
             if not decision_nonce:
                 continue
+            backend_available = True
+            if callable(selected_backend_available):
+                try:
+                    backend_available = bool(selected_backend_available(pending))
+                except (AttributeError, TypeError, ValueError):
+                    backend_available = False
             selected_method = (
                 str(getattr(pending, "selected_backend_method", "") or "software")
                 .strip()
                 .lower()
                 or "software"
             )
-            if selected_method == "software":
-                components.append(
+            pending_components: list[dict[str, Any]] = []
+            if backend_available and selected_method == "software":
+                pending_components.append(
                     {
                         "type": "button",
                         "label": "Approve",
@@ -2106,8 +2125,8 @@ class AdminImplMixin(HandlerMixinBase):
                         ),
                     }
                 )
-            elif selected_method == "totp":
-                components.append(
+            elif backend_available and selected_method == "totp":
+                pending_components.append(
                     {
                         "type": "button",
                         "label": "Approve",
@@ -2119,7 +2138,7 @@ class AdminImplMixin(HandlerMixinBase):
                         ),
                     }
                 )
-            components.append(
+            pending_components.append(
                 {
                     "type": "button",
                     "label": "Reject",
@@ -2131,6 +2150,8 @@ class AdminImplMixin(HandlerMixinBase):
                     ),
                 }
             )
+            if not _append_components_for_pending(pending_components):
+                break
         return {"discord_components": components} if components else {}
 
     async def do_channel_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -2487,6 +2508,9 @@ class AdminImplMixin(HandlerMixinBase):
         delivery_metadata = (
             self._discord_pending_delivery_metadata(response)
             if message.channel == "discord"
+            and bool(
+                getattr(getattr(self, "_discord_channel", None), "supports_components", False)
+            )
             else {}
         )
         if delivery_metadata:

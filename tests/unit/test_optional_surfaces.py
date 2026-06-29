@@ -482,6 +482,7 @@ async def test_tui_decision_confirm_can_send_totp_proof(
                             "confirmation_id": "conf-1",
                             "decision_nonce": "nonce-1",
                             "selected_backend_method": "totp",
+                            "allowed_channel_principals": ["alice"],
                         }
                     ],
                     "count": 1,
@@ -514,6 +515,7 @@ async def test_tui_decision_confirm_can_send_totp_proof(
         {
             "confirmation_id": "conf-1",
             "decision_nonce": "nonce-1",
+            "principal_id": "alice",
             "approval_method": "totp",
             "proof": {"totp_code": "123456"},
         },

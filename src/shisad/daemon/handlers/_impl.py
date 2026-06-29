@@ -1439,7 +1439,8 @@ def _pending_channel_capability_payload(
         "can_carry_t1_stepup": can_carry_t1_stepup,
         "can_carry_method_specific": can_carry_method_specific,
         "requires_channel_principal": bool(
-            allowed_channel_principals and selected_method == "software"
+            allowed_channel_principals
+            and selected_method in {"software", "totp", "recovery_code"}
         ),
         "requires_second_factor": selected_method_proof_tier == "T1_stepup",
         "requires_proof_input": selected_method != "software",

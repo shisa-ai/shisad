@@ -5512,7 +5512,28 @@ def _discord_pending_guidance_lines(
     *,
     pending: Any | None,
     confirmation_id: str,
+    channel_capability: Mapping[str, Any] | None = None,
 ) -> list[str]:
+    if pending is not None:
+        status = str(getattr(pending, "status", "pending")).strip() or "pending"
+        if status != "pending":
+            reason = str(getattr(pending, "status_reason", "") or status).strip()
+            return [f"Approval is no longer pending: {_markdown_code_span(reason)}."]
+        if _pending_confirmation_is_expired(pending):
+            return ["Approval is no longer pending: `approval_expired`."]
+    can_approve = True
+    can_reject = pending is not None
+    cannot_carry_reason = ""
+    if channel_capability is not None:
+        can_approve = bool(channel_capability.get("can_approve", True))
+        can_reject = bool(channel_capability.get("can_reject", can_reject))
+        cannot_carry_reason = str(channel_capability.get("cannot_carry_reason") or "").strip()
+    if not can_approve:
+        reason = cannot_carry_reason or "approval_unavailable"
+        lines = [f"Approval route unavailable: {_markdown_code_span(reason)}."]
+        if can_reject:
+            lines.append("Discord rejection: use the Reject button when shown on this message.")
+        return lines
     selected_method = (
         str(getattr(pending, "selected_backend_method", "") if pending is not None else "")
         .strip()
@@ -5521,14 +5542,14 @@ def _discord_pending_guidance_lines(
     )
     if selected_method == "software":
         return [
-            "Discord approval: use the Approve button on this message.",
-            "Discord rejection: use the Reject button on this message.",
+            "Discord approval: use the Approve button when shown on this message.",
+            "Discord rejection: use the Reject button when shown on this message.",
             f"CLI fallback: {_markdown_code_span(f'shisad action confirm {confirmation_id}')}",
         ]
     if selected_method == "totp":
         return [
-            "Discord approval: use Approve to open the TOTP modal.",
-            "Discord rejection: use the Reject button on this message.",
+            "Discord approval: use Approve when shown to open the TOTP modal.",
+            "Discord rejection: use the Reject button when shown on this message.",
             "TOTP fallback: reply with "
             f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}.",
             "CLI fallback: "
@@ -5538,19 +5559,19 @@ def _discord_pending_guidance_lines(
         label = "WebAuthn" if selected_method == "webauthn" else "Local FIDO2"
         return [
             f"{label} approval required; Discord cannot carry this proof.",
-            "Discord rejection: use the Reject button on this message.",
+            "Discord rejection: use the Reject button when shown on this message.",
             f"Approval route: {_markdown_code_span('browser')}",
         ]
     if selected_method in {"kms", "ledger"}:
         return [
             "External signer approval required "
             f"({_markdown_code_span(selected_method)}); Discord cannot carry this proof.",
-            "Discord rejection: use the Reject button on this message.",
+            "Discord rejection: use the Reject button when shown on this message.",
             f"Approval route: {_markdown_code_span('external_signer')}",
         ]
     return [
         "Selected approval method cannot be carried by Discord.",
-        "Discord rejection: use the Reject button on this message.",
+        "Discord rejection: use the Reject button when shown on this message.",
         f"Approval method: {_markdown_code_span(selected_method)}",
     ]
 
@@ -5564,6 +5585,7 @@ def _discord_pending_confirmation_response_text(
     totp_guidance_ids: set[str],
     single_totp_confirmation_id: str,
     allow_chat_approval: bool,
+    pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     lines = [
         "**Pending confirmations**",
@@ -5593,6 +5615,11 @@ def _discord_pending_confirmation_response_text(
             _discord_pending_guidance_lines(
                 pending=pending,
                 confirmation_id=confirmation_id,
+                channel_capability=(
+                    pending_channel_capability_by_id.get(confirmation_id)
+                    if pending_channel_capability_by_id is not None
+                    else None
+                ),
             )
         )
 
@@ -5626,6 +5653,7 @@ def _daemon_pending_confirmation_response_text(
     totp_guidance_confirmation_ids: Sequence[str] | None = None,
     allow_chat_approval: bool = True,
     delivery_channel: str = "",
+    pending_channel_capability_by_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     binding_rows = list(binding_pending_rows or ())
     totp_guidance_ids = {
@@ -5666,6 +5694,7 @@ def _daemon_pending_confirmation_response_text(
             totp_guidance_ids=totp_guidance_ids,
             single_totp_confirmation_id=single_totp_confirmation_id,
             allow_chat_approval=False,
+            pending_channel_capability_by_id=pending_channel_capability_by_id,
         )
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
         pending_number = index
@@ -9109,6 +9138,10 @@ class SessionImplMixin(HandlerMixinBase):
                     "proof": {"totp_code": totp_submission.code},
                     "reason": "chat_totp_confirmation",
                 }
+                if is_internal_ingress and delivery_target is not None:
+                    principal_id = str(user_id).strip()
+                    if principal_id:
+                        payload["principal_id"] = principal_id
                 result = await self.do_action_confirm(payload)
                 _extend_confirmed_tool_outputs(result)
                 confirmed = bool(result.get("confirmed", False))
@@ -13368,16 +13401,35 @@ class SessionImplMixin(HandlerMixinBase):
                 if str(getattr(pending, "confirmation_id", "")).strip()
             }
             pending_public_preview_by_id: dict[str, str] = {}
+            pending_channel_capability_by_id: dict[str, Mapping[str, Any]] = {}
             pending_to_dict = self._pending_to_dict
+            selected_backend_available_for_pending = getattr(
+                self, "_pending_selected_backend_available", None
+            )
             for pending in visible_pending_rows:
                 confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
                 if not confirmation_id:
                     continue
-                public_pending = pending_to_dict(pending, public=True)
+                selected_backend_available = None
+                if callable(selected_backend_available_for_pending):
+                    try:
+                        selected_backend_available = bool(
+                            selected_backend_available_for_pending(pending)
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        selected_backend_available = False
+                public_pending = pending_to_dict(
+                    pending,
+                    public=True,
+                    selected_backend_available=selected_backend_available,
+                )
                 public_preview = str(
                     public_pending.get("safe_preview") or getattr(pending, "reason", "") or ""
                 ).strip()
                 pending_public_preview_by_id[confirmation_id] = public_preview
+                channel_capability = public_pending.get("channel_capability")
+                if isinstance(channel_capability, Mapping):
+                    pending_channel_capability_by_id[confirmation_id] = channel_capability
             response_text = _daemon_pending_confirmation_response_text(
                 pending_confirmation_ids=visible_pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
@@ -13387,6 +13439,7 @@ class SessionImplMixin(HandlerMixinBase):
                 totp_guidance_confirmation_ids=execution.pending_confirmation_ids,
                 allow_chat_approval=not validated.is_internal_ingress,
                 delivery_channel=validated.channel,
+                pending_channel_capability_by_id=pending_channel_capability_by_id,
             )
             system_generated_pending_confirmation_response = True
             if fallback_notice:

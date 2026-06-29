@@ -1736,6 +1736,19 @@ class TOTPBackend:
         if not user_id:
             raise ConfirmationVerificationError("confirmation_user_missing")
 
+        channel_principal_id = ""
+        allowed_channel_principals = [
+            str(item).strip()
+            for item in getattr(pending_action, "allowed_channel_principals", ())
+            if str(item).strip()
+        ]
+        if allowed_channel_principals:
+            channel_principal_id = str(params.get("principal_id", "")).strip()
+            if not channel_principal_id:
+                raise ConfirmationVerificationError("missing_channel_principal")
+            if channel_principal_id not in set(allowed_channel_principals):
+                raise ConfirmationVerificationError("channel_principal_not_allowed")
+
         factors = self._matching_factors(
             user_id=user_id,
             pending_action=pending_action,
@@ -1787,6 +1800,7 @@ class TOTPBackend:
             "approval_envelope_hash": envelope_hash,
             "action_digest": action_digest,
             "approver_principal_id": factor.principal_id,
+            "channel_principal_id": channel_principal_id,
             "credential_id": factor.credential_id,
             "fallback_used": bool(getattr(pending_action, "fallback_used", False)),
         }
