@@ -5565,7 +5565,16 @@ def _discord_pending_guidance_lines(
         ]
     if selected_method == "totp":
         if not discord_approval_available:
-            approval_line = "Discord components unavailable; TOTP modal was not attached."
+            if not discord_components_available:
+                approval_line = "Discord components unavailable; TOTP modal was not attached."
+            elif not discord_totp_modal_available:
+                approval_line = (
+                    "Discord TOTP modal unavailable; TOTP approval button was not attached."
+                )
+            else:
+                approval_line = (
+                    "Discord TOTP approval button was not attached for this confirmation."
+                )
         elif not discord_totp_modal_available:
             approval_line = (
                 "Discord TOTP modal unavailable; TOTP approval button was not attached."

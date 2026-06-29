@@ -525,10 +525,11 @@ class DiscordChannel(InMemoryChannel):
         send_modal = getattr(response, "send_modal", None) if response is not None else None
         modal = self._totp_modal(parsed)
         if modal is not None and callable(send_modal):
-            result = send_modal(modal)
-            if asyncio.iscoroutine(result):
-                await result
-            return
+            with contextlib.suppress(TypeError, RuntimeError, OSError):
+                result = send_modal(modal)
+                if asyncio.iscoroutine(result):
+                    await result
+                return
         await self._acknowledge_approval_interaction(
             interaction,
             message=(

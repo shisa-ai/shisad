@@ -549,6 +549,40 @@ def test_discord_pending_response_degrades_when_totp_modal_unavailable() -> None
     assert "TOTP fallback: reply with `confirm c-totp 123456`" in response
 
 
+def test_discord_pending_response_degrades_when_totp_approval_button_omitted() -> None:
+    totp_pending = PendingAction(
+        confirmation_id="c-totp",
+        decision_nonce="nonce-totp",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-totp"],
+        pending_actions={"c-totp": totp_pending},
+        pending_index_by_id={"c-totp": 1},
+        binding_pending_rows=[totp_pending],
+        delivery_channel="discord",
+        discord_component_confirmation_ids={"c-totp"},
+        discord_approval_confirmation_ids=set(),
+        discord_reject_confirmation_ids={"c-totp"},
+        discord_totp_modal_confirmation_ids=set(),
+    )
+
+    assert "Discord components unavailable; TOTP modal was not attached." not in response
+    assert "Discord TOTP modal unavailable; TOTP approval button was not attached." in response
+    assert "Discord rejection: use the Reject button when shown on this message." in response
+    assert "TOTP fallback: reply with `confirm c-totp 123456`" in response
+
+
 def test_discord_pending_response_degrades_when_component_view_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
