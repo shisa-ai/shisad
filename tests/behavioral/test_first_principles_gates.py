@@ -181,6 +181,8 @@ async def _assert_channel_originated_approval_not_cli_only_gate(
         in response_text
     )
     assert has_native_approval_guidance or has_component_degradation_guidance
+    if has_component_degradation_guidance:
+        assert "Discord approval fallback: reply with `confirm " in response_text
     assert (
         "Discord rejection:" in response_text
         or "Discord rejection fallback:" in response_text

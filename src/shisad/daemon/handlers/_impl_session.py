@@ -5553,16 +5553,25 @@ def _discord_pending_guidance_lines(
         or "software"
     )
     if selected_method == "software":
-        approval_line = (
-            "Discord approval: use the Approve button when shown on this message."
-            if discord_approval_available
-            else "Discord components unavailable; approval buttons were not attached."
-        )
-        return [
-            approval_line,
-            _discord_rejection_guidance(),
-            f"CLI fallback: {_markdown_code_span(f'shisad action confirm {confirmation_id}')}",
+        lines = [
+            (
+                "Discord approval: use the Approve button when shown on this message."
+                if discord_approval_available
+                else "Discord components unavailable; approval buttons were not attached."
+            )
         ]
+        if not discord_approval_available:
+            lines.append(
+                "Discord approval fallback: reply with "
+                f"{_markdown_code_span(f'confirm {confirmation_id}')}."
+            )
+        lines.extend(
+            [
+                _discord_rejection_guidance(),
+                f"CLI fallback: {_markdown_code_span(f'shisad action confirm {confirmation_id}')}",
+            ]
+        )
+        return lines
     if selected_method == "totp":
         if not discord_approval_available:
             if not discord_components_available:
@@ -8849,6 +8858,55 @@ class SessionImplMixin(HandlerMixinBase):
             else False
         )
 
+        def _typed_channel_software_confirm_allowed() -> bool:
+            if (
+                not is_internal_ingress
+                or delivery_target is None
+                or intent is None
+                or intent.action != "confirm"
+            ):
+                return False
+            principal_id = str(user_id).strip()
+            if not principal_id:
+                return False
+            if intent.target == "id":
+                target_id = intent_explicit_target_id.strip().lower()
+                selected_pending_rows = [
+                    pending
+                    for pending in displayed_pending_rows
+                    if str(getattr(pending, "confirmation_id", "")).strip().lower()
+                    == target_id
+                ]
+            else:
+                selected_pending_rows = [
+                    displayed_pending_rows[index]
+                    for index in _resolve_chat_confirmation_indexes(
+                        intent=intent,
+                        pending_count=len(displayed_pending_rows),
+                        tainted_session=tainted_session,
+                    )
+                ]
+            if not selected_pending_rows:
+                return False
+            for pending in selected_pending_rows:
+                selected_method = (
+                    str(getattr(pending, "selected_backend_method", "") or "software").strip()
+                    or "software"
+                )
+                allowed_principals = {
+                    str(value).strip()
+                    for value in getattr(pending, "allowed_channel_principals", ())
+                    if str(value).strip()
+                }
+                if (
+                    selected_method != "software"
+                    or _pending_uses_totp(pending)
+                    or not _pending_matches_delivery_target(pending, delivery_target)
+                    or principal_id not in allowed_principals
+                ):
+                    return False
+            return True
+
         def _confirmation_result_status_text(
             result: Mapping[str, Any],
             *,
@@ -9056,7 +9114,11 @@ class SessionImplMixin(HandlerMixinBase):
 
         if is_internal_ingress and totp_submission is None:
             assert intent is not None
-            if intent.action != "reject" and not structured_channel_approval:
+            if (
+                intent.action != "reject"
+                and not structured_channel_approval
+                and not _typed_channel_software_confirm_allowed()
+            ):
                 error_text = _chat_confirmation_command_error_text(
                     content,
                     allowed_actions={"reject"},
