@@ -585,8 +585,9 @@ class DiscordChannel(InMemoryChannel):
                 required=True,
             )
             add_item = getattr(modal, "add_item", None)
-            if callable(add_item):
-                add_item(text_input)
+            if not callable(add_item):
+                return None
+            add_item(text_input)
             return modal
         except (TypeError, ValueError):
             return None

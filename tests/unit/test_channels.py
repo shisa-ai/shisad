@@ -808,6 +808,39 @@ def test_discord_component_support_distinguishes_totp_modal_support(
     assert channel.supports_totp_modal is False
 
 
+def test_discord_totp_modal_support_requires_text_input_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeModal:
+        def __init__(self, **_kwargs: object) -> None:
+            return
+
+    class _FakeTextInput:
+        def __init__(self, **_kwargs: object) -> None:
+            return
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(
+            ui=SimpleNamespace(
+                View=object,
+                Button=object,
+                Modal=_FakeModal,
+                TextInput=_FakeTextInput,
+            ),
+            ButtonStyle=SimpleNamespace(green=1, red=2, primary=3),
+        ),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+
+    assert channel.supports_components is True
+    assert channel.supports_totp_modal is False
+
+
 @pytest.mark.asyncio
 async def test_discord_channel_ignores_guild_messages_without_mention(
     monkeypatch: pytest.MonkeyPatch,
