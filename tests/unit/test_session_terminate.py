@@ -116,6 +116,23 @@ async def test_t1_session_terminate_clears_plan_step_rows() -> None:
     assert harness._plan_steps.list_steps(active_only=True) == []
 
 
+def test_t1_terminate_session_helper_clears_plan_step_rows_for_internal_callers() -> None:
+    harness = _Harness()
+    step_id = harness._plan_steps.start_plan_step(
+        session_id=SessionId("sess-1"),
+        plan_hash="plan-1",
+    )
+
+    assert harness._plan_steps.list_steps(active_only=True)[0]["id"] == step_id
+
+    terminated = harness._terminate_session(SessionId("sess-1"), reason="internal")
+
+    assert terminated is True
+    assert harness._session_manager.terminated == [(SessionId("sess-1"), "internal")]
+    assert harness._plan_steps.list_steps(session_id=SessionId("sess-1")) == []
+    assert harness._plan_steps.list_steps(active_only=True) == []
+
+
 @pytest.mark.asyncio
 async def test_m6_s1_session_terminate_returns_false_when_missing() -> None:
     harness = _Harness()

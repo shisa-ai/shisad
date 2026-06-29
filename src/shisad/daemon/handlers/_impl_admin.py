@@ -1399,7 +1399,7 @@ class AdminImplMixin(HandlerMixinBase):
             )
         )
         if ephemeral_session:
-            self._session_manager.terminate(sid, reason=f"channel_observation:{reason}")
+            self._terminate_session(sid, reason=f"channel_observation:{reason}")
         return {
             "session_id": sid,
             "response": "",
@@ -2596,7 +2596,7 @@ class AdminImplMixin(HandlerMixinBase):
             )
         response["ingress_risk"] = result.risk_score
         if public_session:
-            self._session_manager.terminate(sid, reason="public_channel_ephemeral")
+            self._terminate_session(sid, reason="public_channel_ephemeral")
         return cast(dict[str, Any], response)
 
 

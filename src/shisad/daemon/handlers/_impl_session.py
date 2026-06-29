@@ -15655,7 +15655,7 @@ class SessionImplMixin(HandlerMixinBase):
                         checkpoint_id=raw_checkpoint_claim.checkpoint_id,
                     )
             if task_session is not None:
-                terminated = self._session_manager.terminate(
+                terminated = self._terminate_session(
                     task_session.id,
                     reason="task_session_complete",
                 )
@@ -15797,7 +15797,7 @@ class SessionImplMixin(HandlerMixinBase):
             result["session_id"] = sid
             return result
         finally:
-            terminated = session_manager.terminate(
+            terminated = self._terminate_session(
                 cleanroom.id,
                 reason="auto_drop_rerouted_admin_cleanroom",
             )
@@ -16008,6 +16008,14 @@ class SessionImplMixin(HandlerMixinBase):
             ]
         }
 
+    def _terminate_session(self, session_id: SessionId, *, reason: str = "") -> bool:
+        terminated = bool(self._session_manager.terminate(session_id, reason=reason))
+        if terminated:
+            plan_steps = getattr(self, "_plan_steps", None)
+            if plan_steps is not None:
+                plan_steps.clear_session(session_id=session_id)
+        return terminated
+
     async def do_session_terminate(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")).strip())
         if not sid:
@@ -16030,10 +16038,9 @@ class SessionImplMixin(HandlerMixinBase):
             workspace_id=workspace_id,
         ):
             raise ValueError("Session identity binding mismatch")
-        terminated = self._session_manager.terminate(sid, reason=reason)
+        terminated = self._terminate_session(sid, reason=reason)
         if terminated:
             self._clear_parent_task_handoff_lock(sid)
-            self._plan_steps.clear_session(session_id=sid)
             lockdown_manager = getattr(self, "_lockdown_manager", None)
             if lockdown_manager is not None:
                 lockdown_manager.clear_state(sid)
