@@ -309,6 +309,35 @@ def test_pending_action_renderer_shows_selected_totp_collection_for_t0_fallback(
     assert "approve: cannot carry" not in rendered
 
 
+def test_pending_action_renderer_basic_terminal_totp_fallback_is_plain_text() -> None:
+    rendered = render_pending_action(
+        {
+            "confirmation_id": "c1",
+            "tool_name": "web.fetch",
+            "status": "pending",
+            "risk_level": "high",
+            "required_proof_tier": "T1_stepup",
+            "selected_backend_method": "totp",
+            "channel_capability": {
+                "approval_route": "host_cli",
+                "can_carry": True,
+                "can_collect_selected_method": True,
+                "requires_second_factor": True,
+            },
+            "safe_preview": "ACTION CONFIRMATION\nAction: web.fetch",
+            "warnings": ["Contains tainted data"],
+        }
+    )
+
+    assert "\x1b[" not in rendered
+    assert rendered.isascii()
+    assert "risk=high proof=T1_stepup method=totp route=host_cli" in rendered
+    assert "approve: c c1 <totp-code>" in rendered
+    assert "reject: x c1" in rendered
+    assert "preview: ACTION CONFIRMATION | Action: web.fetch" in rendered
+    assert "warnings=1: Contains tainted data" in rendered
+
+
 def test_m6_t4_confirmation_analytics_detects_rubber_stamping() -> None:
     analytics = ConfirmationAnalytics()
     base = datetime.now(UTC) - timedelta(minutes=10)

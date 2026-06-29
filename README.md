@@ -37,6 +37,7 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
 - **Confirmation gates, not blanket denial** — user-requested actions proceed; ambiguous or tainted actions route to confirmation; only genuine anomalies trigger lockdown
+- **Command-channel approvals** — supported command surfaces can approve or reject routine pending actions where they originated, with CLI remaining as fallback rather than the only path
 - **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, lockdown escalation, and user-visible warnings on repeated suspicious deny patterns
 - **Destructive command protection** — enforced at the sandbox policy layer before execution, not by LLM judgment; structurally incapable of `rm -rf /` regardless of prompt injection or misconfiguration
 - **Clean-room workflows** — admin operations run in a taint-isolated session mode with no auto-apply
@@ -52,10 +53,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 This repo is public and still pre-alpha. The latest published line is
 `v0.7.4`. A `v0.8.0b1` beta checkpoint is available for users who want the
-post-`v0.7.4` bug-fix stack before the stable `v0.8.0` UX overhaul ships.
+post-`v0.7.4` bug-fix stack, and `v0.8.0` is in active development as the
+stable command-channel approval and UX-overhaul line.
 
 | Version | Focus |
 |---------|-------|
+| v0.8.0 | Active development: command-channel approvals, TUI/confirmation polish, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
@@ -353,6 +356,7 @@ shisad assumes prompt injection will succeed and builds enforcement outside the 
 - **8-layer PEP pipeline** on every tool call: registry check, schema validation, capability check, DLP (secret pattern detection), resource authorization, egress allowlisting, credential host-scoping, taint sink enforcement
 - **Taint tracking**: content firewalls tag untrusted input on ingress and enforce provenance-aware restrictions on egress — the runtime knows *who asked for* each action (user vs. injected content vs. model hallucination)
 - **Confirmation gates**: user-requested actions proceed; actions with ambiguous or tainted provenance route to user confirmation with context; only genuine anomalies trigger lockdown
+- **Approval surface parity**: routine channel-originated approvals stay on supported command surfaces with explicit approve/reject affordances or typed channel fallbacks; stronger method-specific proofs route truthfully to browser, helper, or external signer surfaces
 - **Behavioral anomaly detection**: control plane consensus (5 independent voters) catches patterns that individual call-level checks miss
 - **Destructive command protection**: enforced at the sandbox layer before execution, not by LLM judgment — structurally incapable of `rm -rf /` regardless of what the model is tricked into proposing
 

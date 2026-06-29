@@ -143,6 +143,71 @@ async def _assert_confirmation_recovery_gate(harness: ContractHarness) -> None:
     assert "todo.log" in str(followup.get("response", ""))
 
 
+async def _assert_channel_originated_approval_not_cli_only_gate(
+    harness: ContractHarness,
+) -> None:
+    sid = await _create_session(
+        harness.client,
+        channel="discord",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    proposed = await harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "channel": "discord",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "write a file called test-output.txt",
+        },
+    )
+
+    _assert_normal_reply(
+        proposed,
+        executed_actions=0,
+        confirmation_required_actions=None,
+    )
+    assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    response_text = str(proposed.get("response", ""))
+    has_native_approval_guidance = "Discord approval:" in response_text
+    has_component_degradation_guidance = (
+        "Discord components unavailable; approval buttons were not attached."
+        in response_text
+    )
+    assert has_native_approval_guidance or has_component_degradation_guidance
+    assert (
+        "Discord rejection:" in response_text
+        or "Discord rejection fallback:" in response_text
+    )
+    assert "CLI fallback:" in response_text
+    if has_native_approval_guidance:
+        assert response_text.index("Discord approval:") < response_text.index("CLI fallback:")
+    assert "shisad action confirm" in response_text
+
+    pending = await harness.client.call(
+        "action.pending",
+        {"confirmation_id": str(pending_ids[0])},
+    )
+    actions = pending.get("actions", [])
+    assert actions
+    action = dict(actions[0])
+    assert action.get("origin_channel") == "discord"
+    assert action.get("delivery_target") is None
+    capability = dict(action.get("channel_capability", {}))
+    assert capability.get("approval_route") == "channel_native"
+    assert capability.get("can_approve") is True
+    assert capability.get("can_reject") is True
+    assert capability.get("can_collect_selected_method") is True
+    assert capability.get("can_carry") is True
+    assert capability.get("cannot_carry_reason") == ""
+
+
 async def test_first_principles_clean_harness(clean_harness: ContractHarness) -> None:
     await _assert_core_product_gates(clean_harness)
 
@@ -172,6 +237,12 @@ async def test_first_principles_confirmation_recovery_gate(
     confirmation_followup_harness: ContractHarness,
 ) -> None:
     await _assert_confirmation_recovery_gate(confirmation_followup_harness)
+
+
+async def test_first_principles_channel_originated_approval_not_cli_only_gate(
+    clean_harness: ContractHarness,
+) -> None:
+    await _assert_channel_originated_approval_not_cli_only_gate(clean_harness)
 
 
 async def test_first_principles_require_confirmation_harness(

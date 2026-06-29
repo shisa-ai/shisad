@@ -3,10 +3,11 @@
 > **Current 2FA feature status:** The approval protocol, credential store, and
 > currently available approval backends documented here were introduced across
 > `v0.6.2` and `v0.6.3` and remain implemented and tested in the latest
-> published line. TOTP confirmation works through trusted chat / command replies
-> and through the CLI. Passkey
-> (WebAuthn) and signer approvals work via browser and remote KMS
-> respectively. QR code rendering for TOTP enrollment is also included.
+> published line. TOTP confirmation works through trusted chat / command
+> replies and through the CLI. The v0.8.0 line adds routine command-channel
+> approve/reject parity for supported surfaces. Passkey (WebAuthn) and signer
+> approvals work via browser and remote KMS respectively. QR code rendering for
+> TOTP enrollment is also included.
 > Entering a TOTP code on the approval web page is not included yet; browser
 > approval today is WebAuthn only.
 
@@ -148,7 +149,8 @@ cannot be retrieved later.
 ### Confirm an action
 
 Preferred path: when the daemon posts a TOTP approval prompt to a trusted
-chat / command channel, reply with your current 6-digit code.
+chat / command channel, use the channel's approval affordance when it is shown
+or reply with your current 6-digit code.
 Confirmation-style replies are handled as control commands before planner
 flow, so approving, rejecting, or asking for pending action status does not
 create a fresh agent task.
@@ -173,21 +175,22 @@ CLI remains available as a secondary path:
 shisad action confirm <CONFIRMATION_ID> --totp-code 123456
 ```
 
-Recovery-code approval is still a CLI flow:
+Recovery-code approval remains a CLI flow:
 
 ```bash
 shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
 ```
 
-> **Command-channel parity (direction of travel).** The goal is that every
-> approval is completable on the channel where it originated — you should not
-> have to switch to the CLI to approve a routine action. TOTP confirmation
-> already works in chat. Recovery-code approval, and click-to-confirm on
-> channels that do not yet expose an interactive approve/reject affordance, are
-> currently CLI-only — a present surface limitation, not a security requirement.
-> Bringing every command channel to parity (inline approve/reject plus
-> in-channel step-up entry) is planned. The CLI stays a first-class path; it is
-> just never the only one for an ongoing approval.
+> **Command-channel parity.** Routine approvals should be completable on the
+> channel where they originated. In the v0.8.0 line, Discord-originated routine
+> approvals advertise native Approve/Reject handling with CLI fallback, and
+> TOTP approval can stay on the trusted channel through a modal where available
+> or a typed confirmation reply. Channels without native buttons still use
+> typed control replies where trusted channel ingress is available. The CLI
+> stays a first-class fallback, but it is not the only path for supported
+> ongoing routine approvals. Method-specific proofs such as WebAuthn, KMS, and
+> Ledger approvals are routed to their browser, helper, or signer surfaces
+> instead of being flattened into channel chat.
 
 ### Behavior details
 

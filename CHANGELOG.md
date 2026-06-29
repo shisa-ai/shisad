@@ -11,6 +11,23 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
+## [0.8.0] - In development
+
+This stable v0.8.0 prep line turns the beta authorization fixes into the
+command-channel approval and UX-overhaul foundation.
+
+### Added
+
+- **Command-channel approvals are no longer CLI-only for routine actions.**
+  Discord-originated routine approvals advertise native Approve/Reject handling
+  with CLI fallback, TOTP prompts can stay on the originating trusted channel,
+  and the first-principles gate now asserts the shipped response and structured
+  pending-action capability state.
+
+- **Terminal fallback rendering is covered as an explicit contract.** Basic
+  terminal/TUI pending-action text stays plain, ANSI-free, and includes approve,
+  reject, preview, and warning details for TOTP fallback paths.
+
 ## [0.8.0b1] - 2026-06-25
 
 This beta checkpoint follows `0.8.0b0` and keeps the release line focused on
