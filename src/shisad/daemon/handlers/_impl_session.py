@@ -16008,14 +16008,6 @@ class SessionImplMixin(HandlerMixinBase):
             ]
         }
 
-    def _terminate_session(self, session_id: SessionId, *, reason: str = "") -> bool:
-        terminated = bool(self._session_manager.terminate(session_id, reason=reason))
-        if terminated:
-            plan_steps = getattr(self, "_plan_steps", None)
-            if plan_steps is not None:
-                plan_steps.clear_session(session_id=session_id)
-        return terminated
-
     async def do_session_terminate(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")).strip())
         if not sid:

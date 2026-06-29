@@ -23,6 +23,8 @@ if TYPE_CHECKING:
             self, method_name: str, /, *args: Any, **kwargs: Any
         ) -> Any: ...
 
+        def _terminate_session(self, session_id: Any, *, reason: str = "") -> bool: ...
+
         def __getattr__(self, name: str) -> Any: ...
 
 else:
@@ -32,3 +34,11 @@ else:
 
         async def _call_control_plane(self, method_name: str, /, *args: Any, **kwargs: Any) -> Any:
             return await call_control_plane(self, method_name, *args, **kwargs)
+
+        def _terminate_session(self, session_id: Any, *, reason: str = "") -> bool:
+            terminated = bool(self._session_manager.terminate(session_id, reason=reason))
+            if terminated:
+                plan_steps = getattr(self, "_plan_steps", None)
+                if plan_steps is not None:
+                    plan_steps.clear_session(session_id=session_id)
+            return terminated
