@@ -187,7 +187,14 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
         lines.append(f"preview: {preview}")
     warnings = action.get("warnings")
     if isinstance(warnings, list) and warnings:
-        lines.append(f"warnings={len(warnings)}")
+        warning_labels = [
+            str(warning).strip() for warning in warnings if str(warning).strip()
+        ]
+        if warning_labels:
+            labels = "; ".join(warning_labels)
+            lines.append(f"warnings={len(warning_labels)}: {labels}")
+        else:
+            lines.append(f"warnings={len(warnings)}")
     return "\n    ".join(lines)
 
 

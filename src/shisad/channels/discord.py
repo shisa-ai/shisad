@@ -560,19 +560,28 @@ class DiscordChannel(InMemoryChannel):
         message: str = "Approval response received.",
     ) -> None:
         response = getattr(interaction, "response", None)
-        if response is None:
-            return
-        send_message = getattr(response, "send_message", None)
-        if callable(send_message):
+        if response is not None:
+            send_message = getattr(response, "send_message", None)
+            if callable(send_message):
+                with contextlib.suppress(*_discord_response_exceptions()):
+                    result = send_message(message, ephemeral=True)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    return
+            defer = getattr(response, "defer", None)
+            if callable(defer):
+                with contextlib.suppress(*_discord_response_exceptions()):
+                    result = defer(ephemeral=True)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    return
+        followup = getattr(interaction, "followup", None)
+        followup_send = (
+            getattr(followup, "send", None) if followup is not None else None
+        )
+        if callable(followup_send):
             with contextlib.suppress(*_discord_response_exceptions()):
-                result = send_message(message, ephemeral=True)
-                if asyncio.iscoroutine(result):
-                    await result
-                return
-        defer = getattr(response, "defer", None)
-        if callable(defer):
-            with contextlib.suppress(*_discord_response_exceptions()):
-                result = defer(ephemeral=True)
+                result = followup_send(message, ephemeral=True)
                 if asyncio.iscoroutine(result):
                     await result
 

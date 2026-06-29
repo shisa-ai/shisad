@@ -881,6 +881,52 @@ async def test_discord_totp_modal_send_failure_falls_back_to_typed_guidance(
 
 
 @pytest.mark.asyncio
+async def test_discord_totp_modal_already_responded_uses_followup_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeDiscordException(Exception):
+        pass
+
+    sent_followups: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeResponse:
+        def send_modal(self, _modal: object) -> None:
+            raise _FakeDiscordException("already responded")
+
+        def send_message(self, _message: str, **_kwargs: object) -> None:
+            raise _FakeDiscordException("response spent")
+
+        def defer(self, **_kwargs: object) -> None:
+            raise _FakeDiscordException("response spent")
+
+    class _FakeFollowup:
+        def send(self, message: str, **kwargs: object) -> None:
+            sent_followups.append((message, dict(kwargs)))
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(DiscordException=_FakeDiscordException),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    monkeypatch.setattr(channel, "_totp_modal", lambda _parsed: object())
+
+    await channel._open_totp_modal(
+        SimpleNamespace(response=_FakeResponse(), followup=_FakeFollowup()),
+        parsed=SimpleNamespace(confirmation_id="c-totp", decision_nonce="nonce-totp"),
+    )
+
+    assert sent_followups == [
+        (
+            "TOTP approval requires a code. Reply with `confirm c-totp 123456`.",
+            {"ephemeral": True},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_discord_acknowledgement_suppresses_discord_response_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

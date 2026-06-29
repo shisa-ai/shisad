@@ -16,6 +16,7 @@ from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.ui.confirmation import (
     ConfirmationAnalytics,
     ConfirmationWarningGenerator,
+    render_pending_action,
     render_structured_confirmation,
     safe_summary,
 )
@@ -248,6 +249,39 @@ def test_m6_t3_warning_generator_detects_first_time_recipient() -> None:
     assert "External destination" in warnings
     assert "Contains tainted data" in warnings
     assert "High-value action" in warnings
+
+
+def test_pending_action_renderer_surfaces_warning_details_after_preview_truncation() -> None:
+    safe_preview = "\n".join(
+        [
+            "ACTION CONFIRMATION",
+            "Action: http_request",
+            "PARAMETERS:",
+            *[f"  param_{index}: value_{index}" for index in range(12)],
+            "WARNINGS:",
+            "  - Contains tainted data",
+        ]
+    )
+    rendered = render_pending_action(
+        {
+            "confirmation_id": "c1",
+            "tool_name": "http_request",
+            "status": "pending",
+            "risk_level": "high",
+            "required_proof_tier": "T1_stepup",
+            "selected_backend_method": "totp",
+            "channel_capability": {
+                "approval_route": "host_cli",
+                "can_carry": True,
+                "requires_second_factor": True,
+            },
+            "safe_preview": safe_preview,
+            "warnings": ["Contains tainted data", "High-value action"],
+        }
+    )
+
+    assert "warnings=2: Contains tainted data; High-value action" in rendered
+    assert "approve: c c1 <totp-code>" in rendered
 
 
 def test_m6_t4_confirmation_analytics_detects_rubber_stamping() -> None:

@@ -34,6 +34,7 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
                     "PARAMETERS:\n"
                     "  url: https://example.test"
                 ),
+                "warnings": ["Contains tainted data"],
             }
         ],
         tasks=[
@@ -62,6 +63,7 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     assert "approve: c c1 <totp-code>" in rendered
     assert "Action: http_request" in rendered
     assert "url: https://example.test" in rendered
+    assert "warnings=1: Contains tainted data" in rendered
     assert "TASKS:" in rendered
     assert "CHANNEL HEALTH:" in rendered
 
@@ -275,7 +277,7 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert "risk=high proof=T1_stepup method=totp route=host_cli" in pending_text
     assert "approve: c c1 <totp-code>" in pending_text
     assert "Action: http_request" in pending_text
-    assert "warnings=1" in pending_text
+    assert "warnings=1: Contains tainted data" in pending_text
 
 
 @pytest.mark.asyncio
