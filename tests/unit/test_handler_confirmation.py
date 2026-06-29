@@ -230,6 +230,29 @@ class _SchedulerRecorder:
         return True
 
 
+class _ApprovalWebRecorder:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.issued: list[str] = []
+
+    def issue_approval_link(self, confirmation_id: str) -> str:
+        self.issued.append(confirmation_id)
+        return f"https://approvals.test/{confirmation_id}"
+
+    def qr_ascii(self, approval_url: str) -> str:
+        return f"QR {approval_url}"
+
+
+class _DeliveryRecorder:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
+    async def send(self, *, target: DeliveryTarget, message: str) -> object:
+        self.messages.append({"target": target, "message": message})
+        return SimpleNamespace(attempted=True, sent=True, reason="sent", target=target)
+
+
 class _ConfirmationImplHarness(ConfirmationImplMixin):
     def __init__(
         self,
@@ -787,6 +810,68 @@ async def test_a1_action_pending_fails_closed_when_selected_backend_disappears(
     assert capability["cannot_carry_reason"] == "confirmation_backend_unavailable"
 
 
+@pytest.mark.asyncio
+async def test_a1_action_pending_suppresses_webauthn_link_when_backend_unavailable(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    approval_web = _ApprovalWebRecorder()
+    harness._approval_web = approval_web
+    pending = _webauthn_pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    action = result["actions"][0]
+    entry = ActionPendingEntry.model_validate(action)
+    capability = entry.channel_capability
+    assert capability["backend_available"] is False
+    assert capability["can_approve"] is False
+    assert capability["can_collect_selected_method"] is False
+    assert capability["can_carry"] is False
+    assert capability["cannot_carry_reason"] == "confirmation_backend_unavailable"
+    assert "approval_url" not in action
+    assert "approval_qr_ascii" not in action
+    assert approval_web.issued == []
+
+
+@pytest.mark.asyncio
+async def test_a1_chat_notifications_skip_webauthn_link_when_backend_unavailable(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    approval_web = _ApprovalWebRecorder()
+    delivery = _DeliveryRecorder()
+    harness._approval_web = approval_web
+    harness._delivery = delivery
+    pending = _webauthn_pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    await harness._send_chat_approval_link_notifications(
+        confirmation_ids=[pending.confirmation_id],
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+    )
+
+    assert approval_web.issued == []
+    assert delivery.messages == []
+
+
+@pytest.mark.asyncio
+async def test_a1_webauthn_ceremony_context_fails_closed_when_backend_unavailable(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    pending = _webauthn_pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness._webauthn_approval_ceremony_context(pending.confirmation_id)
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "confirmation_backend_unavailable"
+
+
 def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(
     tmp_path: Path,
 ) -> None:
@@ -1130,6 +1215,36 @@ def _totp_pending_action(
         approval_envelope_hash=approval_envelope_hash(envelope),
         selected_backend_id="totp.default",
         selected_backend_method="totp",
+    )
+
+
+def _webauthn_pending_action(*, nonce: str) -> PendingAction:
+    envelope = _software_approval_envelope(tool_name=ToolName("web.search")).model_copy(
+        update={"required_level": ConfirmationLevel.BOUND_APPROVAL}
+    )
+    return PendingAction(
+        confirmation_id="c-webauthn",
+        decision_nonce=nonce,
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        required_level=ConfirmationLevel.BOUND_APPROVAL,
+        required_methods=["webauthn"],
+        required_capabilities=ConfirmationCapabilities(
+            principal_binding=True,
+            approval_binding=True,
+        ),
+        allowed_channel_principals=["alice"],
+        approval_envelope=envelope,
+        approval_envelope_hash=approval_envelope_hash(envelope),
+        selected_backend_id="webauthn.default",
+        selected_backend_method="webauthn",
     )
 
 

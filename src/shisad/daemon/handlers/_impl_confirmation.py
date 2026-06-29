@@ -457,6 +457,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise RuntimeError("webauthn backend is unavailable")
         return backend
 
+    def _selected_backend_available_for_pending(self, pending: Any) -> bool:
+        selected_backend_available = getattr(self, "_pending_selected_backend_available", None)
+        if not callable(selected_backend_available):
+            return True
+        try:
+            return bool(selected_backend_available(pending))
+        except Exception:
+            return False
+
     def _local_fido2_backend(self) -> LocalFido2Backend:
         backend = self._confirmation_backend_registry.get_backend("approver.local_fido2")
         if not isinstance(backend, LocalFido2Backend):
@@ -615,15 +624,31 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": "confirmation_method_not_allowed",
                 "message": "This approval request is not waiting for WebAuthn confirmation.",
             }
+        if not self._selected_backend_available_for_pending(pending):
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "confirmation_backend_unavailable",
+                "message": "This approval request cannot be completed with WebAuthn.",
+            }
         try:
             public_key = self._webauthn_backend().approval_request_options(
                 pending_action=pending,
             )
-        except ConfirmationVerificationError as exc:
+        except (ConfirmationVerificationError, RuntimeError) as exc:
+            reason = (
+                "confirmation_backend_unavailable"
+                if isinstance(exc, RuntimeError)
+                else exc.reason
+            )
             return {
                 "ok": False,
-                "status": "invalid_request",
-                "reason": exc.reason,
+                "status": (
+                    "unavailable"
+                    if reason == "confirmation_backend_unavailable"
+                    else "invalid_request"
+                ),
+                "reason": reason,
                 "message": "This approval request cannot be completed with WebAuthn.",
             }
         public_pending = self._pending_to_dict(pending, public=True)
@@ -674,6 +699,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if pending.required_level.priority < ConfirmationLevel.REAUTHENTICATED.priority:
                 continue
             if str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn":
+                continue
+            if not self._selected_backend_available_for_pending(pending):
                 continue
             approval_url = approval_web.issue_approval_link(str(pending.confirmation_id))
             if not approval_url:
@@ -1089,16 +1116,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 continue
             if status_filter and item.status.lower() != status_filter:
                 continue
-            selected_backend_available_fn = getattr(
-                self,
-                "_pending_selected_backend_available",
-                None,
-            )
-            selected_backend_available = (
-                selected_backend_available_fn(item)
-                if callable(selected_backend_available_fn)
-                else None
-            )
+            selected_backend_available = self._selected_backend_available_for_pending(item)
             payload = self._pending_to_dict(
                 item,
                 public=True,
@@ -1109,6 +1127,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 and self._approval_web.enabled
                 and str(getattr(item, "selected_backend_method", "")).strip() == "webauthn"
                 and str(getattr(item, "status", "")).strip() == "pending"
+                and selected_backend_available
             ):
                 approval_url = self._approval_web.issue_approval_link(
                     str(getattr(item, "confirmation_id", ""))
