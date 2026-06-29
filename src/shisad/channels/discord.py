@@ -39,6 +39,7 @@ _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS: tuple[type[BaseException], ...] = (
     RuntimeError,
     OSError,
 )
+_DISCORD_DEFAULT_APPROVAL_ACK = "Approval response received."
 
 
 @dataclass(slots=True)
@@ -65,6 +66,21 @@ def _discord_response_exceptions() -> tuple[type[BaseException], ...]:
     ):
         return (*_DISCORD_RESPONSE_FALLBACK_EXCEPTIONS, discord_exception)
     return _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS
+
+
+async def _call_discord_response(
+    callback: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> bool:
+    if not callable(callback):
+        return False
+    with contextlib.suppress(*_discord_response_exceptions()):
+        result = callback(*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            await result
+        return True
+    return False
 
 
 def discord_approval_custom_id(
@@ -557,33 +573,25 @@ class DiscordChannel(InMemoryChannel):
         self,
         interaction: Any,
         *,
-        message: str = "Approval response received.",
+        message: str = _DISCORD_DEFAULT_APPROVAL_ACK,
     ) -> None:
+        must_deliver_message = message != _DISCORD_DEFAULT_APPROVAL_ACK
         response = getattr(interaction, "response", None)
         if response is not None:
             send_message = getattr(response, "send_message", None)
-            if callable(send_message):
-                with contextlib.suppress(*_discord_response_exceptions()):
-                    result = send_message(message, ephemeral=True)
-                    if asyncio.iscoroutine(result):
-                        await result
-                    return
+            if await _call_discord_response(send_message, message, ephemeral=True):
+                return
             defer = getattr(response, "defer", None)
-            if callable(defer):
-                with contextlib.suppress(*_discord_response_exceptions()):
-                    result = defer(ephemeral=True)
-                    if asyncio.iscoroutine(result):
-                        await result
-                    return
+            if (
+                await _call_discord_response(defer, ephemeral=True)
+                and not must_deliver_message
+            ):
+                return
         followup = getattr(interaction, "followup", None)
         followup_send = (
             getattr(followup, "send", None) if followup is not None else None
         )
-        if callable(followup_send):
-            with contextlib.suppress(*_discord_response_exceptions()):
-                result = followup_send(message, ephemeral=True)
-                if asyncio.iscoroutine(result):
-                    await result
+        await _call_discord_response(followup_send, message, ephemeral=True)
 
     def _totp_modal(self, parsed: DiscordApprovalInteraction) -> Any | None:
         if discord is None:

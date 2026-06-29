@@ -927,6 +927,56 @@ async def test_discord_totp_modal_already_responded_uses_followup_guidance(
 
 
 @pytest.mark.asyncio
+async def test_discord_totp_modal_defer_then_followup_preserves_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeDiscordException(Exception):
+        pass
+
+    events: list[tuple[str, object]] = []
+
+    class _FakeResponse:
+        def send_modal(self, _modal: object) -> None:
+            raise _FakeDiscordException("modal rejected")
+
+        def send_message(self, _message: str, **_kwargs: object) -> None:
+            raise _FakeDiscordException("message rejected")
+
+        def defer(self, **kwargs: object) -> None:
+            events.append(("defer", dict(kwargs)))
+
+    class _FakeFollowup:
+        def send(self, message: str, **kwargs: object) -> None:
+            events.append(("followup", (message, dict(kwargs))))
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(DiscordException=_FakeDiscordException),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    monkeypatch.setattr(channel, "_totp_modal", lambda _parsed: object())
+
+    await channel._open_totp_modal(
+        SimpleNamespace(response=_FakeResponse(), followup=_FakeFollowup()),
+        parsed=SimpleNamespace(confirmation_id="c-totp", decision_nonce="nonce-totp"),
+    )
+
+    assert events == [
+        ("defer", {"ephemeral": True}),
+        (
+            "followup",
+            (
+                "TOTP approval requires a code. Reply with `confirm c-totp 123456`.",
+                {"ephemeral": True},
+            ),
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_discord_acknowledgement_suppresses_discord_response_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -961,6 +1011,42 @@ async def test_discord_acknowledgement_suppresses_discord_response_exceptions(
         ("send_message", {"ephemeral": True}),
         ("defer", {"ephemeral": True}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_discord_generic_acknowledgement_can_stop_after_defer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeDiscordException(Exception):
+        pass
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeResponse:
+        def send_message(self, _message: str, **_kwargs: object) -> None:
+            raise _FakeDiscordException("message rejected")
+
+        def defer(self, **kwargs: object) -> None:
+            events.append(("defer", dict(kwargs)))
+
+    class _FakeFollowup:
+        def send(self, _message: str, **kwargs: object) -> None:
+            events.append(("followup", dict(kwargs)))
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(DiscordException=_FakeDiscordException),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+
+    await channel._acknowledge_approval_interaction(
+        SimpleNamespace(response=_FakeResponse(), followup=_FakeFollowup()),
+    )
+
+    assert events == [("defer", {"ephemeral": True})]
 
 
 @pytest.mark.asyncio
