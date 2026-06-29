@@ -58,6 +58,7 @@ from shisad.interop.a2a_registry import (
     A2aRegistry,
 )
 from shisad.interop.a2a_transport import SocketTransport
+from shisad.ui.tui import fetch_snapshot, render_plain
 from tests.helpers.daemon import ingest_memory_via_ingress
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 from tests.helpers.mcp import write_mock_mcp_server
@@ -920,6 +921,57 @@ async def test_behavioral_out_of_scope_background_action_routes_to_confirmation(
             and bool(event.get("data", {}).get("success")) is True
             for event in executed["events"]
         )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_task_status_snapshot_renders_waiting_on_approval(
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "visible-scoped-reminder",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "allowed_recipients": ["ops-room-2"],
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        await _wait_for_task_session_id(client, task_id=str(created["id"]))
+        pending = await _wait_for_task_pending_confirmation(client, task_id=str(created["id"]))
+        queued = pending["pending"][0]
+        confirmation_id = str(queued.get("confirmation_id", "")).strip()
+
+        status_snapshot = await client.call(
+            "task.status_snapshot",
+            {"user_id": "alice", "workspace_id": "ws1", "limit": 20},
+        )
+        task_row = next(
+            row
+            for row in status_snapshot["tasks"]
+            if str(row.get("task_id", "")) == str(created["id"])
+        )
+        task_confirmation_ids = {
+            str(item.get("confirmation_id", "")).strip()
+            for item in task_row.get("pending_confirmations", [])
+        }
+
+        tui_snapshot = await fetch_snapshot(config.socket_path)
+        rendered = render_plain(tui_snapshot)
+
+        assert confirmation_id in task_confirmation_ids
+        assert f"waiting_on_approval confirmation={confirmation_id}" in rendered
+        assert "reject_hint=x " + confirmation_id in rendered
+        assert "confirmation_metadata_unavailable" not in rendered
     finally:
         await _shutdown_daemon(daemon_task, client)
 

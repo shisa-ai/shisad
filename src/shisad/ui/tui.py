@@ -178,6 +178,40 @@ def _pending_actions_by_confirmation_id(
     }
 
 
+def _task_pending_confirmation_ids(raw_tasks: list[Any]) -> set[str]:
+    confirmation_ids: set[str] = set()
+    for raw in raw_tasks:
+        if not isinstance(raw, Mapping):
+            continue
+        pending = raw.get("pending_confirmations", [])
+        if not isinstance(pending, list):
+            continue
+        for item in pending:
+            if not isinstance(item, Mapping):
+                continue
+            confirmation_id = str(item.get("confirmation_id", "")).strip()
+            if confirmation_id:
+                confirmation_ids.add(confirmation_id)
+    return confirmation_ids
+
+
+def _enrich_task_rows_with_pending_actions(
+    task_rows: list[dict[str, Any]],
+    pending_by_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    for task in task_rows:
+        pending = task.get("pending_confirmations", [])
+        if not isinstance(pending, list):
+            continue
+        for item in pending:
+            if not isinstance(item, dict):
+                continue
+            confirmation_id = str(item.get("confirmation_id", "")).strip()
+            action = pending_by_id.get(confirmation_id)
+            if action:
+                item["pending_action"] = dict(action)
+
+
 def _task_pending_approval_summaries(
     row: Mapping[str, Any],
     pending_by_id: Mapping[str, Mapping[str, Any]],
@@ -193,6 +227,10 @@ def _task_pending_approval_summaries(
         if not confirmation_id:
             continue
         action = pending_by_id.get(confirmation_id, {})
+        if not action and isinstance(item, Mapping):
+            embedded_action = item.get("pending_action", {})
+            if isinstance(embedded_action, Mapping):
+                action = embedded_action
         capability = action.get("channel_capability", {}) if isinstance(action, Mapping) else {}
         route = (
             str(capability.get("approval_route", "")).strip()
@@ -385,6 +423,10 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
             {"status": "pending", "limit": 20},
             default={"actions": []},
         )
+        pending_action_rows = _safe_pending_action_rows(
+            [item for item in pending_result.get("actions", [])]
+        )
+        pending_by_id = _pending_actions_by_confirmation_id(pending_action_rows)
         plan_steps_result = await _safe_call("plan.steps", {"limit": 20}, default={"steps": []})
         task_scope = _task_scope_from_sessions(raw_sessions)
         if task_scope is not None:
@@ -400,6 +442,29 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
             )
         else:
             tasks_result = {"tasks": []}
+        raw_task_rows = [item for item in tasks_result.get("tasks", [])]
+        missing_task_confirmation_ids = (
+            _task_pending_confirmation_ids(raw_task_rows) - set(pending_by_id)
+        )
+        for confirmation_id in sorted(missing_task_confirmation_ids):
+            exact_pending = await _safe_call(
+                "action.pending",
+                {
+                    "confirmation_id": confirmation_id,
+                    "status": "pending",
+                    "limit": 1,
+                    "include_ui": True,
+                },
+                default={"actions": []},
+            )
+            for action in _safe_pending_action_rows(
+                [item for item in exact_pending.get("actions", [])]
+            ):
+                action_id = str(action.get("confirmation_id", "")).strip()
+                if action_id:
+                    pending_by_id[action_id] = action
+        task_rows = _safe_task_rows(raw_task_rows)
+        _enrich_task_rows_with_pending_actions(task_rows, pending_by_id)
         status_result = await _safe_call("daemon.status", default={"channels": {}})
         alerts_result = await _safe_call("dashboard.alerts", {"limit": 20}, default={"alerts": []})
         audit_result = await _safe_call(
@@ -411,11 +476,9 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         await client.close()
     return TuiSnapshot(
         sessions=raw_sessions,
-        pending_actions=_safe_pending_action_rows(
-            [item for item in pending_result.get("actions", [])]
-        ),
+        pending_actions=pending_action_rows,
         plan_steps=_safe_plan_step_rows([item for item in plan_steps_result.get("steps", [])]),
-        tasks=_safe_task_rows([item for item in tasks_result.get("tasks", [])]),
+        tasks=task_rows,
         channel_health=_safe_channel_rows(
             status_result.get("channels", {})
             if isinstance(status_result.get("channels", {}), Mapping)

@@ -466,6 +466,108 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert all(method != "task.list" for method, _params in created[0].calls)
 
 
+@pytest.mark.asyncio
+async def test_t2_tui_fetch_snapshot_enriches_visible_task_confirmation_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeClient:
+        def __init__(self, socket_path: Path) -> None:
+            self.socket_path = socket_path
+            self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(
+            self, method: str, params: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            if method == "session.list":
+                return {"sessions": [{"id": "s1", "user_id": "u1", "workspace_id": "ws1"}]}
+            if method == "action.pending":
+                if params and params.get("confirmation_id") == "c-task-visible":
+                    return {
+                        "actions": [
+                            {
+                                "confirmation_id": "c-task-visible",
+                                "status": "pending",
+                                "required_proof_tier": "T1_stepup",
+                                "selected_backend_method": "recovery_code",
+                                "channel_capability": {
+                                    "approval_route": "host_cli",
+                                    "can_carry": True,
+                                    "can_collect_selected_method": True,
+                                    "requires_second_factor": True,
+                                    "can_reject": True,
+                                },
+                            }
+                        ],
+                        "count": 1,
+                    }
+                return {
+                    "actions": [
+                        {"confirmation_id": f"global-{index}", "status": "pending"}
+                        for index in range(20)
+                    ],
+                    "count": 21,
+                }
+            if method == "plan.steps":
+                return {"steps": []}
+            if method == "task.status_snapshot":
+                return {
+                    "tasks": [
+                        {
+                            "task_id": "task-visible",
+                            "status": "enabled",
+                            "schedule_kind": "event",
+                            "pending_confirmations": [
+                                {"confirmation_id": "c-task-visible", "task_id": "task-visible"}
+                            ],
+                            "pending_confirmation_count": 1,
+                        }
+                    ],
+                    "count": 1,
+                }
+            if method == "daemon.status":
+                return {"channels": {}}
+            if method == "dashboard.alerts":
+                return {"alerts": []}
+            if method == "dashboard.audit_explorer":
+                return {"events": []}
+            raise AssertionError(f"unexpected TUI call: {method}")
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("shisad.ui.tui.ControlClient", _factory)
+    from shisad.ui.tui import fetch_snapshot
+
+    snapshot = await fetch_snapshot(Path("/tmp/control.sock"))
+    rendered = render_plain(snapshot)
+
+    assert len(snapshot.pending_actions) == 20
+    assert "confirmation=c-task-visible" in rendered
+    assert "method=recovery_code" in rendered
+    assert "approve_hint=c c-task-visible <recovery-code>" in rendered
+    assert "confirmation_metadata_unavailable" not in rendered
+    assert (
+        "action.pending",
+        {
+            "confirmation_id": "c-task-visible",
+            "status": "pending",
+            "limit": 1,
+            "include_ui": True,
+        },
+    ) in created[0].calls
+
+
 def test_tui_render_rich_fallbacks_to_plain_without_rich(monkeypatch: pytest.MonkeyPatch) -> None:
     from shisad.ui import tui as tui_module
 

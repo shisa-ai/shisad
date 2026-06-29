@@ -10915,6 +10915,21 @@ class SessionImplMixin(HandlerMixinBase):
                     f"CLI fallback: run '{_totp_cli_confirm_command(confirmation_id)}'."
                 )
                 continue
+            if (
+                decision == "confirm"
+                and _pending_uses_recovery_code(pending)
+                and not _pending_confirmation_is_expired(pending)
+            ):
+                rejected += 1
+                rejection_reasons.append("recovery_code_required")
+                outcome_lines.append(f"{confirmation_id} ({tool_name}): recovery_code_required")
+                outcome_lines.append(
+                    "Recovery-code approvals cannot be completed from chat text."
+                )
+                outcome_lines.append(
+                    f"CLI fallback: run '{_recovery_code_cli_confirm_command(confirmation_id)}'."
+                )
+                continue
 
             payload = {
                 "confirmation_id": confirmation_id,
