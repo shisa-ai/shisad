@@ -1665,7 +1665,7 @@ def _pending_confirmation_chat_status_response_text(
 def _internal_ingress_confirmation_approval_not_allowed_text() -> str:
     return (
         "Chat approval commands from this channel are not accepted without proof. "
-        "No action was taken. Use the CLI confirmation command or TOTP code flow "
+        "No action was taken. Use the CLI confirmation command or proof-code flow "
         "to confirm, or reply with 'reject N' to reject in chat."
     )
 
@@ -1688,6 +1688,14 @@ def _parse_chat_totp_submission(text: str) -> ChatTotpSubmission | None:
 
 def _pending_uses_totp(pending: Any) -> bool:
     return str(getattr(pending, "selected_backend_method", "")).strip() == "totp"
+
+
+def _pending_uses_recovery_code(pending: Any) -> bool:
+    return str(getattr(pending, "selected_backend_method", "")).strip() == "recovery_code"
+
+
+def _pending_uses_typed_proof(pending: Any) -> bool:
+    return _pending_uses_totp(pending) or _pending_uses_recovery_code(pending)
 
 
 def _approval_metadata_value(metadata: Mapping[str, Any] | None, key: str) -> str:
@@ -1741,12 +1749,20 @@ def _totp_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
     return [pending for pending in pending_rows if _pending_uses_totp(pending)]
 
 
-def _non_totp_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
-    return [pending for pending in pending_rows if not _pending_uses_totp(pending)]
+def _recovery_code_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
+    return [pending for pending in pending_rows if _pending_uses_recovery_code(pending)]
+
+
+def _non_typed_proof_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
+    return [pending for pending in pending_rows if not _pending_uses_typed_proof(pending)]
 
 
 def _totp_cli_confirm_command(confirmation_id: str) -> str:
     return f"shisad action confirm {confirmation_id} --totp-code 123456"
+
+
+def _recovery_code_cli_confirm_command(confirmation_id: str) -> str:
+    return f"shisad action confirm {confirmation_id} --recovery-code ABCD-EFGH"
 
 
 def _action_reject_command(confirmation_id: str) -> str:
@@ -1940,6 +1956,15 @@ def _chat_totp_guidance_lines(*, pending_rows: Sequence[Any]) -> list[str]:
         "TOTP in chat: if exactly one TOTP action is pending, reply with the 6-digit code.",
         "If multiple TOTP actions are pending, reply with 'confirm CONFIRMATION_ID 123456'.",
         f"CLI fallback: run '{_totp_cli_confirm_command('CONFIRMATION_ID')}'.",
+    ]
+
+
+def _chat_recovery_code_guidance_lines(*, pending_rows: Sequence[Any]) -> list[str]:
+    if not _recovery_code_pending_rows(pending_rows):
+        return []
+    return [
+        "Recovery-code approvals cannot be completed from chat text.",
+        f"CLI fallback: run '{_recovery_code_cli_confirm_command('CONFIRMATION_ID')}'.",
     ]
 
 
@@ -5599,6 +5624,13 @@ def _discord_pending_guidance_lines(
             "CLI fallback: "
             f"{_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}",
         ]
+    if selected_method == "recovery_code":
+        return [
+            "Recovery-code approval required; Discord cannot collect this proof.",
+            _discord_rejection_guidance(),
+            "CLI fallback: "
+            f"{_markdown_code_span(_recovery_code_cli_confirm_command(confirmation_id))}",
+        ]
     if selected_method in {"webauthn", "local_fido2"}:
         label = "WebAuthn" if selected_method == "webauthn" else "Local FIDO2"
         return [
@@ -5801,6 +5833,12 @@ def _daemon_pending_confirmation_response_text(
                     f"   TOTP approval pending: reply with 'reject {pending_number}' to reject"
                 )
                 lines.append(f"   To approve: {_totp_cli_confirm_command(confirmation_id)}")
+        elif pending is not None and _pending_uses_recovery_code(pending):
+            lines.append(
+                f"   Recovery-code approval pending: reply with 'reject {pending_number}' "
+                "to reject"
+            )
+            lines.append(f"   To approve: {_recovery_code_cli_confirm_command(confirmation_id)}")
         else:
             if allow_chat_approval:
                 lines.append(
@@ -8628,26 +8666,28 @@ class SessionImplMixin(HandlerMixinBase):
         allow_chat_approval: bool = True,
     ) -> str:
         totp_rows = _totp_pending_rows(pending_rows)
-        non_totp_rows = _non_totp_pending_rows(pending_rows)
+        recovery_code_rows = _recovery_code_pending_rows(pending_rows)
+        non_typed_proof_rows = _non_typed_proof_pending_rows(pending_rows)
         if tainted_session:
             lines = ["Pending confirmations (tainted session)."]
         else:
             lines = ["Pending confirmations."]
-        if totp_rows:
-            if non_totp_rows:
+        if totp_rows or recovery_code_rows:
+            if non_typed_proof_rows:
                 if allow_chat_approval:
                     lines.append(
-                        "For non-TOTP items, reply with 'confirm N' or 'reject N'. "
+                        "For non-proof-code items, reply with 'confirm N' or 'reject N'. "
                         "Reply with 'no to all' to reject all pending items."
                     )
                 else:
                     lines.append(
-                        "For non-TOTP items, reply with 'reject N' or 'no to all' to reject; "
+                        "For non-proof-code items, reply with 'reject N' or 'no to all' to reject; "
                         "use the CLI confirmation command to approve."
                     )
             else:
                 lines.append("Reply with 'reject N' or 'no to all' to deny pending items.")
             lines.extend(_chat_totp_guidance_lines(pending_rows=pending_rows))
+            lines.extend(_chat_recovery_code_guidance_lines(pending_rows=pending_rows))
         else:
             if allow_chat_approval:
                 if len(pending_rows) == 1:
@@ -8670,6 +8710,10 @@ class SessionImplMixin(HandlerMixinBase):
                 reason = "requires_confirmation"
             lines.append(f"{idx}. {pending.tool_name}: {reason}")
             if _pending_uses_totp(pending):
+                confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+                if confirmation_id:
+                    lines.append(f"   confirmation ID: {confirmation_id}")
+            if _pending_uses_recovery_code(pending):
                 confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
                 if confirmation_id:
                     lines.append(f"   confirmation ID: {confirmation_id}")

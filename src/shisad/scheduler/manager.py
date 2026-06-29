@@ -22,7 +22,7 @@ from shisad.scheduler.schema import (
 )
 
 _MAX_RESOLVED_CONFIRMATIONS_PER_TASK = 32
-_MAX_CRON_LOOKAHEAD_DAYS = 5 * 366
+_MAX_CRON_LOOKAHEAD_DAYS = 400 * 366
 
 
 class SchedulerManager:

@@ -1215,6 +1215,30 @@ def test_t2_task_status_snapshot_includes_long_gap_leap_day_cron_run() -> None:
     assert rows[0]["next_run_at"] == "2028-02-29T00:00:00+00:00"
 
 
+def test_t2_task_status_snapshot_includes_leap_day_weekday_conjunction() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="leap-day-monday-task",
+        goal="send reminder",
+        schedule=Schedule(kind="cron", expression="0 0 29 2 1"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    now = datetime(2025, 3, 1, 0, 0, 0, tzinfo=UTC)
+
+    rows = scheduler.task_status_snapshot(
+        limit=10,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        now=now,
+    )
+
+    assert rows[0]["task_id"] == task.id
+    assert rows[0]["next_run_at"] == "2044-02-29T00:00:00+00:00"
+
+
 def test_gh59_task_status_snapshot_renders_one_shot_interval_without_recurring_wording() -> None:
     scheduler = SchedulerManager()
     task = scheduler.create_task(

@@ -306,6 +306,37 @@ def test_chat_pending_confirmation_summary_adds_totp_guidance_when_totp_is_pendi
     assert "yes to all" not in summary.lower()
 
 
+def test_chat_pending_confirmation_summary_adds_recovery_code_guidance() -> None:
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="recovery_code",
+    )
+
+    summary = SessionImplMixin._chat_pending_confirmation_summary(
+        pending_rows=[pending],
+        tainted_session=False,
+    )
+
+    assert "Recovery-code approvals cannot be completed from chat text." in summary
+    assert (
+        "shisad action confirm confirmation_id --recovery-code abcd-efgh"
+        in summary.lower()
+    )
+    assert "confirmation id: c-1" in summary.lower()
+    assert "reply with 'confirm n'" not in summary.lower()
+    assert "yes to all" not in summary.lower()
+
+
 def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None:
     plain_pending = PendingAction(
         confirmation_id="c-1",
@@ -368,6 +399,66 @@ def test_daemon_pending_confirmation_response_formats_discord_markdown() -> None
     assert "TOTP fallback: reply with `confirm c-2 123456`" in response
     assert "CLI fallback: `shisad action confirm c-2 --totp-code 123456`" in response
     assert response.endswith("Review all pending: `shisad action list`")
+
+
+def test_daemon_pending_confirmation_response_uses_recovery_code_cli_fallback() -> None:
+    pending = PendingAction(
+        confirmation_id="c-recovery",
+        decision_nonce="nonce-recovery",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="recovery_code",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-recovery"],
+        pending_actions={"c-recovery": pending},
+        pending_index_by_id={"c-recovery": 1},
+        binding_pending_rows=[pending],
+        allow_chat_approval=True,
+    )
+
+    assert "Recovery-code approval pending" in response
+    assert "To approve: shisad action confirm c-recovery --recovery-code ABCD-EFGH" in response
+    assert "In chat: reply with 'confirm" not in response
+    assert "Confirm: shisad action confirm c-recovery" not in response
+
+
+def test_discord_pending_response_uses_recovery_code_cli_fallback() -> None:
+    pending = PendingAction(
+        confirmation_id="c-recovery",
+        decision_nonce="nonce-recovery",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="recovery_code",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=["c-recovery"],
+        pending_actions={"c-recovery": pending},
+        pending_index_by_id={"c-recovery": 1},
+        binding_pending_rows=[pending],
+        allow_chat_approval=False,
+        delivery_channel="discord",
+    )
+
+    assert "Recovery-code approval required; Discord cannot collect this proof." in response
+    assert "CLI fallback: `shisad action confirm c-recovery --recovery-code ABCD-EFGH`" in response
+    assert "confirm c-recovery 123456" not in response
 
 
 def test_gh64_discord_pending_response_advertises_bounded_approval() -> None:
