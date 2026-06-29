@@ -1368,6 +1368,7 @@ def _pending_channel_capability_payload(
     selected_method_proof_tier = _selected_method_proof_tier(selected_method)
     required_level = getattr(pending, "required_level", "")
     required_level_value = str(getattr(required_level, "value", required_level)).strip()
+    is_pending = str(getattr(pending, "status", "pending")).strip() == "pending"
     backend_available = True if selected_backend_available is None else bool(
         selected_backend_available
     )
@@ -1377,7 +1378,7 @@ def _pending_channel_capability_payload(
         else "unavailable"
     )
     can_collect_selected_method = (
-        backend_available and approval_route in {"channel_native", "host_cli"}
+        is_pending and backend_available and approval_route in {"channel_native", "host_cli"}
     )
     can_carry_t0_identity = (
         can_collect_selected_method and selected_method_proof_tier == "T0_identity"
@@ -1395,6 +1396,8 @@ def _pending_channel_capability_payload(
     }.get(required_proof_tier, False)
     if can_carry_required_proof_tier:
         cannot_carry_reason = ""
+    elif not is_pending:
+        cannot_carry_reason = "approval_not_pending"
     elif not backend_available:
         cannot_carry_reason = "confirmation_backend_unavailable"
     else:
@@ -1420,8 +1423,8 @@ def _pending_channel_capability_payload(
         "required_proof_tier": required_proof_tier,
         "required_level": required_level_value,
         "required_methods": list(getattr(pending, "required_methods", ())),
-        "can_approve": bool(selected_method) and backend_available,
-        "can_reject": str(getattr(pending, "status", "pending")).strip() == "pending",
+        "can_approve": bool(selected_method) and backend_available and is_pending,
+        "can_reject": is_pending,
         "can_collect_selected_method": can_collect_selected_method,
         "can_carry": can_carry_required_proof_tier,
         "can_carry_required_proof_tier": can_carry_required_proof_tier,

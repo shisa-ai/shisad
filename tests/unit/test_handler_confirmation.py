@@ -1806,6 +1806,12 @@ def test_a1_load_pending_actions_fails_legacy_channel_pending_without_principal(
     assert loaded.allowed_channel_principals == []
     assert loaded.status == "failed"
     assert loaded.status_reason == "channel_principal_unavailable"
+    public = HandlerImplementation._pending_to_dict(loaded, public=True)
+    capability = public["channel_capability"]
+    assert capability["can_approve"] is False
+    assert capability["can_collect_selected_method"] is False
+    assert capability["can_carry"] is False
+    assert capability["can_carry_required_proof_tier"] is False
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
     assert persisted[0]["status"] == "failed"
     assert persisted[0]["status_reason"] == "channel_principal_unavailable"
