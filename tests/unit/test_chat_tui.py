@@ -255,7 +255,8 @@ def test_u2_chat_status_bar_formats_structured_state() -> None:
 
     assert app._format_status_bar() == (
         f"shisad {__version__} | connection=connected | session=sess-structured | "
-        "channel=cli | lockdown=caution | user=alice | workspace=prod"
+        "channel=cli | lockdown=caution | user=alice | workspace=prod | "
+        "keys=Ctrl+N New | Ctrl+C Quit"
     )
 
 
@@ -291,7 +292,8 @@ async def test_u2_chat_mount_renders_structured_status_and_theme_classes() -> No
 
     assert str(status_bar.renderable) == (
         f"shisad {__version__} | connection=connected | session=active-sid | "
-        "channel=cli | lockdown=caution | user=ops | workspace=prod"
+        "channel=cli | lockdown=caution | user=ops | workspace=prod | "
+        "keys=Ctrl+N New | Ctrl+C Quit"
     )
     assert chat_log.has_class("shisa-panel")
     assert chat_input.has_class("shisa-panel")

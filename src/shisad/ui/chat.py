@@ -25,6 +25,7 @@ from textual.widgets import Footer, Header, Markdown, Static, TextArea
 from shisad import __version__
 from shisad.core.transcript import derive_legacy_transcript_entry_id
 from shisad.ui.evidence import render_evidence_refs_for_terminal
+from shisad.ui.motion import TerminalCapabilities, format_key_hints
 from shisad.ui.theme import get_builtin_theme, textual_theme_css
 
 _INLINE_LIST_LEAD_RE = re.compile(r":\s+(?P<marker>[-*+]|\d+[.)])\s+(?=\S)")
@@ -380,6 +381,7 @@ class ChatApp(App[None]):
         self._connection_state = "disconnected"
         self._channel = "cli"
         self._lockdown_level = "normal"
+        self._terminal_capabilities = TerminalCapabilities.from_env()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -726,10 +728,14 @@ class ChatApp(App[None]):
         lockdown = self._lockdown_level.strip().lower() or "normal"
         channel = self._channel.strip().lower() or "cli"
         connection = self._connection_state.strip().lower() or "disconnected"
+        key_hints = format_key_hints(
+            (("ctrl+n", "New"), ("ctrl+c", "Quit")),
+            self._terminal_capabilities,
+        )
         return (
             f"shisad {__version__} | connection={connection} | session={session_id} | "
             f"channel={channel} | lockdown={lockdown} | user={self._user_id} | "
-            f"workspace={self._workspace_id}"
+            f"workspace={self._workspace_id} | keys={key_hints}"
         )
 
     def _refresh_status_from_message_result(self, result: Mapping[str, Any]) -> None:
