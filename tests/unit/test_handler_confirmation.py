@@ -906,6 +906,48 @@ async def test_a1_webauthn_ceremony_context_fails_closed_when_backend_unavailabl
 
 
 @pytest.mark.asyncio
+async def test_a1_action_pending_backend_availability_respects_pending_principal(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+    pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
+    pending.required_level = ConfirmationLevel.SOFTWARE
+    pending.allowed_principals = ["removed-laptop"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    entry = ActionPendingEntry.model_validate(result["actions"][0])
+    capability = entry.channel_capability
+    assert capability["backend_available"] is False
+    assert capability["can_approve"] is False
+    assert capability["cannot_carry_reason"] == "confirmation_backend_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_a1_action_pending_backend_availability_respects_pending_credential(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+    pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
+    pending.required_level = ConfirmationLevel.SOFTWARE
+    pending.allowed_credentials = ["removed-credential"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    entry = ActionPendingEntry.model_validate(result["actions"][0])
+    capability = entry.channel_capability
+    assert capability["backend_available"] is False
+    assert capability["can_approve"] is False
+    assert capability["cannot_carry_reason"] == "confirmation_backend_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_a1_action_pending_suppresses_webauthn_link_when_expired(
     tmp_path: Path,
 ) -> None:
@@ -985,6 +1027,44 @@ async def test_a1_action_pending_suppresses_local_fido2_helper_when_expired(
 
     assert result["count"] == 1
     action = result["actions"][0]
+    assert "helper_origin" not in action
+    assert "helper_rp_id" not in action
+    assert "helper_public_key" not in action
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a1_action_pending_suppresses_local_fido2_helper_when_backend_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    calls: list[str] = []
+
+    def local_fido2_helper(pending: PendingAction) -> dict[str, object]:
+        calls.append(pending.confirmation_id)
+        return {
+            "ok": True,
+            "origin": "http://127.0.0.1:8765",
+            "rp_id": "127.0.0.1",
+            "public_key": {"challenge": "test"},
+        }
+
+    monkeypatch.setattr(harness, "_local_fido2_approval_context", local_fido2_helper)
+    pending = _webauthn_pending_action(nonce="expected")
+    pending.selected_backend_id = "approver.local_fido2"
+    pending.selected_backend_method = "local_fido2"
+    pending.required_methods = ["local_fido2"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    action = result["actions"][0]
+    entry = ActionPendingEntry.model_validate(action)
+    capability = entry.channel_capability
+    assert capability["backend_available"] is False
+    assert capability["can_approve"] is False
     assert "helper_origin" not in action
     assert "helper_rp_id" not in action
     assert "helper_public_key" not in action

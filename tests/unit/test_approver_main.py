@@ -204,6 +204,41 @@ def test_approver_service_process_pending_once_confirms_local_fido2_action() -> 
     ]
 
 
+def test_approver_service_skips_unavailable_local_fido2_action() -> None:
+    device = _FakeDevice()
+    service = _HarnessService(
+        device=device,
+        responses={
+            "action.pending": [
+                {
+                    "actions": [
+                        {
+                            "confirmation_id": "c-1",
+                            "decision_nonce": "nonce-1",
+                            "selected_backend_method": "local_fido2",
+                            "channel_capability": {
+                                "backend_available": False,
+                                "can_approve": False,
+                            },
+                        }
+                    ]
+                }
+            ],
+        },
+    )
+
+    def fail_prompt(_row: dict[str, Any]) -> bool:
+        raise AssertionError("unavailable local FIDO2 rows must not be prompted")
+
+    result = asyncio.run(service.process_pending_once(prompt=fail_prompt))
+
+    assert result == {"processed": 0, "approved": 0, "rejected": 0}
+    assert device.assertion_calls == []
+    assert service.calls == [
+        ("action.pending", {"status": "pending", "limit": 100, "include_ui": True}),
+    ]
+
+
 def test_approver_service_process_pending_once_rejects_when_prompt_declines() -> None:
     device = _FakeDevice()
     service = _HarnessService(

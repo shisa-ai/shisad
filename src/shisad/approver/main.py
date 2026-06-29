@@ -243,6 +243,12 @@ class ApproverService:
                 continue
             if str(item.get("selected_backend_method", "")).strip() != "local_fido2":
                 continue
+            capability = item.get("channel_capability")
+            if isinstance(capability, dict) and (
+                capability.get("backend_available") is False
+                or capability.get("can_approve") is False
+            ):
+                continue
             rows.append(item)
         return rows
 

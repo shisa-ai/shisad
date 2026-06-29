@@ -3019,11 +3019,54 @@ class HandlerImplementation(
         selected_method = str(getattr(pending, "selected_backend_method", "")).strip()
         if selected_method and str(getattr(backend, "method", "")).strip() != selected_method:
             return False
+        user_id = str(getattr(pending, "user_id", ""))
         is_available_for = getattr(backend, "is_available_for", None)
         if callable(is_available_for):
             try:
-                return bool(is_available_for(user_id=str(getattr(pending, "user_id", ""))))
+                if not bool(is_available_for(user_id=user_id)):
+                    return False
             except Exception:
+                return False
+        allowed_principals = [
+            str(value).strip()
+            for value in getattr(pending, "allowed_principals", ())
+            if str(value).strip()
+        ]
+        if allowed_principals:
+            capabilities = getattr(backend, "capabilities", None)
+            if not bool(getattr(capabilities, "principal_binding", False)):
+                return False
+            principals_for_user = getattr(backend, "principals_for_user", None)
+            if not callable(principals_for_user):
+                return False
+            try:
+                available_principals = {
+                    str(value).strip()
+                    for value in principals_for_user(user_id=user_id)
+                    if str(value).strip()
+                }
+            except Exception:
+                return False
+            if not (set(allowed_principals) & available_principals):
+                return False
+        allowed_credentials = [
+            str(value).strip()
+            for value in getattr(pending, "allowed_credentials", ())
+            if str(value).strip()
+        ]
+        if allowed_credentials:
+            credentials_for_user = getattr(backend, "credentials_for_user", None)
+            if not callable(credentials_for_user):
+                return False
+            try:
+                available_credentials = {
+                    str(value).strip()
+                    for value in credentials_for_user(user_id=user_id)
+                    if str(value).strip()
+                }
+            except Exception:
+                return False
+            if not (set(allowed_credentials) & available_credentials):
                 return False
         return True
 

@@ -1141,6 +1141,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             elif (
                 str(getattr(item, "selected_backend_method", "")).strip() == "local_fido2"
                 and pending_action_is_live_pending(item)
+                and selected_backend_available
             ):
                 helper_context = self._local_fido2_approval_context(item)
                 if helper_context.get("ok") is True:
