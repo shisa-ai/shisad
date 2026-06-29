@@ -1750,6 +1750,24 @@ def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_pat
     assert persisted[0]["strip_direct_tool_execute_envelope_keys"] is True
 
 
+def test_a1_load_pending_actions_backfills_legacy_channel_principal(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("allowed_channel_principals", None)
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.allowed_channel_principals == ["alice"]
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["allowed_channel_principals"] == ["alice"]
+
+
 def _pep_context_snapshot(
     *,
     capabilities: set[Capability],

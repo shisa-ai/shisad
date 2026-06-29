@@ -3452,6 +3452,7 @@ class HandlerImplementation(
             sensitive_pending_groups.add(group)
         pruned_stale = False
         migrated_legacy_strip_intent = False
+        migrated_legacy_channel_principal = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -3620,6 +3621,11 @@ class HandlerImplementation(
             ):
                 pending.strip_direct_tool_execute_envelope_keys = True
                 migrated_legacy_strip_intent = True
+            if pending.delivery_target is not None and not pending.allowed_channel_principals:
+                channel_principal = str(pending.user_id).strip()
+                if channel_principal:
+                    pending.allowed_channel_principals = [channel_principal]
+                    migrated_legacy_channel_principal = True
             if _has_sensitive_pending_text(pending.tool_name, pending.arguments):
                 pending.arguments = _redact_sensitive_pending_arguments(
                     pending.tool_name,
@@ -3660,7 +3666,7 @@ class HandlerImplementation(
                     persist=False,
                 )
                 pruned_stale = True
-        if pruned_stale or migrated_legacy_strip_intent:
+        if pruned_stale or migrated_legacy_strip_intent or migrated_legacy_channel_principal:
             self._persist_pending_actions()
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
