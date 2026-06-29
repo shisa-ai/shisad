@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -344,6 +344,10 @@ class SchedulerManager:
         for task in tasks[: max(0, int(limit))]:
             pending = len(self.pending_confirmations(task.id))
             schedule_rendering = task_schedule_rendering(task)
+            delivery_target = (
+                task.delivery_target if isinstance(task.delivery_target, Mapping) else {}
+            )
+            delivery_channel = str(delivery_target.get("channel", "")).strip()
             rows.append(
                 {
                     "task_id": task.id,
@@ -364,6 +368,7 @@ class SchedulerManager:
                     "max_runs": int(task.max_runs),
                     "created_by": str(task.created_by),
                     "workspace_id": str(task.workspace_id),
+                    "delivery_channel": delivery_channel,
                 }
             )
         return rows

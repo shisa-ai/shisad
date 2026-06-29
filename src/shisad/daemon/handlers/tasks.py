@@ -11,6 +11,8 @@ from shisad.core.api.schema import (
     TaskListResult,
     TaskPendingConfirmationsParams,
     TaskPendingConfirmationsResult,
+    TaskStatusSnapshotParams,
+    TaskStatusSnapshotResult,
     TaskTriggerEventParams,
     TaskTriggerEventResult,
 )
@@ -84,4 +86,18 @@ class TaskHandlers:
         )
         return TaskPendingConfirmationsResult.model_validate(
             await self._impl.do_task_pending_confirmations(payload)
+        )
+
+    async def handle_task_status_snapshot(
+        self,
+        params: TaskStatusSnapshotParams,
+        ctx: RequestContext,
+    ) -> TaskStatusSnapshotResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TaskStatusSnapshotResult.model_validate(
+            await self._impl.do_task_status_snapshot(payload)
         )

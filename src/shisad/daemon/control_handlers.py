@@ -180,6 +180,8 @@ from shisad.core.api.schema import (
     TaskListResult,
     TaskPendingConfirmationsParams,
     TaskPendingConfirmationsResult,
+    TaskStatusSnapshotParams,
+    TaskStatusSnapshotResult,
     TaskTriggerEventParams,
     TaskTriggerEventResult,
     ThreadCloseParams,
@@ -789,6 +791,13 @@ class DaemonControlHandlers:
         ctx: RequestContext,
     ) -> TaskPendingConfirmationsResult:
         return await self._tasks.handle_task_pending_confirmations(params, ctx)
+
+    async def handle_task_status_snapshot(
+        self,
+        params: TaskStatusSnapshotParams,
+        ctx: RequestContext,
+    ) -> TaskStatusSnapshotResult:
+        return await self._tasks.handle_task_status_snapshot(params, ctx)
 
     async def handle_web_search(
         self, params: WebSearchParams, ctx: RequestContext

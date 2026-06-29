@@ -267,6 +267,19 @@ class TasksImplMixin(HandlerMixinBase):
         )
         return str(pending.confirmation_id)
 
+    @staticmethod
+    def _public_task_confirmation_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "confirmation_id": optional_string(row.get("confirmation_id", "")),
+            "task_id": optional_string(row.get("task_id", "")),
+            "tool_name": optional_string(row.get("tool_name", "")),
+            "event_type": optional_string(row.get("event_type", "")),
+            "payload_taint": optional_string(row.get("payload_taint", "")),
+            "reason": optional_string(row.get("reason", "")),
+            "status": optional_string(row.get("status", "pending")) or "pending",
+            "queued_at": optional_string(row.get("queued_at", "")),
+        }
+
     async def _reject_task_run(
         self,
         *,
@@ -647,3 +660,43 @@ class TasksImplMixin(HandlerMixinBase):
         task_id = str(params.get("task_id", ""))
         pending = self._scheduler.pending_confirmations(task_id)
         return {"task_id": task_id, "pending": pending, "count": len(pending)}
+
+    async def do_task_status_snapshot(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id = optional_string(params.get("user_id", ""))
+        workspace_id = optional_string(params.get("workspace_id", ""))
+        limit = max(0, int(params.get("limit", 20) or 20))
+        if not user_id or not workspace_id:
+            return {
+                "tasks": [],
+                "count": 0,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "scope_status": "missing_scope",
+            }
+
+        rows = self._scheduler.task_status_snapshot(
+            limit=limit,
+            created_by=UserId(user_id),
+            workspace_id=WorkspaceId(workspace_id),
+        )
+        visible_rows: list[dict[str, Any]] = []
+        for row in rows:
+            task_id = optional_string(row.get("task_id", ""))
+            public_row = dict(row)
+            pending_source = self._scheduler.pending_confirmations(task_id) if task_id else []
+            pending_rows = [
+                TasksImplMixin._public_task_confirmation_row(raw)
+                for raw in pending_source
+                if isinstance(raw, Mapping)
+            ]
+            public_row["pending_confirmations"] = pending_rows
+            public_row["pending_confirmation_count"] = len(pending_rows)
+            public_row["confirmation_needed"] = bool(pending_rows)
+            visible_rows.append(public_row)
+        return {
+            "tasks": visible_rows,
+            "count": len(visible_rows),
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "scope_status": "scoped",
+        }

@@ -52,9 +52,13 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
         tasks=[
             {
                 "id": "t1",
+                "status": "enabled",
                 "enabled": True,
                 "schedule_kind": "interval",
+                "schedule_summary": "every 5 minutes",
                 "delivery_channel": "discord",
+                "pending_confirmations": [{"confirmation_id": "c-task"}],
+                "pending_confirmation_count": 1,
             }
         ],
         channel_health=[
@@ -80,6 +84,8 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     assert "WORK BREAKDOWN:" in rendered
     assert "> [in_progress] 1. Current request" in rendered
     assert "TASKS:" in rendered
+    assert "t1 status=enabled enabled=True schedule=interval delivery=discord" in rendered
+    assert "waiting_on_approval confirmation=c-task" in rendered
     assert "CHANNEL HEALTH:" in rendered
 
 
@@ -209,7 +215,7 @@ def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
         "channels=2 connected_channels=1 alerts=1 acknowledged_alerts=1 audit_events=1"
     ) in rendered
     assert "s2 user=u2 lockdown=caution" in rendered
-    assert "t2 enabled=False schedule=manual" in rendered
+    assert "t2 status=disabled enabled=False schedule=manual" in rendered
     assert "slack enabled=True available=True connected=False status=degraded" in rendered
     assert "active AnomalyReported ack=" in rendered
     assert "acknowledged AlertRaised ack=known false positive" in rendered
@@ -284,7 +290,9 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
         ) -> dict[str, object]:
             self.calls.append((method, params))
             mapping = {
-                "session.list": {"sessions": [{"id": "s1"}]},
+                "session.list": {
+                    "sessions": [{"id": "s1", "user_id": "u1", "workspace_id": "ws1"}]
+                },
                 "action.pending": {
                     "actions": [
                         {
@@ -316,15 +324,20 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
                     ],
                     "count": 1,
                 },
-                "task.list": {
+                "task.status_snapshot": {
                     "tasks": [
                         {
-                            "id": "t1",
-                            "enabled": True,
-                            "schedule": {"kind": "interval"},
-                            "delivery_target": {"channel": "discord"},
+                            "task_id": "t1",
+                            "title": "task one",
+                            "status": "enabled",
+                            "schedule_kind": "recurring_interval",
+                            "schedule_summary": "every 5 minutes",
+                            "delivery_channel": "discord",
+                            "last_triggered_at": "2026-06-29T00:00:00+00:00",
                         }
-                    ]
+                    ],
+                    "count": 1,
+                    "scope_status": "scoped",
                 },
                 "daemon.status": {
                     "channels": {
@@ -365,7 +378,9 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert snapshot.plan_steps[0]["status"] == "in_progress"
     assert snapshot.plan_steps[0]["current"] is True
     assert snapshot.tasks[0]["id"] == "t1"
-    assert snapshot.tasks[0]["schedule_kind"] == "interval"
+    assert snapshot.tasks[0]["status"] == "enabled"
+    assert snapshot.tasks[0]["schedule_kind"] == "recurring_interval"
+    assert snapshot.tasks[0]["schedule_summary"] == "every 5 minutes"
     assert snapshot.channel_health[0]["channel"] == "discord"
     assert snapshot.channel_health[0]["connected"] is True
     assert snapshot.channel_health[0]["status"] == "ok"
@@ -373,6 +388,11 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert snapshot.audit_events[0]["event_type"] == "AuditLogged"
     assert created[0].connected is True
     assert created[0].closed is True
+    assert (
+        "task.status_snapshot",
+        {"user_id": "u1", "workspace_id": "ws1", "limit": 20},
+    ) in created[0].calls
+    assert all(method != "task.list" for method, _params in created[0].calls)
 
 
 def test_tui_render_rich_fallbacks_to_plain_without_rich(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -469,6 +489,8 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
                 "enabled": True,
                 "schedule_kind": "interval",
                 "delivery_channel": "discord",
+                "pending_confirmations": [{"confirmation_id": "c1"}],
+                "pending_confirmation_count": 1,
             }
         ],
         channel_health=[
@@ -548,7 +570,9 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert "Action: http_request" in pending_text
     assert "warnings=1: Contains tainted data" in pending_text
     plan_text = "\n".join(" ".join(row) for row in plan_table.rows)
+    task_text = "\n".join(" ".join(row) for row in tasks_table.rows)
     assert "step-1 1 Current request blocked yes pending_confirmation" in plan_text
+    assert "confirmation=c1 proof=T0_identity method=totp route=host_cli" in task_text
     assert sessions_table.styles == ["green"]
     assert pending_table.styles == ["yellow"]
     assert plan_table.styles == ["yellow"]
@@ -580,7 +604,6 @@ async def test_tui_fetch_snapshot_tolerates_partial_rpc_failures(
                 "session.list": {"sessions": [{"id": "s1"}]},
                 "action.pending": {"actions": [{"confirmation_id": "c1", "status": "pending"}]},
                 "plan.steps": {"steps": []},
-                "task.list": {"tasks": []},
                 "daemon.status": {"channels": {}},
                 "dashboard.alerts": {"alerts": [{"event_type": "AlertRaised"}]},
             }
@@ -606,6 +629,62 @@ async def test_tui_fetch_snapshot_tolerates_partial_rpc_failures(
     assert snapshot.audit_events == []
     assert created[0].connected is True
     assert created[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_t2_tui_fetch_snapshot_fails_closed_without_unique_task_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeClient:
+        def __init__(self, socket_path: Path) -> None:
+            self.socket_path = socket_path
+            self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(
+            self, method: str, params: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            if method == "session.list":
+                return {
+                    "sessions": [
+                        {"id": "s1", "user_id": "u1", "workspace_id": "ws1"},
+                        {"id": "s2", "user_id": "u2", "workspace_id": "ws1"},
+                    ]
+                }
+            if method == "action.pending":
+                return {"actions": []}
+            if method == "plan.steps":
+                return {"steps": []}
+            if method == "daemon.status":
+                return {"channels": {}}
+            if method == "dashboard.alerts":
+                return {"alerts": []}
+            if method == "dashboard.audit_explorer":
+                return {"events": []}
+            raise AssertionError(f"unexpected TUI task/global call: {method}")
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("shisad.ui.tui.ControlClient", _factory)
+    from shisad.ui.tui import fetch_snapshot
+
+    snapshot = await fetch_snapshot(Path("/tmp/control.sock"))
+
+    assert snapshot.tasks == []
+    assert all(
+        method not in {"task.list", "task.status_snapshot"} for method, _params in created[0].calls
+    )
 
 
 @pytest.mark.asyncio

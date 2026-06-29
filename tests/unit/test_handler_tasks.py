@@ -13,6 +13,7 @@ from shisad.core.api.schema import (
     TaskCreateParams,
     TaskDisableParams,
     TaskPendingConfirmationsParams,
+    TaskStatusSnapshotParams,
     TaskTriggerEventParams,
 )
 from shisad.core.types import Capability, SessionId
@@ -32,6 +33,7 @@ class _ProgrammableImpl:
             "disable": [],
             "trigger": [],
             "pending": [],
+            "status_snapshot": [],
         }
 
     def script(self, kind: str, result: dict[str, object] | Exception) -> None:
@@ -64,6 +66,27 @@ class _ProgrammableImpl:
         return self._next(
             "pending",
             {"task_id": str(payload.get("task_id", "")), "pending": [], "count": 0},
+        )
+
+    async def do_task_status_snapshot(self, payload: dict[str, object]) -> dict[str, object]:
+        self.payloads.append(("status_snapshot", payload))
+        return self._next(
+            "status_snapshot",
+            {
+                "tasks": [
+                    {
+                        "task_id": "task-1",
+                        "title": "task one",
+                        "status": "enabled",
+                        "schedule_kind": "event",
+                        "schedule_summary": "event-triggered: alarm",
+                    }
+                ],
+                "count": 1,
+                "user_id": str(payload.get("user_id", "")),
+                "workspace_id": str(payload.get("workspace_id", "")),
+                "scope_status": "scoped",
+            },
         )
 
     def _next(self, kind: str, default: dict[str, object]) -> dict[str, object]:
@@ -174,6 +197,24 @@ async def test_task_list_validates_count_shape() -> None:
     handlers = _handlers(impl)
     listing = await handlers.handle_task_list(NoParams(), RequestContext())
     assert listing.count == 1
+
+
+@pytest.mark.asyncio
+async def test_t2_task_status_snapshot_forwards_scope_to_impl() -> None:
+    impl = _ProgrammableImpl()
+    handlers = _handlers(impl)
+
+    snapshot = await handlers.handle_task_status_snapshot(
+        TaskStatusSnapshotParams(user_id="alice", workspace_id="ws1", limit=5),
+        RequestContext(),
+    )
+
+    assert snapshot.count == 1
+    assert snapshot.tasks[0].task_id == "task-1"
+    assert impl.payloads[-1] == (
+        "status_snapshot",
+        {"user_id": "alice", "workspace_id": "ws1", "limit": 5},
+    )
 
 
 @pytest.mark.asyncio

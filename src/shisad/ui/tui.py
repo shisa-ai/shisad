@@ -77,24 +77,152 @@ def _safe_task_rows(raw_tasks: list[Any]) -> list[dict[str, Any]]:
     for raw in raw_tasks:
         if not isinstance(raw, Mapping):
             continue
+        task_id = str(raw.get("task_id", raw.get("id", ""))).strip()
+        status = str(raw.get("status", "")).strip().lower()
+        if not status and "enabled" in raw:
+            status = "enabled" if bool(raw.get("enabled", False)) else "disabled"
+        enabled = bool(raw.get("enabled", status == "enabled"))
         schedule = raw.get("schedule", {})
         delivery = raw.get("delivery_target", {})
-        schedule_kind = ""
+        schedule_kind = str(raw.get("schedule_kind", "")).strip()
         if isinstance(schedule, Mapping):
-            schedule_kind = str(schedule.get("kind", "")).strip()
-        delivery_channel = ""
+            schedule_kind = schedule_kind or str(schedule.get("kind", "")).strip()
+        delivery_channel = str(raw.get("delivery_channel", "")).strip()
         if isinstance(delivery, Mapping):
-            delivery_channel = str(delivery.get("channel", "")).strip()
+            delivery_channel = delivery_channel or str(delivery.get("channel", "")).strip()
+        pending = _safe_task_pending_rows(raw.get("pending_confirmations", []))
+        try:
+            pending_count = int(raw.get("pending_confirmation_count", len(pending)) or 0)
+        except (TypeError, ValueError):
+            pending_count = len(pending)
         rows.append(
             {
-                "id": str(raw.get("id", "")),
-                "enabled": bool(raw.get("enabled", False)),
+                "id": task_id,
+                "title": str(raw.get("title", "")).strip(),
+                "status": status or "unknown",
+                "enabled": enabled,
                 "schedule_kind": schedule_kind,
+                "schedule_summary": str(raw.get("schedule_summary", "")).strip(),
                 "last_triggered_at": str(raw.get("last_triggered_at", "")),
+                "next_run_at": str(raw.get("next_run_at", "")),
                 "delivery_channel": delivery_channel,
+                "pending_confirmations": pending,
+                "pending_confirmation_count": max(pending_count, len(pending)),
+                "confirmation_needed": bool(raw.get("confirmation_needed", False))
+                or bool(pending),
             }
         )
     return rows
+
+
+def _safe_task_pending_rows(raw_pending: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_pending, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in raw_pending:
+        if not isinstance(raw, Mapping):
+            continue
+        rows.append(
+            {
+                "confirmation_id": str(raw.get("confirmation_id", "")).strip(),
+                "task_id": str(raw.get("task_id", "")).strip(),
+                "tool_name": str(raw.get("tool_name", "")).strip(),
+                "event_type": str(raw.get("event_type", "")).strip(),
+                "payload_taint": str(raw.get("payload_taint", "")).strip(),
+                "reason": str(raw.get("reason", "")).strip(),
+                "status": str(raw.get("status", "")).strip() or "pending",
+                "queued_at": str(raw.get("queued_at", "")).strip(),
+            }
+        )
+    return rows
+
+
+def _task_status(row: Mapping[str, Any]) -> str:
+    status = str(row.get("status", "")).strip().lower()
+    if status:
+        return status
+    if "enabled" in row:
+        return "enabled" if bool(row.get("enabled", False)) else "disabled"
+    return "unknown"
+
+
+def _task_enabled(row: Mapping[str, Any]) -> bool:
+    if "enabled" in row:
+        return bool(row.get("enabled", False))
+    return _task_status(row) == "enabled"
+
+
+def _task_scope_from_sessions(raw_sessions: Any) -> tuple[str, str] | None:
+    if not isinstance(raw_sessions, list):
+        return None
+    scopes: set[tuple[str, str]] = set()
+    for raw in raw_sessions:
+        if not isinstance(raw, Mapping):
+            continue
+        user_id = str(raw.get("user_id", "")).strip()
+        workspace_id = str(raw.get("workspace_id", "")).strip()
+        if user_id and workspace_id:
+            scopes.add((user_id, workspace_id))
+    if len(scopes) != 1:
+        return None
+    return next(iter(scopes))
+
+
+def _pending_actions_by_confirmation_id(
+    actions: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("confirmation_id", "")).strip(): row
+        for row in actions
+        if str(row.get("confirmation_id", "")).strip()
+    }
+
+
+def _task_pending_approval_summaries(
+    row: Mapping[str, Any],
+    pending_by_id: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    pending = row.get("pending_confirmations", [])
+    if not isinstance(pending, list):
+        pending = []
+    summaries: list[str] = []
+    for item in pending:
+        if not isinstance(item, Mapping):
+            continue
+        confirmation_id = str(item.get("confirmation_id", "")).strip()
+        if not confirmation_id:
+            continue
+        action = pending_by_id.get(confirmation_id, {})
+        capability = action.get("channel_capability", {}) if isinstance(action, Mapping) else {}
+        route = (
+            str(capability.get("approval_route", "")).strip()
+            if isinstance(capability, Mapping)
+            else ""
+        )
+        proof = str(action.get("required_proof_tier", "")).strip()
+        method = str(action.get("selected_backend_method", "")).strip()
+        parts = [f"confirmation={confirmation_id}"]
+        if proof:
+            parts.append(f"proof={proof}")
+        if method:
+            parts.append(f"method={method}")
+        if route:
+            parts.append(f"route={route}")
+        if method == "totp":
+            parts.append(f"approve_hint=c {confirmation_id} <totp-code>")
+        else:
+            parts.append(f"approve_hint=c {confirmation_id}")
+        parts.append(f"reject_hint=x {confirmation_id}")
+        summaries.append(" ".join(parts))
+    if summaries:
+        return summaries
+    try:
+        pending_count = int(row.get("pending_confirmation_count", 0) or 0)
+    except (TypeError, ValueError):
+        pending_count = 0
+    if pending_count > 0:
+        return [f"pending_count={pending_count}"]
+    return []
 
 
 def _show_plan_step_sessions(rows: list[dict[str, Any]]) -> bool:
@@ -215,13 +343,31 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
     try:
         await client.connect()
         sessions_result = await _safe_call("session.list", default={"sessions": []})
+        raw_sessions = [
+            dict(item)
+            for item in sessions_result.get("sessions", [])
+            if isinstance(item, Mapping)
+        ]
         pending_result = await _safe_call(
             "action.pending",
             {"status": "pending", "limit": 20},
             default={"actions": []},
         )
         plan_steps_result = await _safe_call("plan.steps", {"limit": 20}, default={"steps": []})
-        tasks_result = await _safe_call("task.list", default={"tasks": []})
+        task_scope = _task_scope_from_sessions(raw_sessions)
+        if task_scope is not None:
+            task_user_id, task_workspace_id = task_scope
+            tasks_result = await _safe_call(
+                "task.status_snapshot",
+                {
+                    "user_id": task_user_id,
+                    "workspace_id": task_workspace_id,
+                    "limit": 20,
+                },
+                default={"tasks": []},
+            )
+        else:
+            tasks_result = {"tasks": []}
         status_result = await _safe_call("daemon.status", default={"channels": {}})
         alerts_result = await _safe_call("dashboard.alerts", {"limit": 20}, default={"alerts": []})
         audit_result = await _safe_call(
@@ -232,9 +378,7 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
     finally:
         await client.close()
     return TuiSnapshot(
-        sessions=[
-            dict(item) for item in sessions_result.get("sessions", []) if isinstance(item, Mapping)
-        ],
+        sessions=raw_sessions,
         pending_actions=_safe_pending_action_rows(
             [item for item in pending_result.get("actions", [])]
         ),
@@ -296,6 +440,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     active_alerts = _active_alert_rows(snapshot)
     acknowledged_alerts = _acknowledged_alert_rows(snapshot)
     plan_step_rows = _safe_plan_step_rows(snapshot.plan_steps)
+    pending_by_id = _pending_actions_by_confirmation_id(snapshot.pending_actions)
     lines: list[str] = []
     lines.append("SHISAD TUI SNAPSHOT")
     lines.append("SUMMARY:")
@@ -340,13 +485,27 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     if not snapshot.tasks:
         lines.append("  no background tasks")
     for row in snapshot.tasks:
+        task_details: list[str] = []
+        schedule_summary = str(row.get("schedule_summary", "")).strip()
+        if schedule_summary:
+            task_details.append(f"summary={schedule_summary}")
+        last_triggered_at = str(row.get("last_triggered_at", "")).strip()
+        if last_triggered_at:
+            task_details.append(f"last={last_triggered_at}")
+        next_run_at = str(row.get("next_run_at", "")).strip()
+        if next_run_at:
+            task_details.append(f"next={next_run_at}")
+        suffix = f" {' '.join(task_details)}" if task_details else ""
         lines.append(
             "  "
             f"{row.get('id', '')} "
-            f"enabled={row.get('enabled', False)} "
+            f"status={_task_status(row)} "
+            f"enabled={_task_enabled(row)} "
             f"schedule={row.get('schedule_kind', '')} "
-            f"delivery={row.get('delivery_channel', '')}"
+            f"delivery={row.get('delivery_channel', '')}{suffix}"
         )
+        for approval in _task_pending_approval_summaries(row, pending_by_id):
+            lines.append(f"    waiting_on_approval {approval}")
     lines.append("CHANNEL HEALTH:")
     if not channel_rows:
         lines.append("  no configured channels")
@@ -397,7 +556,7 @@ def _summary_counts(snapshot: TuiSnapshot) -> dict[str, int]:
         ),
         "pending_confirmations": len(snapshot.pending_actions),
         "tasks": len(snapshot.tasks),
-        "enabled_tasks": sum(1 for row in snapshot.tasks if bool(row.get("enabled", False))),
+        "enabled_tasks": sum(1 for row in snapshot.tasks if _task_enabled(row)),
         "channels": len(channel_rows),
         "connected_channels": sum(1 for row in channel_rows if bool(row.get("connected", False))),
         "alerts": len(active_alerts),
@@ -499,6 +658,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     active_alerts = _active_alert_rows(snapshot)
     acknowledged_alerts = _acknowledged_alert_rows(snapshot)
     plan_step_rows = _safe_plan_step_rows(snapshot.plan_steps)
+    pending_by_id = _pending_actions_by_confirmation_id(snapshot.pending_actions)
 
     summary = Table(title="Summary", show_lines=False, row_styles=["", "dim"])
     summary.add_column("Metric")
@@ -571,19 +731,24 @@ def render_rich(snapshot: TuiSnapshot) -> str:
 
     tasks = Table(title="Tasks", show_lines=False, row_styles=["", "dim"])
     tasks.add_column("Task")
-    tasks.add_column("Enabled")
+    tasks.add_column("Status")
     tasks.add_column("Schedule")
     tasks.add_column("Delivery")
+    tasks.add_column("Last")
+    tasks.add_column("Approval")
     for row in snapshot.tasks:
+        approval = "; ".join(_task_pending_approval_summaries(row, pending_by_id))
         tasks.add_row(
             str(row.get("id", "")),
-            str(row.get("enabled", False)),
+            _task_status(row),
             str(row.get("schedule_kind", "")),
             str(row.get("delivery_channel", "")),
-            style=_enabled_style(row.get("enabled", False)),
+            str(row.get("last_triggered_at", "")),
+            approval,
+            style=_enabled_style(_task_enabled(row)),
         )
     if not snapshot.tasks:
-        tasks.add_row("(none)", "", "", "")
+        tasks.add_row("(none)", "", "", "", "", "")
 
     channels = Table(title="Channel Health", show_lines=False, row_styles=["", "dim"])
     channels.add_column("Channel")

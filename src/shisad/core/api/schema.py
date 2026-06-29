@@ -1699,6 +1699,12 @@ class TaskPendingConfirmationsParams(_StrictParams):
     task_id: str
 
 
+class TaskStatusSnapshotParams(_StrictParams):
+    user_id: str = ""
+    workspace_id: str = ""
+    limit: int = Field(default=20, ge=0, le=100)
+
+
 class TaskCreateResult(BaseModel):
     id: str
     name: str = ""
@@ -1742,6 +1748,35 @@ class TaskPendingConfirmationsResult(BaseModel):
     task_id: str
     pending: list[dict[str, Any]] = Field(default_factory=list)
     count: int = 0
+
+
+class TaskStatusSnapshotRow(BaseModel):
+    task_id: str
+    title: str = ""
+    status: str = ""
+    schedule_kind: str = ""
+    schedule_summary: str = ""
+    created_at: datetime | str | None = None
+    last_triggered_at: datetime | str | None = None
+    next_run_at: datetime | str | None = None
+    confirmation_needed: bool = False
+    pending_confirmation_count: int = 0
+    pending_confirmations: list[dict[str, Any]] = Field(default_factory=list)
+    trigger_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    max_runs: int = 0
+    created_by: str = ""
+    workspace_id: str = ""
+    delivery_channel: str = ""
+
+
+class TaskStatusSnapshotResult(BaseModel):
+    tasks: list[TaskStatusSnapshotRow] = Field(default_factory=list)
+    count: int = 0
+    user_id: str = ""
+    workspace_id: str = ""
+    scope_status: Literal["scoped", "missing_scope"] = "scoped"
 
 
 class LockdownSetParams(_StrictParams):
