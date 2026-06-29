@@ -503,8 +503,8 @@ async def test_chat_app_skips_create_when_session_exists() -> None:
                     "id": "existing-id",
                     "state": "active",
                     "channel": "discord",
-                    "user_id": "ops",
-                    "workspace_id": "prod",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
                     "lockdown_level": "quarantine",
                 }
             ]
@@ -516,6 +516,8 @@ async def test_chat_app_skips_create_when_session_exists() -> None:
     assert app._session_id == "existing-id"
     assert app._channel == "discord"
     assert app._lockdown_level == "quarantine"
+    assert app._user_id == "alice"
+    assert app._workspace_id == "ws1"
 
 
 @pytest.mark.asyncio

@@ -551,10 +551,16 @@ class ChatApp(App[None]):
             return
         channel = str(metadata.get("channel", "")).strip().lower()
         lockdown = str(metadata.get("lockdown_level", "")).strip().lower()
+        user_id = str(metadata.get("user_id", "")).strip()
+        workspace_id = str(metadata.get("workspace_id", "")).strip()
         if channel:
             self._channel = channel
         if lockdown:
             self._lockdown_level = lockdown
+        if user_id:
+            self._user_id = user_id
+        if workspace_id:
+            self._workspace_id = workspace_id
         self._refresh_status_bar()
 
     async def _find_session_metadata(
