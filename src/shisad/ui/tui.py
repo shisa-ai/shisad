@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from shisad.core.api.transport import ControlClient
+from shisad.core.plan_steps import normalize_plan_step_status
 from shisad.ui.confirmation import render_pending_action
 
 logger = logging.getLogger(__name__)
@@ -21,10 +22,48 @@ logger = logging.getLogger(__name__)
 class TuiSnapshot:
     sessions: list[dict[str, Any]] = field(default_factory=list)
     pending_actions: list[dict[str, Any]] = field(default_factory=list)
+    plan_steps: list[dict[str, Any]] = field(default_factory=list)
     tasks: list[dict[str, Any]] = field(default_factory=list)
     channel_health: list[dict[str, Any]] = field(default_factory=list)
     alerts: list[dict[str, Any]] = field(default_factory=list)
     audit_events: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _safe_plan_step_rows(raw_steps: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_steps):
+        if not isinstance(raw, Mapping):
+            continue
+        status = normalize_plan_step_status(raw.get("status", "pending"))
+        order = raw.get("order", index + 1)
+        try:
+            order_value = int(order)
+        except (TypeError, ValueError):
+            order_value = index + 1
+        depends_raw = raw.get("depends_on", [])
+        depends_on = (
+            [str(item).strip() for item in depends_raw if str(item).strip()]
+            if isinstance(depends_raw, list)
+            else []
+        )
+        rows.append(
+            {
+                "id": str(raw.get("id", "")).strip(),
+                "session_id": str(raw.get("session_id", "")).strip(),
+                "plan_hash": str(raw.get("plan_hash", "")).strip(),
+                "order": max(1, order_value),
+                "title": str(raw.get("title", "") or "Current request").strip(),
+                "status": status,
+                "current": bool(raw.get("current", False))
+                and status in {"in_progress", "blocked"},
+                "depends_on": depends_on,
+                "blocked_reason": str(raw.get("blocked_reason", "")).strip()
+                if status == "blocked"
+                else "",
+            }
+        )
+    rows.sort(key=lambda row: (int(row.get("order", 0)), str(row.get("id", ""))))
+    return rows
 
 
 def _safe_task_rows(raw_tasks: list[Any]) -> list[dict[str, Any]]:
@@ -166,6 +205,7 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
             {"status": "pending", "limit": 20},
             default={"actions": []},
         )
+        plan_steps_result = await _safe_call("plan.steps", {"limit": 20}, default={"steps": []})
         tasks_result = await _safe_call("task.list", default={"tasks": []})
         status_result = await _safe_call("daemon.status", default={"channels": {}})
         alerts_result = await _safe_call("dashboard.alerts", {"limit": 20}, default={"alerts": []})
@@ -183,6 +223,7 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         pending_actions=_safe_pending_action_rows(
             [item for item in pending_result.get("actions", [])]
         ),
+        plan_steps=_safe_plan_step_rows([item for item in plan_steps_result.get("steps", [])]),
         tasks=_safe_task_rows([item for item in tasks_result.get("tasks", [])]),
         channel_health=_safe_channel_rows(
             status_result.get("channels", {})
@@ -239,6 +280,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     channel_rows = _configured_channel_rows(snapshot)
     active_alerts = _active_alert_rows(snapshot)
     acknowledged_alerts = _acknowledged_alert_rows(snapshot)
+    plan_step_rows = _safe_plan_step_rows(snapshot.plan_steps)
     lines: list[str] = []
     lines.append("SHISAD TUI SNAPSHOT")
     lines.append("SUMMARY:")
@@ -257,6 +299,24 @@ def render_plain(snapshot: TuiSnapshot) -> str:
         lines.append("  no pending confirmations")
     for row in snapshot.pending_actions:
         lines.append("  " + render_pending_action(row))
+    lines.append("WORK BREAKDOWN:")
+    if not plan_step_rows:
+        lines.append("  no active plan")
+    for row in plan_step_rows:
+        marker = "> " if bool(row.get("current", False)) else ""
+        details: list[str] = []
+        depends_on = row.get("depends_on", [])
+        if isinstance(depends_on, list) and depends_on:
+            details.append("depends_on=" + ",".join(str(item) for item in depends_on))
+        blocked_reason = str(row.get("blocked_reason", "")).strip()
+        if blocked_reason:
+            details.append(f"blocked={blocked_reason}")
+        suffix = f" {' '.join(details)}" if details else ""
+        lines.append(
+            "  "
+            f"{marker}[{row.get('status', 'unknown')}] "
+            f"{row.get('order', '')}. {row.get('title', '')}{suffix}"
+        )
     lines.append("TASKS:")
     if not snapshot.tasks:
         lines.append("  no background tasks")
@@ -363,6 +423,17 @@ def _pending_status_style(status: object) -> str:
     return "dim"
 
 
+def _plan_step_status_style(status: object) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "done":
+        return "green"
+    if normalized in {"in_progress", "blocked"}:
+        return "yellow"
+    if normalized == "failed":
+        return "red"
+    return "dim"
+
+
 def _enabled_style(value: object) -> str:
     return "green" if bool(value) else "dim"
 
@@ -408,6 +479,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     channel_rows = _configured_channel_rows(snapshot)
     active_alerts = _active_alert_rows(snapshot)
     acknowledged_alerts = _acknowledged_alert_rows(snapshot)
+    plan_step_rows = _safe_plan_step_rows(snapshot.plan_steps)
 
     summary = Table(title="Summary", show_lines=False, row_styles=["", "dim"])
     summary.add_column("Metric")
@@ -446,6 +518,33 @@ def render_rich(snapshot: TuiSnapshot) -> str:
         )
     if not snapshot.pending_actions:
         pending.add_row("(none)", "", "", "", "")
+
+    plan_steps = Table(title="Work Breakdown", show_lines=False, row_styles=["", "dim"])
+    plan_steps.add_column("Step")
+    plan_steps.add_column("Order", justify="right")
+    plan_steps.add_column("Title")
+    plan_steps.add_column("Status")
+    plan_steps.add_column("Current")
+    plan_steps.add_column("Details")
+    for row in plan_step_rows:
+        details: list[str] = []
+        depends_on = row.get("depends_on", [])
+        if isinstance(depends_on, list) and depends_on:
+            details.append("depends_on=" + ",".join(str(item) for item in depends_on))
+        blocked_reason = str(row.get("blocked_reason", "")).strip()
+        if blocked_reason:
+            details.append(blocked_reason)
+        plan_steps.add_row(
+            str(row.get("id", "")),
+            str(row.get("order", "")),
+            str(row.get("title", "")),
+            str(row.get("status", "unknown")),
+            "yes" if bool(row.get("current", False)) else "no",
+            " ".join(details),
+            style=_plan_step_status_style(row.get("status", "")),
+        )
+    if not plan_step_rows:
+        plan_steps.add_row("(none)", "", "", "", "", "")
 
     tasks = Table(title="Tasks", show_lines=False, row_styles=["", "dim"])
     tasks.add_column("Task")
@@ -518,6 +617,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     console.print(Panel.fit(summary))
     console.print(Panel.fit(sessions))
     console.print(Panel.fit(pending))
+    console.print(Panel.fit(plan_steps))
     console.print(Panel.fit(tasks))
     console.print(Panel.fit(channels))
     console.print(Panel.fit(alerts))

@@ -40,6 +40,15 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
                 "warnings": ["Contains tainted data"],
             }
         ],
+        plan_steps=[
+            {
+                "id": "step-1",
+                "order": 1,
+                "title": "Current request",
+                "status": "in_progress",
+                "current": True,
+            }
+        ],
         tasks=[
             {
                 "id": "t1",
@@ -68,6 +77,8 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     assert "Action: http_request" in rendered
     assert "url: https://example.test" in rendered
     assert "warnings=1: Contains tainted data" in rendered
+    assert "WORK BREAKDOWN:" in rendered
+    assert "> [in_progress] 1. Current request" in rendered
     assert "TASKS:" in rendered
     assert "CHANNEL HEALTH:" in rendered
 
@@ -82,10 +93,56 @@ def test_u3_tui_plain_renderer_includes_summary_and_explicit_empty_states() -> N
     ) in rendered
     assert "SESSIONS:\n  no active sessions" in rendered
     assert "PENDING CONFIRMATIONS:\n  no pending confirmations" in rendered
+    assert "WORK BREAKDOWN:\n  no active plan" in rendered
     assert "TASKS:\n  no background tasks" in rendered
     assert "CHANNEL HEALTH:\n  no configured channels" in rendered
     assert "ALERTS:\n  no active alerts" in rendered
     assert "AUDIT EVENTS:\n  no recent audit events" in rendered
+
+
+def test_t1_tui_plain_renderer_uses_structured_plan_step_rows() -> None:
+    snapshot = TuiSnapshot(
+        plan_steps=[
+            {
+                "id": "step-2",
+                "order": 2,
+                "title": "Patch UI",
+                "status": "in_progress",
+                "current": True,
+                "depends_on": ["step-1"],
+            },
+            {
+                "id": "step-1",
+                "order": 1,
+                "title": "Inspect runtime",
+                "status": "done",
+                "current": False,
+            },
+            {
+                "id": "step-3",
+                "order": 3,
+                "title": "Wait for approval",
+                "status": "blocked",
+                "current": True,
+                "blocked_reason": "pending_confirmation",
+            },
+            {
+                "id": "step-4",
+                "order": 4,
+                "title": "Mystery status",
+                "status": "unexpected",
+                "current": True,
+            },
+        ]
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert "WORK BREAKDOWN:" in rendered
+    assert "  [done] 1. Inspect runtime" in rendered
+    assert "  > [in_progress] 2. Patch UI depends_on=step-1" in rendered
+    assert "  > [blocked] 3. Wait for approval blocked=pending_confirmation" in rendered
+    assert "  [unknown] 4. Mystery status" in rendered
 
 
 def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
@@ -214,6 +271,19 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
                         }
                     ]
                 },
+                "plan.steps": {
+                    "steps": [
+                        {
+                            "id": "step-1",
+                            "session_id": "s1",
+                            "order": 1,
+                            "title": "Current request",
+                            "status": "in_progress",
+                            "current": True,
+                        }
+                    ],
+                    "count": 1,
+                },
                 "task.list": {
                     "tasks": [
                         {
@@ -259,6 +329,9 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     assert snapshot.pending_actions[0]["selected_backend_method"] == "software"
     assert snapshot.pending_actions[0]["channel_capability"]["can_carry"] is True
     assert snapshot.pending_actions[0]["warnings"] == ["Contains tainted data"]
+    assert snapshot.plan_steps[0]["id"] == "step-1"
+    assert snapshot.plan_steps[0]["status"] == "in_progress"
+    assert snapshot.plan_steps[0]["current"] is True
     assert snapshot.tasks[0]["id"] == "t1"
     assert snapshot.tasks[0]["schedule_kind"] == "interval"
     assert snapshot.channel_health[0]["channel"] == "discord"
@@ -348,6 +421,16 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
                 "warnings": ["Contains tainted data"],
             }
         ],
+        plan_steps=[
+            {
+                "id": "step-1",
+                "order": 1,
+                "title": "Current request",
+                "status": "blocked",
+                "current": True,
+                "blocked_reason": "pending_confirmation",
+            }
+        ],
         tasks=[
             {
                 "id": "t1",
@@ -410,6 +493,9 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
         table for table in panel_tables if getattr(table, "title", "") == "Pending Confirmations"
     )
     tasks_table = next(table for table in panel_tables if getattr(table, "title", "") == "Tasks")
+    plan_table = next(
+        table for table in panel_tables if getattr(table, "title", "") == "Work Breakdown"
+    )
     channels_table = next(
         table for table in panel_tables if getattr(table, "title", "") == "Channel Health"
     )
@@ -429,8 +515,11 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert "approve: cannot carry" not in pending_text
     assert "Action: http_request" in pending_text
     assert "warnings=1: Contains tainted data" in pending_text
+    plan_text = "\n".join(" ".join(row) for row in plan_table.rows)
+    assert "step-1 1 Current request blocked yes pending_confirmation" in plan_text
     assert sessions_table.styles == ["green"]
     assert pending_table.styles == ["yellow"]
+    assert plan_table.styles == ["yellow"]
     assert tasks_table.styles == ["green"]
     assert channels_table.styles == ["green", "yellow", "red"]
     assert alerts_table.styles == ["red", "dim"]
@@ -458,6 +547,7 @@ async def test_tui_fetch_snapshot_tolerates_partial_rpc_failures(
             mapping = {
                 "session.list": {"sessions": [{"id": "s1"}]},
                 "action.pending": {"actions": [{"confirmation_id": "c1", "status": "pending"}]},
+                "plan.steps": {"steps": []},
                 "task.list": {"tasks": []},
                 "daemon.status": {"channels": {}},
                 "dashboard.alerts": {"alerts": [{"event_type": "AlertRaised"}]},

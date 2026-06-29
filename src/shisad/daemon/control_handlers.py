@@ -130,6 +130,8 @@ from shisad.core.api.schema import (
     NoteSearchParams,
     NoteSearchResult,
     NoteVerifyResult,
+    PlanStepsParams,
+    PlanStepsResult,
     PolicyExplainParams,
     PolicyExplainResult,
     RealityCheckReadParams,
@@ -221,6 +223,7 @@ from shisad.daemon.handlers import (
     ConfirmationHandlers,
     DashboardHandlers,
     MemoryHandlers,
+    PlanHandlers,
     SessionHandlers,
     SkillHandlers,
     TaskHandlers,
@@ -241,6 +244,7 @@ class DaemonControlHandlers:
         self._impl = impl
         internal_ingress_marker = services.internal_ingress_marker
         self._session = SessionHandlers(impl, internal_ingress_marker=internal_ingress_marker)
+        self._plan_steps = PlanHandlers(impl, internal_ingress_marker=internal_ingress_marker)
         self._tool_execution = ToolExecutionHandlers(
             impl,
             internal_ingress_marker=internal_ingress_marker,
@@ -286,6 +290,11 @@ class DaemonControlHandlers:
 
     async def handle_session_list(self, params: NoParams, ctx: RequestContext) -> SessionListResult:
         return await self._session.handle_session_list(params, ctx)
+
+    async def handle_plan_steps(
+        self, params: PlanStepsParams, ctx: RequestContext
+    ) -> PlanStepsResult:
+        return await self._plan_steps.handle_plan_steps(params, ctx)
 
     async def handle_session_restore(
         self, params: SessionRestoreParams, ctx: RequestContext

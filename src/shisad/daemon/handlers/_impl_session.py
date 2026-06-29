@@ -580,6 +580,7 @@ class SessionMessagePlannerContextResult:
     planner_tools_payload: list[dict[str, Any]]
     planner_input: str
     assistant_tone_override: AssistantTone | None
+    plan_step_id: str = ""
     pending_action_binding_ids: tuple[str, ...] = ()
     same_session_user_goal_host_patterns: set[str] = field(default_factory=set)
     context_confirmation_host_patterns: set[str] = field(default_factory=set)
@@ -10362,6 +10363,11 @@ class SessionImplMixin(HandlerMixinBase):
                 expires_at="",  # Explicit expiry is available in control-plane audit stream.
             )
         )
+        plan_step_id = self._plan_steps.start_plan_step(
+            session_id=sid,
+            plan_hash=active_plan_hash or committed_plan_hash,
+            title="Current request",
+        )
 
         planner_enabled_tool_defs = _planner_enabled_tools(
             registry_tools=registry_tools,
@@ -10553,6 +10559,7 @@ class SessionImplMixin(HandlerMixinBase):
             planner_tools_payload=planner_tools_payload,
             planner_input=planner_input,
             assistant_tone_override=assistant_tone_override,
+            plan_step_id=plan_step_id,
             pending_action_binding_ids=pending_action_binding_ids,
             same_session_user_goal_host_patterns=(
                 same_session_destination_attribution.same_session_user_goal_host_patterns
@@ -13265,6 +13272,12 @@ class SessionImplMixin(HandlerMixinBase):
                 declared_resource_roots=set(),
             )
             active_plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
+            committed_plan_hash = str(getattr(committed_plan, "plan_hash", committed_plan))
+            plan_step_id = self._plan_steps.start_plan_step(
+                session_id=sid,
+                plan_hash=active_plan_hash or committed_plan_hash,
+                title="Current request",
+            )
         except ControlPlaneUnavailableError:
             logger.warning(
                 "Pending-action continuation could not begin control-plane plan for %s",
@@ -13325,11 +13338,12 @@ class SessionImplMixin(HandlerMixinBase):
             policy_egress_host_patterns=set(),
             context=context,
             planner_origin=planner_origin,
-            committed_plan_hash=str(getattr(committed_plan, "plan_hash", committed_plan)),
+            committed_plan_hash=committed_plan_hash,
             active_plan_hash=active_plan_hash,
             planner_tools_payload=planner_tools_payload,
             planner_input=planner_input,
             assistant_tone_override=None,
+            plan_step_id=plan_step_id,
         )
         try:
             planner_result = await planner.propose(
@@ -14046,6 +14060,33 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             except (OSError, RuntimeError, TypeError, ValueError):
                 logger.warning("Trace recording failed; continuing without trace", exc_info=True)
+
+        if planner_context.plan_step_id:
+            blocked_reasons: list[str] = []
+            if execution.pending_confirmation:
+                blocked_reasons.append("pending_confirmation")
+            if execution.rejected:
+                blocked_reasons.append("action_rejected")
+            if planner_dispatch.planner_failure_code:
+                self._plan_steps.update_step(
+                    session_id=sid,
+                    step_id=planner_context.plan_step_id,
+                    status="failed",
+                    blocked_reason=planner_dispatch.planner_failure_code,
+                )
+            elif blocked_reasons:
+                self._plan_steps.update_step(
+                    session_id=sid,
+                    step_id=planner_context.plan_step_id,
+                    status="blocked",
+                    blocked_reason=",".join(blocked_reasons),
+                )
+            else:
+                self._plan_steps.update_step(
+                    session_id=sid,
+                    step_id=planner_context.plan_step_id,
+                    status="done",
+                )
 
         await self._event_bus.publish(
             SessionMessageResponded(

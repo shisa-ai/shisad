@@ -5,6 +5,7 @@ from shisad.daemon.handlers.assistant import AssistantHandlers
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.daemon.handlers.dashboard import DashboardHandlers
 from shisad.daemon.handlers.memory import MemoryHandlers
+from shisad.daemon.handlers.plan_steps import PlanHandlers
 from shisad.daemon.handlers.session import SessionHandlers
 from shisad.daemon.handlers.skills import SkillHandlers
 from shisad.daemon.handlers.tasks import TaskHandlers
@@ -16,6 +17,7 @@ __all__ = [
     "ConfirmationHandlers",
     "DashboardHandlers",
     "MemoryHandlers",
+    "PlanHandlers",
     "SessionHandlers",
     "SkillHandlers",
     "TaskHandlers",

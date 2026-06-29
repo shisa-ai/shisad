@@ -77,6 +77,7 @@ from shisad.core.events import (
     ToolExecuted,
     ToolRejected,
 )
+from shisad.core.plan_steps import PlanStepStore
 from shisad.core.session import Session
 from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
@@ -97,6 +98,7 @@ from shisad.daemon.handlers._impl_assistant import AssistantImplMixin
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._impl_dashboard import DashboardImplMixin
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
+from shisad.daemon.handlers._impl_plan_steps import PlanStepsImplMixin
 from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
     _browser_runtime_unavailable_rejection_reason,
@@ -1548,6 +1550,7 @@ class ApprovedToolExecutionResult:
 
 class HandlerImplementation(
     SessionImplMixin,
+    PlanStepsImplMixin,
     ToolExecutionImplMixin,
     ConfirmationImplMixin,
     MemoryImplMixin,
@@ -1569,6 +1572,7 @@ class HandlerImplementation(
         self._registry = services.registry
         self._alarm_tool = services.alarm_tool
         self._session_manager = services.session_manager
+        self._plan_steps = PlanStepStore()
         self._transcript_store = services.transcript_store
         self._evidence_store = services.evidence_store
         self._trace_recorder = services.trace_recorder

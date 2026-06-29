@@ -252,6 +252,36 @@ class SessionListResult(BaseModel):
     sessions: list[SessionListEntry] = Field(default_factory=list)
 
 
+class PlanStepsParams(_StrictParams):
+    """Parameters for plan.steps."""
+
+    session_id: str = ""
+    limit: int = Field(default=20, ge=0, le=100)
+
+
+class PlanStepRecord(BaseModel):
+    """Structured plan-step row for UI work-breakdown rendering."""
+
+    id: str
+    session_id: str = ""
+    plan_hash: str = ""
+    order: int = Field(default=1, ge=1)
+    title: str = ""
+    status: Literal["pending", "in_progress", "blocked", "done", "failed", "unknown"] = "unknown"
+    current: bool = False
+    depends_on: list[str] = Field(default_factory=list)
+    blocked_reason: str = ""
+    updated_at: datetime | str | None = None
+
+
+class PlanStepsResult(BaseModel):
+    """Result for plan.steps."""
+
+    session_id: str = ""
+    steps: list[PlanStepRecord] = Field(default_factory=list)
+    count: int = 0
+
+
 class SessionTerminateParams(_StrictParams):
     """Parameters for session.terminate."""
 

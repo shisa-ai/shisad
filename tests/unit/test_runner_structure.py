@@ -20,6 +20,7 @@ from shisad.core.api.schema import (
     MemoryTimelinePromoteParams,
     MemoryTimelineReadParams,
     MemoryTimelineSearchParams,
+    PlanStepsParams,
     RealityCheckReadParams,
     RealityCheckSearchParams,
     SessionSetModeParams,
@@ -77,6 +78,7 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert mapping["admin.soul.update"] is AdminSoulUpdateParams
     assert mapping["session.set_mode"] is SessionSetModeParams
     assert mapping["session.terminate"] is SessionTerminateParams
+    assert mapping["plan.steps"] is PlanStepsParams
     assert mapping["channel.pairing_propose"] is ChannelPairingProposalParams
     assert mapping["realitycheck.search"] is RealityCheckSearchParams
     assert mapping["realitycheck.read"] is RealityCheckReadParams
@@ -94,6 +96,7 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert admin_only["admin.soul.update"] is True
     assert admin_only["session.restore"] is True
     assert admin_only["session.export"] is True
+    assert admin_only["plan.steps"] is False
     assert admin_only["memory.review_procedure_candidate"] is True
     assert admin_only["memory.timeline.search"] is False
     assert admin_only["memory.timeline.read"] is False

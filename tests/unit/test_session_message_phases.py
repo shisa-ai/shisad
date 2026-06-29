@@ -16,6 +16,7 @@ import pytest
 import shisad.daemon.handlers._impl_session as impl_session
 from shisad.channels.base import DeliveryTarget
 from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
+from shisad.core.plan_steps import PlanStepStore
 from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
@@ -272,6 +273,7 @@ class _PlannerContextBuildHarness(SessionImplMixin):
         self._memory_manager = SimpleNamespace()
         self._browser_toolkit = None
         self._evidence_store = None
+        self._plan_steps = PlanStepStore()
         self._registry = ToolRegistry()
         self._policy_loader = SimpleNamespace(
             policy=SimpleNamespace(
@@ -3278,12 +3280,19 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
         self._transcript_root = "/tmp/shisad-test"
         self._trace_recorder = None
         self._planner_model_id = "planner"
+        self._plan_steps = PlanStepStore()
 
     async def _noop_publish(self, _event: object) -> None:
         return None
 
     @staticmethod
-    def _pending_to_dict(pending: Any, *, public: bool = False) -> dict[str, Any]:
+    def _pending_to_dict(
+        pending: Any,
+        *,
+        public: bool = False,
+        selected_backend_available: bool | None = None,
+    ) -> dict[str, Any]:
+        _ = selected_backend_available
         preview = str(getattr(pending, "safe_preview", "") or "")
         if (
             public
@@ -3584,6 +3593,43 @@ async def test_finalize_response_offloads_evidence_wrapping_from_event_loop(
 
     response = await finalize_task
     assert response["session_id"] == "sess-g1"
+
+
+@pytest.mark.asyncio
+async def test_t1_finalize_response_updates_structured_plan_step_state() -> None:
+    harness = _FinalizeEvidenceHarness()
+    done_step_id = harness._plan_steps.start_plan_step(
+        session_id=SessionId("sess-g1"),
+        plan_hash="plan-g1",
+        title="Current request",
+    )
+    done_execution = _finalize_execution_result(tool_outputs=[])
+    done_execution.planner_dispatch.planner_context.plan_step_id = done_step_id
+
+    await SessionImplMixin._finalize_response(harness, done_execution)
+
+    done_row = harness._plan_steps.list_steps(session_id=SessionId("sess-g1"))[0]
+    assert done_row["status"] == "done"
+    assert done_row["current"] is False
+
+    blocked_step_id = harness._plan_steps.start_plan_step(
+        session_id=SessionId("sess-g1"),
+        plan_hash="plan-g2",
+        title="Current request",
+    )
+    blocked_execution = _finalize_execution_result(
+        tool_outputs=[],
+        rejected=1,
+        rejection_reasons_for_user=["requires confirmation"],
+    )
+    blocked_execution.planner_dispatch.planner_context.plan_step_id = blocked_step_id
+
+    await SessionImplMixin._finalize_response(harness, blocked_execution)
+
+    blocked_row = harness._plan_steps.list_steps(session_id=SessionId("sess-g1"))[0]
+    assert blocked_row["status"] == "blocked"
+    assert blocked_row["current"] is True
+    assert blocked_row["blocked_reason"] == "action_rejected"
 
 
 @pytest.mark.asyncio
@@ -6785,8 +6831,8 @@ async def test_finalize_response_formats_discord_pending_summary() -> None:
     assert "ID: `c-1`" in text
     assert "confirm 1" not in text
     assert "approve with" not in text.lower()
-    assert "To reject in chat: `reject 1`" in text
-    assert "Confirm from CLI: `shisad action confirm c-1`" in text
+    assert "Discord rejection fallback: reply with `reject c-1`." in text
+    assert "CLI fallback: `shisad action confirm c-1`" in text
     assert "**Warnings:**" in text
     assert "```text\nACTION CONFIRMATION\nAction: fs.list\nPARAMETERS:\n  path: .\n```" in text
 
