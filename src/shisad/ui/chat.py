@@ -505,6 +505,7 @@ class ChatApp(App[None]):
     async def _ensure_session(self, client: Any) -> None:
         """Create a session if one wasn't provided."""
         if self._active_session_id():
+            await self._refresh_active_session_metadata(client)
             return
         self._session_id = None
         if self._reuse_bound_session:
@@ -539,6 +540,44 @@ class ChatApp(App[None]):
         self._channel = "cli"
         self._lockdown_level = "normal"
         self._refresh_status_bar()
+
+    async def _refresh_active_session_metadata(self, client: Any) -> None:
+        """Refresh status chrome for an explicitly attached session when available."""
+        session_id = self._active_session_id()
+        if not session_id:
+            return
+        metadata = await self._find_session_metadata(client, session_id)
+        if metadata is None:
+            return
+        channel = str(metadata.get("channel", "")).strip().lower()
+        lockdown = str(metadata.get("lockdown_level", "")).strip().lower()
+        if channel:
+            self._channel = channel
+        if lockdown:
+            self._lockdown_level = lockdown
+        self._refresh_status_bar()
+
+    async def _find_session_metadata(
+        self,
+        client: Any,
+        session_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Return structured metadata for a known session id, if the daemon lists it."""
+        try:
+            result = await client.call("session.list", params={})
+        except Exception:
+            return None
+        if not isinstance(result, Mapping):
+            return None
+        sessions = result.get("sessions", [])
+        if not isinstance(sessions, list):
+            return None
+        for item in sessions:
+            if not isinstance(item, Mapping):
+                continue
+            if str(item.get("id", "")).strip() == session_id:
+                return item
+        return None
 
     async def _find_bound_session(self, client: Any) -> tuple[str, str]:
         """Resolve an existing active CLI session by user/workspace binding."""
@@ -595,6 +634,7 @@ class ChatApp(App[None]):
             except Exception as retry_exc:
                 raise RuntimeError(str(retry_exc)) from retry_exc
 
+        self._refresh_status_from_message_result(result)
         self._extract_response(result)
         return result
 
@@ -685,6 +725,15 @@ class ChatApp(App[None]):
             f"channel={channel} | lockdown={lockdown} | user={self._user_id} | "
             f"workspace={self._workspace_id}"
         )
+
+    def _refresh_status_from_message_result(self, result: Mapping[str, Any]) -> None:
+        session_id = str(result.get("session_id", "")).strip()
+        if session_id:
+            self._session_id = session_id
+        lockdown = str(result.get("lockdown_level", "")).strip().lower()
+        if lockdown:
+            self._lockdown_level = lockdown
+        self._refresh_status_bar()
 
     def _set_connection_state(self, state: str) -> None:
         self._connection_state = state.strip().lower() or "disconnected"

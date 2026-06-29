@@ -380,6 +380,37 @@ async def test_u2_chat_happy_path_submits_prompt_and_renders_response() -> None:
     assert assistant_messages[-1] == "Hello from shisad!"
 
 
+@pytest.mark.asyncio
+async def test_u2_chat_submit_refreshes_lockdown_status_from_response() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    fake_client.call = AsyncMock(
+        return_value={
+            "session_id": "sess-1",
+            "response": "Caution state is now active.",
+            "lockdown_level": "caution",
+        }
+    )
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_widget = app.query_one("#chat-input", TextArea)
+        input_widget.focus()
+        input_widget.load_text("hello")
+        await app.action_submit_prompt()
+        await pilot.pause()
+        status_bar = app.query_one("#chat-status", Static)
+
+    assert "lockdown=caution" in str(status_bar.renderable)
+
+
 def test_chat_app_prompt_history_cycles_through_previous_prompts() -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
@@ -456,7 +487,7 @@ async def test_chat_app_creates_session_on_connect() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_app_skips_create_when_session_exists() -> None:
-    """When session_id is provided, _ensure_session should not create."""
+    """When session_id is provided, _ensure_session should refresh metadata but not create."""
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
         user_id="ops",
@@ -465,10 +496,26 @@ async def test_chat_app_skips_create_when_session_exists() -> None:
     )
 
     mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        return_value={
+            "sessions": [
+                {
+                    "id": "existing-id",
+                    "state": "active",
+                    "channel": "discord",
+                    "user_id": "ops",
+                    "workspace_id": "prod",
+                    "lockdown_level": "quarantine",
+                }
+            ]
+        }
+    )
     await app._ensure_session(mock_client)
 
-    mock_client.call.assert_not_called()
+    mock_client.call.assert_awaited_once_with("session.list", params={})
     assert app._session_id == "existing-id"
+    assert app._channel == "discord"
+    assert app._lockdown_level == "quarantine"
 
 
 @pytest.mark.asyncio
