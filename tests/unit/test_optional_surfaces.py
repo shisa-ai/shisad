@@ -103,8 +103,8 @@ def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
             {"id": "t2", "enabled": False, "schedule_kind": "manual"},
         ],
         channel_health=[
-            {"channel": "discord", "enabled": True, "connected": True, "status": "ok"},
-            {"channel": "slack", "enabled": True, "connected": False, "status": "degraded"},
+            {"channel": "discord", "enabled": True, "available": True, "connected": True},
+            {"channel": "slack", "enabled": True, "available": True, "connected": False},
         ],
         alerts=[
             {"event_type": "AnomalyReported", "acknowledged_reason": ""},
@@ -121,7 +121,7 @@ def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
     ) in rendered
     assert "s2 user=u2 lockdown=caution" in rendered
     assert "t2 enabled=False schedule=manual" in rendered
-    assert "slack enabled=True available=False connected=False status=degraded" in rendered
+    assert "slack enabled=True available=True connected=False status=degraded" in rendered
     assert "active AnomalyReported ack=" in rendered
     assert "acknowledged AlertRaised ack=known false positive" in rendered
 
@@ -134,14 +134,12 @@ def test_u3_tui_plain_treats_disabled_channels_and_acknowledged_alerts_as_inacti
                 "enabled": False,
                 "available": False,
                 "connected": False,
-                "status": "disabled",
             },
             {
                 "channel": "slack",
                 "enabled": False,
                 "available": False,
                 "connected": False,
-                "status": "disabled",
             },
         ],
         alerts=[
@@ -232,7 +230,6 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
                             "enabled": True,
                             "available": True,
                             "connected": True,
-                            "status": "ok",
                         }
                     }
                 },

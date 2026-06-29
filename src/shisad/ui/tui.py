@@ -52,19 +52,46 @@ def _safe_task_rows(raw_tasks: list[Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _derive_channel_status(
+    *,
+    enabled: bool,
+    available: bool,
+    connected: bool,
+    status: object,
+) -> str:
+    normalized = str(status or "").strip()
+    if normalized:
+        return normalized
+    if not enabled:
+        return "disabled"
+    if not available:
+        return "misconfigured"
+    if not connected:
+        return "degraded"
+    return "ok"
+
+
 def _safe_channel_rows(raw_channels: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for raw_name, raw in raw_channels.items():
         name = str(raw_name).strip().lower()
         if not isinstance(raw, Mapping):
             raw = {}
+        enabled = bool(raw.get("enabled", False))
+        available = bool(raw.get("available", False))
+        connected = bool(raw.get("connected", False))
         rows.append(
             {
                 "channel": name,
-                "enabled": bool(raw.get("enabled", False)),
-                "available": bool(raw.get("available", False)),
-                "connected": bool(raw.get("connected", False)),
-                "status": str(raw.get("status", "")).strip(),
+                "enabled": enabled,
+                "available": available,
+                "connected": connected,
+                "status": _derive_channel_status(
+                    enabled=enabled,
+                    available=available,
+                    connected=connected,
+                    status=raw.get("status", ""),
+                ),
             }
         )
     rows.sort(key=lambda row: str(row.get("channel", "")))
@@ -172,7 +199,12 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
 
 
 def _channel_status(row: Mapping[str, Any]) -> str:
-    return str(row.get("status", "")).strip().lower()
+    return _derive_channel_status(
+        enabled=bool(row.get("enabled", False)),
+        available=bool(row.get("available", False)),
+        connected=bool(row.get("connected", False)),
+        status=row.get("status", ""),
+    ).lower()
 
 
 def _channel_is_configured(row: Mapping[str, Any]) -> bool:
@@ -246,7 +278,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
             f"enabled={row.get('enabled', False)} "
             f"available={row.get('available', False)} "
             f"connected={row.get('connected', False)} "
-            f"status={row.get('status', '')}"
+            f"status={_channel_status(row)}"
         )
     lines.append("ALERTS:")
     if not active_alerts:
@@ -443,7 +475,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
             str(row.get("enabled", False)),
             str(row.get("available", False)),
             str(row.get("connected", False)),
-            str(row.get("status", "")),
+            _channel_status(row),
             style=_channel_style(row),
         )
     if not channel_rows:
