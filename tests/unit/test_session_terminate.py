@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.core.plan_steps import PlanStepStore
 from shisad.core.session import Session
 from shisad.core.types import SessionId, UserId, WorkspaceId
 from shisad.daemon.handlers._impl_session import SessionImplMixin
@@ -49,6 +50,7 @@ class _SessionManagerStub:
 class _Harness(SessionImplMixin):
     def __init__(self) -> None:
         self._session_manager = _SessionManagerStub()
+        self._plan_steps = PlanStepStore()
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
 
     async def _noop_publish(self, _event: object) -> None:
@@ -88,6 +90,30 @@ async def test_m6_s1_session_terminate_succeeds_for_bound_owner() -> None:
     assert result["session_id"] == "sess-1"
     assert result["reason"] == "prune"
     assert harness._session_manager.terminated == [(SessionId("sess-1"), "prune")]
+
+
+@pytest.mark.asyncio
+async def test_t1_session_terminate_clears_plan_step_rows() -> None:
+    harness = _Harness()
+    step_id = harness._plan_steps.start_plan_step(
+        session_id=SessionId("sess-1"),
+        plan_hash="plan-1",
+    )
+
+    assert harness._plan_steps.list_steps(active_only=True)[0]["id"] == step_id
+
+    await harness.do_session_terminate(
+        {
+            "session_id": "sess-1",
+            "channel": "cli",
+            "user_id": "alice",
+            "workspace_id": "w1",
+            "reason": "done",
+        }
+    )
+
+    assert harness._plan_steps.list_steps(session_id=SessionId("sess-1")) == []
+    assert harness._plan_steps.list_steps(active_only=True) == []
 
 
 @pytest.mark.asyncio

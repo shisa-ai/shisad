@@ -117,24 +117,46 @@ class PlanStepStore:
                 return True
         return False
 
+    def clear_session(self, *, session_id: SessionId) -> None:
+        normalized_session = str(session_id).strip()
+        with self._lock:
+            self._steps_by_session.pop(normalized_session, None)
+
     def list_steps(
         self,
         *,
         session_id: SessionId | None = None,
         limit: int = 20,
+        active_only: bool = False,
     ) -> list[dict[str, Any]]:
         max_rows = max(0, int(limit))
         with self._lock:
             if session_id is not None and str(session_id).strip():
                 rows = list(self._steps_by_session.get(str(session_id).strip(), []))
             else:
-                rows = [
-                    row
-                    for session_rows in self._steps_by_session.values()
-                    for row in session_rows
-                ]
-        rows.sort(key=lambda row: (str(row.get("session_id", "")), int(row.get("order", 0))))
+                rows = []
+                for session_rows in self._steps_by_session.values():
+                    if active_only and not self._session_has_active_plan(session_rows):
+                        continue
+                    rows.extend(session_rows)
+        if active_only and session_id is not None and not self._session_has_active_plan(rows):
+            rows = []
+        rows.sort(
+            key=lambda row: (
+                str(row.get("session_id", "")),
+                int(row.get("order", 0)),
+                str(row.get("id", "")),
+            )
+        )
         return [dict(row) for row in rows[:max_rows]]
+
+    @staticmethod
+    def _session_has_active_plan(rows: Sequence[Mapping[str, Any]]) -> bool:
+        return any(
+            bool(row.get("current", False))
+            and normalize_plan_step_status(row.get("status", "")) in PLAN_STEP_CURRENT_STATUSES
+            for row in rows
+        )
 
     @staticmethod
     def _normalize_step(

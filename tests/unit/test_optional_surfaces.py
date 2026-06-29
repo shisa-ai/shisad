@@ -145,6 +145,38 @@ def test_t1_tui_plain_renderer_uses_structured_plan_step_rows() -> None:
     assert "  [unknown] 4. Mystery status" in rendered
 
 
+def test_t1_tui_plain_renderer_scopes_multiple_session_plan_rows() -> None:
+    snapshot = TuiSnapshot(
+        plan_steps=[
+            {
+                "id": "step-b",
+                "session_id": "sess-b",
+                "order": 1,
+                "title": "Second session",
+                "status": "blocked",
+                "current": True,
+                "blocked_reason": "pending_confirmation",
+            },
+            {
+                "id": "step-a",
+                "session_id": "sess-a",
+                "order": 1,
+                "title": "First session",
+                "status": "in_progress",
+                "current": True,
+            },
+        ]
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert "  > [in_progress] 1. First session session=sess-a" in rendered
+    assert (
+        "  > [blocked] 1. Second session session=sess-b blocked=pending_confirmation"
+        in rendered
+    )
+
+
 def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
     snapshot = TuiSnapshot(
         sessions=[

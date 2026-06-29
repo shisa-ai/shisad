@@ -17,6 +17,7 @@ class PlanStepsImplMixin(HandlerMixinBase):
         steps = self._plan_steps.list_steps(
             session_id=SessionId(session_id) if session_id else None,
             limit=limit,
+            active_only=True,
         )
         return cast(
             dict[str, Any],

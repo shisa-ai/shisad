@@ -62,7 +62,13 @@ def _safe_plan_step_rows(raw_steps: list[Any]) -> list[dict[str, Any]]:
                 else "",
             }
         )
-    rows.sort(key=lambda row: (int(row.get("order", 0)), str(row.get("id", ""))))
+    rows.sort(
+        key=lambda row: (
+            str(row.get("session_id", "")),
+            int(row.get("order", 0)),
+            str(row.get("id", "")),
+        )
+    )
     return rows
 
 
@@ -89,6 +95,15 @@ def _safe_task_rows(raw_tasks: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _show_plan_step_sessions(rows: list[dict[str, Any]]) -> bool:
+    session_ids = {
+        str(row.get("session_id", "")).strip()
+        for row in rows
+        if row.get("session_id")
+    }
+    return len(session_ids) > 1
 
 
 def _derive_channel_status(
@@ -302,9 +317,13 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     lines.append("WORK BREAKDOWN:")
     if not plan_step_rows:
         lines.append("  no active plan")
+    show_plan_sessions = _show_plan_step_sessions(plan_step_rows)
     for row in plan_step_rows:
         marker = "> " if bool(row.get("current", False)) else ""
         details: list[str] = []
+        session_id = str(row.get("session_id", "")).strip()
+        if show_plan_sessions and session_id:
+            details.append(f"session={session_id}")
         depends_on = row.get("depends_on", [])
         if isinstance(depends_on, list) and depends_on:
             details.append("depends_on=" + ",".join(str(item) for item in depends_on))
@@ -526,8 +545,12 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     plan_steps.add_column("Status")
     plan_steps.add_column("Current")
     plan_steps.add_column("Details")
+    show_plan_sessions = _show_plan_step_sessions(plan_step_rows)
     for row in plan_step_rows:
         details: list[str] = []
+        session_id = str(row.get("session_id", "")).strip()
+        if show_plan_sessions and session_id:
+            details.append(f"session={session_id}")
         depends_on = row.get("depends_on", [])
         if isinstance(depends_on, list) and depends_on:
             details.append("depends_on=" + ",".join(str(item) for item in depends_on))

@@ -16033,6 +16033,7 @@ class SessionImplMixin(HandlerMixinBase):
         terminated = self._session_manager.terminate(sid, reason=reason)
         if terminated:
             self._clear_parent_task_handoff_lock(sid)
+            self._plan_steps.clear_session(session_id=sid)
             lockdown_manager = getattr(self, "_lockdown_manager", None)
             if lockdown_manager is not None:
                 lockdown_manager.clear_state(sid)
