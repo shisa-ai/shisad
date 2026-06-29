@@ -20,6 +20,7 @@ from shisad.core.api.schema import (
 )
 from shisad.core.approval import (
     ApprovalEnvelope,
+    ApprovalRoutingError,
     ConfirmationBackendRegistry,
     ConfirmationCapabilities,
     ConfirmationEvidence,
@@ -602,6 +603,24 @@ def test_gh64_discord_pending_keeps_software_when_totp_unavailable(
     assert pending.selected_backend_id == "software.default"
     assert pending.selected_backend_method == "software"
     assert pending.allowed_channel_principals == ["alice"]
+
+
+def test_a1_queue_pending_action_rejects_channel_target_without_principal(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+
+    with pytest.raises(ApprovalRoutingError, match="channel_principal_unavailable"):
+        harness._queue_pending_action(
+            session_id=SessionId("s-a1"),
+            user_id=UserId(""),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "discord approvals"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+            delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        )
 
 
 def test_gh64_discord_pending_respects_explicit_non_totp_method_constraint(
@@ -1766,6 +1785,30 @@ def test_a1_load_pending_actions_backfills_legacy_channel_principal(tmp_path) ->
     assert loaded.allowed_channel_principals == ["alice"]
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
     assert persisted[0]["allowed_channel_principals"] == ["alice"]
+
+
+def test_a1_load_pending_actions_fails_legacy_channel_pending_without_principal(
+    tmp_path,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.user_id = UserId("")
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("allowed_channel_principals", None)
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.allowed_channel_principals == []
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "channel_principal_unavailable"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["status"] == "failed"
+    assert persisted[0]["status_reason"] == "channel_principal_unavailable"
 
 
 def _pep_context_snapshot(

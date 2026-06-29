@@ -3127,6 +3127,8 @@ class HandlerImplementation(
                 requirement.route_reason or "confirmation_requirement_conflict"
             )
         normalized_user_id = str(user_id)
+        if delivery_target is not None and not normalized_user_id.strip():
+            raise ApprovalRoutingError("channel_principal_unavailable")
         backend_resolution = self._channel_usable_confirmation_backend(
             requirement=requirement,
             user_id=normalized_user_id,
@@ -3626,6 +3628,10 @@ class HandlerImplementation(
                 if channel_principal:
                     pending.allowed_channel_principals = [channel_principal]
                     migrated_legacy_channel_principal = True
+                elif pending.status == "pending":
+                    pending.status = "failed"
+                    pending.status_reason = "channel_principal_unavailable"
+                    pruned_stale = True
             if _has_sensitive_pending_text(pending.tool_name, pending.arguments):
                 pending.arguments = _redact_sensitive_pending_arguments(
                     pending.tool_name,
