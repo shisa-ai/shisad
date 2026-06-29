@@ -421,42 +421,41 @@ class SchedulerManager:
         minute_field, hour_field, day_field, month_field, weekday_field = fields
         allowed_minutes = self._cron_allowed_values(minute_field, minimum=0, maximum=59)
         allowed_hours = self._cron_allowed_values(hour_field, minimum=0, maximum=23)
+        allowed_days = self._cron_allowed_values(day_field, minimum=1, maximum=31)
+        allowed_months = self._cron_allowed_values(month_field, minimum=1, maximum=12)
         last_minute = (
             last_triggered_at.replace(second=0, microsecond=0)
             if last_triggered_at is not None
             else None
         )
-        for day_offset in range(0, _MAX_CRON_LOOKAHEAD_DAYS + 1):
-            day = start + timedelta(days=day_offset)
-            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-            weekday = (day_start.weekday() + 1) % 7
-            if not self._cron_field_matches(
-                month_field,
-                value=day_start.month,
-                minimum=1,
-                maximum=12,
-            ):
-                continue
-            if not self._cron_field_matches(
-                day_field,
-                value=day_start.day,
-                minimum=1,
-                maximum=31,
-            ):
-                continue
-            if not self._cron_field_matches(
-                weekday_field,
-                value=weekday,
-                minimum=0,
-                maximum=7,
-            ):
-                continue
-            for hour in allowed_hours:
-                for minute in allowed_minutes:
-                    candidate = day_start.replace(hour=hour, minute=minute)
-                    if candidate < start or candidate == last_minute:
+        end = start + timedelta(days=_MAX_CRON_LOOKAHEAD_DAYS)
+        for year in range(start.year, end.year + 1):
+            for month in allowed_months:
+                if year == start.year and month < start.month:
+                    continue
+                if year == end.year and month > end.month:
+                    continue
+                for day in allowed_days:
+                    try:
+                        day_start = datetime(year, month, day, tzinfo=start.tzinfo)
+                    except ValueError:
                         continue
-                    return candidate
+                    if day_start.date() < start.date() or day_start.date() > end.date():
+                        continue
+                    weekday = (day_start.weekday() + 1) % 7
+                    if not self._cron_field_matches(
+                        weekday_field,
+                        value=weekday,
+                        minimum=0,
+                        maximum=7,
+                    ):
+                        continue
+                    for hour in allowed_hours:
+                        for minute in allowed_minutes:
+                            candidate = day_start.replace(hour=hour, minute=minute)
+                            if candidate < start or candidate > end or candidate == last_minute:
+                                continue
+                            return candidate
         return None
 
     @staticmethod

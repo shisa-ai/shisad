@@ -1239,6 +1239,57 @@ def test_t2_task_status_snapshot_includes_leap_day_weekday_conjunction() -> None
     assert rows[0]["next_run_at"] == "2044-02-29T00:00:00+00:00"
 
 
+def test_t2_task_status_snapshot_short_circuits_impossible_calendar_cron(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="impossible-february-task",
+        goal="send reminder",
+        schedule=Schedule(kind="cron", expression="0 0 31 2 *"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    original_matcher = SchedulerManager._cron_field_matches
+    match_calls = 0
+
+    def counting_matcher(
+        field: str,
+        *,
+        value: int,
+        minimum: int,
+        maximum: int,
+    ) -> bool:
+        nonlocal match_calls
+        match_calls += 1
+        return original_matcher(
+            field,
+            value=value,
+            minimum=minimum,
+            maximum=maximum,
+        )
+
+    monkeypatch.setattr(
+        SchedulerManager,
+        "_cron_field_matches",
+        staticmethod(counting_matcher),
+    )
+    now = datetime(2025, 3, 1, 0, 0, 0, tzinfo=UTC)
+
+    rows = scheduler.task_status_snapshot(
+        limit=10,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        now=now,
+    )
+
+    assert rows[0]["task_id"] == task.id
+    assert rows[0]["next_run_at"] == ""
+    assert match_calls < 1_000
+
+
 def test_gh59_task_status_snapshot_renders_one_shot_interval_without_recurring_wording() -> None:
     scheduler = SchedulerManager()
     task = scheduler.create_task(
