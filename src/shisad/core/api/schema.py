@@ -1817,6 +1817,7 @@ class ActionPendingEntry(BaseModel):
     required_methods: list[str] = Field(default_factory=list)
     channel_capability: dict[str, Any] = Field(default_factory=dict)
     allowed_principals: list[str] = Field(default_factory=list)
+    allowed_channel_principals: list[str] = Field(default_factory=list)
     allowed_credentials: list[str] = Field(default_factory=list)
     required_capabilities: dict[str, Any] = Field(default_factory=dict)
     approval_envelope: dict[str, Any] | None = None

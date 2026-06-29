@@ -1089,7 +1089,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 continue
             if status_filter and item.status.lower() != status_filter:
                 continue
-            payload = self._pending_to_dict(item, public=True)
+            selected_backend_available_fn = getattr(
+                self,
+                "_pending_selected_backend_available",
+                None,
+            )
+            selected_backend_available = (
+                selected_backend_available_fn(item)
+                if callable(selected_backend_available_fn)
+                else None
+            )
+            payload = self._pending_to_dict(
+                item,
+                public=True,
+                selected_backend_available=selected_backend_available,
+            )
             if (
                 getattr(self, "_approval_web", None) is not None
                 and self._approval_web.enabled

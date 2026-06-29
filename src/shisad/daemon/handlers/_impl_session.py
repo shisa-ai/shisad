@@ -9182,6 +9182,10 @@ class SessionImplMixin(HandlerMixinBase):
                         "reason": "chat_confirmation",
                     }
                     if intent.action == "confirm":
+                        if is_internal_ingress and delivery_target is not None:
+                            principal_id = str(user_id).strip()
+                            if principal_id:
+                                payload["principal_id"] = principal_id
                         result = await self.do_action_confirm(payload)
                         _extend_confirmed_tool_outputs(result)
                         confirmed = bool(result.get("confirmed", False))
@@ -10585,6 +10589,13 @@ class SessionImplMixin(HandlerMixinBase):
                 "reason": "planner_action_resolve",
             }
             if decision == "confirm":
+                if (
+                    bool(getattr(validated, "is_internal_ingress", False))
+                    and getattr(validated, "delivery_target", None) is not None
+                ):
+                    principal_id = str(getattr(validated, "user_id", "")).strip()
+                    if principal_id:
+                        payload["principal_id"] = principal_id
                 result = await self.do_action_confirm(payload)
                 confirmed = bool(result.get("confirmed", False))
                 if not confirmed and str(result.get("reason", "")).strip() == "cooldown_active":

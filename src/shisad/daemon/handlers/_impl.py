@@ -1362,13 +1362,23 @@ def _pending_channel_capability_payload(
     *,
     origin_channel: str,
     required_proof_tier: str,
+    selected_backend_available: bool | None = None,
 ) -> dict[str, Any]:
     selected_method = str(getattr(pending, "selected_backend_method", "")).strip().lower()
     selected_method_proof_tier = _selected_method_proof_tier(selected_method)
     required_level = getattr(pending, "required_level", "")
     required_level_value = str(getattr(required_level, "value", required_level)).strip()
-    approval_route = _approval_route_for_method(selected_method, origin_channel=origin_channel)
-    can_collect_selected_method = approval_route in {"channel_native", "host_cli"}
+    backend_available = True if selected_backend_available is None else bool(
+        selected_backend_available
+    )
+    approval_route = (
+        _approval_route_for_method(selected_method, origin_channel=origin_channel)
+        if backend_available
+        else "unavailable"
+    )
+    can_collect_selected_method = (
+        backend_available and approval_route in {"channel_native", "host_cli"}
+    )
     can_carry_t0_identity = (
         can_collect_selected_method and selected_method_proof_tier == "T0_identity"
     )
@@ -1383,27 +1393,34 @@ def _pending_channel_capability_payload(
         "T1_stepup": can_carry_t1_stepup,
         "method_specific": can_carry_method_specific,
     }.get(required_proof_tier, False)
-    cannot_carry_reason = (
-        ""
-        if can_carry_required_proof_tier
-        else _cannot_carry_reason(
+    if can_carry_required_proof_tier:
+        cannot_carry_reason = ""
+    elif not backend_available:
+        cannot_carry_reason = "confirmation_backend_unavailable"
+    else:
+        cannot_carry_reason = _cannot_carry_reason(
             proof_tier=required_proof_tier,
             selected_method=selected_method,
             selected_method_proof_tier=selected_method_proof_tier,
             approval_route=approval_route,
             can_collect_selected_method=can_collect_selected_method,
         )
-    )
+    allowed_channel_principals = [
+        str(value).strip()
+        for value in getattr(pending, "allowed_channel_principals", ())
+        if str(value).strip()
+    ]
     return {
         "origin_channel": origin_channel,
         "approval_route": approval_route,
         "selected_backend_id": str(getattr(pending, "selected_backend_id", "")).strip(),
         "selected_method": selected_method,
+        "backend_available": backend_available,
         "selected_method_proof_tier": selected_method_proof_tier,
         "required_proof_tier": required_proof_tier,
         "required_level": required_level_value,
         "required_methods": list(getattr(pending, "required_methods", ())),
-        "can_approve": bool(selected_method),
+        "can_approve": bool(selected_method) and backend_available,
         "can_reject": str(getattr(pending, "status", "pending")).strip() == "pending",
         "can_collect_selected_method": can_collect_selected_method,
         "can_carry": can_carry_required_proof_tier,
@@ -1411,6 +1428,9 @@ def _pending_channel_capability_payload(
         "can_carry_t0_identity": can_carry_t0_identity,
         "can_carry_t1_stepup": can_carry_t1_stepup,
         "can_carry_method_specific": can_carry_method_specific,
+        "requires_channel_principal": bool(
+            allowed_channel_principals and selected_method == "software"
+        ),
         "requires_second_factor": selected_method_proof_tier == "T1_stepup",
         "requires_proof_input": selected_method != "software",
         "cannot_carry_reason": cannot_carry_reason,
@@ -1445,6 +1465,7 @@ class PendingAction:
     required_level: ConfirmationLevel = ConfirmationLevel.SOFTWARE
     required_methods: list[str] = field(default_factory=list)
     allowed_principals: list[str] = field(default_factory=list)
+    allowed_channel_principals: list[str] = field(default_factory=list)
     allowed_credentials: list[str] = field(default_factory=list)
     required_capabilities: ConfirmationCapabilities = field(
         default_factory=ConfirmationCapabilities
@@ -2822,7 +2843,12 @@ class HandlerImplementation(
         )
 
     @staticmethod
-    def _pending_to_dict(pending: PendingAction, *, public: bool = False) -> dict[str, Any]:
+    def _pending_to_dict(
+        pending: PendingAction,
+        *,
+        public: bool = False,
+        selected_backend_available: bool | None = None,
+    ) -> dict[str, Any]:
         browser_sensitive_pending = _has_sensitive_pending_text(
             pending.tool_name,
             pending.arguments,
@@ -2906,8 +2932,10 @@ class HandlerImplementation(
                 pending,
                 origin_channel=origin_channel,
                 required_proof_tier=required_proof_tier,
+                selected_backend_available=selected_backend_available,
             ),
             "allowed_principals": list(pending.allowed_principals),
+            "allowed_channel_principals": list(pending.allowed_channel_principals),
             "allowed_credentials": list(pending.allowed_credentials),
             "required_capabilities": pending.required_capabilities.model_dump(mode="json"),
             "approval_envelope_hash": "" if sensitive_pending else pending.approval_envelope_hash,
@@ -2967,6 +2995,28 @@ class HandlerImplementation(
                     mode="json"
                 )
         return payload
+
+    def _pending_selected_backend_available(self, pending: PendingAction) -> bool:
+        registry = getattr(self, "_confirmation_backend_registry", None)
+        get_backend = getattr(registry, "get_backend", None)
+        if not callable(get_backend):
+            return False
+        selected_backend_id = (
+            str(getattr(pending, "selected_backend_id", "")).strip() or "software.default"
+        )
+        backend = get_backend(selected_backend_id)
+        if backend is None:
+            return False
+        selected_method = str(getattr(pending, "selected_backend_method", "")).strip()
+        if selected_method and str(getattr(backend, "method", "")).strip() != selected_method:
+            return False
+        is_available_for = getattr(backend, "is_available_for", None)
+        if callable(is_available_for):
+            try:
+                return bool(is_available_for(user_id=str(getattr(pending, "user_id", ""))))
+            except Exception:
+                return False
+        return True
 
     @staticmethod
     def _is_high_risk_confirmation(tool_name: ToolName, arguments: dict[str, Any]) -> bool:
@@ -3329,6 +3379,11 @@ class HandlerImplementation(
             required_level=requirement.level,
             required_methods=list(requirement.methods),
             allowed_principals=list(requirement.allowed_principals),
+            allowed_channel_principals=(
+                [normalized_user_id]
+                if delivery_target is not None and normalized_user_id.strip()
+                else []
+            ),
             allowed_credentials=list(requirement.allowed_credentials),
             required_capabilities=requirement.require_capabilities.model_copy(deep=True),
             approval_envelope=approval_envelope,
@@ -3521,6 +3576,11 @@ class HandlerImplementation(
                     allowed_principals=[
                         str(value).strip()
                         for value in item.get("allowed_principals", [])
+                        if str(value).strip()
+                    ],
+                    allowed_channel_principals=[
+                        str(value).strip()
+                        for value in item.get("allowed_channel_principals", [])
                         if str(value).strip()
                     ],
                     allowed_credentials=[

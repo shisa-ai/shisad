@@ -1539,6 +1539,18 @@ class SoftwareConfirmationBackend:
             raise ConfirmationVerificationError("confirmation_credential_binding_unavailable")
 
         principal_id = ""
+        allowed_channel_principals = [
+            str(item).strip()
+            for item in getattr(pending_action, "allowed_channel_principals", ())
+            if str(item).strip()
+        ]
+        if allowed_channel_principals:
+            principal_id = str(params.get("principal_id", "")).strip()
+            if not principal_id:
+                raise ConfirmationVerificationError("missing_channel_principal")
+            if principal_id not in set(allowed_channel_principals):
+                raise ConfirmationVerificationError("channel_principal_not_allowed")
+
         envelope_hash, action_digest = _approval_binding_inputs(pending_action)
         payload = {
             "schema_version": "shisad.confirmation_evidence.v1",

@@ -374,8 +374,13 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         )
 
     @staticmethod
-    def _pending_to_dict(pending: PendingAction, *, public: bool = False) -> dict[str, object]:
-        _ = public
+    def _pending_to_dict(
+        pending: PendingAction,
+        *,
+        public: bool = False,
+        selected_backend_available: bool | None = None,
+    ) -> dict[str, object]:
+        _ = public, selected_backend_available
         return {
             "confirmation_id": pending.confirmation_id,
             "decision_nonce": pending.decision_nonce,
@@ -596,6 +601,7 @@ def test_gh64_discord_pending_keeps_software_when_totp_unavailable(
 
     assert pending.selected_backend_id == "software.default"
     assert pending.selected_backend_method == "software"
+    assert pending.allowed_channel_principals == ["alice"]
 
 
 def test_gh64_discord_pending_respects_explicit_non_totp_method_constraint(
@@ -727,6 +733,41 @@ def test_a1_public_pending_payload_exposes_shared_approval_contract(
     assert capability["cannot_carry_reason"] == "selected_method_requires_T1_stepup"
 
 
+@pytest.mark.asyncio
+async def test_a1_action_pending_fails_closed_when_selected_backend_disappears(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-a1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://example.test/page"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        confirmation_requirement=ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE),
+    )
+    assert pending.selected_backend_id == "totp.default"
+
+    harness._confirmation_backend_registry._backends.pop("totp.default")
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    entry = ActionPendingEntry.model_validate(result["actions"][0])
+    capability = entry.channel_capability
+    assert capability["backend_available"] is False
+    assert capability["can_approve"] is False
+    assert capability["can_collect_selected_method"] is False
+    assert capability["can_carry"] is False
+    assert capability["can_carry_required_proof_tier"] is False
+    assert capability["cannot_carry_reason"] == "confirmation_backend_unavailable"
+
+
 def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(
     tmp_path: Path,
 ) -> None:
@@ -823,6 +864,72 @@ async def test_a1_totp_confirmation_binds_allowed_principal(tmp_path: Path) -> N
     evidence = harness._pending_actions["c-1"].confirmation_evidence
     assert evidence is not None
     assert evidence.approver_principal_id == "ops-laptop"
+
+
+@pytest.mark.asyncio
+async def test_a1_software_channel_confirmation_requires_bound_principal(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "missing_channel_principal"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_a1_software_channel_confirmation_rejects_wrong_bound_principal(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "principal_id": "bob",
+        }
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "channel_principal_not_allowed"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_a1_software_channel_confirmation_accepts_bound_principal(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "principal_id": "alice",
+        }
+    )
+
+    assert result["confirmed"] is True
+    evidence = harness._pending_actions["c-1"].confirmation_evidence
+    assert evidence is not None
+    assert evidence.approver_principal_id == "alice"
 
 
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
