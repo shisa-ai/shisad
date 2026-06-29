@@ -3439,6 +3439,7 @@ async def test_u9_chat_internal_channel_ingress_allows_rejecting_totp_pending_ac
         selected_backend_id="totp.default",
         selected_backend_method="totp",
     )
+    pending.allowed_channel_principals = ["alice"]
     harness._pending_actions[pending.confirmation_id] = pending
 
     result = await SessionImplMixin._maybe_handle_chat_confirmation(
@@ -3460,6 +3461,14 @@ async def test_u9_chat_internal_channel_ingress_allows_rejecting_totp_pending_ac
     assert "rejected 1" in str(result["response"]).lower()
     assert result["pending_confirmation_ids"] == []
     assert harness.confirm_calls == []
+    assert harness.reject_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "reason": "chat_confirmation",
+            "principal_id": "alice",
+        }
+    ]
     assert harness._pending_actions["c-1"].status == "rejected"
 
 
@@ -3937,6 +3946,62 @@ async def test_a1_action_resolve_passes_bound_channel_principal(tmp_path) -> Non
     assert result.executed == 1
     assert result.rejected == 0
     assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "reason": "planner_action_resolve",
+            "principal_id": "alice",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a2_action_resolve_reject_passes_bound_channel_principal(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=target,
+    )
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(sanitized_text="reject 1", original_hash="0" * 64),
+        is_internal_ingress=True,
+        delivery_target=target,
+        session=SimpleNamespace(metadata={"delivery_target": target.model_dump(mode="json")}),
+    )
+
+    result = await SessionImplMixin._execute_planner_action_resolve(
+        harness,
+        validated=validated,
+        arguments={"decision": "reject", "target": "1", "scope": "one"},
+        pending_action_binding_ids=("c-1",),
+        requires_explicit_current_turn_intent=True,
+    )
+
+    assert result.success is True
+    assert result.executed == 1
+    assert result.rejected == 0
+    assert harness.reject_calls == [
         {
             "confirmation_id": "c-1",
             "decision_nonce": "nonce-1",

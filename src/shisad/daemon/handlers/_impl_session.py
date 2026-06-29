@@ -9391,6 +9391,15 @@ class SessionImplMixin(HandlerMixinBase):
                                 f"({pending.tool_name}): {status}"
                             )
                     else:
+                        allowed_channel_principals = list(pending.allowed_channel_principals)
+                        if (
+                            is_internal_ingress
+                            and delivery_target is not None
+                            and allowed_channel_principals
+                        ):
+                            principal_id = str(user_id).strip()
+                            if principal_id:
+                                payload["principal_id"] = principal_id
                         result = await self.do_action_reject(payload)
                         rejected = bool(result.get("rejected", False))
                         if rejected:
@@ -10838,6 +10847,15 @@ class SessionImplMixin(HandlerMixinBase):
                     ).strip()
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
             else:
+                allowed_channel_principals = list(pending.allowed_channel_principals)
+                if (
+                    bool(getattr(validated, "is_internal_ingress", False))
+                    and getattr(validated, "delivery_target", None) is not None
+                    and allowed_channel_principals
+                ):
+                    principal_id = str(getattr(validated, "user_id", "")).strip()
+                    if principal_id:
+                        payload["principal_id"] = principal_id
                 result = await self.do_action_reject(payload)
                 resolved = bool(result.get("rejected", False))
                 if resolved:
