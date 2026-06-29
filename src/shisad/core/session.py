@@ -553,6 +553,14 @@ class SessionManager:
             if session.metadata.get("operator_owned_cli") is not True:
                 session.metadata["operator_owned_cli"] = True
                 trust_changed = True
+            created_peer = session.metadata.get("created_rpc_peer")
+            created_uid = created_peer.get("uid") if isinstance(created_peer, dict) else None
+            if not isinstance(created_uid, int):
+                session.metadata["created_rpc_peer"] = {
+                    "uid": os.getuid(),
+                    "gid": os.getgid(),
+                }
+                trust_changed = True
         raw_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
         sync_mode_before = (
             raw_mode if raw_mode in {"policy_default", "manual_override"} else "legacy"

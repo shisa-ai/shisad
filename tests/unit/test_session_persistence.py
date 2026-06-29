@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -313,6 +314,10 @@ def test_lt1_session_manager_migrates_legacy_default_cli_trust_level(
     assert restored is not None
     assert restored.metadata["trust_level"] == "trusted"
     assert restored.metadata["operator_owned_cli"] is True
+    assert restored.metadata["created_rpc_peer"] == {
+        "uid": os.getuid(),
+        "gid": os.getgid(),
+    }
 
 
 def test_lt1_session_manager_does_not_upgrade_mediated_or_task_sessions(
