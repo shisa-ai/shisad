@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, cast
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
 from shisad.core.events import (
     AnomalyReported,
@@ -130,6 +131,18 @@ class TasksImplMixin(HandlerMixinBase):
         return payload
 
     @staticmethod
+    def _task_delivery_target(task: Any) -> DeliveryTarget | None:
+        arguments = TasksImplMixin._task_delivery_arguments(task)
+        if arguments is None:
+            return None
+        return DeliveryTarget(
+            channel=str(arguments["channel"]),
+            recipient=str(arguments["recipient"]),
+            workspace_hint=str(arguments.get("workspace_hint", "")),
+            thread_id=str(arguments.get("thread_id", "")),
+        )
+
+    @staticmethod
     def _task_scope_mismatch_reason(task: Any, arguments: Mapping[str, Any]) -> str:
         recipient = str(arguments.get("recipient", "")).strip()
         recipient_allowlist = [
@@ -232,6 +245,7 @@ class TasksImplMixin(HandlerMixinBase):
             arguments=dict(arguments),
             reason=reason,
             capabilities=set(capabilities),
+            delivery_target=self._task_delivery_target(task),
             preflight_action=preflight_action,
             taint_labels=list(_payload_taints(str(getattr(run, "payload_taint", "")))),
             confirmation_requirement=confirmation_requirement,

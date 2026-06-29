@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.api.schema import (
     NoParams,
     TaskCreateParams,
@@ -12,7 +15,9 @@ from shisad.core.api.schema import (
     TaskPendingConfirmationsParams,
     TaskTriggerEventParams,
 )
+from shisad.core.types import Capability, SessionId
 from shisad.daemon.context import RequestContext
+from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers.tasks import TaskHandlers
 
 
@@ -78,6 +83,20 @@ def _handlers(impl: _ProgrammableImpl, marker: object | None = None) -> TaskHand
     )
 
 
+class _QueueTaskConfirmationHarness(TasksImplMixin):
+    def __init__(self) -> None:
+        self.pending_kwargs: list[dict[str, object]] = []
+        self.scheduler_confirmations: list[tuple[str, dict[str, object]]] = []
+        self._scheduler = SimpleNamespace(queue_confirmation=self._queue_confirmation)
+
+    def _queue_confirmation(self, task_id: str, action: dict[str, object]) -> None:
+        self.scheduler_confirmations.append((task_id, action))
+
+    def _queue_pending_action(self, **kwargs: object) -> object:
+        self.pending_kwargs.append(kwargs)
+        return SimpleNamespace(confirmation_id="confirm-task-1")
+
+
 @pytest.mark.asyncio
 async def test_task_create_forwards_params_and_ingress_marker() -> None:
     impl = _ProgrammableImpl()
@@ -105,6 +124,48 @@ async def test_task_create_forwards_params_and_ingress_marker() -> None:
     assert payload["policy_snapshot_ref"] == "policy-1"
     assert payload["workspace_id"] == "ws1"
     assert payload["_internal_ingress_marker"] is marker
+
+
+def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None:
+    harness = _QueueTaskConfirmationHarness()
+    task = SimpleNamespace(
+        id="task-1",
+        created_by="alice",
+        workspace_id="ws1",
+        delivery_target={
+            "channel": "discord",
+            "recipient": "chan-1",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+    )
+    run = SimpleNamespace(
+        payload_taint="trusted_scheduler",
+        trigger_payload="wake",
+        plan_commitment="plan-1",
+    )
+    session = SimpleNamespace(id=SessionId("scheduler-session-1"))
+
+    confirmation_id = harness._queue_task_confirmation(
+        task=task,
+        run=run,
+        event_type="message.received",
+        session=session,
+        arguments={"channel": "discord", "recipient": "chan-1", "body": "hello"},
+        reason="requires_confirmation",
+        capabilities={Capability.MESSAGE_SEND},
+        preflight_action=None,
+    )
+
+    assert confirmation_id == "confirm-task-1"
+    assert len(harness.pending_kwargs) == 1
+    delivery_target = harness.pending_kwargs[0]["delivery_target"]
+    assert isinstance(delivery_target, DeliveryTarget)
+    assert delivery_target.channel == "discord"
+    assert delivery_target.recipient == "chan-1"
+    assert delivery_target.workspace_hint == "guild-1"
+    assert delivery_target.thread_id == "thread-1"
+    assert harness.scheduler_confirmations[0][0] == "task-1"
 
 
 @pytest.mark.asyncio

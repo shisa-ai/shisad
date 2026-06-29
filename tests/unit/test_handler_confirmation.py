@@ -13,6 +13,7 @@ import pytest
 from shisad.channels.base import DeliveryTarget
 from shisad.core.api.schema import (
     ActionDecisionParams,
+    ActionPendingEntry,
     ActionPendingParams,
     ActionPurgeParams,
     ConfirmationMetricsParams,
@@ -671,6 +672,147 @@ def test_gh64_discord_pending_uses_later_totp_when_earlier_method_ineligible(
 
     assert pending.selected_backend_id == "totp.default"
     assert pending.selected_backend_method == "totp"
+
+
+def test_a1_public_pending_payload_exposes_shared_approval_contract(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    _register_totp_factor(harness)  # type: ignore[arg-type]
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-a1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://example.test/page?token=secret-token"},
+        public_arguments={"url": "https://example.test/page"},
+        sensitive_public_payload=True,
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        confirmation_requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.SOFTWARE,
+            allowed_principals=["ops-laptop"],
+        ),
+    )
+
+    public = harness._pending_to_dict(pending, public=True)
+
+    assert "action_id" in ActionPendingEntry.model_fields
+    entry = ActionPendingEntry.model_validate(public)
+    assert entry.action_id == pending.confirmation_id
+    assert entry.action_kind == ActionKind.EGRESS.value
+    assert entry.origin_channel == "discord"
+    assert entry.required_proof_tier == "T0_identity"
+    assert entry.required_level == ConfirmationLevel.SOFTWARE.value
+    assert entry.required_methods == []
+    assert entry.arguments == {"url": "https://example.test/page"}
+    assert "secret-token" not in json.dumps(public, sort_keys=True)
+
+    capability = entry.channel_capability
+    assert capability["origin_channel"] == "discord"
+    assert capability["required_proof_tier"] == "T0_identity"
+    assert capability["required_level"] == ConfirmationLevel.SOFTWARE.value
+    assert capability["selected_method"] == "totp"
+    assert capability["can_reject"] is True
+    assert capability["can_carry"] is True
+    assert capability["cannot_carry_reason"] == ""
+
+
+def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+
+    class _AvailableKmsBackend:
+        backend_id = "kms.test"
+        method = "kms"
+        level = ConfirmationLevel.SIGNED_AUTHORIZATION
+        capabilities = ConfirmationCapabilities()
+        third_party_verifiable = True
+
+        def is_available_for(self, *, user_id: str) -> bool:
+            _ = user_id
+            return True
+
+        def principals_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return set()
+
+        def credentials_for_user(self, *, user_id: str) -> set[str]:
+            _ = user_id
+            return set()
+
+        def verify(
+            self,
+            *,
+            pending_action: object,
+            params: dict[str, object],
+            now: datetime | None = None,
+        ) -> ConfirmationEvidence:
+            _ = pending_action, params, now
+            raise AssertionError("serialization test must not verify KMS evidence")
+
+    harness._confirmation_backend_registry.register(_AvailableKmsBackend())
+
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-a1-kms"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://example.test/signed"},
+        reason="requires_signed_authorization",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        confirmation_requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            methods=["kms"],
+        ),
+    )
+
+    public = harness._pending_to_dict(pending, public=True)
+    entry = ActionPendingEntry.model_validate(public)
+
+    assert entry.required_proof_tier == "method_specific"
+    assert entry.required_level == ConfirmationLevel.SIGNED_AUTHORIZATION.value
+    assert entry.required_methods == ["kms"]
+    assert entry.selected_backend_method == "kms"
+    capability = entry.channel_capability
+    assert capability["origin_channel"] == "discord"
+    assert capability["required_level"] == ConfirmationLevel.SIGNED_AUTHORIZATION.value
+    assert capability["selected_method"] == "kms"
+    assert capability["approval_route"] == "external_signer"
+    assert capability["can_carry"] is False
+    assert capability["cannot_carry_reason"] == "method_specific_approval_requires_kms"
+
+
+@pytest.mark.asyncio
+async def test_a1_totp_confirmation_binds_allowed_principal(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    _register_totp_factor(harness)
+    pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
+    pending.required_level = ConfirmationLevel.SOFTWARE
+    pending.allowed_principals = ["ops-laptop"]
+    pending.approval_envelope = _software_approval_envelope(tool_name=ToolName("web.search"))
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "approval_method": "totp",
+            "proof": {"totp_code": generate_totp_code("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")},
+        }
+    )
+
+    assert result["confirmed"] is True
+    assert result["approval_level"] == ConfirmationLevel.REAUTHENTICATED.value
+    assert result["approval_method"] == "totp"
+    evidence = harness._pending_actions["c-1"].confirmation_evidence
+    assert evidence is not None
+    assert evidence.approver_principal_id == "ops-laptop"
 
 
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:

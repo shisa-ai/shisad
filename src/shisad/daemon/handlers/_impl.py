@@ -153,6 +153,7 @@ from shisad.security.control_plane.schema import (
     RiskTier,
     build_action,
     extract_request_size_bytes,
+    infer_action_kind,
 )
 from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
@@ -1279,6 +1280,104 @@ async def _structured_evidence_promote(
         "summary": ref.summary,
         "content": content,
         "taint_labels": taint_labels,
+    }
+
+
+_CHANNEL_NATIVE_APPROVAL_METHODS = frozenset({"software", "totp", "recovery_code"})
+_EXTERNAL_SIGNER_APPROVAL_METHODS = frozenset({"kms", "ledger"})
+
+
+def _required_proof_tier(level: ConfirmationLevel | str) -> str:
+    try:
+        normalized = ConfirmationLevel(str(getattr(level, "value", level)))
+    except ValueError:
+        return "method_specific"
+    if normalized == ConfirmationLevel.SOFTWARE:
+        return "T0_identity"
+    if normalized == ConfirmationLevel.REAUTHENTICATED:
+        return "T1_stepup"
+    return "method_specific"
+
+
+def _pending_origin_channel(pending: Any) -> str:
+    delivery_target = getattr(pending, "delivery_target", None)
+    if delivery_target is not None:
+        channel = str(getattr(delivery_target, "channel", "")).strip().lower()
+        if channel:
+            return channel
+    preflight_action = getattr(pending, "preflight_action", None)
+    origin = getattr(preflight_action, "origin", None)
+    return str(getattr(origin, "channel", "")).strip().lower()
+
+
+def _pending_action_kind_value(pending: Any, arguments: dict[str, Any]) -> str:
+    preflight_action = getattr(pending, "preflight_action", None)
+    preflight_kind = getattr(preflight_action, "action_kind", "")
+    if preflight_kind:
+        return str(getattr(preflight_kind, "value", preflight_kind))
+    return infer_action_kind(str(getattr(pending, "tool_name", "")), arguments).value
+
+
+def _approval_route_for_method(method: str, *, origin_channel: str) -> str:
+    if method in _CHANNEL_NATIVE_APPROVAL_METHODS:
+        return "channel_native" if origin_channel else "host_cli"
+    if method in {"webauthn", "local_fido2"}:
+        return "browser"
+    if method in _EXTERNAL_SIGNER_APPROVAL_METHODS:
+        return "external_signer"
+    return "unknown"
+
+
+def _cannot_carry_reason(
+    *,
+    proof_tier: str,
+    selected_method: str,
+    approval_route: str,
+) -> str:
+    if approval_route in {"channel_native", "host_cli"}:
+        return ""
+    if proof_tier == "method_specific" and selected_method:
+        return f"method_specific_approval_requires_{selected_method}"
+    if selected_method:
+        return f"approval_requires_{selected_method}"
+    return "approval_method_unavailable"
+
+
+def _pending_channel_capability_payload(
+    pending: Any,
+    *,
+    origin_channel: str,
+    required_proof_tier: str,
+) -> dict[str, Any]:
+    selected_method = str(getattr(pending, "selected_backend_method", "")).strip().lower()
+    required_level = getattr(pending, "required_level", "")
+    required_level_value = str(getattr(required_level, "value", required_level)).strip()
+    approval_route = _approval_route_for_method(selected_method, origin_channel=origin_channel)
+    can_carry = approval_route in {"channel_native", "host_cli"}
+    cannot_carry_reason = (
+        ""
+        if can_carry
+        else _cannot_carry_reason(
+            proof_tier=required_proof_tier,
+            selected_method=selected_method,
+            approval_route=approval_route,
+        )
+    )
+    return {
+        "origin_channel": origin_channel,
+        "approval_route": approval_route,
+        "selected_backend_id": str(getattr(pending, "selected_backend_id", "")).strip(),
+        "selected_method": selected_method,
+        "required_proof_tier": required_proof_tier,
+        "required_level": required_level_value,
+        "required_methods": list(getattr(pending, "required_methods", ())),
+        "can_approve": bool(selected_method),
+        "can_reject": str(getattr(pending, "status", "pending")).strip() == "pending",
+        "can_carry": can_carry,
+        "can_carry_t0_identity": required_proof_tier == "T0_identity" and can_carry,
+        "can_carry_t1_stepup": required_proof_tier == "T1_stepup" and can_carry,
+        "can_carry_method_specific": required_proof_tier == "method_specific" and can_carry,
+        "cannot_carry_reason": cannot_carry_reason,
     }
 
 
@@ -2732,16 +2831,26 @@ class HandlerImplementation(
             if sensitive_summary is not None
             else pending.safe_preview
         )
+        action_id = pending.confirmation_id
+        action_kind = _pending_action_kind_value(pending, pending.arguments)
+        origin_channel = _pending_origin_channel(pending)
+        required_proof_tier = _required_proof_tier(pending.required_level)
+        preflight_risk_tier = getattr(getattr(pending, "preflight_action", None), "risk_tier", "")
+        risk_level = str(getattr(preflight_risk_tier, "value", preflight_risk_tier)).strip()
         payload: dict[str, Any] = {
             "confirmation_id": pending.confirmation_id,
+            "action_id": action_id,
+            "action_kind": action_kind,
             "decision_nonce": pending.decision_nonce,
             "session_id": str(pending.session_id),
             "user_id": str(pending.user_id),
             "workspace_id": str(pending.workspace_id),
+            "origin_channel": origin_channel,
             "task_id": pending.task_id,
             "tool_name": str(pending.tool_name),
             "arguments": arguments,
             "reason": pending.reason,
+            "risk_level": risk_level,
             "capabilities": sorted(cap.value for cap in pending.capabilities),
             "created_at": pending.created_at.isoformat(),
             "delivery_target": (
@@ -2754,8 +2863,14 @@ class HandlerImplementation(
             "warnings": list(pending.warnings),
             "leak_check": dict(pending.leak_check),
             "approval_task_envelope_id": pending.approval_task_envelope_id,
+            "required_proof_tier": required_proof_tier,
             "required_level": pending.required_level.value,
             "required_methods": list(pending.required_methods),
+            "channel_capability": _pending_channel_capability_payload(
+                pending,
+                origin_channel=origin_channel,
+                required_proof_tier=required_proof_tier,
+            ),
             "allowed_principals": list(pending.allowed_principals),
             "allowed_credentials": list(pending.allowed_credentials),
             "required_capabilities": pending.required_capabilities.model_dump(mode="json"),

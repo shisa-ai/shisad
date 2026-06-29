@@ -1793,14 +1793,18 @@ class ActionPendingEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     confirmation_id: str = ""
+    action_id: str = ""
+    action_kind: str = ""
     decision_nonce: str = ""
     session_id: str = ""
     user_id: str = ""
     workspace_id: str = ""
+    origin_channel: str = ""
     status: str = ""
     tool_name: str = ""
     arguments: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
+    risk_level: str = ""
     capabilities: list[str] = Field(default_factory=list)
     created_at: str = ""
     execute_after: str | None = None
@@ -1808,8 +1812,10 @@ class ActionPendingEntry(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     leak_check: dict[str, Any] = Field(default_factory=dict)
     approval_task_envelope_id: str = ""
+    required_proof_tier: str = ""
     required_level: str = ""
     required_methods: list[str] = Field(default_factory=list)
+    channel_capability: dict[str, Any] = Field(default_factory=dict)
     allowed_principals: list[str] = Field(default_factory=list)
     allowed_credentials: list[str] = Field(default_factory=list)
     required_capabilities: dict[str, Any] = Field(default_factory=dict)
