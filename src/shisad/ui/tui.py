@@ -175,9 +175,11 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     """Render a deterministic plaintext dashboard for non-rich terminals."""
     lines: list[str] = []
     lines.append("SHISAD TUI SNAPSHOT")
+    lines.append("SUMMARY:")
+    lines.append("  " + _summary_counts_line(snapshot))
     lines.append("SESSIONS:")
     if not snapshot.sessions:
-        lines.append("  (none)")
+        lines.append("  no active sessions")
     for row in snapshot.sessions:
         lines.append(
             "  "
@@ -186,12 +188,12 @@ def render_plain(snapshot: TuiSnapshot) -> str:
         )
     lines.append("PENDING CONFIRMATIONS:")
     if not snapshot.pending_actions:
-        lines.append("  (none)")
+        lines.append("  no pending confirmations")
     for row in snapshot.pending_actions:
         lines.append("  " + render_pending_action(row))
     lines.append("TASKS:")
     if not snapshot.tasks:
-        lines.append("  (none)")
+        lines.append("  no background tasks")
     for row in snapshot.tasks:
         lines.append(
             "  "
@@ -202,7 +204,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
         )
     lines.append("CHANNEL HEALTH:")
     if not snapshot.channel_health:
-        lines.append("  (none)")
+        lines.append("  no configured channels")
     for row in snapshot.channel_health:
         lines.append(
             "  "
@@ -213,12 +215,12 @@ def render_plain(snapshot: TuiSnapshot) -> str:
         )
     lines.append("ALERTS:")
     if not snapshot.alerts:
-        lines.append("  (none)")
+        lines.append("  no active alerts")
     for row in snapshot.alerts:
         lines.append(f"  {row.get('event_type', '')} ack={row.get('acknowledged_reason', '')}")
     lines.append("AUDIT EVENTS:")
     if not snapshot.audit_events:
-        lines.append("  (none)")
+        lines.append("  no recent audit events")
     for row in snapshot.audit_events:
         lines.append(
             "  "
@@ -226,6 +228,73 @@ def render_plain(snapshot: TuiSnapshot) -> str:
             f"session={row.get('session_id', '')}"
         )
     return "\n".join(lines)
+
+
+def _summary_counts(snapshot: TuiSnapshot) -> dict[str, int]:
+    return {
+        "sessions": len(snapshot.sessions),
+        "lockdown": sum(
+            1
+            for row in snapshot.sessions
+            if str(row.get("lockdown_level", "")).strip().lower() not in {"", "normal"}
+        ),
+        "pending_confirmations": len(snapshot.pending_actions),
+        "tasks": len(snapshot.tasks),
+        "enabled_tasks": sum(1 for row in snapshot.tasks if bool(row.get("enabled", False))),
+        "channels": len(snapshot.channel_health),
+        "connected_channels": sum(
+            1 for row in snapshot.channel_health if bool(row.get("connected", False))
+        ),
+        "alerts": len(snapshot.alerts),
+        "audit_events": len(snapshot.audit_events),
+    }
+
+
+def _summary_counts_line(snapshot: TuiSnapshot) -> str:
+    summary = _summary_counts(snapshot)
+    return (
+        f"sessions={summary['sessions']} "
+        f"lockdown={summary['lockdown']} "
+        f"pending_confirmations={summary['pending_confirmations']} "
+        f"tasks={summary['tasks']} "
+        f"enabled_tasks={summary['enabled_tasks']} "
+        f"channels={summary['channels']} "
+        f"connected_channels={summary['connected_channels']} "
+        f"alerts={summary['alerts']} "
+        f"audit_events={summary['audit_events']}"
+    )
+
+
+def _lockdown_style(level: object) -> str:
+    normalized = str(level or "").strip().lower()
+    if normalized in {"", "normal"}:
+        return "green"
+    if normalized in {"caution", "warning"}:
+        return "yellow"
+    return "red"
+
+
+def _pending_status_style(status: object) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "pending":
+        return "yellow"
+    if normalized == "approved":
+        return "green"
+    if normalized in {"rejected", "expired", "failed", "error"}:
+        return "red"
+    return "dim"
+
+
+def _enabled_style(value: object) -> str:
+    return "green" if bool(value) else "dim"
+
+
+def _connected_style(value: object) -> str:
+    return "green" if bool(value) else "red"
+
+
+def _alert_style(event_type: object) -> str:
+    return "red" if str(event_type or "").strip() else "dim"
 
 
 def render_rich(snapshot: TuiSnapshot) -> str:
@@ -242,7 +311,13 @@ def render_rich(snapshot: TuiSnapshot) -> str:
 
     console = Console(record=True)
 
-    sessions = Table(title="Sessions", show_lines=False)
+    summary = Table(title="Summary", show_lines=False, row_styles=["", "dim"])
+    summary.add_column("Metric")
+    summary.add_column("Count", justify="right")
+    for label, count in _summary_counts(snapshot).items():
+        summary.add_row(label, str(count))
+
+    sessions = Table(title="Sessions", show_lines=False, row_styles=["", "dim"])
     sessions.add_column("Session")
     sessions.add_column("User")
     sessions.add_column("Lockdown")
@@ -251,11 +326,12 @@ def render_rich(snapshot: TuiSnapshot) -> str:
             str(row.get("id", "")),
             str(row.get("user_id", "")),
             str(row.get("lockdown_level", "")),
+            style=_lockdown_style(row.get("lockdown_level", "")),
         )
     if not snapshot.sessions:
         sessions.add_row("(none)", "", "")
 
-    pending = Table(title="Pending Confirmations", show_lines=False)
+    pending = Table(title="Pending Confirmations", show_lines=False, row_styles=["", "dim"])
     pending.add_column("Confirmation")
     pending.add_column("Tool")
     pending.add_column("Status")
@@ -268,11 +344,12 @@ def render_rich(snapshot: TuiSnapshot) -> str:
             str(row.get("status", "")),
             str(row.get("required_proof_tier", "")),
             render_pending_action(row),
+            style=_pending_status_style(row.get("status", "")),
         )
     if not snapshot.pending_actions:
         pending.add_row("(none)", "", "", "", "")
 
-    tasks = Table(title="Tasks", show_lines=False)
+    tasks = Table(title="Tasks", show_lines=False, row_styles=["", "dim"])
     tasks.add_column("Task")
     tasks.add_column("Enabled")
     tasks.add_column("Schedule")
@@ -283,11 +360,12 @@ def render_rich(snapshot: TuiSnapshot) -> str:
             str(row.get("enabled", False)),
             str(row.get("schedule_kind", "")),
             str(row.get("delivery_channel", "")),
+            style=_enabled_style(row.get("enabled", False)),
         )
     if not snapshot.tasks:
         tasks.add_row("(none)", "", "", "")
 
-    channels = Table(title="Channel Health", show_lines=False)
+    channels = Table(title="Channel Health", show_lines=False, row_styles=["", "dim"])
     channels.add_column("Channel")
     channels.add_column("Enabled")
     channels.add_column("Available")
@@ -298,22 +376,24 @@ def render_rich(snapshot: TuiSnapshot) -> str:
             str(row.get("enabled", False)),
             str(row.get("available", False)),
             str(row.get("connected", False)),
+            style=_connected_style(row.get("connected", False)),
         )
     if not snapshot.channel_health:
         channels.add_row("(none)", "", "", "")
 
-    alerts = Table(title="Alerts", show_lines=False)
+    alerts = Table(title="Alerts", show_lines=False, row_styles=["", "dim"])
     alerts.add_column("Event")
     alerts.add_column("Ack")
     for row in snapshot.alerts:
         alerts.add_row(
             str(row.get("event_type", "")),
             str(row.get("acknowledged_reason", "")),
+            style=_alert_style(row.get("event_type", "")),
         )
     if not snapshot.alerts:
         alerts.add_row("(none)", "")
 
-    audit = Table(title="Audit Events", show_lines=False)
+    audit = Table(title="Audit Events", show_lines=False, row_styles=["", "dim"])
     audit.add_column("Timestamp")
     audit.add_column("Event")
     audit.add_column("Session")
@@ -326,6 +406,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     if not snapshot.audit_events:
         audit.add_row("(none)", "", "")
 
+    console.print(Panel.fit(summary))
     console.print(Panel.fit(sessions))
     console.print(Panel.fit(pending))
     console.print(Panel.fit(tasks))

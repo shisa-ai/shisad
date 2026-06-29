@@ -72,6 +72,55 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     assert "CHANNEL HEALTH:" in rendered
 
 
+def test_u3_tui_plain_renderer_includes_summary_and_explicit_empty_states() -> None:
+    rendered = render_plain(TuiSnapshot())
+
+    assert "SUMMARY:" in rendered
+    assert (
+        "sessions=0 lockdown=0 pending_confirmations=0 tasks=0 enabled_tasks=0 "
+        "channels=0 connected_channels=0 alerts=0 audit_events=0"
+    ) in rendered
+    assert "SESSIONS:\n  no active sessions" in rendered
+    assert "PENDING CONFIRMATIONS:\n  no pending confirmations" in rendered
+    assert "TASKS:\n  no background tasks" in rendered
+    assert "CHANNEL HEALTH:\n  no configured channels" in rendered
+    assert "ALERTS:\n  no active alerts" in rendered
+    assert "AUDIT EVENTS:\n  no recent audit events" in rendered
+
+
+def test_u3_tui_plain_summary_counts_derive_from_structured_rows() -> None:
+    snapshot = TuiSnapshot(
+        sessions=[
+            {"id": "s1", "user_id": "u1", "lockdown_level": "normal"},
+            {"id": "s2", "user_id": "u2", "lockdown_level": "caution"},
+        ],
+        pending_actions=[
+            {"confirmation_id": "c1", "tool_name": "fs.write", "status": "pending"},
+            {"confirmation_id": "c2", "tool_name": "http.request", "status": "pending"},
+        ],
+        tasks=[
+            {"id": "t1", "enabled": True, "schedule_kind": "interval"},
+            {"id": "t2", "enabled": False, "schedule_kind": "manual"},
+        ],
+        channel_health=[
+            {"channel": "discord", "connected": True},
+            {"channel": "slack", "connected": False},
+        ],
+        alerts=[{"event_type": "AnomalyReported"}],
+        audit_events=[{"event_type": "SessionMessageReceived"}],
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert (
+        "sessions=2 lockdown=1 pending_confirmations=2 tasks=2 enabled_tasks=1 "
+        "channels=2 connected_channels=1 alerts=1 audit_events=1"
+    ) in rendered
+    assert "s2 user=u2 lockdown=caution" in rendered
+    assert "t2 enabled=False schedule=manual" in rendered
+    assert "slack enabled=False available=False connected=False" in rendered
+
+
 def test_web_snapshot_renderer_includes_key_sections() -> None:
     html = render_web_snapshot(
         {
@@ -211,12 +260,14 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
         def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             self.title = str(kwargs.get("title", ""))
             self.rows: list[tuple[str, ...]] = []
+            self.styles: list[str] = []
 
         def add_column(self, *_args: object, **_kwargs: object) -> None:
             return
 
-        def add_row(self, *row: str) -> None:
+        def add_row(self, *row: str, **kwargs: object) -> None:
             self.rows.append(tuple(row))
+            self.styles.append(str(kwargs.get("style", "")))
 
     modules = {
         "rich.console": SimpleNamespace(Console=_FakeConsole),
@@ -277,15 +328,34 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     assert len(created_consoles) == 1
     panel_tables = [panel[1] for panel in created_consoles[0].panels if isinstance(panel, tuple)]
     assert any(getattr(table, "title", "") == "Audit Events" for table in panel_tables)
+    sessions_table = next(
+        table for table in panel_tables if getattr(table, "title", "") == "Sessions"
+    )
     pending_table = next(
         table for table in panel_tables if getattr(table, "title", "") == "Pending Confirmations"
     )
+    tasks_table = next(table for table in panel_tables if getattr(table, "title", "") == "Tasks")
+    channels_table = next(
+        table for table in panel_tables if getattr(table, "title", "") == "Channel Health"
+    )
+    alerts_table = next(table for table in panel_tables if getattr(table, "title", "") == "Alerts")
+    summary_table = next(
+        table for table in panel_tables if getattr(table, "title", "") == "Summary"
+    )
+    summary_text = "\n".join(" ".join(row) for row in summary_table.rows)
+    assert "pending_confirmations 1" in summary_text
+    assert "connected_channels 1" in summary_text
     pending_text = "\n".join(" ".join(row) for row in pending_table.rows)
     assert "risk=high proof=T0_identity method=totp route=host_cli" in pending_text
     assert "approve: c c1 <totp-code>" in pending_text
     assert "approve: cannot carry" not in pending_text
     assert "Action: http_request" in pending_text
     assert "warnings=1: Contains tainted data" in pending_text
+    assert sessions_table.styles == ["green"]
+    assert pending_table.styles == ["yellow"]
+    assert tasks_table.styles == ["green"]
+    assert channels_table.styles == ["green"]
+    assert alerts_table.styles == ["red"]
 
 
 @pytest.mark.asyncio
