@@ -381,6 +381,30 @@ async def test_m3_acp_adapter_collects_summary_mode_cost_and_raw_updates(
 
 
 @pytest.mark.asyncio
+async def test_m3_acp_adapter_empty_config_surface_applies_only_model_override(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--omit-config-options"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            read_only=True,
+            model="opus",
+            reasoning_effort="xhigh",
+            max_turns=8,
+        ),
+    )
+
+    assert result.result.success is True
+    assert result.selected_mode == "plan"
+    assert "model=opus" in result.result.summary
+    assert result.applied_config == {"model": "opus"}
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_generic_transport_exception_summary_redacts_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

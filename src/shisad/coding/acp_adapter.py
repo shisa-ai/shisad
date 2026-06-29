@@ -1327,15 +1327,24 @@ class AcpAdapter(CodingAgentAdapter):
         request_step: Callable[[Awaitable[Any], str], Awaitable[Any]] | None = None,
     ) -> dict[str, str]:
         desired: dict[str, str] = {}
+        permissive_legacy_config = not available_config and self._spec.name != "claude"
         if config.model:
             desired["model"] = config.model
-        if config.reasoning_effort:
+        if (
+            ("reasoning_effort" in available_config or permissive_legacy_config)
+            and config.reasoning_effort
+        ):
             desired["reasoning_effort"] = config.reasoning_effort
-        if config.max_turns is not None:
+        if ("max_turns" in available_config or permissive_legacy_config) and (
+            config.max_turns is not None
+        ):
             desired["max_turns"] = str(config.max_turns)
-        if config.permission_mode:
+        if (
+            ("permission_mode" in available_config or permissive_legacy_config)
+            and config.permission_mode
+        ):
             desired["permission_mode"] = config.permission_mode
-        if "allowed_tools" in available_config or not available_config:
+        if "allowed_tools" in available_config or permissive_legacy_config:
             if config.allowed_tools:
                 desired["allowed_tools"] = ",".join(config.allowed_tools)
             elif config.read_only:

@@ -97,6 +97,7 @@ class FakeAcpAgent(Agent):
         exit_on_set_config_option: bool = False,
         exit_stderr: str = "",
         exit_code: int = 1,
+        omit_config_options: bool = False,
     ) -> None:
         self._agent_name = agent_name
         self._default_mode = default_mode
@@ -113,6 +114,7 @@ class FakeAcpAgent(Agent):
         self._exit_on_set_config_option = exit_on_set_config_option
         self._exit_stderr = exit_stderr
         self._exit_code = exit_code
+        self._omit_config_options = omit_config_options
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
 
@@ -200,7 +202,7 @@ class FakeAcpAgent(Agent):
                     SessionMode(id="read-only", name="Read Only"),
                 ],
             ),
-            config_options=self._config_options(config),
+            config_options=[] if self._omit_config_options else self._config_options(config),
         )
 
     async def load_session(
@@ -225,7 +227,7 @@ class FakeAcpAgent(Agent):
                     SessionMode(id="read-only", name="Read Only"),
                 ],
             ),
-            config_options=self._config_options(config),
+            config_options=[] if self._omit_config_options else self._config_options(config),
         )
 
     async def list_sessions(
@@ -492,6 +494,7 @@ async def _main() -> None:
     parser.add_argument("--child-sleep", type=float, default=60.0)
     parser.add_argument("--exit-on-set-session-mode", action="store_true")
     parser.add_argument("--exit-on-set-config-option", action="store_true")
+    parser.add_argument("--omit-config-options", action="store_true")
     args = parser.parse_args()
     _ = default_environment()
     if args.exit_before_initialize:
@@ -513,6 +516,7 @@ async def _main() -> None:
             exit_on_set_config_option=args.exit_on_set_config_option,
             exit_stderr=args.stderr,
             exit_code=args.exit_code,
+            omit_config_options=args.omit_config_options,
         )
     )
 
