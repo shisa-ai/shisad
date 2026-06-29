@@ -13,7 +13,7 @@ from typing import Any
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.plan_steps import normalize_plan_step_status
-from shisad.ui.confirmation import render_pending_action
+from shisad.ui.confirmation import approval_proof_placeholder, render_pending_action
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,8 @@ def _task_pending_approval_summaries(
             parts.append(f"route={route}")
         if has_action_metadata and (can_carry or can_collect_inline_totp):
             if requires_second_factor:
-                parts.append(f"approve_hint=c {confirmation_id} <totp-code>")
+                proof_placeholder = approval_proof_placeholder(method)
+                parts.append(f"approve_hint=c {confirmation_id} {proof_placeholder}")
             else:
                 parts.append(f"approve_hint=c {confirmation_id}")
         else:
@@ -860,7 +861,7 @@ async def run_interactive(socket_path: Path) -> None:
         snapshot = await fetch_snapshot(socket_path)
         print(render_plain(snapshot))
         print("")
-        print("[r]efresh  [c]onfirm <id> [totp-code]  [x] reject <id>  [q]uit")
+        print("[r]efresh  [c]onfirm <id> [proof-code]  [x] reject <id>  [q]uit")
         command = input("> ").strip()
         if not command:
             continue
@@ -871,13 +872,13 @@ async def run_interactive(socket_path: Path) -> None:
         if command.startswith("c "):
             parts = command.split()
             confirmation_id = parts[1].strip() if len(parts) > 1 else ""
-            totp_code = parts[2].strip() if len(parts) > 2 else ""
-            if totp_code:
+            proof_code = parts[2].strip() if len(parts) > 2 else ""
+            if proof_code:
                 await _decision(
                     socket_path,
                     "action.confirm",
                     confirmation_id,
-                    totp_code=totp_code,
+                    proof_code=proof_code,
                 )
             else:
                 await _decision(socket_path, "action.confirm", confirmation_id)
@@ -894,6 +895,7 @@ async def _decision(
     method: str,
     confirmation_id: str,
     *,
+    proof_code: str = "",
     totp_code: str = "",
 ) -> None:
     if not confirmation_id:
@@ -950,11 +952,23 @@ async def _decision(
             payload["decision_nonce"] = decision_nonce
             if method in {"action.confirm", "action.reject"} and channel_principal_id:
                 payload["principal_id"] = channel_principal_id
-            if method == "action.confirm" and totp_code.strip():
-                payload["approval_method"] = "totp"
-                payload["proof"] = {"totp_code": totp_code.strip()}
-            elif method == "action.confirm" and selected_backend_method == "totp":
-                print("totp_code required for this confirmation")
+            supplied_proof = proof_code.strip() or totp_code.strip()
+            if method == "action.confirm" and supplied_proof:
+                if selected_backend_method == "recovery_code":
+                    payload["approval_method"] = "recovery_code"
+                    payload["proof"] = {"recovery_code": supplied_proof}
+                elif selected_backend_method in {"", "totp"}:
+                    payload["approval_method"] = "totp"
+                    payload["proof"] = {"totp_code": supplied_proof}
+                else:
+                    print(f"{selected_backend_method} cannot use a typed proof code here")
+                    return
+            elif method == "action.confirm" and selected_backend_method in {
+                "totp",
+                "recovery_code",
+            }:
+                required_label = approval_proof_placeholder(selected_backend_method).strip("<>")
+                print(f"{required_label} required for this confirmation")
                 return
         result = await client.call(
             method,

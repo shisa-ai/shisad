@@ -22,6 +22,7 @@ from shisad.scheduler.schema import (
 )
 
 _MAX_RESOLVED_CONFIRMATIONS_PER_TASK = 32
+_MAX_CRON_LOOKAHEAD_DAYS = 5 * 366
 
 
 class SchedulerManager:
@@ -414,18 +415,63 @@ class SchedulerManager:
         start = now.replace(second=0, microsecond=0)
         if now.second or now.microsecond:
             start += timedelta(minutes=1)
+        fields = expression.split()
+        if len(fields) != 5:
+            raise ValueError("cron schedule requires exactly 5 fields")
+        minute_field, hour_field, day_field, month_field, weekday_field = fields
+        allowed_minutes = self._cron_allowed_values(minute_field, minimum=0, maximum=59)
+        allowed_hours = self._cron_allowed_values(hour_field, minimum=0, maximum=23)
         last_minute = (
             last_triggered_at.replace(second=0, microsecond=0)
             if last_triggered_at is not None
             else None
         )
-        for minute_offset in range(0, 366 * 24 * 60):
-            candidate = start + timedelta(minutes=minute_offset)
-            if candidate == last_minute:
+        for day_offset in range(0, _MAX_CRON_LOOKAHEAD_DAYS + 1):
+            day = start + timedelta(days=day_offset)
+            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+            weekday = (day_start.weekday() + 1) % 7
+            if not self._cron_field_matches(
+                month_field,
+                value=day_start.month,
+                minimum=1,
+                maximum=12,
+            ):
                 continue
-            if self._cron_matches(expression, candidate):
-                return candidate
+            if not self._cron_field_matches(
+                day_field,
+                value=day_start.day,
+                minimum=1,
+                maximum=31,
+            ):
+                continue
+            if not self._cron_field_matches(
+                weekday_field,
+                value=weekday,
+                minimum=0,
+                maximum=7,
+            ):
+                continue
+            for hour in allowed_hours:
+                for minute in allowed_minutes:
+                    candidate = day_start.replace(hour=hour, minute=minute)
+                    if candidate < start or candidate == last_minute:
+                        continue
+                    return candidate
         return None
+
+    @staticmethod
+    def _cron_allowed_values(field: str, *, minimum: int, maximum: int) -> list[int]:
+        SchedulerManager._validate_cron_field(field, minimum=minimum, maximum=maximum)
+        return [
+            value
+            for value in range(minimum, maximum + 1)
+            if SchedulerManager._cron_field_matches(
+                field,
+                value=value,
+                minimum=minimum,
+                maximum=maximum,
+            )
+        ]
 
     def _prune_confirmation_rows(self, task_id: str) -> None:
         rows = list(self._pending_confirmations.get(task_id, []))

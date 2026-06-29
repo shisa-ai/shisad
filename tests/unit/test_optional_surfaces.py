@@ -143,6 +143,40 @@ def test_t2_task_approval_hint_respects_surface_carry_gate() -> None:
     assert "reject_hint=x c-browser" in rendered
 
 
+def test_t2_task_approval_hint_labels_recovery_code_truthfully() -> None:
+    snapshot = TuiSnapshot(
+        pending_actions=[
+            {
+                "confirmation_id": "c-recovery",
+                "tool_name": "message.send",
+                "status": "pending",
+                "required_proof_tier": "T1_stepup",
+                "selected_backend_method": "recovery_code",
+                "channel_capability": {
+                    "approval_route": "host_cli",
+                    "can_carry": True,
+                    "can_collect_selected_method": True,
+                    "requires_second_factor": True,
+                },
+            }
+        ],
+        tasks=[
+            {
+                "id": "task-recovery",
+                "status": "enabled",
+                "schedule_kind": "event",
+                "pending_confirmations": [{"confirmation_id": "c-recovery"}],
+                "pending_confirmation_count": 1,
+            }
+        ],
+    )
+
+    rendered = render_plain(snapshot)
+
+    assert "approve_hint=c c-recovery <recovery-code>" in rendered
+    assert "<totp-code>" not in rendered
+
+
 def test_t1_tui_plain_renderer_uses_structured_plan_step_rows() -> None:
     snapshot = TuiSnapshot(
         plan_steps=[
@@ -944,6 +978,70 @@ async def test_tui_decision_confirm_can_send_totp_proof(
             "principal_id": "alice",
             "approval_method": "totp",
             "proof": {"totp_code": "123456"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_tui_decision_confirm_can_send_recovery_code_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-1",
+                            "decision_nonce": "nonce-1",
+                            "selected_backend_method": "recovery_code",
+                            "allowed_channel_principals": ["alice"],
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": True, "method": method, "payload": payload}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-1",
+        proof_code="ABCD-EFGH",
+    )
+    assert created[0].calls[-1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "conf-1",
+            "decision_nonce": "nonce-1",
+            "principal_id": "alice",
+            "approval_method": "recovery_code",
+            "proof": {"recovery_code": "ABCD-EFGH"},
         },
     )
 

@@ -153,6 +153,15 @@ def _preview_excerpt(value: Any, *, max_len: int = 320, max_lines: int = 8) -> s
     return f"{excerpt[:max_len]}..."
 
 
+def approval_proof_placeholder(selected_method: str) -> str:
+    method = selected_method.strip().lower()
+    if method == "recovery_code":
+        return "<recovery-code>"
+    if method == "totp":
+        return "<totp-code>"
+    return "<proof-code>"
+
+
 def render_pending_action(action: Mapping[str, Any]) -> str:
     """Render a compact pending-action row from structured daemon state."""
     confirmation_id = str(action.get("confirmation_id", "")).strip()
@@ -178,7 +187,8 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
     ]
     if can_carry or can_collect_inline_totp:
         if requires_second_factor:
-            lines.append(f"approve: c {confirmation_id} <totp-code>")
+            proof_placeholder = approval_proof_placeholder(selected_method)
+            lines.append(f"approve: c {confirmation_id} {proof_placeholder}")
         else:
             lines.append(f"approve: c {confirmation_id}")
     else:

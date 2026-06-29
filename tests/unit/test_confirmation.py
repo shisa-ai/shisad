@@ -338,6 +338,28 @@ def test_pending_action_renderer_basic_terminal_totp_fallback_is_plain_text() ->
     assert "warnings=1: Contains tainted data" in rendered
 
 
+def test_t2_pending_action_renderer_labels_recovery_code_truthfully() -> None:
+    rendered = render_pending_action(
+        {
+            "confirmation_id": "c1",
+            "tool_name": "web.fetch",
+            "status": "pending",
+            "risk_level": "high",
+            "required_proof_tier": "T1_stepup",
+            "selected_backend_method": "recovery_code",
+            "channel_capability": {
+                "approval_route": "host_cli",
+                "can_carry": True,
+                "can_collect_selected_method": True,
+                "requires_second_factor": True,
+            },
+        }
+    )
+
+    assert "approve: c c1 <recovery-code>" in rendered
+    assert "<totp-code>" not in rendered
+
+
 def test_m6_t4_confirmation_analytics_detects_rubber_stamping() -> None:
     analytics = ConfirmationAnalytics()
     base = datetime.now(UTC) - timedelta(minutes=10)
