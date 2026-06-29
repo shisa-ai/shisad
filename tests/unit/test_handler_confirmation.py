@@ -715,9 +715,16 @@ def test_a1_public_pending_payload_exposes_shared_approval_contract(
     assert capability["required_proof_tier"] == "T0_identity"
     assert capability["required_level"] == ConfirmationLevel.SOFTWARE.value
     assert capability["selected_method"] == "totp"
+    assert capability["selected_method_proof_tier"] == "T1_stepup"
     assert capability["can_reject"] is True
-    assert capability["can_carry"] is True
-    assert capability["cannot_carry_reason"] == ""
+    assert capability["can_collect_selected_method"] is True
+    assert capability["can_carry"] is False
+    assert capability["can_carry_required_proof_tier"] is False
+    assert capability["can_carry_t0_identity"] is False
+    assert capability["can_carry_t1_stepup"] is True
+    assert capability["requires_second_factor"] is True
+    assert capability["requires_proof_input"] is True
+    assert capability["cannot_carry_reason"] == "selected_method_requires_T1_stepup"
 
 
 def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(
@@ -782,8 +789,11 @@ def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(
     assert capability["origin_channel"] == "discord"
     assert capability["required_level"] == ConfirmationLevel.SIGNED_AUTHORIZATION.value
     assert capability["selected_method"] == "kms"
+    assert capability["selected_method_proof_tier"] == "method_specific"
     assert capability["approval_route"] == "external_signer"
     assert capability["can_carry"] is False
+    assert capability["can_collect_selected_method"] is False
+    assert capability["can_carry_required_proof_tier"] is False
     assert capability["cannot_carry_reason"] == "method_specific_approval_requires_kms"
 
 

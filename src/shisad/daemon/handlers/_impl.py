@@ -1328,13 +1328,27 @@ def _approval_route_for_method(method: str, *, origin_channel: str) -> str:
     return "unknown"
 
 
+def _selected_method_proof_tier(method: str) -> str:
+    if method == "software":
+        return "T0_identity"
+    if method in {"totp", "recovery_code"}:
+        return "T1_stepup"
+    if method:
+        return "method_specific"
+    return ""
+
+
 def _cannot_carry_reason(
     *,
     proof_tier: str,
     selected_method: str,
+    selected_method_proof_tier: str,
     approval_route: str,
+    can_collect_selected_method: bool,
 ) -> str:
     if approval_route in {"channel_native", "host_cli"}:
+        if can_collect_selected_method and selected_method_proof_tier != proof_tier:
+            return f"selected_method_requires_{selected_method_proof_tier}"
         return ""
     if proof_tier == "method_specific" and selected_method:
         return f"method_specific_approval_requires_{selected_method}"
@@ -1350,17 +1364,34 @@ def _pending_channel_capability_payload(
     required_proof_tier: str,
 ) -> dict[str, Any]:
     selected_method = str(getattr(pending, "selected_backend_method", "")).strip().lower()
+    selected_method_proof_tier = _selected_method_proof_tier(selected_method)
     required_level = getattr(pending, "required_level", "")
     required_level_value = str(getattr(required_level, "value", required_level)).strip()
     approval_route = _approval_route_for_method(selected_method, origin_channel=origin_channel)
-    can_carry = approval_route in {"channel_native", "host_cli"}
+    can_collect_selected_method = approval_route in {"channel_native", "host_cli"}
+    can_carry_t0_identity = (
+        can_collect_selected_method and selected_method_proof_tier == "T0_identity"
+    )
+    can_carry_t1_stepup = (
+        can_collect_selected_method and selected_method_proof_tier == "T1_stepup"
+    )
+    can_carry_method_specific = (
+        can_collect_selected_method and selected_method_proof_tier == "method_specific"
+    )
+    can_carry_required_proof_tier = {
+        "T0_identity": can_carry_t0_identity,
+        "T1_stepup": can_carry_t1_stepup,
+        "method_specific": can_carry_method_specific,
+    }.get(required_proof_tier, False)
     cannot_carry_reason = (
         ""
-        if can_carry
+        if can_carry_required_proof_tier
         else _cannot_carry_reason(
             proof_tier=required_proof_tier,
             selected_method=selected_method,
+            selected_method_proof_tier=selected_method_proof_tier,
             approval_route=approval_route,
+            can_collect_selected_method=can_collect_selected_method,
         )
     )
     return {
@@ -1368,15 +1399,20 @@ def _pending_channel_capability_payload(
         "approval_route": approval_route,
         "selected_backend_id": str(getattr(pending, "selected_backend_id", "")).strip(),
         "selected_method": selected_method,
+        "selected_method_proof_tier": selected_method_proof_tier,
         "required_proof_tier": required_proof_tier,
         "required_level": required_level_value,
         "required_methods": list(getattr(pending, "required_methods", ())),
         "can_approve": bool(selected_method),
         "can_reject": str(getattr(pending, "status", "pending")).strip() == "pending",
-        "can_carry": can_carry,
-        "can_carry_t0_identity": required_proof_tier == "T0_identity" and can_carry,
-        "can_carry_t1_stepup": required_proof_tier == "T1_stepup" and can_carry,
-        "can_carry_method_specific": required_proof_tier == "method_specific" and can_carry,
+        "can_collect_selected_method": can_collect_selected_method,
+        "can_carry": can_carry_required_proof_tier,
+        "can_carry_required_proof_tier": can_carry_required_proof_tier,
+        "can_carry_t0_identity": can_carry_t0_identity,
+        "can_carry_t1_stepup": can_carry_t1_stepup,
+        "can_carry_method_specific": can_carry_method_specific,
+        "requires_second_factor": selected_method_proof_tier == "T1_stepup",
+        "requires_proof_input": selected_method != "software",
         "cannot_carry_reason": cannot_carry_reason,
     }
 
