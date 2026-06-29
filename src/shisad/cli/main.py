@@ -2031,20 +2031,6 @@ def _pending_action_row(
     return None
 
 
-def _resolve_pending_decision_nonce(
-    *,
-    config: DaemonConfig,
-    confirmation_id: str,
-) -> str:
-    pending = _pending_action_row(
-        config=config,
-        confirmation_id=confirmation_id,
-        status="pending",
-        include_ui=False,
-    )
-    return (pending.decision_nonce or "").strip() if pending is not None else ""
-
-
 def _single_allowed_channel_principal(row: ActionPendingEntry | None) -> str:
     if row is None:
         return ""
@@ -2417,25 +2403,32 @@ def action_confirm(
 def action_reject(confirmation_id: str, nonce: str, reason: str) -> None:
     """Reject one pending confirmation."""
     config = _get_config()
+    pending_row = _pending_action_row(
+        config=config,
+        confirmation_id=confirmation_id,
+        status="pending",
+        include_ui=False,
+    )
     decision_nonce = nonce.strip()
     if not decision_nonce:
-        decision_nonce = _resolve_pending_decision_nonce(
-            config=config,
-            confirmation_id=confirmation_id,
-        )
+        decision_nonce = (pending_row.decision_nonce or "").strip() if pending_row else ""
     if not decision_nonce:
         raise click.ClickException(
             "Decision nonce not found for confirmation_id; run 'shisad action list' and retry "
             "with --nonce."
         )
+    payload: dict[str, object] = {
+        "confirmation_id": confirmation_id,
+        "decision_nonce": decision_nonce,
+        "reason": reason,
+    }
+    channel_principal = _single_allowed_channel_principal(pending_row)
+    if channel_principal:
+        payload["principal_id"] = channel_principal
     result = rpc_call(
         config,
         "action.reject",
-        {
-            "confirmation_id": confirmation_id,
-            "decision_nonce": decision_nonce,
-            "reason": reason,
-        },
+        payload,
         response_model=ActionRejectResult,
     )
     click.echo(_dump_model(result))

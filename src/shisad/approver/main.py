@@ -26,6 +26,16 @@ def _b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def _single_allowed_channel_principal(row: Mapping[str, Any]) -> str:
+    raw_principals = row.get("allowed_channel_principals")
+    if not isinstance(raw_principals, list):
+        return ""
+    principals = [
+        str(value).strip() for value in raw_principals if str(value).strip()
+    ]
+    return principals[0] if len(principals) == 1 else ""
+
+
 class ApproverDevice(Protocol):
     def register_credential(
         self,
@@ -278,14 +288,18 @@ class ApproverService:
                     public_key_options=public_key,
                     origin=origin,
                 )
+                confirm_payload: dict[str, Any] = {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": decision_nonce,
+                    "approval_method": "local_fido2",
+                    "proof": proof,
+                }
+                channel_principal = _single_allowed_channel_principal(row)
+                if channel_principal:
+                    confirm_payload["principal_id"] = channel_principal
                 result = await self._call(
                     "action.confirm",
-                    {
-                        "confirmation_id": confirmation_id,
-                        "decision_nonce": decision_nonce,
-                        "approval_method": "local_fido2",
-                        "proof": proof,
-                    },
+                    confirm_payload,
                 )
                 if not bool(result.get("confirmed")):
                     raise RuntimeError(
@@ -293,13 +307,17 @@ class ApproverService:
                     )
                 approved += 1
             else:
+                reject_payload: dict[str, Any] = {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": decision_nonce,
+                    "reason": "local_helper_reject",
+                }
+                channel_principal = _single_allowed_channel_principal(row)
+                if channel_principal:
+                    reject_payload["principal_id"] = channel_principal
                 result = await self._call(
                     "action.reject",
-                    {
-                        "confirmation_id": confirmation_id,
-                        "decision_nonce": decision_nonce,
-                        "reason": "local_helper_reject",
-                    },
+                    reject_payload,
                 )
                 if not bool(result.get("rejected")):
                     raise RuntimeError(

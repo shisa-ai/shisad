@@ -171,6 +171,7 @@ def test_approver_service_process_pending_once_confirms_local_fido2_action() -> 
                             "selected_backend_method": "local_fido2",
                             "helper_origin": "https://deadbeef.approver.shisad.invalid",
                             "helper_public_key": {"challenge": "xyz"},
+                            "allowed_channel_principals": ["alice"],
                         }
                     ]
                 }
@@ -199,6 +200,7 @@ def test_approver_service_process_pending_once_confirms_local_fido2_action() -> 
                 "decision_nonce": "nonce-1",
                 "approval_method": "local_fido2",
                 "proof": {"id": "assertion-1"},
+                "principal_id": "alice",
             },
         ),
     ]
@@ -251,6 +253,7 @@ def test_approver_service_process_pending_once_rejects_when_prompt_declines() ->
                             "confirmation_id": "c-1",
                             "decision_nonce": "nonce-1",
                             "selected_backend_method": "local_fido2",
+                            "allowed_channel_principals": ["alice"],
                         }
                     ]
                 }
@@ -276,6 +279,7 @@ def test_approver_service_process_pending_once_rejects_when_prompt_declines() ->
                 "confirmation_id": "c-1",
                 "decision_nonce": "nonce-1",
                 "reason": "local_helper_reject",
+                "principal_id": "alice",
             },
         ),
     ]
