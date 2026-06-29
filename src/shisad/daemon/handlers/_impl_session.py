@@ -10753,6 +10753,14 @@ class SessionImplMixin(HandlerMixinBase):
                 summary=f"action.resolve rejected: {target_error}",
             )
 
+        effective_delivery_target = getattr(validated, "delivery_target", None)
+        if effective_delivery_target is None and bool(
+            getattr(validated, "is_internal_ingress", False)
+        ):
+            effective_delivery_target = _stored_delivery_target_from_session(
+                getattr(validated, "session", None)
+            )
+
         executed = 0
         rejected = 0
         rejection_reasons: list[str] = []
@@ -10794,7 +10802,7 @@ class SessionImplMixin(HandlerMixinBase):
             if decision == "confirm":
                 if (
                     bool(getattr(validated, "is_internal_ingress", False))
-                    and getattr(validated, "delivery_target", None) is not None
+                    and effective_delivery_target is not None
                 ):
                     principal_id = str(getattr(validated, "user_id", "")).strip()
                     if principal_id:
@@ -10850,7 +10858,7 @@ class SessionImplMixin(HandlerMixinBase):
                 allowed_channel_principals = list(pending.allowed_channel_principals)
                 if (
                     bool(getattr(validated, "is_internal_ingress", False))
-                    and getattr(validated, "delivery_target", None) is not None
+                    and effective_delivery_target is not None
                     and allowed_channel_principals
                 ):
                     principal_id = str(getattr(validated, "user_id", "")).strip()
