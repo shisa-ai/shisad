@@ -568,6 +568,99 @@ async def test_t2_tui_fetch_snapshot_enriches_visible_task_confirmation_metadata
     ) in created[0].calls
 
 
+@pytest.mark.asyncio
+async def test_t2_tui_fetch_snapshot_bounds_task_confirmation_metadata_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    confirmation_ids = [f"c-task-{index}" for index in range(25)]
+
+    class _FakeClient:
+        def __init__(self, socket_path: Path) -> None:
+            self.socket_path = socket_path
+            self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(
+            self, method: str, params: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            if method == "session.list":
+                return {"sessions": [{"id": "s1", "user_id": "u1", "workspace_id": "ws1"}]}
+            if method == "action.pending":
+                confirmation_id = str((params or {}).get("confirmation_id", "")).strip()
+                if confirmation_id:
+                    return {
+                        "actions": [
+                            {
+                                "confirmation_id": confirmation_id,
+                                "status": "pending",
+                                "required_proof_tier": "T0_identity",
+                                "selected_backend_method": "software",
+                                "channel_capability": {
+                                    "approval_route": "host_cli",
+                                    "can_carry": True,
+                                    "can_reject": True,
+                                },
+                            }
+                        ],
+                        "count": 1,
+                    }
+                return {"actions": [], "count": 25}
+            if method == "plan.steps":
+                return {"steps": []}
+            if method == "task.status_snapshot":
+                return {
+                    "tasks": [
+                        {
+                            "task_id": "task-visible",
+                            "status": "enabled",
+                            "schedule_kind": "event",
+                            "pending_confirmations": [
+                                {"confirmation_id": confirmation_id, "task_id": "task-visible"}
+                                for confirmation_id in confirmation_ids
+                            ],
+                            "pending_confirmation_count": len(confirmation_ids),
+                        }
+                    ],
+                    "count": 1,
+                }
+            if method == "daemon.status":
+                return {"channels": {}}
+            if method == "dashboard.alerts":
+                return {"alerts": []}
+            if method == "dashboard.audit_explorer":
+                return {"events": []}
+            raise AssertionError(f"unexpected TUI call: {method}")
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("shisad.ui.tui.ControlClient", _factory)
+    from shisad.ui.tui import fetch_snapshot
+
+    snapshot = await fetch_snapshot(Path("/tmp/control.sock"))
+    rendered = render_plain(snapshot)
+    exact_calls = [
+        params
+        for method, params in created[0].calls
+        if method == "action.pending" and params and params.get("confirmation_id")
+    ]
+
+    assert len(exact_calls) == 20
+    assert "pending_count=25 rendered=20" in rendered
+    assert "confirmation=c-task-0 proof=T0_identity method=software" in rendered
+    assert "confirmation=c-task-24" not in rendered
+
+
 def test_tui_render_rich_fallbacks_to_plain_without_rich(monkeypatch: pytest.MonkeyPatch) -> None:
     from shisad.ui import tui as tui_module
 

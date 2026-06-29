@@ -17,6 +17,9 @@ from shisad.ui.confirmation import approval_proof_placeholder, render_pending_ac
 
 logger = logging.getLogger(__name__)
 
+_MAX_TASK_PENDING_ACTION_ENRICHMENTS = 20
+_MAX_TASK_PENDING_CONFIRMATION_ROWS = 20
+
 
 @dataclass(slots=True)
 class TuiSnapshot:
@@ -119,7 +122,7 @@ def _safe_task_pending_rows(raw_pending: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_pending, list):
         return []
     rows: list[dict[str, Any]] = []
-    for raw in raw_pending:
+    for raw in raw_pending[:_MAX_TASK_PENDING_CONFIRMATION_ROWS]:
         if not isinstance(raw, Mapping):
             continue
         rows.append(
@@ -178,26 +181,37 @@ def _pending_actions_by_confirmation_id(
     }
 
 
-def _task_pending_confirmation_ids(raw_tasks: list[Any]) -> set[str]:
-    confirmation_ids: set[str] = set()
+def _task_pending_confirmation_enrichment_plan(
+    raw_tasks: list[Any],
+    pending_by_id: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[str], set[str]]:
+    fetch_ids: list[str] = []
+    limited_ids: set[str] = set()
+    seen = set(pending_by_id)
     for raw in raw_tasks:
         if not isinstance(raw, Mapping):
             continue
         pending = raw.get("pending_confirmations", [])
         if not isinstance(pending, list):
             continue
-        for item in pending:
+        for item in pending[:_MAX_TASK_PENDING_CONFIRMATION_ROWS]:
             if not isinstance(item, Mapping):
                 continue
             confirmation_id = str(item.get("confirmation_id", "")).strip()
-            if confirmation_id:
-                confirmation_ids.add(confirmation_id)
-    return confirmation_ids
+            if not confirmation_id or confirmation_id in seen:
+                continue
+            seen.add(confirmation_id)
+            if len(fetch_ids) < _MAX_TASK_PENDING_ACTION_ENRICHMENTS:
+                fetch_ids.append(confirmation_id)
+            else:
+                limited_ids.add(confirmation_id)
+    return fetch_ids, limited_ids
 
 
 def _enrich_task_rows_with_pending_actions(
     task_rows: list[dict[str, Any]],
     pending_by_id: Mapping[str, Mapping[str, Any]],
+    limited_ids: set[str],
 ) -> None:
     for task in task_rows:
         pending = task.get("pending_confirmations", [])
@@ -210,6 +224,8 @@ def _enrich_task_rows_with_pending_actions(
             action = pending_by_id.get(confirmation_id)
             if action:
                 item["pending_action"] = dict(action)
+            elif confirmation_id in limited_ids:
+                item["metadata_limited"] = True
 
 
 def _task_pending_approval_summaries(
@@ -275,21 +291,27 @@ def _task_pending_approval_summaries(
                 str(capability.get("cannot_carry_reason", "")).strip()
                 if isinstance(capability, Mapping)
                 else ""
-            ) or (
-                "surface_cannot_carry"
-                if has_action_metadata
-                else "confirmation_metadata_unavailable"
             )
+            if not reason and has_action_metadata:
+                reason = "surface_cannot_carry"
+            if not reason:
+                reason = (
+                    "metadata_enrichment_limit_reached"
+                    if bool(item.get("metadata_limited", False))
+                    else "confirmation_metadata_unavailable"
+                )
             parts.append(f"approve_unavailable={reason}")
         if can_reject:
             parts.append(f"reject_hint=x {confirmation_id}")
         summaries.append(" ".join(parts))
-    if summaries:
-        return summaries
     try:
         pending_count = int(row.get("pending_confirmation_count", 0) or 0)
     except (TypeError, ValueError):
         pending_count = 0
+    if summaries:
+        if pending_count > len(pending):
+            summaries.append(f"pending_count={pending_count} rendered={len(pending)}")
+        return summaries
     if pending_count > 0:
         return [f"pending_count={pending_count}"]
     return []
@@ -443,10 +465,10 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         else:
             tasks_result = {"tasks": []}
         raw_task_rows = [item for item in tasks_result.get("tasks", [])]
-        missing_task_confirmation_ids = (
-            _task_pending_confirmation_ids(raw_task_rows) - set(pending_by_id)
+        missing_task_confirmation_ids, limited_task_confirmation_ids = (
+            _task_pending_confirmation_enrichment_plan(raw_task_rows, pending_by_id)
         )
-        for confirmation_id in sorted(missing_task_confirmation_ids):
+        for confirmation_id in missing_task_confirmation_ids:
             exact_pending = await _safe_call(
                 "action.pending",
                 {
@@ -464,7 +486,11 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
                 if action_id:
                     pending_by_id[action_id] = action
         task_rows = _safe_task_rows(raw_task_rows)
-        _enrich_task_rows_with_pending_actions(task_rows, pending_by_id)
+        _enrich_task_rows_with_pending_actions(
+            task_rows,
+            pending_by_id,
+            limited_task_confirmation_ids,
+        )
         status_result = await _safe_call("daemon.status", default={"channels": {}})
         alerts_result = await _safe_call("dashboard.alerts", {"limit": 20}, default={"alerts": []})
         audit_result = await _safe_call(
