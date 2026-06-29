@@ -52,6 +52,7 @@ from shisad.daemon.handlers._mixin_typing import (
 )
 from shisad.daemon.handlers._pending_approval import (
     build_policy_context_for_pending_action,
+    pending_action_is_live_pending,
     pep_arguments_for_policy_evaluation,
 )
 from shisad.security.control_plane.schema import RiskTier, build_action
@@ -700,6 +701,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 continue
             if str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn":
                 continue
+            if not pending_action_is_live_pending(pending):
+                continue
             if not self._selected_backend_available_for_pending(pending):
                 continue
             approval_url = approval_web.issue_approval_link(str(pending.confirmation_id))
@@ -1126,7 +1129,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 getattr(self, "_approval_web", None) is not None
                 and self._approval_web.enabled
                 and str(getattr(item, "selected_backend_method", "")).strip() == "webauthn"
-                and str(getattr(item, "status", "")).strip() == "pending"
+                and pending_action_is_live_pending(item)
                 and selected_backend_available
             ):
                 approval_url = self._approval_web.issue_approval_link(
@@ -1137,7 +1140,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     payload["approval_qr_ascii"] = self._approval_web.qr_ascii(approval_url)
             elif (
                 str(getattr(item, "selected_backend_method", "")).strip() == "local_fido2"
-                and str(getattr(item, "status", "")).strip() == "pending"
+                and pending_action_is_live_pending(item)
             ):
                 helper_context = self._local_fido2_approval_context(item)
                 if helper_context.get("ok") is True:

@@ -253,6 +253,39 @@ class _DeliveryRecorder:
         return SimpleNamespace(attempted=True, sent=True, reason="sent", target=target)
 
 
+class _AvailableWebAuthnRouteBackend:
+    backend_id = "webauthn.default"
+    method = "webauthn"
+    level = ConfirmationLevel.BOUND_APPROVAL
+    capabilities = ConfirmationCapabilities(
+        principal_binding=True,
+        approval_binding=True,
+    )
+    third_party_verifiable = False
+
+    def is_available_for(self, *, user_id: str) -> bool:
+        _ = user_id
+        return True
+
+    def principals_for_user(self, *, user_id: str) -> set[str]:
+        _ = user_id
+        return {"ops-laptop"}
+
+    def credentials_for_user(self, *, user_id: str) -> set[str]:
+        _ = user_id
+        return {"webauthn-1"}
+
+    def verify(
+        self,
+        *,
+        pending_action: object,
+        params: dict[str, object],
+        now: datetime | None = None,
+    ) -> ConfirmationEvidence:
+        _ = pending_action, params, now
+        raise AssertionError("route advertisement tests must not verify WebAuthn")
+
+
 class _ConfirmationImplHarness(ConfirmationImplMixin):
     def __init__(
         self,
@@ -870,6 +903,57 @@ async def test_a1_webauthn_ceremony_context_fails_closed_when_backend_unavailabl
     assert result["ok"] is False
     assert result["status"] == "unavailable"
     assert result["reason"] == "confirmation_backend_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_a1_action_pending_suppresses_webauthn_link_when_expired(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    approval_web = _ApprovalWebRecorder()
+    harness._approval_web = approval_web
+    harness._confirmation_backend_registry.register(_AvailableWebAuthnRouteBackend())
+    pending = _webauthn_pending_action(nonce="expected")
+    pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_pending({"confirmation_id": pending.confirmation_id})
+
+    assert result["count"] == 1
+    action = result["actions"][0]
+    entry = ActionPendingEntry.model_validate(action)
+    capability = entry.channel_capability
+    assert capability["backend_available"] is True
+    assert capability["can_approve"] is False
+    assert capability["can_collect_selected_method"] is False
+    assert capability["can_carry"] is False
+    assert capability["cannot_carry_reason"] == "approval_expired"
+    assert "approval_url" not in action
+    assert "approval_qr_ascii" not in action
+    assert approval_web.issued == []
+
+
+@pytest.mark.asyncio
+async def test_a1_chat_notifications_skip_webauthn_link_when_expired(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    approval_web = _ApprovalWebRecorder()
+    delivery = _DeliveryRecorder()
+    harness._approval_web = approval_web
+    harness._delivery = delivery
+    harness._confirmation_backend_registry.register(_AvailableWebAuthnRouteBackend())
+    pending = _webauthn_pending_action(nonce="expected")
+    pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    await harness._send_chat_approval_link_notifications(
+        confirmation_ids=[pending.confirmation_id],
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+    )
+
+    assert approval_web.issued == []
+    assert delivery.messages == []
 
 
 def test_a1_public_pending_payload_marks_stronger_method_uncarryable_on_discord(

@@ -110,6 +110,8 @@ from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_con
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
+    pending_action_is_expired,
+    pending_action_is_live_pending,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
     pending_pep_elevation_from_payload,
@@ -1369,6 +1371,8 @@ def _pending_channel_capability_payload(
     required_level = getattr(pending, "required_level", "")
     required_level_value = str(getattr(required_level, "value", required_level)).strip()
     is_pending = str(getattr(pending, "status", "pending")).strip() == "pending"
+    is_expired = pending_action_is_expired(pending)
+    is_live_pending = pending_action_is_live_pending(pending)
     backend_available = True if selected_backend_available is None else bool(
         selected_backend_available
     )
@@ -1378,7 +1382,7 @@ def _pending_channel_capability_payload(
         else "unavailable"
     )
     can_collect_selected_method = (
-        is_pending and backend_available and approval_route in {"channel_native", "host_cli"}
+        is_live_pending and backend_available and approval_route in {"channel_native", "host_cli"}
     )
     can_carry_t0_identity = (
         can_collect_selected_method and selected_method_proof_tier == "T0_identity"
@@ -1398,6 +1402,8 @@ def _pending_channel_capability_payload(
         cannot_carry_reason = ""
     elif not is_pending:
         cannot_carry_reason = "approval_not_pending"
+    elif is_expired:
+        cannot_carry_reason = "approval_expired"
     elif not backend_available:
         cannot_carry_reason = "confirmation_backend_unavailable"
     else:
@@ -1423,7 +1429,7 @@ def _pending_channel_capability_payload(
         "required_proof_tier": required_proof_tier,
         "required_level": required_level_value,
         "required_methods": list(getattr(pending, "required_methods", ())),
-        "can_approve": bool(selected_method) and backend_available and is_pending,
+        "can_approve": bool(selected_method) and backend_available and is_live_pending,
         "can_reject": is_pending,
         "can_collect_selected_method": can_collect_selected_method,
         "can_carry": can_carry_required_proof_tier,

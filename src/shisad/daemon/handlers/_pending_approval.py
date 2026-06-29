@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,23 @@ class PendingPepElevationRequest:
     kind: str = "capability_grant"
     reason_code: str = ""
     capability_grants: set[Capability] = field(default_factory=set)
+
+
+def pending_action_is_expired(pending: Any, *, now: datetime | None = None) -> bool:
+    expires_at = getattr(pending, "expires_at", None)
+    if not isinstance(expires_at, datetime):
+        return False
+    current = now or datetime.now(expires_at.tzinfo or UTC)
+    if expires_at.tzinfo is None and current.tzinfo is not None:
+        current = current.replace(tzinfo=None)
+    return expires_at <= current
+
+
+def pending_action_is_live_pending(pending: Any, *, now: datetime | None = None) -> bool:
+    return (
+        str(getattr(pending, "status", "pending")).strip() == "pending"
+        and not pending_action_is_expired(pending, now=now)
+    )
 
 
 def pep_arguments_for_policy_evaluation(
