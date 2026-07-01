@@ -25,10 +25,7 @@ def normalize_plan_step_status(value: object) -> str:
 
 def _safe_display_text(value: object, *, fallback: str = "", limit: int = 120) -> str:
     text = str(value or "").strip()
-    cleaned = "".join(
-        char if ord(char) >= 32 and ord(char) != 127 else " "
-        for char in text
-    )
+    cleaned = "".join(char if ord(char) >= 32 and ord(char) != 127 else " " for char in text)
     normalized = " ".join(cleaned.split())
     if not normalized:
         normalized = fallback

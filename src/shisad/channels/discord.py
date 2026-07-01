@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.discord_components import (
+    DiscordApprovalInteraction,
+    discord_approval_custom_id,
+    parse_discord_approval_custom_id,
+)
 from shisad.channels.discord_policy import (
     DiscordChannelPolicy,
     DiscordChannelPolicyDecision,
@@ -30,10 +35,7 @@ discord: Any | None = _discord
 
 logger = logging.getLogger(__name__)
 
-_DISCORD_APPROVAL_CUSTOM_ID_PREFIX = "shisad:approval:v1"
-_DISCORD_APPROVAL_ACTIONS = {"confirm", "reject", "totp", "totp_submit"}
 _DISCORD_TOTP_CODE_FIELD_ID = "totp_code"
-DISCORD_VIEW_COMPONENT_LIMIT = 25
 _DISCORD_RESPONSE_FALLBACK_EXCEPTIONS: tuple[type[BaseException], ...] = (
     TypeError,
     RuntimeError,
@@ -49,13 +51,6 @@ class DiscordConfig:
     guild_workspace_map: dict[str, str] | None = None
     trusted_users: set[str] | None = None
     channel_rules: list[DiscordChannelRule] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class DiscordApprovalInteraction:
-    action: str
-    confirmation_id: str
-    decision_nonce: str
 
 
 def _discord_response_exceptions() -> tuple[type[BaseException], ...]:
@@ -81,49 +76,6 @@ async def _call_discord_response(
             await result
         return True
     return False
-
-
-def discord_approval_custom_id(
-    *,
-    action: str,
-    confirmation_id: str,
-    decision_nonce: str,
-) -> str:
-    normalized_action = action.strip().lower()
-    normalized_confirmation_id = confirmation_id.strip()
-    normalized_nonce = decision_nonce.strip()
-    if normalized_action not in _DISCORD_APPROVAL_ACTIONS:
-        raise ValueError("unsupported Discord approval action")
-    if (
-        not normalized_confirmation_id
-        or not normalized_nonce
-        or ":" in normalized_confirmation_id
-        or ":" in normalized_nonce
-    ):
-        raise ValueError("Discord approval custom id requires id and nonce")
-    return (
-        f"{_DISCORD_APPROVAL_CUSTOM_ID_PREFIX}:"
-        f"{normalized_action}:{normalized_confirmation_id}:{normalized_nonce}"
-    )
-
-
-def parse_discord_approval_custom_id(custom_id: str) -> DiscordApprovalInteraction | None:
-    parts = custom_id.strip().split(":")
-    prefix_parts = _DISCORD_APPROVAL_CUSTOM_ID_PREFIX.split(":")
-    if len(parts) != len(prefix_parts) + 3:
-        return None
-    if parts[: len(prefix_parts)] != prefix_parts:
-        return None
-    action = parts[len(prefix_parts)].strip().lower()
-    confirmation_id = parts[len(prefix_parts) + 1].strip()
-    decision_nonce = parts[len(prefix_parts) + 2].strip()
-    if action not in _DISCORD_APPROVAL_ACTIONS or not confirmation_id or not decision_nonce:
-        return None
-    return DiscordApprovalInteraction(
-        action=action,
-        confirmation_id=confirmation_id,
-        decision_nonce=decision_nonce,
-    )
 
 
 class DiscordChannel(InMemoryChannel):
@@ -514,9 +466,7 @@ class DiscordChannel(InMemoryChannel):
         guild = getattr(interaction, "guild", None)
         guild_id = str(getattr(guild, "id", "")).strip() if guild is not None else ""
         channel_obj = getattr(interaction, "channel", None)
-        channel_id = (
-            str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
-        )
+        channel_id = str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
         interaction_id = str(getattr(interaction, "id", "")).strip()
         message_id = (
             f"discord-interaction:{interaction_id}:{parsed.action}:{parsed.confirmation_id}"
@@ -582,15 +532,10 @@ class DiscordChannel(InMemoryChannel):
             if await _call_discord_response(send_message, message, ephemeral=True):
                 return
             defer = getattr(response, "defer", None)
-            if (
-                await _call_discord_response(defer, ephemeral=True)
-                and not must_deliver_message
-            ):
+            if await _call_discord_response(defer, ephemeral=True) and not must_deliver_message:
                 return
         followup = getattr(interaction, "followup", None)
-        followup_send = (
-            getattr(followup, "send", None) if followup is not None else None
-        )
+        followup_send = getattr(followup, "send", None) if followup is not None else None
         await _call_discord_response(followup_send, message, ephemeral=True)
 
     def _totp_modal(self, parsed: DiscordApprovalInteraction) -> Any | None:

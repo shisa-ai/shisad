@@ -177,16 +177,12 @@ async def _assert_channel_originated_approval_not_cli_only_gate(
     response_text = str(proposed.get("response", ""))
     has_native_approval_guidance = "Discord approval:" in response_text
     has_component_degradation_guidance = (
-        "Discord components unavailable; approval buttons were not attached."
-        in response_text
+        "Discord components unavailable; approval buttons were not attached." in response_text
     )
     assert has_native_approval_guidance or has_component_degradation_guidance
     if has_component_degradation_guidance:
         assert "Discord approval fallback: reply with `confirm " in response_text
-    assert (
-        "Discord rejection:" in response_text
-        or "Discord rejection fallback:" in response_text
-    )
+    assert "Discord rejection:" in response_text or "Discord rejection fallback:" in response_text
     assert "CLI fallback:" in response_text
     if has_native_approval_guidance:
         assert response_text.index("Discord approval:") < response_text.index("CLI fallback:")

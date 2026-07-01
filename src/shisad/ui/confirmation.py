@@ -174,8 +174,7 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
     route = str(capability.get("approval_route", "")).strip() or "unknown"
     can_carry = bool(capability.get("can_carry", False))
     can_collect_inline_totp = (
-        bool(capability.get("can_collect_selected_method", False))
-        and selected_method == "totp"
+        bool(capability.get("can_collect_selected_method", False)) and selected_method == "totp"
     )
     can_reject = bool(capability.get("can_reject", True))
     requires_second_factor = bool(
@@ -201,9 +200,7 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
         lines.append(f"preview: {preview}")
     warnings = action.get("warnings")
     if isinstance(warnings, list) and warnings:
-        warning_labels = [
-            str(warning).strip() for warning in warnings if str(warning).strip()
-        ]
+        warning_labels = [str(warning).strip() for warning in warnings if str(warning).strip()]
         if warning_labels:
             labels = "; ".join(warning_labels)
             lines.append(f"warnings={len(warning_labels)}: {labels}")

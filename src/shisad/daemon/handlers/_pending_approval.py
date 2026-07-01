@@ -63,10 +63,9 @@ def pending_action_is_expired(pending: Any, *, now: datetime | None = None) -> b
 
 
 def pending_action_is_live_pending(pending: Any, *, now: datetime | None = None) -> bool:
-    return (
-        str(getattr(pending, "status", "pending")).strip() == "pending"
-        and not pending_action_is_expired(pending, now=now)
-    )
+    return str(
+        getattr(pending, "status", "pending")
+    ).strip() == "pending" and not pending_action_is_expired(pending, now=now)
 
 
 def pep_arguments_for_policy_evaluation(

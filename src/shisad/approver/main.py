@@ -30,9 +30,7 @@ def _single_allowed_channel_principal(row: Mapping[str, Any]) -> str:
     raw_principals = row.get("allowed_channel_principals")
     if not isinstance(raw_principals, list):
         return ""
-    principals = [
-        str(value).strip() for value in raw_principals if str(value).strip()
-    ]
+    principals = [str(value).strip() for value in raw_principals if str(value).strip()]
     return principals[0] if len(principals) == 1 else ""
 
 

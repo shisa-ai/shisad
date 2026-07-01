@@ -1331,18 +1331,16 @@ class AcpAdapter(CodingAgentAdapter):
         if config.model:
             desired["model"] = config.model
         if (
-            ("reasoning_effort" in available_config or permissive_legacy_config)
-            and config.reasoning_effort
-        ):
+            "reasoning_effort" in available_config or permissive_legacy_config
+        ) and config.reasoning_effort:
             desired["reasoning_effort"] = config.reasoning_effort
         if ("max_turns" in available_config or permissive_legacy_config) and (
             config.max_turns is not None
         ):
             desired["max_turns"] = str(config.max_turns)
         if (
-            ("permission_mode" in available_config or permissive_legacy_config)
-            and config.permission_mode
-        ):
+            "permission_mode" in available_config or permissive_legacy_config
+        ) and config.permission_mode:
             desired["permission_mode"] = config.permission_mode
         if "allowed_tools" in available_config or permissive_legacy_config:
             if config.allowed_tools:

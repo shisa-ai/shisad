@@ -657,9 +657,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
         except (ConfirmationVerificationError, RuntimeError) as exc:
             reason = (
-                "confirmation_backend_unavailable"
-                if isinstance(exc, RuntimeError)
-                else exc.reason
+                "confirmation_backend_unavailable" if isinstance(exc, RuntimeError) else exc.reason
             )
             return {
                 "ok": False,
@@ -1415,6 +1413,28 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "status_reason": pending.status_reason,
         }
 
+    def _scheduler_control_confirmation_principal(
+        self,
+        pending: Any,
+        params: Mapping[str, Any],
+        session: Any,
+    ) -> str:
+        if str(params.get("principal_id", "")).strip():
+            return ""
+        if str(getattr(session, "channel", "")).strip().lower() != "scheduler":
+            return ""
+        allowed_channel_principals = [
+            str(item).strip()
+            for item in getattr(pending, "allowed_channel_principals", ())
+            if str(item).strip()
+        ]
+        if len(allowed_channel_principals) != 1:
+            return ""
+        pending_user_id = str(getattr(pending, "user_id", "")).strip()
+        if pending_user_id != allowed_channel_principals[0]:
+            return ""
+        return pending_user_id
+
     async def _do_action_confirm_locked(
         self,
         params: Mapping[str, Any],
@@ -1551,6 +1571,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "session_missing",
             }
+
+        params = dict(params)
+        scheduler_principal = self._scheduler_control_confirmation_principal(
+            pending,
+            params,
+            session,
+        )
+        if scheduler_principal:
+            params["principal_id"] = scheduler_principal
 
         backend = self._confirmation_backend_registry.get_backend(
             str(getattr(pending, "selected_backend_id", "")).strip() or "software.default"

@@ -15,7 +15,7 @@ from typing import Any, ClassVar, cast
 from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
-from shisad.channels.discord import (
+from shisad.channels.discord_components import (
     DISCORD_VIEW_COMPONENT_LIMIT,
     discord_approval_custom_id,
 )
@@ -2129,9 +2129,7 @@ class AdminImplMixin(HandlerMixinBase):
                 except (AttributeError, TypeError, ValueError):
                     backend_available = False
             selected_method = (
-                str(getattr(pending, "selected_backend_method", "") or "software")
-                .strip()
-                .lower()
+                str(getattr(pending, "selected_backend_method", "") or "software").strip().lower()
                 or "software"
             )
             pending_components: list[dict[str, Any]] = []
@@ -2550,8 +2548,10 @@ class AdminImplMixin(HandlerMixinBase):
                     ),
                 )
                 can_build_view = getattr(discord_channel, "can_build_view_from_metadata", None)
-                if candidate_metadata and callable(can_build_view) and bool(
-                    can_build_view(candidate_metadata)
+                if (
+                    candidate_metadata
+                    and callable(can_build_view)
+                    and bool(can_build_view(candidate_metadata))
                 ):
                     delivery_metadata = candidate_metadata
         if delivery_metadata:

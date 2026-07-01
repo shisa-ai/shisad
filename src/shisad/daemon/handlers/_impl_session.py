@@ -5538,6 +5538,8 @@ def _discord_pending_guidance_lines(
     *,
     pending: Any | None,
     confirmation_id: str,
+    pending_number: int | None = None,
+    use_single_totp_code_reply: bool = False,
     channel_capability: Mapping[str, Any] | None = None,
     discord_components_available: bool = True,
     discord_approval_available: bool = True,
@@ -5545,11 +5547,24 @@ def _discord_pending_guidance_lines(
     discord_totp_modal_available: bool = True,
 ) -> list[str]:
     def _discord_rejection_guidance() -> str:
+        scoped_hint = (
+            f" Scoped rejection: reply with {_markdown_code_span(f'reject {pending_number}')}."
+            if pending_number is not None
+            else ""
+        )
         if discord_reject_available:
-            return "Discord rejection: use the Reject button when shown on this message."
+            return (
+                f"Discord rejection: use the Reject button when shown on this message.{scoped_hint}"
+            )
+        if use_single_totp_code_reply and pending_number is not None:
+            return (
+                "Discord rejection fallback: reply with "
+                f"{_markdown_code_span(f'reject {pending_number}')}."
+            )
         return (
             "Discord rejection fallback: reply with "
             f"{_markdown_code_span(f'reject {confirmation_id}')}."
+            f"{scoped_hint}"
         )
 
     if pending is not None:
@@ -5614,11 +5629,19 @@ def _discord_pending_guidance_lines(
             approval_line = "Discord TOTP modal unavailable; TOTP approval button was not attached."
         else:
             approval_line = "Discord approval: use Approve when shown to open the TOTP modal."
+        totp_fallback_line = (
+            "TOTP fallback: reply with the 6-digit code."
+            if use_single_totp_code_reply
+            else (
+                "TOTP fallback: reply with "
+                f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}; "
+                "for a single TOTP prompt, reply with the 6-digit code."
+            )
+        )
         return [
             approval_line,
             _discord_rejection_guidance(),
-            "TOTP fallback: reply with "
-            f"{_markdown_code_span(f'confirm {confirmation_id} 123456')}.",
+            totp_fallback_line,
             f"CLI fallback: {_markdown_code_span(_totp_cli_confirm_command(confirmation_id))}",
         ]
     if selected_method == "recovery_code":
@@ -5714,6 +5737,12 @@ def _discord_pending_confirmation_response_text(
             _discord_pending_guidance_lines(
                 pending=pending,
                 confirmation_id=confirmation_id,
+                pending_number=pending_number,
+                use_single_totp_code_reply=(
+                    confirmation_id == single_totp_confirmation_id
+                    and pending_actions is not None
+                    and len(pending_actions) > len(indexed_confirmation_ids)
+                ),
                 channel_capability=(
                     pending_channel_capability_by_id.get(confirmation_id)
                     if pending_channel_capability_by_id is not None

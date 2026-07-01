@@ -1376,8 +1376,8 @@ def _pending_channel_capability_payload(
     is_pending = str(getattr(pending, "status", "pending")).strip() == "pending"
     is_expired = pending_action_is_expired(pending)
     is_live_pending = pending_action_is_live_pending(pending)
-    backend_available = True if selected_backend_available is None else bool(
-        selected_backend_available
+    backend_available = (
+        True if selected_backend_available is None else bool(selected_backend_available)
     )
     approval_route = (
         _approval_route_for_method(selected_method, origin_channel=origin_channel)
@@ -1390,9 +1390,7 @@ def _pending_channel_capability_payload(
     can_carry_t0_identity = (
         can_collect_selected_method and selected_method_proof_tier == "T0_identity"
     )
-    can_carry_t1_stepup = (
-        can_collect_selected_method and selected_method_proof_tier == "T1_stepup"
-    )
+    can_carry_t1_stepup = can_collect_selected_method and selected_method_proof_tier == "T1_stepup"
     can_carry_method_specific = (
         can_collect_selected_method and selected_method_proof_tier == "method_specific"
     )
@@ -1441,8 +1439,7 @@ def _pending_channel_capability_payload(
         "can_carry_t1_stepup": can_carry_t1_stepup,
         "can_carry_method_specific": can_carry_method_specific,
         "requires_channel_principal": bool(
-            allowed_channel_principals
-            and selected_method in {"software", "totp", "recovery_code"}
+            allowed_channel_principals and selected_method in {"software", "totp", "recovery_code"}
         ),
         "requires_second_factor": selected_method_proof_tier == "T1_stepup",
         "requires_proof_input": selected_method != "software",
@@ -4179,6 +4176,7 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=success,
                 checkpoint_id=checkpoint_id,
+                error="" if success else delivery_result.reason or "message_send_failed",
                 tool_output=HandlerImplementation._with_tool_output_ingress(
                     self,
                     session=session,

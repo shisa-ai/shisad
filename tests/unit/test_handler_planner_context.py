@@ -2604,11 +2604,7 @@ def test_gh63_result_followup_preserves_fenced_mixed_result_text() -> None:
 
     assert response is not None
     assert response.text == (
-        "Completed actions:\n"
-        "Completed action result:\n"
-        "```markdown\n"
-        "# README\n"
-        "```"
+        "Completed actions:\nCompleted action result:\n```markdown\n# README\n```"
     )
 
 

@@ -328,10 +328,7 @@ def test_chat_pending_confirmation_summary_adds_recovery_code_guidance() -> None
     )
 
     assert "Recovery-code approvals cannot be completed from chat text." in summary
-    assert (
-        "shisad action confirm confirmation_id --recovery-code abcd-efgh"
-        in summary.lower()
-    )
+    assert "shisad action confirm confirmation_id --recovery-code abcd-efgh" in summary.lower()
     assert "confirmation id: c-1" in summary.lower()
     assert "reply with 'confirm n'" not in summary.lower()
     assert "yes to all" not in summary.lower()
@@ -764,8 +761,7 @@ def test_discord_pending_response_degrades_for_ids_omitted_by_component_budget()
         pending_confirmation_ids=list(pending_actions),
         pending_actions=pending_actions,
         pending_index_by_id={
-            confirmation_id: index
-            for index, confirmation_id in enumerate(pending_actions, start=1)
+            confirmation_id: index for index, confirmation_id in enumerate(pending_actions, start=1)
         },
         binding_pending_rows=list(pending_actions.values()),
         delivery_channel="discord",
