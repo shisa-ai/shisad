@@ -8287,6 +8287,72 @@ def _direct_tool_output_response_without_synthesis(
     )
 
 
+def _direct_file_evidence_response_after_synthesis_failure(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    firewall: Any,
+) -> str:
+    tool_names = {
+        str(record.get("tool_name", "")).strip()
+        for record in records
+        if str(record.get("tool_name", "")).strip()
+    }
+    if not tool_names or not tool_names <= {"fs.read", "fs.list"}:
+        return ""
+
+    lines: list[str] = []
+    for record in records:
+        tool_name = str(record.get("tool_name", "")).strip()
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        path = str(payload.get("path", "")).strip()
+        if tool_name == "fs.read":
+            target = path or "the file"
+            summary_prefix = f"I read {target}"
+            error = str(payload.get("error", "")).strip()
+            if error:
+                lines.append(f"I tried to read {target}, but it failed: {error}.")
+                continue
+            output_text = _find_tool_output_preview_text(payload)
+            lines.append(summary_prefix + ".")
+            if output_text:
+                inspect = getattr(firewall, "inspect", None)
+                safe_summary = (
+                    _generate_safe_summary(
+                        output_text,
+                        source=target,
+                        byte_size=len(output_text.encode("utf-8")),
+                        firewall=firewall,
+                    )
+                    if callable(inspect)
+                    else _compact_context_text(output_text, max_chars=200)
+                )
+                if safe_summary:
+                    lines.append(f"Summary: {safe_summary}")
+                preview_lines, truncated = _preview_multiline_output(output_text)
+                if preview_lines:
+                    lines.append("Excerpt:")
+                    lines.extend(preview_lines)
+                    if truncated:
+                        lines.append("... (truncated)")
+            continue
+        if tool_name == "fs.list":
+            entries = payload.get("entries")
+            count = payload.get("count", len(entries) if isinstance(entries, list) else 0)
+            target = f" for {path}" if path else ""
+            lines.append(f"I listed {count} entr{'y' if count == 1 else 'ies'}{target}.")
+            entries_text = _find_tool_entries_preview_text(payload)
+            if entries_text:
+                preview_lines, truncated = _preview_multiline_output(entries_text)
+                if preview_lines:
+                    lines.append("Entries:")
+                    lines.extend(preview_lines)
+                    if truncated:
+                        lines.append("... (truncated)")
+    return "\n".join(lines).strip()
+
+
 def _supplemental_evidence_read_response(
     supplemental_entries: Sequence[Mapping[str, Any]],
 ) -> str:
@@ -14347,12 +14413,19 @@ class SessionImplMixin(HandlerMixinBase):
                             else synthesized_response
                         )
                     else:
+                        file_evidence_fallback = (
+                            _direct_file_evidence_response_after_synthesis_failure(
+                                chat_serialized_tool_outputs,
+                                firewall=self._firewall,
+                            )
+                        )
                         direct_fallback_response = _direct_user_visible_tool_output_fallback(
                             chat_serialized_tool_outputs,
                             supplemental_entries=supplemental_entries,
                         )
                         fallback_response = (
-                            direct_fallback_response
+                            file_evidence_fallback
+                            or direct_fallback_response
                             or _intermediate_tool_summary_response(
                                 tool_output_summary,
                                 page_title_metadata_block=fallback_page_title_metadata_block,
@@ -14369,8 +14442,10 @@ class SessionImplMixin(HandlerMixinBase):
                             else fallback_response
                         )
                         protected_tool_output_end = len(response_text)
-                        if direct_fallback_response:
-                            allowed_structural_response_text = direct_fallback_response
+                        if file_evidence_fallback or direct_fallback_response:
+                            allowed_structural_response_text = (
+                                file_evidence_fallback or direct_fallback_response
+                            )
                 elif response_text.strip():
                     appended_summary = (
                         user_visible_tool_output_summary
@@ -14413,8 +14488,15 @@ class SessionImplMixin(HandlerMixinBase):
                         protected_tool_output_start = (
                             len(synthesized_response) + 2 if synthesized_response else 0
                         )
+                        file_evidence_fallback = ""
                         direct_fallback_response = ""
                         if not synthesized_response:
+                            file_evidence_fallback = (
+                                _direct_file_evidence_response_after_synthesis_failure(
+                                    chat_serialized_tool_outputs,
+                                    firewall=self._firewall,
+                                )
+                            )
                             direct_fallback_response = _direct_user_visible_tool_output_fallback(
                                 chat_serialized_tool_outputs,
                                 supplemental_entries=supplemental_entries,
@@ -14422,14 +14504,17 @@ class SessionImplMixin(HandlerMixinBase):
                         response_text = (
                             f"{synthesized_response}\n\n{tool_output_summary}"
                             if synthesized_response
-                            else direct_fallback_response
+                            else file_evidence_fallback
+                            or direct_fallback_response
                             or _intermediate_tool_summary_response(
                                 tool_output_summary,
                                 page_title_metadata_block=fallback_page_title_metadata_block,
                             )
                         )
-                        if direct_fallback_response:
-                            allowed_structural_response_text = direct_fallback_response
+                        if file_evidence_fallback or direct_fallback_response:
+                            allowed_structural_response_text = (
+                                file_evidence_fallback or direct_fallback_response
+                            )
                         protected_tool_output_end = len(response_text)
         if (
             validated.session_mode == SessionMode.ADMIN_CLEANROOM

@@ -267,6 +267,76 @@ async def test_lus_similar_file_recovery_survives_initial_planner_validation_fal
 
 
 @pytest.mark.asyncio
+async def test_lus_read_summary_fallback_is_user_facing_when_synthesis_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _read_then_empty_synthesis_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        planner_input = messages[-1].content if messages else ""
+        if "POST-TOOL SYNTHESIS PASS" in planner_input:
+            return ProviderResponse(
+                message=Message(role="assistant", content=""),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if "read readme.md" in planner_input.lower():
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Reading README.md.",
+                    tool_calls=[
+                        _tool_call(
+                            "fs.read",
+                            {"path": "README.md", "max_bytes": 4096},
+                            call_id="t-readme-summary-fallback",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return await _stub_complete(self, messages, tools)
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _read_then_empty_synthesis_complete,
+            raising=True,
+        )
+        (harness.workspace_root / "README.md").write_text(
+            "# Release Close README\n\n"
+            "release-close fallback project summary content for live user smoke.\n",
+            encoding="utf-8",
+        )
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Please read README.md and summarize what this project is.",
+            },
+        )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert reply.get("pending_confirmation_ids") == []
+    assert int(reply.get("executed_actions", 0)) == 1
+    response_text = str(reply.get("response", ""))
+    assert "Completed action result:" not in response_text
+    assert "I read" in response_text
+    assert "Summary:" in response_text
+    assert "release-close fallback project summary content" in response_text
+
+
+@pytest.mark.asyncio
 async def test_lus_shell_file_discovery_routes_to_confirmation_without_lockdown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

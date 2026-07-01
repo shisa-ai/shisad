@@ -5860,7 +5860,9 @@ async def test_finalize_response_direct_fs_read_summary_skips_output_confirmatio
 
     text = str(response["response"])
     assert not text.startswith("[CONFIRMATION REQUIRED]")
-    assert text.startswith("Completed action result:\n- fs.read read README.md.")
+    assert text.startswith("I read README.md.")
+    assert "Summary:" in text
+    assert "Excerpt:" in text
     assert "https://example.test/readme" in text
 
 
