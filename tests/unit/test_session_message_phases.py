@@ -2406,6 +2406,56 @@ def test_lus_similar_file_read_phrase_sets_recovery_marker() -> None:
     assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
 
 
+def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args() -> None:
+    planner_proposal = ActionProposal(
+        action_id="planner-fs-list",
+        tool_name=ToolName("fs.list"),
+        arguments={
+            "path": ".",
+            "recursive": True,
+            "limit": 25,
+            "filesystem_intent": impl_session._CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
+        },
+        reasoning="List similar files.",
+        data_sources=[],
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(actions=[planner_proposal], assistant_response=""),
+        evaluated=[
+            EvaluatedProposal(
+                proposal=planner_proposal,
+                decision=PEPDecision(
+                    kind=PEPDecisionKind.ALLOW,
+                    reason="allow",
+                    tool_name=planner_proposal.tool_name,
+                ),
+            )
+        ],
+        attempts=1,
+    )
+    pep = SimpleNamespace(
+        evaluate=lambda tool_name, arguments, context: PEPDecision(
+            kind=PEPDecisionKind.ALLOW,
+            reason="allow",
+            tool_name=tool_name,
+        )
+    )
+
+    rewritten = impl_session._rewrite_explicit_memory_intent_planner_result(
+        user_text="Can you find the similar file and read it instead?",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(),
+    )
+
+    assert rewritten is not planner_result
+    [proposal] = [item.proposal for item in rewritten.evaluated]
+    assert proposal.tool_name == ToolName("fs.list")
+    assert proposal.arguments == planner_proposal.arguments
+    assert "user_text:explicit_file_intent" in proposal.data_sources
+    assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
+
+
 def test_gh51_filesystem_continuation_repeat_guard_keeps_fs_list_options_distinct() -> None:
     repeated_proposal = ActionProposal(
         action_id="a-repeat-list",

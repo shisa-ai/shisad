@@ -3890,6 +3890,7 @@ def _rewrite_explicit_memory_intent_planner_result(
         and all(
             evaluated.proposal.tool_name == explicit_proposal.tool_name
             and evaluated.proposal.arguments == explicit_proposal.arguments
+            and set(explicit_proposal.data_sources).issubset(evaluated.proposal.data_sources)
             for evaluated, explicit_proposal in zip(
                 planner_result.evaluated,
                 explicit_proposals,
