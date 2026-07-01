@@ -7422,6 +7422,24 @@ def _filename_match_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", Path(value).name.casefold())
 
 
+def _collapse_repeated_filename_token(value: str) -> str:
+    # Bounded filename-token normalization for accidental repeated characters.
+    return re.sub(r"(.)\1+", r"\1", value)
+
+
+def _repeated_filename_token_distance_at_most(
+    left: str,
+    right: str,
+    *,
+    limit: int,
+) -> int | None:
+    collapsed_left = _collapse_repeated_filename_token(left)
+    collapsed_right = _collapse_repeated_filename_token(right)
+    if collapsed_left == left and collapsed_right == right:
+        return None
+    return _levenshtein_distance_at_most(collapsed_left, collapsed_right, limit=limit)
+
+
 def _best_similar_file_path_from_listing(
     tool_output: Any,
     *,
@@ -7461,11 +7479,30 @@ def _best_similar_file_path_from_listing(
             continue
         distance = _levenshtein_distance_at_most(failed_token, name_token, limit=1)
         if distance is None and failed_stem_token and stem_token:
-            distance = _levenshtein_distance_at_most(failed_stem_token, stem_token, limit=1)
-        if distance is None or distance >= best_distance:
+            distance = _levenshtein_distance_at_most(
+                failed_stem_token,
+                stem_token,
+                limit=1,
+            )
+        score = distance
+        if score is None:
+            repeated_distance = _repeated_filename_token_distance_at_most(
+                failed_token,
+                name_token,
+                limit=1,
+            )
+            if repeated_distance is None and failed_stem_token and stem_token:
+                repeated_distance = _repeated_filename_token_distance_at_most(
+                    failed_stem_token,
+                    stem_token,
+                    limit=1,
+                )
+            if repeated_distance is not None:
+                score = 2 + repeated_distance
+        if score is None or score >= best_distance:
             continue
         best_path = read_path
-        best_distance = distance
+        best_distance = score
     return best_path
 
 

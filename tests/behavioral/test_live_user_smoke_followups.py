@@ -169,7 +169,7 @@ async def test_lus_similar_file_recovery_reads_matched_file_after_typo(
             "session.message",
             {
                 "session_id": sid,
-                "content": "Please read READMEE.md and summarize it.",
+                "content": "Please read READMEEE.md and summarize it.",
             },
         )
         first_outputs = _extract_tool_outputs(first)
