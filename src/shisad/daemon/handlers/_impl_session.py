@@ -4234,15 +4234,10 @@ def _intermediate_tool_summary_response(
     return f"{_INTERMEDIATE_TOOL_OUTPUT_HEADER}\n\n{summary}"
 
 
-def _should_synthesize_initial_evidence_tool_response(
-    preliminary_prose: str,
+def _tool_outputs_include_initial_synthesis_evidence_tools(
     executed_tool_outputs: Sequence[Any],
 ) -> bool:
-    # Evidence-producing tools make same-turn pre-tool prose preliminary by
-    # structure, independent of what English phrase the prose contains.
-    if not str(preliminary_prose or "").strip():
-        return False
-    evidence_tool_names = {
+    initial_synthesis_tool_names = {
         ToolName("browser.navigate"),
         ToolName("browser.read_page"),
         ToolName("browser.screenshot"),
@@ -4253,9 +4248,41 @@ def _should_synthesize_initial_evidence_tool_response(
         ToolName("realitycheck.read"),
     }
     return any(
-        getattr(tool_output, "tool_name", None) in evidence_tool_names
+        getattr(tool_output, "tool_name", None) in initial_synthesis_tool_names
         for tool_output in executed_tool_outputs
     )
+
+
+def _tool_outputs_include_direct_synthesis_evidence_tools(
+    executed_tool_outputs: Sequence[Any],
+) -> bool:
+    direct_synthesis_tool_names = {
+        ToolName("browser.navigate"),
+        ToolName("browser.read_page"),
+        ToolName("browser.screenshot"),
+        ToolName("fs.list"),
+        ToolName("fs.read"),
+        ToolName("web.search"),
+        ToolName("web.fetch"),
+        ToolName("evidence.read"),
+        ToolName("realitycheck.search"),
+        ToolName("realitycheck.read"),
+    }
+    return any(
+        getattr(tool_output, "tool_name", None) in direct_synthesis_tool_names
+        for tool_output in executed_tool_outputs
+    )
+
+
+def _should_synthesize_initial_evidence_tool_response(
+    preliminary_prose: str,
+    executed_tool_outputs: Sequence[Any],
+) -> bool:
+    # Evidence-producing tools make same-turn pre-tool prose preliminary by
+    # structure, independent of what English phrase the prose contains.
+    if not str(preliminary_prose or "").strip():
+        return False
+    return _tool_outputs_include_initial_synthesis_evidence_tools(executed_tool_outputs)
 
 
 def _transcript_entry_context_role(
@@ -13854,8 +13881,18 @@ class SessionImplMixin(HandlerMixinBase):
                     response_text = f"{response_text}\n\n{appended_summary}"
                     protected_tool_output_end = len(response_text)
                 else:
-                    direct_tool_response = _direct_tool_output_response_without_synthesis(
-                        chat_serialized_tool_outputs
+                    direct_tool_response = (
+                        ""
+                        if (
+                            execution.rejected <= 0
+                            and execution.pending_confirmation <= 0
+                            and _tool_outputs_include_direct_synthesis_evidence_tools(
+                                execution.executed_tool_outputs
+                            )
+                        )
+                        else _direct_tool_output_response_without_synthesis(
+                            chat_serialized_tool_outputs
+                        )
                     )
                     if direct_tool_response:
                         response_text = direct_tool_response

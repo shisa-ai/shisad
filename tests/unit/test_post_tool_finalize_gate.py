@@ -67,6 +67,16 @@ def test_gh46_synthesizes_for_nonempty_prose_and_realitycheck_evidence_tools(
     )
 
 
+@pytest.mark.parametrize("tool_name", ["fs.read", "fs.list"])
+def test_rc_lus_does_not_replace_nonempty_prose_for_filesystem_only_tools(
+    tool_name: str,
+) -> None:
+    assert not _should_synthesize_initial_evidence_tool_response(
+        "I'll inspect the local file evidence before answering.",
+        [_tool_output(tool_name)],
+    )
+
+
 def test_contract_b_synthesizes_for_nonempty_prose_and_multiple_web_tools() -> None:
     assert _should_synthesize_initial_evidence_tool_response(
         "preliminary",
@@ -77,7 +87,7 @@ def test_contract_b_synthesizes_for_nonempty_prose_and_multiple_web_tools() -> N
 def test_contract_b_does_not_synthesize_for_non_web_tools_only() -> None:
     assert not _should_synthesize_initial_evidence_tool_response(
         "preliminary",
-        [_tool_output("fs.read")],
+        [_tool_output("todo.list")],
     )
 
 

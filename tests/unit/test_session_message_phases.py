@@ -3784,9 +3784,9 @@ async def test_finalize_response_synthesizes_web_turn_with_preliminary_prose() -
 
 
 @pytest.mark.asyncio
-async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis() -> None:
+async def test_rc_lus_finalize_response_synthesizes_direct_fs_read_evidence() -> None:
     harness = _FinalizeEvidenceHarness()
-    synthesis = _PostToolSynthesisPlanner("Mutated file summary.")
+    synthesis = _PostToolSynthesisPlanner("README summary from file evidence.")
     harness._planner = synthesis
     harness._evidence_store = None
     execution = _finalize_execution_result(
@@ -3811,11 +3811,13 @@ async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert text.startswith("Completed action result:")
-    assert "fs.read read README.md" in text
-    assert "# ShisaD" in text
-    assert "Tool results summary:" not in text
-    assert synthesis.calls == []
+    assert text == "README summary from file evidence."
+    assert "Completed action result:" not in text
+    assert len(synthesis.calls) == 1
+    synthesis_input = synthesis.calls[0]["user_content"].replace("^", "")
+    assert "Tool outputs from the same turn" in synthesis_input
+    assert "# ShisaD" in synthesis_input
+    assert "Security-first daemon." in synthesis_input
 
 
 @pytest.mark.asyncio
