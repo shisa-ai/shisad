@@ -5666,6 +5666,78 @@ async def test_finalize_response_marks_unsynthesized_tool_summary_as_intermediat
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_failed_fs_read_uses_user_visible_failure_summary() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=False,
+                content=json.dumps(
+                    {
+                        "ok": False,
+                        "path": "READMEE.md",
+                        "error": "path_not_found",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="",
+        sanitized_text="Please read READMEE.md and summarize it.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text == "Completed action result:\n- fs.read read READMEE.md failed: path_not_found."
+    assert "intermediate tool output" not in text
+    assert "Tool results summary:" not in text
+    assert "[REDACTED" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_fs_list_uses_user_visible_summary_without_synthesis() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.list",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "path": "/workspace",
+                        "entries": [
+                            {"name": "README.md", "path": "/workspace/README.md"},
+                            {"name": "docs", "path": "/workspace/docs"},
+                        ],
+                        "count": 2,
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="",
+        sanitized_text="Can you find the similar file?",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("Completed action result:\n- fs.list returned 2 entries")
+    assert "README.md" in text
+    assert "intermediate tool output" not in text
+    assert "Tool results summary:" not in text
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_fallback_keeps_page_title_metadata_labeled() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("")

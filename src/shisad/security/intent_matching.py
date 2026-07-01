@@ -99,6 +99,8 @@ def has_follow_on_command_verb(text: str) -> bool:
             recent_words = set(previous_words[-5:])
             if not tail or recent_words & {"completed", "finished", "performed"}:
                 continue
+        if verb == "check" and previous and not tail:
+            continue
         if verb in {"call", "check", "search"} and previous in {"the", "my"}:
             continue
         return True

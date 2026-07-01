@@ -27,6 +27,7 @@ from shisad.security.lockdown import LockdownLevel
         "resume the lockdown because shisad raised a false positive",
         "resume the lockdown because I cleared the issue.",
         "resume the lockdown because I finished my check",
+        "resume the lockdown because I cleared the live smoke check",
         "resume the lockdown because I completed the web search",
         "resume the lockdown because I completed the web search for the incident",
         "resume the lockdown because I finished the call with the customer",

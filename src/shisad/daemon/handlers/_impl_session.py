@@ -4260,7 +4260,6 @@ def _tool_outputs_include_direct_synthesis_evidence_tools(
         ToolName("browser.navigate"),
         ToolName("browser.read_page"),
         ToolName("browser.screenshot"),
-        ToolName("fs.list"),
         ToolName("fs.read"),
         ToolName("web.search"),
         ToolName("web.fetch"),
@@ -4270,6 +4269,7 @@ def _tool_outputs_include_direct_synthesis_evidence_tools(
     }
     return any(
         getattr(tool_output, "tool_name", None) in direct_synthesis_tool_names
+        and bool(getattr(tool_output, "success", False))
         for tool_output in executed_tool_outputs
     )
 
@@ -4704,6 +4704,45 @@ def _top_level_tool_summary_error(row: str) -> str:
     return match.group("error")
 
 
+def _top_level_tool_summary_value(row: str, key: str) -> str:
+    match = re.search(rf"(?:^|, ){re.escape(key)}=(?P<value>[^,\n]+)", row)
+    if match is None:
+        return ""
+    return match.group("value").strip()
+
+
+def _fs_read_succeeded_summary(sections: Sequence[tuple[str, list[str]]]) -> str:
+    lines: list[str] = []
+    for tool_name, section_lines in sections:
+        if tool_name != "fs.read" or not section_lines:
+            continue
+        if not _top_level_tool_summary_succeeded(section_lines[0], "fs.read"):
+            continue
+        path = _top_level_tool_summary_value(section_lines[0], "path")
+        read_summary = "- fs.read completed."
+        if path:
+            read_summary = f"- fs.read read {path}."
+        lines.append(read_summary)
+        try:
+            output_index = section_lines.index("  output:")
+        except ValueError:
+            continue
+        for output_line in section_lines[output_index + 1 :]:
+            if not output_line.startswith("  "):
+                break
+            preview_line = _OUTPUT_URL_RE.sub("[URL omitted]", output_line[2:])
+            lines.append(f"  {preview_line}")
+    if not lines:
+        return ""
+    return "Local file evidence:\n" + "\n".join(lines)
+
+
+def _with_local_file_evidence(search_response: str, fs_read_summary: str) -> str:
+    if not fs_read_summary:
+        return search_response
+    return f"{fs_read_summary}\n\n{search_response}"
+
+
 def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
     sections = _tool_output_summary_sections(tool_output_summary)
     search_entries = [
@@ -4714,11 +4753,7 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
     if any(_top_level_tool_summary_succeeded(row, "web.search") for row in search_entries):
         return None
     search_errors = {_top_level_tool_summary_error(row) for row in search_entries}
-    fs_read_succeeded = any(
-        _top_level_tool_summary_succeeded(lines[0], "fs.read")
-        for tool_name, lines in sections
-        if tool_name == "fs.read" and lines
-    )
+    fs_read_summary = _fs_read_succeeded_summary(sections)
     setup_hint = (
         "Configure SHISAD_WEB_SEARCH_BACKEND_URL for the running daemon. Add "
         "IP-literal, localhost, or .local/.internal/.lan backend hosts to the "
@@ -4727,55 +4762,33 @@ def _search_backend_unconfigured_response(tool_output_summary: str) -> str | Non
         "preapproved, restart shisad, then retry"
     )
     if "web_search_backend_unconfigured" in search_errors:
-        if fs_read_succeeded:
-            return (
-                "I read the requested local file, but web search is not configured "
-                "for this daemon, so I can't complete the web-search portion right "
-                f"now. {setup_hint} the search."
-            )
-        return (
+        return _with_local_file_evidence(
             "Web search is not configured for this daemon, so I can't search the web "
-            f"right now. {setup_hint}."
+            f"right now. {setup_hint}.",
+            fs_read_summary,
         )
     if (
         "ip_literal_not_allowlisted" in search_errors
         or "local_destination_not_allowlisted" in search_errors
     ):
-        if fs_read_succeeded:
-            return (
-                "I read the requested local file, but web search backend is not "
-                "allowed by the effective web allowlist, so I can't complete the "
-                f"web-search portion right now. {setup_hint} the search."
-            )
-        return (
+        return _with_local_file_evidence(
             "Web search backend is not allowed by the effective web allowlist, so "
-            f"I can't search the web right now. {setup_hint}."
+            f"I can't search the web right now. {setup_hint}.",
+            fs_read_summary,
         )
     if "redirect_host_not_preapproved" in search_errors:
-        if fs_read_succeeded:
-            return (
-                "I read the requested local file, but web search backend redirected "
-                "to a host outside the effective web allowlist, so I can't complete "
-                f"the web-search portion right now. {setup_hint} the search."
-            )
-        return (
+        return _with_local_file_evidence(
             "Web search backend redirected to a host outside the effective web "
-            f"allowlist, so I can't search the web right now. {setup_hint}."
+            f"allowlist, so I can't search the web right now. {setup_hint}.",
+            fs_read_summary,
         )
     if "search_backend_invalid_json" in search_errors:
-        if fs_read_succeeded:
-            return (
-                "I read the requested local file, but web search backend did not "
-                "return valid JSON, so I can't complete the web-search portion right "
-                "now. Check that SHISAD_WEB_SEARCH_BACKEND_URL points at the search "
-                "backend base URL and that JSON output is enabled, restart shisad, "
-                "then retry the search."
-            )
-        return (
+        return _with_local_file_evidence(
             "Web search backend did not return valid JSON, so I can't search the "
             "web right now. Check that SHISAD_WEB_SEARCH_BACKEND_URL points at "
             "the search backend base URL and that JSON output is enabled, restart "
-            "shisad, then retry."
+            "shisad, then retry.",
+            fs_read_summary,
         )
     return None
 

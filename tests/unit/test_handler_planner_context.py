@@ -1919,13 +1919,23 @@ def test_rc_lus_coerces_noninternal_web_search_backend_failure() -> None:
         executed_tool_outputs=2,
         tool_output_summary=(
             "Tool results summary:\n"
-            "- fs.read: success=True, ok=True, README.md output: # ShisaD\n"
+            "- fs.read: success=True, ok=True, path=README.md\n"
+            "  output:\n"
+            "  # ShisaD\n"
+            "  A local-first assistant daemon.\n"
+            "  See https://example.com/details for more context.\n"
             "- web.search: success=False, ok=False, results=0, "
             "error=web_search_backend_unconfigured"
         ),
     )
 
-    assert response.startswith("I read the requested local file")
+    assert response.startswith("Local file evidence")
+    assert "- fs.read read README.md." in response
+    assert "# ShisaD" in response
+    assert "A local-first assistant daemon." in response
+    assert "https://example.com" not in response
+    assert "[URL omitted]" in response
+    assert "Web search is not configured" in response
     assert "Configure a web search backend and allowed domains" not in response
     assert "SHISAD_WEB_SEARCH_BACKEND_URL" in response
     assert "IP-literal, localhost, or .local/.internal/.lan" in response
@@ -1974,14 +1984,17 @@ def test_gh52_rc_lus_coerces_mixed_fs_read_web_search_local_backend_failure() ->
         executed_tool_outputs=2,
         tool_output_summary=(
             "Tool results summary:\n"
-            "- fs.read: success=True, ok=True, README.md output: # ShisaD\n"
+            "- fs.read: success=True, ok=True, path=README.md\n"
+            "  output:\n"
+            "  # ShisaD\n"
             "- web.search: success=False, ok=False, results=0, "
             "error=local_destination_not_allowlisted"
         ),
     )
 
-    assert response.startswith("I read the requested local file")
-    assert "web search backend is not allowed" in response
+    assert response.startswith("Local file evidence")
+    assert "# ShisaD" in response
+    assert "Web search backend is not allowed" in response
     assert "effective web allowlist" in response
 
 
