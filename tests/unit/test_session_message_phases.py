@@ -2395,6 +2395,17 @@ def test_gh49_daemon_owned_explicit_reminder_marker_counts_as_current_turn() -> 
     )
 
 
+def test_lus_similar_file_read_phrase_sets_recovery_marker() -> None:
+    proposal = impl_session._build_explicit_memory_intent_proposal(
+        "Can you find the similar file and read it instead?"
+    )
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("fs.list")
+    assert "user_text:explicit_file_intent" in proposal.data_sources
+    assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
+
+
 def test_gh51_filesystem_continuation_repeat_guard_keeps_fs_list_options_distinct() -> None:
     repeated_proposal = ActionProposal(
         action_id="a-repeat-list",
@@ -5733,6 +5744,83 @@ async def test_finalize_response_fs_list_uses_user_visible_summary_without_synth
     text = str(response["response"])
     assert text.startswith("Completed action result:\n- fs.list returned 2 entries")
     assert "README.md" in text
+    assert "intermediate tool output" not in text
+    assert "Tool results summary:" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_evidence_read_fallback_uses_user_visible_content() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="evidence.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "ref_id": "ev-example",
+                        "source": "assistant",
+                        "content": (
+                            "Example Domain\nThis domain is for use in documentation examples."
+                        ),
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+        sanitized_text="What did the fetched page say?",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("Evidence read:\n")
+    assert "Example Domain" in text
+    assert "documentation examples" in text
+    assert "intermediate tool output" not in text
+    assert "Tool results summary:" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_note_search_fallback_uses_user_visible_entries() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="note.search",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "entries": [
+                            {
+                                "key": "release-close-code",
+                                "value": "cobalt-lantern-42",
+                            }
+                        ],
+                        "count": 1,
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="",
+        sanitized_text="What is my v0.8 5843 release-close code?",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("Completed action result:\n- note.search: completed.")
+    assert "release-close-code: cobalt-lantern-42" in text
     assert "intermediate tool output" not in text
     assert "Tool results summary:" not in text
 

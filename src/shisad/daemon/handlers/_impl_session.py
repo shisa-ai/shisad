@@ -194,6 +194,7 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+_SIMILAR_FILE_READ_INTENT_SOURCE = "user_text:explicit_similar_file_read_intent"
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _LOCKDOWN_RESUME_TOOL_NAME = ToolName("lockdown.resume")
@@ -208,6 +209,10 @@ _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
 _CONTEXT_SUMMARY_SCAN_LIMIT = 24
 _MEMORY_CONTEXT_ENTRY_MAX_CHARS = 220
 _MEMORY_QUERY_CONTEXT_MAX_CHARS = 400
+_FAILED_FS_READ_SUMMARY_RE = re.compile(
+    r"- fs\.read read (?P<path>.+?) failed: path_not_found\.",
+    flags=re.IGNORECASE,
+)
 _THREAD_RESUME_CONTEXT_MAX_TOKENS = 700
 _TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_CHARS = 800
 _TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_LINES = 12
@@ -3645,11 +3650,18 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
     similar_file_match = re.fullmatch(
         r"(?:please\s+)?(?:can you\s+)?"
         r"(?:(?:find|look for|search for)\s+)"
-        r"(?:the\s+)?(?:similar\s+)?file\??",
+        r"(?:the\s+)?(?:similar\s+)?file"
+        r"(?:\s+and\s+(?P<read_after_list>"
+        r"(?:read|open|show|summarize)(?:\s+(?:it|that|the\s+file))?"
+        r"(?:\s+instead)?"
+        r"))?\??",
         normalized,
         flags=re.IGNORECASE,
     )
     if similar_file_match is not None:
+        data_sources = ["user_text:explicit_file_intent"]
+        if similar_file_match.group("read_after_list"):
+            data_sources.append(_SIMILAR_FILE_READ_INTENT_SOURCE)
         return ActionProposal(
             action_id="explicit-fs-similar-file-list",
             tool_name=ToolName("fs.list"),
@@ -3660,7 +3672,7 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
             },
             reasoning="List the configured workspace to recover from a likely filename typo.",
-            data_sources=["user_text:explicit_file_intent"],
+            data_sources=data_sources,
         )
 
     fetch_match = re.search(
@@ -7362,6 +7374,95 @@ def _parse_tool_output_payload(raw_content: str) -> dict[str, Any]:
     return {"structured": True, "value": parsed}
 
 
+def _recent_failed_fs_read_path_from_transcript(
+    transcript_store: TranscriptStore | None,
+    sid: SessionId,
+) -> str:
+    if transcript_store is None:
+        return ""
+    try:
+        entries = list(transcript_store.list_entries(sid))
+    except (OSError, ValueError, TypeError):
+        return ""
+    recent_entries = entries[-24:]
+    for index in range(len(recent_entries) - 1, -1, -1):
+        entry = recent_entries[index]
+        if str(getattr(entry, "role", "")).strip() != "assistant":
+            continue
+        content = str(getattr(entry, "content_preview", "") or "")
+        if not content:
+            continue
+        match = _FAILED_FS_READ_SUMMARY_RE.search(content)
+        if match is None:
+            continue
+        path = _clean_explicit_path_token(match.group("path"))
+        if "[REDACTED:" not in path and _looks_like_explicit_path_token(path):
+            return path
+        for previous in reversed(recent_entries[max(0, index - 4) : index]):
+            if str(getattr(previous, "role", "")).strip() != "user":
+                continue
+            proposal = _build_explicit_memory_intent_proposal(
+                str(getattr(previous, "content_preview", "") or "")
+            )
+            if proposal is None or str(proposal.tool_name) != "fs.read":
+                continue
+            previous_path = _clean_explicit_path_token(str(proposal.arguments.get("path", "")))
+            if _looks_like_explicit_path_token(previous_path):
+                return previous_path
+    return ""
+
+
+def _filename_match_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", Path(value).name.casefold())
+
+
+def _best_similar_file_path_from_listing(
+    tool_output: Any,
+    *,
+    failed_path: str,
+) -> str:
+    failed_name = Path(failed_path).name
+    failed_token = _filename_match_token(failed_name)
+    failed_stem_token = _filename_match_token(Path(failed_name).stem)
+    if not failed_name or not failed_token:
+        return ""
+    payload = _parse_tool_output_payload(str(getattr(tool_output, "content", "") or ""))
+    if not isinstance(payload, Mapping) or not bool(payload.get("ok", False)):
+        return ""
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return ""
+
+    best_path = ""
+    best_distance = 10_000
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        entry_kind = str(entry.get("type", "")).strip().casefold()
+        if entry_kind in {"dir", "directory"}:
+            continue
+        path = str(entry.get("path", "")).strip()
+        name = str(entry.get("name", "")).strip() or Path(path).name
+        read_path = name if "[REDACTED:" in path else path
+        if not read_path or not name or "[REDACTED:" in read_path:
+            continue
+        if name.casefold() == failed_name.casefold():
+            return read_path
+
+        name_token = _filename_match_token(name)
+        stem_token = _filename_match_token(Path(name).stem)
+        if not name_token:
+            continue
+        distance = _levenshtein_distance_at_most(failed_token, name_token, limit=1)
+        if distance is None and failed_stem_token and stem_token:
+            distance = _levenshtein_distance_at_most(failed_stem_token, stem_token, limit=1)
+        if distance is None or distance >= best_distance:
+            continue
+        best_path = read_path
+        best_distance = distance
+    return best_path
+
+
 def _safe_navigation_urlsplit(url: str) -> SplitResult | None:
     try:
         return urlsplit(url)
@@ -8097,6 +8198,58 @@ def _direct_tool_output_response_without_synthesis(
         if str(record.get("tool_name", "")).strip()
     }
     if not tool_names or not tool_names <= {"fs.read", "fs.list"}:
+        return ""
+    return _summarize_tool_outputs_for_user_response(
+        records,
+        header="Completed action result",
+    )
+
+
+def _supplemental_evidence_read_response(
+    supplemental_entries: Sequence[Mapping[str, Any]],
+) -> str:
+    lines: list[str] = []
+    for entry in supplemental_entries:
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, Mapping) or not metadata.get("ephemeral_evidence_read"):
+            continue
+        content = str(entry.get("content", "")).strip()
+        if not content:
+            continue
+        preview_lines, truncated = _preview_multiline_output(content)
+        if not preview_lines:
+            continue
+        if not lines:
+            lines.append("Evidence read:")
+        lines.extend(preview_lines)
+        if truncated:
+            lines.append("... (truncated)")
+    return "\n".join(lines)
+
+
+def _direct_user_visible_tool_output_fallback(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    supplemental_entries: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    evidence_read_response = _supplemental_evidence_read_response(supplemental_entries)
+    if evidence_read_response:
+        return evidence_read_response
+
+    tool_names = {
+        str(record.get("tool_name", "")).strip()
+        for record in records
+        if str(record.get("tool_name", "")).strip()
+    }
+    direct_summary_tool_names = {
+        "fs.read",
+        "fs.list",
+        "note.list",
+        "note.search",
+        "todo.list",
+        "reminder.list",
+    }
+    if not tool_names or not tool_names <= direct_summary_tool_names:
         return ""
     return _summarize_tool_outputs_for_user_response(
         records,
@@ -11359,6 +11512,215 @@ class SessionImplMixin(HandlerMixinBase):
             if canonical and canonical not in rejected_tool_names:
                 rejected_tool_names.append(canonical)
 
+        async def _try_execute_similar_file_read_recovery(
+            *,
+            source_proposal: ActionProposal,
+            list_tool_output: Any,
+        ) -> None:
+            nonlocal executed, rejected
+            if _SIMILAR_FILE_READ_INTENT_SOURCE not in source_proposal.data_sources:
+                return
+            failed_path = _recent_failed_fs_read_path_from_transcript(
+                getattr(self, "_transcript_store", None),
+                sid,
+            )
+            if not failed_path:
+                return
+            read_path = _best_similar_file_path_from_listing(
+                list_tool_output,
+                failed_path=failed_path,
+            )
+            if not read_path:
+                return
+
+            read_tool_name = ToolName("fs.read")
+            read_arguments = {
+                "path": read_path,
+                "max_bytes": 1048576,
+                "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
+            }
+            read_proposal = ActionProposal(
+                action_id="explicit-fs-similar-file-read",
+                tool_name=read_tool_name,
+                arguments=read_arguments,
+                reasoning=(
+                    "Read the current fs.list result that matches the previous "
+                    "missing filename typo."
+                ),
+                data_sources=[
+                    "user_text:explicit_file_intent",
+                    _SIMILAR_FILE_READ_INTENT_SOURCE,
+                    "tool_output:fs.list",
+                    "transcript:previous_fs_read_failure",
+                ],
+            )
+            await self._event_bus.publish(
+                ToolProposed(
+                    session_id=sid,
+                    actor="daemon_recovery",
+                    tool_name=read_tool_name,
+                    arguments=dict(read_arguments),
+                )
+            )
+            read_pep_decision = self._pep.evaluate(
+                read_tool_name,
+                pep_arguments_for_policy_evaluation(read_tool_name, read_arguments),
+                planner_context.context,
+            )
+            read_monitor_decision = self._monitor.evaluate(
+                user_goal=validated.firewall_result.sanitized_text,
+                actions=[read_proposal],
+                operator_owned_cli_input=control_plane_operator_owned_cli_input,
+            )
+            if read_monitor_decision.kind != MonitorDecisionType.REJECT:
+                self._monitor_reject_counts[sid] = 0
+            await self._event_bus.publish(
+                MonitorEvaluated(
+                    session_id=sid,
+                    actor="monitor",
+                    tool_name=read_tool_name,
+                    decision=read_monitor_decision.kind.value,
+                    reason=read_monitor_decision.reason,
+                )
+            )
+            read_risk_score = read_pep_decision.risk_score or 0.0
+            read_cp_eval = await _call_control_plane(
+                self,
+                "evaluate_action",
+                tool_name=str(read_tool_name),
+                arguments=dict(read_arguments),
+                monitor_arguments=dict(read_arguments),
+                origin=planner_context.planner_origin,
+                risk_tier=_risk_tier_from_score(read_risk_score),
+                declared_domains=[],
+                session_tainted=session_tainted,
+                trusted_input=control_plane_trusted_input,
+                operator_owned_cli_input=control_plane_operator_owned_cli_input,
+                raw_user_text=control_plane_user_text,
+            )
+            await self._publish_control_plane_evaluation(
+                sid=sid,
+                tool_name=read_tool_name,
+                arguments=read_arguments,
+                evaluation=read_cp_eval,
+            )
+            cp_user_reason_codes = list(getattr(read_cp_eval, "reason_codes", []) or [])
+            for vote in getattr(getattr(read_cp_eval, "consensus", None), "votes", []) or []:
+                if str(
+                    getattr(getattr(vote, "decision", ""), "value", getattr(vote, "decision", ""))
+                ) not in {
+                    "BLOCK",
+                    "FLAG",
+                }:
+                    continue
+                for reason_code in getattr(vote, "reason_codes", []) or []:
+                    if reason_code not in cp_user_reason_codes:
+                        cp_user_reason_codes.append(reason_code)
+
+            final_kind, final_reason = combine_monitor_with_policy(
+                pep_kind=read_pep_decision.kind.value,
+                monitor=read_monitor_decision,
+                risk_score=read_risk_score,
+                auto_approve_threshold=self._policy_loader.policy.risk_policy.auto_approve_threshold,
+                block_threshold=self._policy_loader.policy.risk_policy.block_threshold,
+            )
+            if read_cp_eval.decision == ControlDecision.BLOCK:
+                final_kind = "reject"
+                final_reason = ",".join(cp_user_reason_codes) or "control_plane_block"
+            elif (
+                read_cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
+                and final_kind == "allow"
+            ):
+                final_kind = "reject"
+                final_reason = ",".join(cp_user_reason_codes) or "control_plane_confirmation"
+            elif (
+                final_kind == "reject"
+                and read_pep_decision.kind.value != "reject"
+                and read_monitor_decision.kind == MonitorDecisionType.REJECT
+            ):
+                final_reason = _action_monitor_rejection_reason(read_monitor_decision)
+            if final_kind == "reject" and final_reason == "pep_reject":
+                final_reason = (
+                    read_pep_decision.reason_code.strip()
+                    or read_pep_decision.reason
+                    or "pep_reject"
+                )
+
+            if self._lockdown_manager.should_block_all_actions(sid):
+                final_kind, final_reason = ("reject", "session_in_lockdown")
+
+            rate_decision = self._rate_limiter.evaluate(
+                session_id=str(sid),
+                user_id=str(validated.user_id),
+                tool_name=str(read_tool_name),
+                consume=False,
+            )
+            if rate_decision.block:
+                final_kind, final_reason = ("reject", f"rate_limit:{rate_decision.reason}")
+                await self._handle_lockdown_transition(
+                    sid,
+                    trigger="rate_limit",
+                    reason=rate_decision.reason,
+                )
+            elif rate_decision.require_confirmation and final_kind == "allow":
+                final_kind, final_reason = ("reject", rate_decision.reason)
+
+            if final_kind != "allow":
+                rejected += 1
+                _record_rejected_tool_name(str(read_tool_name))
+                rejection_reasons_for_user.append(final_reason or read_pep_decision.reason)
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="daemon_recovery",
+                        tool_name=read_tool_name,
+                        reason=final_reason or read_pep_decision.reason,
+                    )
+                )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(
+                        TraceToolCall(
+                            tool_name=str(read_tool_name),
+                            arguments=dict(read_arguments),
+                            pep_decision=read_pep_decision.kind.value,
+                            monitor_decision=read_monitor_decision.kind.value,
+                            control_plane_decision=read_cp_eval.decision.value,
+                            final_decision=final_kind,
+                            executed=False,
+                            execution_success=None,
+                        )
+                    )
+                return
+
+            execution_result = await self._execute_approved_action(
+                sid=sid,
+                user_id=validated.user_id,
+                tool_name=read_tool_name,
+                arguments=read_arguments,
+                capabilities=planner_context.effective_caps,
+                approval_actor="daemon_recovery",
+                execution_action=read_cp_eval.action,
+            )
+            if execution_result.checkpoint_id:
+                checkpoint_ids.append(execution_result.checkpoint_id)
+            if execution_result.success:
+                executed += 1
+            if execution_result.tool_output is not None:
+                executed_tool_outputs.append(execution_result.tool_output)
+            if self._trace_recorder is not None:
+                trace_tool_calls.append(
+                    TraceToolCall(
+                        tool_name=str(read_tool_name),
+                        arguments=dict(read_arguments),
+                        pep_decision=read_pep_decision.kind.value,
+                        monitor_decision=read_monitor_decision.kind.value,
+                        control_plane_decision=read_cp_eval.decision.value,
+                        final_decision=final_kind,
+                        executed=True,
+                        execution_success=execution_result.success,
+                    )
+                )
+
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
             proposal_tool_name = canonical_tool_name(str(proposal.tool_name), warn_on_alias=False)
@@ -12238,6 +12600,16 @@ class SessionImplMixin(HandlerMixinBase):
                         executed=True,
                         execution_success=success,
                     )
+                )
+            if (
+                success
+                and tool_output is not None
+                and proposal_tool_name == "fs.list"
+                and _SIMILAR_FILE_READ_INTENT_SOURCE in proposal.data_sources
+            ):
+                await _try_execute_similar_file_read_recovery(
+                    source_proposal=proposal,
+                    list_tool_output=tool_output,
                 )
 
         return SessionMessageExecutionResult(
@@ -13866,7 +14238,10 @@ class SessionImplMixin(HandlerMixinBase):
                             else synthesized_response
                         )
                     else:
-                        fallback_response = _intermediate_tool_summary_response(
+                        fallback_response = _direct_user_visible_tool_output_fallback(
+                            chat_serialized_tool_outputs,
+                            supplemental_entries=supplemental_entries,
+                        ) or _intermediate_tool_summary_response(
                             tool_output_summary,
                             page_title_metadata_block=fallback_page_title_metadata_block,
                         )
@@ -13925,7 +14300,11 @@ class SessionImplMixin(HandlerMixinBase):
                         response_text = (
                             f"{synthesized_response}\n\n{tool_output_summary}"
                             if synthesized_response
-                            else _intermediate_tool_summary_response(
+                            else _direct_user_visible_tool_output_fallback(
+                                chat_serialized_tool_outputs,
+                                supplemental_entries=supplemental_entries,
+                            )
+                            or _intermediate_tool_summary_response(
                                 tool_output_summary,
                                 page_title_metadata_block=fallback_page_title_metadata_block,
                             )
