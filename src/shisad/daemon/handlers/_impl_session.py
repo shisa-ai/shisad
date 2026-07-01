@@ -4129,6 +4129,7 @@ def _should_prefix_output_confirmation(
     *,
     output_result: Any,
     user_goal: str = "",
+    allowed_structural_response_text: str = "",
 ) -> bool:
     if not bool(getattr(output_result, "require_confirmation", False)):
         return False
@@ -4139,7 +4140,11 @@ def _should_prefix_output_confirmation(
     }
     url_findings = list(getattr(output_result, "url_findings", []) or [])
     if reason_codes and reason_codes <= {"unallowlisted_url"} and url_findings:
-        normalized_goal = _normalized_url_for_confirmation_match(user_goal)
+        normalized_goal = _normalized_url_for_confirmation_match(
+            " ".join(
+                part for part in (user_goal, allowed_structural_response_text) if str(part).strip()
+            )
+        )
         user_requested_urls = {
             _normalized_url_for_confirmation_match(match.group(0))
             for match in _OUTPUT_URL_RE.finditer(normalized_goal)
@@ -8259,6 +8264,20 @@ def _direct_user_visible_tool_output_fallback(
 
 def _is_result_followup_query(user_text: str) -> bool:
     normalized = normalize_intent_text(user_text).lower().strip(" ?.!:")
+    result_subject_tokens = {
+        "action",
+        "actions",
+        "approval",
+        "confirmation",
+        "file",
+        "it",
+        "read",
+        "that",
+        "tool",
+        "tools",
+        "write",
+    }
+    normalized_tokens = set(normalized.split())
     if normalized in {
         "what was the result",
         "what is the result",
@@ -8270,6 +8289,8 @@ def _is_result_followup_query(user_text: str) -> bool:
         "show me the result",
         "show me what you found",
     }:
+        return True
+    if normalized.startswith("what happened") and (normalized_tokens & result_subject_tokens):
         return True
     return bool(
         re.fullmatch(
@@ -14012,6 +14033,7 @@ class SessionImplMixin(HandlerMixinBase):
         tool_output_summary = ""
         protected_tool_output_start: int | None = None
         protected_tool_output_end: int | None = None
+        allowed_structural_response_text = ""
         model_facing_chat_serialized_tool_outputs = _model_facing_serialized_tool_outputs(
             chat_serialized_tool_outputs
         )
@@ -14238,12 +14260,16 @@ class SessionImplMixin(HandlerMixinBase):
                             else synthesized_response
                         )
                     else:
-                        fallback_response = _direct_user_visible_tool_output_fallback(
+                        direct_fallback_response = _direct_user_visible_tool_output_fallback(
                             chat_serialized_tool_outputs,
                             supplemental_entries=supplemental_entries,
-                        ) or _intermediate_tool_summary_response(
-                            tool_output_summary,
-                            page_title_metadata_block=fallback_page_title_metadata_block,
+                        )
+                        fallback_response = (
+                            direct_fallback_response
+                            or _intermediate_tool_summary_response(
+                                tool_output_summary,
+                                page_title_metadata_block=fallback_page_title_metadata_block,
+                            )
                         )
                         protected_tool_output_start = (
                             len(action_resolution_text) + 2
@@ -14256,6 +14282,8 @@ class SessionImplMixin(HandlerMixinBase):
                             else fallback_response
                         )
                         protected_tool_output_end = len(response_text)
+                        if direct_fallback_response:
+                            allowed_structural_response_text = direct_fallback_response
                 elif response_text.strip():
                     appended_summary = (
                         user_visible_tool_output_summary
@@ -14286,6 +14314,7 @@ class SessionImplMixin(HandlerMixinBase):
                         response_text = direct_tool_response
                         protected_tool_output_start = 0
                         protected_tool_output_end = len(response_text)
+                        allowed_structural_response_text = direct_tool_response
                     else:
                         post_tool_synthesis_result = await self._synthesize_post_tool_response(
                             execution=execution,
@@ -14297,18 +14326,23 @@ class SessionImplMixin(HandlerMixinBase):
                         protected_tool_output_start = (
                             len(synthesized_response) + 2 if synthesized_response else 0
                         )
-                        response_text = (
-                            f"{synthesized_response}\n\n{tool_output_summary}"
-                            if synthesized_response
-                            else _direct_user_visible_tool_output_fallback(
+                        direct_fallback_response = ""
+                        if not synthesized_response:
+                            direct_fallback_response = _direct_user_visible_tool_output_fallback(
                                 chat_serialized_tool_outputs,
                                 supplemental_entries=supplemental_entries,
                             )
+                        response_text = (
+                            f"{synthesized_response}\n\n{tool_output_summary}"
+                            if synthesized_response
+                            else direct_fallback_response
                             or _intermediate_tool_summary_response(
                                 tool_output_summary,
                                 page_title_metadata_block=fallback_page_title_metadata_block,
                             )
                         )
+                        if direct_fallback_response:
+                            allowed_structural_response_text = direct_fallback_response
                         protected_tool_output_end = len(response_text)
         if (
             validated.session_mode == SessionMode.ADMIN_CLEANROOM
@@ -14430,6 +14464,7 @@ class SessionImplMixin(HandlerMixinBase):
             if _should_prefix_output_confirmation(
                 output_result=output_result,
                 user_goal=output_confirmation_user_goal,
+                allowed_structural_response_text=allowed_structural_response_text,
             ):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
         if not public_sensitive_taints and not output_result.blocked:

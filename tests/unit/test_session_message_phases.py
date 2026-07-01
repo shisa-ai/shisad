@@ -5651,6 +5651,55 @@ async def test_rc_lus_shortcut_result_followup_ignores_other_target_tool_output(
 
 
 @pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_answers_what_happened_for_confirmed_write() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    entries = [
+        TranscriptEntry(
+            role="tool",
+            content_hash="0" * 64,
+            content_preview=json.dumps(
+                {
+                    "ok": True,
+                    "path": "/tmp/shisad-live-user-smoke/lus-approval-check.txt",
+                    "written": True,
+                    "bytes_written": 30,
+                    "error": "",
+                }
+            ),
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "fs.write",
+                "tool_success": True,
+            },
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="What happened with the file write?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: appended.update(kwargs),
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "What happened with the file write?"},
+        sanitized_text="What happened with the file write?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    text = str(response["response"])
+    assert text == "Confirmed action result:\n- fs.write: completed."
+    assert appended["content"] == text
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_marks_unsynthesized_tool_summary_as_intermediate() -> None:
     harness = _FinalizeEvidenceHarness()
     synthesis = _PostToolSynthesisPlanner("")
@@ -5708,6 +5757,61 @@ async def test_finalize_response_failed_fs_read_uses_user_visible_failure_summar
     assert "intermediate tool output" not in text
     assert "Tool results summary:" not in text
     assert "[REDACTED" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_direct_fs_read_summary_skips_output_confirmation() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url="https://example.test/readme",
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "path": "README.md",
+                        "content": (
+                            "# ShisaD\n\nRelease notes live at https://example.test/readme."
+                        ),
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="",
+        sanitized_text="read README.md",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert not text.startswith("[CONFIRMATION REQUIRED]")
+    assert text.startswith("Completed action result:\n- fs.read read README.md.")
+    assert "https://example.test/readme" in text
 
 
 @pytest.mark.asyncio
