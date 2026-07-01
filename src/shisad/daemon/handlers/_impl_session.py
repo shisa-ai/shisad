@@ -3921,6 +3921,45 @@ def _rewrite_explicit_memory_intent_planner_result(
     )
 
 
+def _rewrite_explicit_filesystem_intent_planner_failure(
+    *,
+    user_text: str,
+    planner_result: PlannerResult,
+    pep: Any,
+    context: PolicyContext,
+) -> PlannerResult:
+    explicit_proposals = _build_explicit_multi_intent_proposals(user_text)
+    if not explicit_proposals:
+        return planner_result
+
+    if not all(
+        canonical_tool_name(str(proposal.tool_name), warn_on_alias=False) in {"fs.read", "fs.list"}
+        and proposal.arguments.get("filesystem_intent")
+        == _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT
+        for proposal in explicit_proposals
+    ):
+        return planner_result
+
+    evaluated = [
+        EvaluatedProposal(
+            proposal=explicit_proposal,
+            decision=pep.evaluate(
+                explicit_proposal.tool_name,
+                explicit_proposal.arguments,
+                context,
+            ),
+        )
+        for explicit_proposal in explicit_proposals
+    ]
+    return PlannerResult(
+        output=PlannerOutput(assistant_response="", actions=explicit_proposals),
+        evaluated=evaluated,
+        attempts=planner_result.attempts,
+        provider_response=planner_result.provider_response,
+        messages_sent=planner_result.messages_sent,
+    )
+
+
 def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
@@ -10962,7 +11001,17 @@ class SessionImplMixin(HandlerMixinBase):
                 messages_sent=(),
             )
 
-        if not planner_failure_code:
+        if planner_failure_code:
+            recovered_planner_result = _rewrite_explicit_filesystem_intent_planner_failure(
+                user_text=validated.firewall_result.sanitized_text,
+                planner_result=planner_result,
+                pep=self._pep,
+                context=planner_context.context,
+            )
+            if recovered_planner_result is not planner_result:
+                planner_result = recovered_planner_result
+                planner_failure_code = ""
+        else:
             planner_result = _rewrite_plain_greeting_planner_result(
                 user_text=validated.firewall_result.sanitized_text,
                 planner_result=planner_result,
