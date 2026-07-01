@@ -92,6 +92,7 @@ _PROCESS_GROUP_WRAPPER_CODE = (
 )
 _TRANSPORT_ERROR_STRING_MAX_CHARS = 2000
 _TRANSPORT_ERROR_ESCAPED_CONTAINER_STATE_LIMIT = 4096
+_SESSION_NOTIFICATION_DRAIN_SEC = 0.1
 _TRANSPORT_ERROR_HUMAN_SECRET_LABEL = (
     r"(?:(?!(?:tokens?|secrets?|passwords?|credentials?|keys?)\b)"
     r"[A-Za-z0-9]+[ _]+){0,4}"
@@ -1116,7 +1117,7 @@ class AcpAdapter(CodingAgentAdapter):
                         ),
                         "prompt",
                     )
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(_SESSION_NOTIFICATION_DRAIN_SEC)
                     duration_ms = int((time.monotonic() - start) * 1000)
                     raw_updates = tuple(recorder.notifications)
                     if not _extract_summary(raw_updates):

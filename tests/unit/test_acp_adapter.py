@@ -381,6 +381,25 @@ async def test_m3_acp_adapter_collects_summary_mode_cost_and_raw_updates(
 
 
 @pytest.mark.asyncio
+async def test_m3_acp_adapter_drains_post_prompt_summary_chunks(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("opencode"))
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\nPOST_RETURN_SUMMARY\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="opencode",
+            read_only=True,
+        ),
+    )
+
+    assert result.result.success is True
+    assert result.result.summary == "Task ACP_CANARY_OK"
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_empty_config_surface_applies_only_model_override(
     tmp_path: Path,
 ) -> None:

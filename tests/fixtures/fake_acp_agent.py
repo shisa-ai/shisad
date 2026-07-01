@@ -115,6 +115,7 @@ class FakeAcpAgent(Agent):
         self._exit_stderr = exit_stderr
         self._exit_code = exit_code
         self._omit_config_options = omit_config_options
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
 
@@ -323,7 +324,24 @@ class FakeAcpAgent(Agent):
                 f"model={config.get('model', '')} "
                 f"permission_mode={config.get('permission_mode', '')}"
             )
-            if self._large_single_line_summary_bytes > 0:
+            if "POST_RETURN_SUMMARY" in prompt_text:
+                await self._client.session_update(
+                    session_id=session_id,
+                    update=update_agent_message_text("Task"),
+                )
+
+                async def _send_late_summary() -> None:
+                    await asyncio.sleep(0.05)
+                    if self._client is not None:
+                        await self._client.session_update(
+                            session_id=session_id,
+                            update=update_agent_message_text(" ACP_CANARY_OK"),
+                        )
+
+                task = asyncio.create_task(_send_late_summary())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+            elif self._large_single_line_summary_bytes > 0:
                 payload = f"{self._agent_name} large-response mode={mode} " + (
                     "x" * self._large_single_line_summary_bytes
                 )
