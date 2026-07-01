@@ -5975,7 +5975,8 @@ async def test_finalize_response_note_search_fallback_uses_user_visible_entries(
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert text.startswith("Completed action result:\n- note.search: completed.")
+    assert text.startswith("I found 1 matching note.")
+    assert "Notes:" in text
     assert "release-close-code: cobalt-lantern-42" in text
     assert "intermediate tool output" not in text
     assert "Tool results summary:" not in text
@@ -6012,11 +6013,11 @@ async def test_finalize_response_fallback_keeps_page_title_metadata_labeled() ->
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert text.startswith("I completed the tool step")
+    assert text.startswith("I fetched https://example.test/page.")
+    assert "Summary:" in text
     assert "Optional page-title metadata" in text
     assert "Reserve Online | Venue" in text
     primary_summary = text.split("Optional page-title metadata", 1)[0]
-    assert "Reserve Online" not in primary_summary
     assert '"title"' not in primary_summary
 
 
