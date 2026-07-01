@@ -35,6 +35,12 @@ unlinked until the `v0.8.0` tag exists.
   rows are cleared on session teardown, and task snapshots stay bound to the
   session that owns them.
 
+- **Task list inspection is scriptable.** `shisad task list` now reports an
+  explicit empty state, and `shisad task list --json` prints raw scheduler
+  metadata for local diagnostics. JSON output can include user-authored task
+  text, schedule metadata, delivery-channel display fields, and identifiers, so
+  redact it before sharing logs.
+
 - **Polished dashboard tables.** The dashboard clarifies channel status and
   inactive states so you can see at a glance which channels are connected,
   idle, or unconfigured.

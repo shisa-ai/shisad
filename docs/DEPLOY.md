@@ -512,6 +512,16 @@ Troubleshooting:
 
 ---
 
+## Operational CLI Output
+
+Treat diagnostic JSON from shisad CLI commands as local operational data.
+`shisad task list --json` prints the raw scheduler task-list response, which
+can include user-authored task text, schedule metadata, delivery-channel
+display fields, and identifiers. Do not paste this output into shared logs,
+support tickets, or issue reports without reviewing and redacting it.
+
+---
+
 ## Host Hardening (Optional)
 
 For production or internet-facing deployments:
