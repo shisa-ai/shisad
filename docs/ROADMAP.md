@@ -67,15 +67,15 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.7.3` is published: open-thread/topic resume, fuzzy timeline/archive
   search, procedure-experience candidates, and timeline/procedure security
   hardening extend the structured long-term memory line.
-- `v0.8.0b0` is published: it is the first v0.8 beta checkpoint and publishes
+- `v0.8.0b0` has been published as the first v0.8 beta checkpoint and publishes
   the reviewed post-`v0.7.4` bug-fix stack while the stable v0.8 UX overhaul
   remains in progress.
 - `v0.8.0b1` is the current v0.8 beta checkpoint: it adds structured
   turn-authorization fixes, explicit shell-command clarity, and channel target
   scoping on top of `v0.8.0b0`.
-- `v0.8.0` is in active development: the current focus is stable
-  command-channel approval parity, TUI/confirmation polish, and the broader UX
-  overhaul foundation.
+- `v0.8.0` is in release-close review: the stable release content covers
+  command-channel approval parity, TUI/confirmation polish, task panels, and the
+  broader UX overhaul foundation. It is not tagged or published yet.
 
 ## Milestones
 
@@ -372,10 +372,11 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ### v0.8 — UX overhaul
 
-- v0.8.0 stable prep — command-channel approvals are not CLI-only for supported
-  routine paths; Discord advertises native Approve/Reject handling with CLI
-  fallback, TOTP stays on trusted command channels when possible, and stronger
-  method-specific proofs route to browser/helper/signer surfaces truthfully
+- v0.8.0 release-close candidate — command-channel approvals are not CLI-only
+  for supported routine paths; Discord advertises native Approve/Reject handling
+  with CLI fallback, TOTP stays on trusted command channels when possible, and
+  stronger method-specific proofs route to browser/helper/signer surfaces
+  truthfully
 - TUI visual overhaul — theme system, chat/dashboard/confirmation chrome
 - CLI & config — TOML config file, help text, error messages, naming consistency
 - Onboarding — first-run wizard, tutorial bot, upgrade flow

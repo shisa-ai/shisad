@@ -11,22 +11,87 @@ Normal releases use semver-style versions; beta checkpoints and exceptional
 follow-up patch lines may use PEP 440-compatible prerelease or four-segment
 versions when the release checklist records that choice.
 
-## [0.8.0] - In development
+## 0.8.0 Release Content - 2026-07-01
 
-This stable v0.8.0 prep line turns the beta authorization fixes into the
-command-channel approval and UX-overhaul foundation.
+This stable v0.8.0 release content turns the beta authorization fixes into the
+command-channel approval and UX-overhaul foundation. This section stays
+unlinked until the `v0.8.0` tag exists.
 
 ### Added
 
+- **Themeable terminal and web surfaces.** shisad now ships a shared theme
+  foundation with built-in dark, light, and high-contrast palettes, imports
+  common btop color themes, and applies consistent styling across the chat TUI,
+  dashboard, and web view. Choose a theme with `SHISAD_UI_THEME` or point at a
+  custom file with `SHISAD_UI_THEME_PATH`.
+
+- **Refreshed chat TUI.** Chat sessions get new chrome with clearer status,
+  styled evidence references, and status that refreshes from structured session
+  state, including channel and user metadata as the session evolves.
+
+- **Structured plan-step and task panels in the TUI.** The TUI surfaces the
+  agent's active plan steps and the task snapshot for the current session as
+  first-class panels that update as steps and tasks change. Stale plan-step
+  rows are cleared on session teardown, and task snapshots stay bound to the
+  session that owns them.
+
+- **Polished dashboard tables.** The dashboard clarifies channel status and
+  inactive states so you can see at a glance which channels are connected,
+  idle, or unconfigured.
+
+- **UI motion fallback.** Progress indicators and animated elements degrade
+  gracefully on terminals without full motion support, and UI glyph selection
+  respects locale precedence.
+
 - **Command-channel approvals are no longer CLI-only for routine actions.**
   Discord-originated routine approvals advertise native Approve/Reject handling
-  with CLI fallback, TOTP prompts can stay on the originating trusted channel,
-  and the first-principles gate now asserts the shipped response and structured
-  pending-action capability state.
+  with CLI fallback, and TOTP prompts can stay on the originating trusted
+  channel when it supports them.
 
 - **Terminal fallback rendering is covered as an explicit contract.** Basic
-  terminal/TUI pending-action text stays plain, ANSI-free, and includes approve,
-  reject, preview, and warning details for TOTP fallback paths.
+  terminal and TUI pending-action text stays plain, ANSI-free, and includes
+  approve, reject, preview, and warning details, so TOTP fallback paths remain
+  usable on any terminal.
+
+### Changed
+
+- **The command channel is the preferred approval surface.** Approvals and TOTP
+  prompts prefer the channel that issued the command, falling back to CLI only
+  when the originating channel cannot handle the interaction. Where the channel
+  supports it, TOTP is preferred over less-suitable channel methods. The
+  chosen-channel principle is now spelled out in the design philosophy.
+
+- **Approval capability advertising is honest.** Pending approvals only offer
+  factors that are actually available for that row: expired rows suppress their
+  affordances, unavailable WebAuthn routes are not offered, and channel-bound
+  user identities are checked through the approval path. If no suitable factor
+  is available, approval fails closed instead of pointing at an unusable prompt.
+
+### Fixed
+
+- **Discord approval and TOTP flows are more robust.** Discord approvals recover
+  from missing modal fields, no-components responses, and defer paths without
+  losing TOTP guidance; fenced or preview-formatted confirmations parse
+  correctly; and unsupported inline chat approvals no longer appear on channels
+  that cannot handle them.
+
+- **Task and plan snapshots survive session lifecycle events.** Task snapshots
+  are bound to the current session and daemon state so a restored session keeps
+  its tasks; session teardown consistently clears plan steps through shared
+  cleanup; and the task surface falls back safely when structured data is
+  unavailable.
+
+- **Session and planner identity binding is consistent.** CLI, helper, and
+  session reject paths bind to the correct user identity, and planner resolve
+  fallbacks pick the right one.
+
+- **Coding-agent sessions honor the configured model override.** Agent Client
+  Protocol coding-agent sessions default to the configured model override so
+  model negotiation works consistently.
+
+- **UI themes fail safely.** Broken, empty, or undecodable theme files fall
+  back to the selected built-in palette instead of crashing or silently loading
+  an unrelated default.
 
 ## [0.8.0b1] - 2026-06-25
 

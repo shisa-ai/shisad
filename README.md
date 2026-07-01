@@ -51,14 +51,14 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. The latest published line is
-`v0.7.4`. A `v0.8.0b1` beta checkpoint is available for users who want the
-post-`v0.7.4` bug-fix stack, and `v0.8.0` is in active development as the
-stable command-channel approval and UX-overhaul line.
+This repo is public and still pre-alpha. The latest published stable line is
+`v0.7.4`, and `v0.8.0b1` is the latest published beta checkpoint. The `v0.8.0`
+stable release content is in release-close review and is not tagged or
+published yet.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.0 | Active development: command-channel approvals, TUI/confirmation polish, and stable UX-overhaul foundation |
+| v0.8.0 | Release-close candidate: command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
