@@ -4536,9 +4536,16 @@ def task() -> None:
 
 
 @task.command("list")
-def task_list() -> None:
+@click.option("--json", "as_json", is_flag=True, help="Print the raw task list JSON.")
+def task_list(as_json: bool) -> None:
     config = _get_config()
     result = rpc_call(config, "task.list", response_model=TaskListResult)
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.tasks:
+        _echo("No scheduled tasks", fg="yellow")
+        return
     for item in result.tasks:
         click.echo(f"{item.id} {item.name} enabled={item.enabled}")
 

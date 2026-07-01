@@ -5417,6 +5417,12 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             "I need explicit confirmation because the proposed read action was not "
             "grounded in the committed goal or a prior approved step."
         )
+    if any(code == "planner_output_invalid" for code in codes):
+        return (
+            "I couldn't complete that request because the planner returned an invalid "
+            "response after repair attempts. Please retry; if it repeats, check the "
+            "configured planner route or use a simpler request."
+        )
     if any(code == "resource:outside_workspace_root" for code in codes):
         return (
             "I couldn't complete that request because the requested path is outside "

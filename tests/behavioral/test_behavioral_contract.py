@@ -2412,7 +2412,8 @@ async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown
         assert int(reply.get("blocked_actions", 0)) >= 1
         assert int(reply.get("confirmation_required_actions", 0)) == 0
         assert reply.get("planner_error") == "planner_output_invalid"
-        assert "planner_output_invalid" in str(reply.get("response", ""))
+        assert "planner_output_invalid" not in str(reply.get("response", ""))
+        assert "planner returned an invalid response" in str(reply.get("response", ""))
 
         responses = await harness.client.call(
             "audit.query",
@@ -2448,7 +2449,8 @@ async def test_contract_planner_validation_error_is_not_rewritten_as_greeting(
     assert int(reply.get("blocked_actions", 0)) >= 1
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert reply.get("planner_error") == "planner_output_invalid"
-    assert "planner_output_invalid" in response_text
+    assert "planner_output_invalid" not in response_text
+    assert "planner returned an invalid response" in response_text
     assert "how can i help" not in response_text.lower()
 
 

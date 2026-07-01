@@ -944,6 +944,8 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["git", "diff", "--repo", ".", "--ref", "HEAD~1", "--max-lines", "10"])
     _invoke_ok(runner, ["git", "log", "--repo", ".", "--limit", "3"])
     assert "t-1 backup enabled=True" in _invoke_ok(runner, ["task", "list"]).output
+    task_json = json.loads(_invoke_ok(runner, ["task", "list", "--json"]).output)
+    assert task_json["tasks"][0]["id"] == "t-1"
     assert "demo@1.0.0" in _invoke_ok(runner, ["skill", "list"]).output
     _invoke_ok(runner, ["skill", "review", str(skill_path)])
     _invoke_ok(runner, ["skill", "install", str(skill_path), "--approve-untrusted"])
@@ -1206,6 +1208,33 @@ def test_cli_commands_route_through_rpc_wrapper(
         "session.import",
         {"archive_path": "/tmp/s-1.shisad-session.zip"},
     ) in calls
+
+
+def test_task_list_empty_state_and_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = {"tasks": [], "count": 0}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    assert "No scheduled tasks" in _invoke_ok(runner, ["task", "list"]).output
+    assert json.loads(_invoke_ok(runner, ["task", "list", "--json"]).output) == {
+        "tasks": [],
+        "count": 0,
+    }
+    assert calls == [("task.list", None), ("task.list", None)]
 
 
 def test_gh53_web_search_cli_renders_unconfigured_backend_diagnostic(
