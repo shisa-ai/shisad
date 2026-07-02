@@ -191,6 +191,7 @@ bash runner/harness.sh start --no-debug
 uv run python - <<'PY'
 import asyncio
 import os
+from pathlib import Path
 
 from shisad.core.api.transport import ControlClient
 
@@ -198,7 +199,7 @@ from shisad.core.api.transport import ControlClient
 async def main() -> None:
     socket_path = os.environ["SHISAD_SOCKET_PATH"]
     channel_id = os.environ["SHISAD_DISCORD_DEFAULT_CHANNEL_ID"]
-    client = ControlClient(socket_path)
+    client = ControlClient(Path(socket_path))
     await client.connect()
     try:
         result = await client.call(
