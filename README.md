@@ -52,13 +52,12 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published stable line is
-`v0.7.4`, and `v0.8.0b1` is the latest published beta checkpoint. The `v0.8.0`
-stable release content is in release-close review and is not tagged or
-published yet.
+`v0.8.0`. The `v0.8.0b1` beta checkpoint remains available for users who need
+the prerelease structured-authorization checkpoint.
 
 | Version | Focus |
 |---------|-------|
-| v0.8.0 | Release-close candidate: command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
+| v0.8.0 | Command-channel approvals, TUI/confirmation polish, task panels, and stable UX-overhaul foundation |
 | v0.8 beta | Bug-fix checkpoint before the stable UX overhaul (latest beta: `v0.8.0b1`) |
 | v0.7 | Memory foundation + long-term memory/evaluation surfaces (latest published: `v0.7.4`) |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |

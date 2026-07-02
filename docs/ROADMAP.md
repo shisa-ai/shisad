@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-06-29*
+*Updated: 2026-07-02*
 *Status: Active*
 
 ## Goal
@@ -70,12 +70,12 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.8.0b0` has been published as the first v0.8 beta checkpoint and publishes
   the reviewed post-`v0.7.4` bug-fix stack while the stable v0.8 UX overhaul
   remains in progress.
-- `v0.8.0b1` is the current v0.8 beta checkpoint: it adds structured
+- `v0.8.0b1` is the latest v0.8 beta checkpoint: it adds structured
   turn-authorization fixes, explicit shell-command clarity, and channel target
   scoping on top of `v0.8.0b0`.
-- `v0.8.0` is in release-close review: the stable release content covers
-  command-channel approval parity, TUI/confirmation polish, task panels, and the
-  broader UX overhaul foundation. It is not tagged or published yet.
+- `v0.8.0` is published: the stable release covers command-channel approval
+  parity, TUI/confirmation polish, task panels, and the broader UX overhaul
+  foundation.
 
 ## Milestones
 
@@ -372,7 +372,7 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ### v0.8 — UX overhaul
 
-- v0.8.0 release-close candidate — command-channel approvals are not CLI-only
+- v0.8.0 stable release — command-channel approvals are not CLI-only
   for supported routine paths; Discord advertises native Approve/Reject handling
   with CLI fallback, TOTP stays on trusted command channels when possible, and
   stronger method-specific proofs route to browser/helper/signer surfaces
