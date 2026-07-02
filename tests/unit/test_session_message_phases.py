@@ -2403,7 +2403,18 @@ def test_lus_similar_file_read_phrase_sets_recovery_marker() -> None:
     assert proposal is not None
     assert proposal.tool_name == ToolName("fs.list")
     assert "user_text:explicit_file_intent" in proposal.data_sources
+    assert "user_text:explicit_similar_file_recovery_intent" in proposal.data_sources
     assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
+
+
+def test_lus_similar_file_find_phrase_sets_recovery_without_read_marker() -> None:
+    proposal = impl_session._build_explicit_memory_intent_proposal("Can you find the similar file?")
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("fs.list")
+    assert "user_text:explicit_file_intent" in proposal.data_sources
+    assert "user_text:explicit_similar_file_recovery_intent" in proposal.data_sources
+    assert "user_text:explicit_similar_file_read_intent" not in proposal.data_sources
 
 
 def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args() -> None:
@@ -2453,6 +2464,7 @@ def test_lus_rewrite_restores_daemon_recovery_marker_when_planner_matches_args()
     assert proposal.tool_name == ToolName("fs.list")
     assert proposal.arguments == planner_proposal.arguments
     assert "user_text:explicit_file_intent" in proposal.data_sources
+    assert "user_text:explicit_similar_file_recovery_intent" in proposal.data_sources
     assert "user_text:explicit_similar_file_read_intent" in proposal.data_sources
 
 

@@ -194,6 +194,7 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+_SIMILAR_FILE_RECOVERY_INTENT_SOURCE = "user_text:explicit_similar_file_recovery_intent"
 _SIMILAR_FILE_READ_INTENT_SOURCE = "user_text:explicit_similar_file_read_intent"
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
 _ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
@@ -3659,7 +3660,10 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
         flags=re.IGNORECASE,
     )
     if similar_file_match is not None:
-        data_sources = ["user_text:explicit_file_intent"]
+        data_sources = [
+            "user_text:explicit_file_intent",
+            _SIMILAR_FILE_RECOVERY_INTENT_SOURCE,
+        ]
         if similar_file_match.group("read_after_list"):
             data_sources.append(_SIMILAR_FILE_READ_INTENT_SOURCE)
         return ActionProposal(
@@ -11759,7 +11763,10 @@ class SessionImplMixin(HandlerMixinBase):
             list_tool_output: Any,
         ) -> None:
             nonlocal executed, rejected
-            if _SIMILAR_FILE_READ_INTENT_SOURCE not in source_proposal.data_sources:
+            if not (
+                _SIMILAR_FILE_RECOVERY_INTENT_SOURCE in source_proposal.data_sources
+                or _SIMILAR_FILE_READ_INTENT_SOURCE in source_proposal.data_sources
+            ):
                 return
             failed_path = _recent_failed_fs_read_path_from_transcript(
                 getattr(self, "_transcript_store", None),
@@ -11780,6 +11787,15 @@ class SessionImplMixin(HandlerMixinBase):
                 "max_bytes": 1048576,
                 "filesystem_intent": _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT,
             }
+            read_data_sources = [
+                "user_text:explicit_file_intent",
+                "tool_output:fs.list",
+                "transcript:previous_fs_read_failure",
+            ]
+            if _SIMILAR_FILE_RECOVERY_INTENT_SOURCE in source_proposal.data_sources:
+                read_data_sources.append(_SIMILAR_FILE_RECOVERY_INTENT_SOURCE)
+            if _SIMILAR_FILE_READ_INTENT_SOURCE in source_proposal.data_sources:
+                read_data_sources.append(_SIMILAR_FILE_READ_INTENT_SOURCE)
             read_proposal = ActionProposal(
                 action_id="explicit-fs-similar-file-read",
                 tool_name=read_tool_name,
@@ -11788,12 +11804,7 @@ class SessionImplMixin(HandlerMixinBase):
                     "Read the current fs.list result that matches the previous "
                     "missing filename typo."
                 ),
-                data_sources=[
-                    "user_text:explicit_file_intent",
-                    _SIMILAR_FILE_READ_INTENT_SOURCE,
-                    "tool_output:fs.list",
-                    "transcript:previous_fs_read_failure",
-                ],
+                data_sources=read_data_sources,
             )
             await self._event_bus.publish(
                 ToolProposed(
@@ -12846,7 +12857,10 @@ class SessionImplMixin(HandlerMixinBase):
                 success
                 and tool_output is not None
                 and proposal_tool_name == "fs.list"
-                and _SIMILAR_FILE_READ_INTENT_SOURCE in proposal.data_sources
+                and (
+                    _SIMILAR_FILE_RECOVERY_INTENT_SOURCE in proposal.data_sources
+                    or _SIMILAR_FILE_READ_INTENT_SOURCE in proposal.data_sources
+                )
             ):
                 await _try_execute_similar_file_read_recovery(
                     source_proposal=proposal,

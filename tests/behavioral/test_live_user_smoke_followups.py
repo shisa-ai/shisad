@@ -200,6 +200,53 @@ async def test_lus_similar_file_recovery_reads_matched_file_after_typo(
 
 
 @pytest.mark.asyncio
+async def test_lus_similar_file_recovery_reads_after_find_only_followup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        (harness.workspace_root / "README.md").write_text(
+            "# Recovery README\n\nrelease-close recovered from find-only follow-up\n",
+            encoding="utf-8",
+        )
+        sid = await _create_session(harness.client)
+        first = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Please read READMEE.md and summarize it.",
+            },
+        )
+        first_outputs = _extract_tool_outputs(first)
+        assert first_outputs["fs.read"][0].get("error") == "path_not_found"
+
+        recovered = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Can you find the similar file?",
+            },
+        )
+
+    assert recovered.get("lockdown_level") == "normal"
+    assert int(recovered.get("blocked_actions", 0)) == 0
+    assert int(recovered.get("confirmation_required_actions", 0)) == 0
+    assert recovered.get("pending_confirmation_ids") == []
+    assert int(recovered.get("executed_actions", 0)) == 2
+    outputs = _extract_tool_outputs(recovered)
+    assert "fs.list" in outputs
+    assert "fs.read" in outputs
+    read_payload = outputs["fs.read"][-1]
+    assert read_payload.get("ok") is True
+    assert "release-close recovered from find-only follow-up" in str(
+        read_payload.get("content", "")
+    )
+    response_text = str(recovered.get("response", ""))
+    assert "release-close recovered from find-only follow-up" in response_text
+    assert "intermediate tool output" not in response_text
+
+
+@pytest.mark.asyncio
 async def test_lus_similar_file_recovery_survives_initial_planner_validation_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
