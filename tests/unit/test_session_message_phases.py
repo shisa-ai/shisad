@@ -6022,6 +6022,62 @@ async def test_finalize_response_fallback_keeps_page_title_metadata_labeled() ->
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_web_fetch_fallback_uses_current_user_url_goal() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    requested_url = "https://example.test/page"
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "content": "Example page content.",
+                        "url": requested_url,
+                    },
+                    sort_keys=True,
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+        content=f"Fetch {requested_url} and summarize it.",
+        sanitized_text=f"Fetch {requested_url} and summarize it.",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert not text.startswith("[CONFIRMATION REQUIRED]")
+    assert text.startswith(f"I fetched {requested_url}.")
+    assert "Summary:" in text
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_pending_actions_keep_title_metadata_labeled(
     tmp_path: Path,
 ) -> None:

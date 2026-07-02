@@ -8406,6 +8406,20 @@ def _direct_evidence_response_after_synthesis_failure(
     return "\n".join(lines).strip()
 
 
+def _direct_evidence_output_confirmation_allowance(
+    records: Sequence[Mapping[str, Any]],
+    response_text: str,
+) -> str:
+    tool_names = {
+        str(record.get("tool_name", "")).strip()
+        for record in records
+        if str(record.get("tool_name", "")).strip()
+    }
+    if "web.fetch" in tool_names:
+        return ""
+    return response_text
+
+
 def _supplemental_evidence_read_response(
     supplemental_entries: Sequence[Mapping[str, Any]],
 ) -> str:
@@ -14501,7 +14515,12 @@ class SessionImplMixin(HandlerMixinBase):
                         protected_tool_output_end = len(response_text)
                         if evidence_fallback or direct_fallback_response:
                             allowed_structural_response_text = (
-                                evidence_fallback or direct_fallback_response
+                                _direct_evidence_output_confirmation_allowance(
+                                    chat_serialized_tool_outputs,
+                                    evidence_fallback,
+                                )
+                                if evidence_fallback
+                                else direct_fallback_response
                             )
                 elif response_text.strip():
                     appended_summary = (
@@ -14578,7 +14597,12 @@ class SessionImplMixin(HandlerMixinBase):
                             )
                         if evidence_fallback or direct_fallback_response:
                             allowed_structural_response_text = (
-                                evidence_fallback or direct_fallback_response
+                                _direct_evidence_output_confirmation_allowance(
+                                    chat_serialized_tool_outputs,
+                                    evidence_fallback,
+                                )
+                                if evidence_fallback
+                                else direct_fallback_response
                             )
                         protected_tool_output_end = len(response_text)
         if (
