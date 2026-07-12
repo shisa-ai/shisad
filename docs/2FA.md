@@ -800,6 +800,10 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
   `approval_contract_hash` and the current tool-schema `action_digest`. Missing,
   legacy, or inconsistent bindings are terminalized rather than authorized;
   unresolved executing attempts become `outcome_unknown`.
+- The lifetime binding includes the optional `execute_after` cooldown, which
+  must be timezone-aware and fall between creation and expiry. Loaded
+  confirmation evidence is accepted only when its payload hash and duplicated
+  proof/backend metadata validate canonically against the selected backend.
 - `action_summary` is excluded so display text cannot change the
   cryptographic binding.
 

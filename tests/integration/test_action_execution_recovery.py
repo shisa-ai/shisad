@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core.api.schema import SessionCreateParams
-from shisad.core.approval import legacy_software_confirmation_requirement
+from shisad.core.approval import canonical_sha256, legacy_software_confirmation_requirement
 from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
 from shisad.core.request_context import RequestContext
@@ -68,6 +68,20 @@ def _control_plane_history_rows(config: DaemonConfig) -> list[dict[str, object]]
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _replace_with_self_asserted_fabricated_evidence(row: dict[str, object]) -> None:
+    evidence = row["confirmation_evidence"]
+    assert isinstance(evidence, dict)
+    payload = evidence["evidence_payload"]
+    assert isinstance(payload, dict)
+    fabricated_payload = dict(payload)
+    fabricated_payload["backend_id"] = "fabricated.backend"
+    fabricated_hash = canonical_sha256(fabricated_payload)
+    evidence["backend_id"] = "fabricated.backend"
+    evidence["evidence_payload"] = fabricated_payload
+    evidence["evidence_hash"] = fabricated_hash
+    row["approval_evidence_hash"] = fabricated_hash
 
 
 async def _wait_for_recovery_accounting(impl: object) -> None:
@@ -1169,6 +1183,7 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "top_level_expiry_extension",
         "valid_backend_method_drift",
         "valid_fallback_drift",
+        "fabricated_confirmation_evidence",
         "action_digest_mismatch",
         "retry_generation_exhausted",
         "principal_mismatch",
@@ -1308,6 +1323,8 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
             "mode": "allow_levels",
             "allow_levels": ["software"],
         }
+    elif tamper == "fabricated_confirmation_evidence":
+        _replace_with_self_asserted_fabricated_evidence(durable_rows[0])
     elif tamper == "action_digest_mismatch":
         durable_rows[0]["action_digest"] = "sha256:" + ("f" * 64)
     elif tamper == "retry_generation_exhausted":
@@ -1354,7 +1371,7 @@ tools:
 
 @pytest.mark.parametrize(
     "recovery_case",
-    ["exact-key", "changed-key", "adapter-error"],
+    ["exact-key", "changed-key", "fabricated-evidence", "adapter-error"],
 )
 @pytest.mark.asyncio
 async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effect(
@@ -1455,10 +1472,13 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     finally:
         await services.shutdown()
 
-    if recovery_case == "changed-key":
+    if recovery_case in {"changed-key", "fabricated-evidence"}:
         pending_path = config.data_dir / "pending_actions.json"
         durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
-        durable_rows[0]["stable_idempotency_key"] = stable_key + "-changed"
+        if recovery_case == "changed-key":
+            durable_rows[0]["stable_idempotency_key"] = stable_key + "-changed"
+        else:
+            _replace_with_self_asserted_fabricated_evidence(durable_rows[0])
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
     restarted = await DaemonServices.build(config)
@@ -1468,7 +1488,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         restarted_handlers = DaemonControlHandlers(services=restarted)
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
         await _wait_for_recovery_accounting(restarted_handlers._impl)
-        if recovery_case == "changed-key":
+        if recovery_case in {"changed-key", "fabricated-evidence"}:
             assert recovered.status == "outcome_unknown"
             assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
             assert recovered.retry_generation == 0

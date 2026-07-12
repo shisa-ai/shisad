@@ -2440,6 +2440,102 @@ def confirmation_evidence_satisfies_requirement(
     return confirmation_evidence_capabilities(evidence).covers(requirement.require_capabilities)
 
 
+def confirmation_evidence_is_canonical(
+    *,
+    evidence: ConfirmationEvidence,
+    backend: ConfirmationBackend,
+    confirmation_id: str,
+) -> bool:
+    """Validate backend identity and every duplicated field in hashed evidence."""
+
+    payload = evidence.evidence_payload
+    if not isinstance(payload, dict):
+        return False
+    try:
+        expected_hash = canonical_sha256(payload)
+    except (TypeError, ValueError):
+        return False
+    if (
+        evidence.schema_version != "shisad.confirmation_evidence.v1"
+        or payload.get("schema_version") != evidence.schema_version
+        or not evidence.evidence_hash
+        or not hmac.compare_digest(evidence.evidence_hash, expected_hash)
+        or evidence.backend_id != backend.backend_id
+        or evidence.binding_scope != backend.binding_scope
+        or evidence.third_party_verifiable != backend.third_party_verifiable
+    ):
+        return False
+
+    backend_method = backend.method.strip()
+    allowed_methods = {backend_method}
+    if isinstance(backend, TOTPBackend):
+        allowed_methods.add("recovery_code")
+    if evidence.method not in allowed_methods:
+        return False
+
+    expected_level: ConfirmationLevel | None
+    if isinstance(backend, SignerConfirmationAdapter):
+        if (
+            _clamp_signer_review_surface(
+                default=backend.review_surface,
+                reported=evidence.review_surface,
+            )
+            != evidence.review_surface
+        ):
+            return False
+        expected_level = _signer_level_for_result(
+            default_level=backend.level,
+            review_surface=evidence.review_surface,
+            blind_sign_detected=evidence.blind_sign_detected,
+        )
+    else:
+        if evidence.review_surface != backend.review_surface:
+            return False
+        expected_level = backend.level
+    if evidence.level != expected_level:
+        return False
+
+    duplicated_fields: dict[str, Any] = {
+        "schema_version": evidence.schema_version,
+        "backend_id": evidence.backend_id,
+        "method": evidence.method,
+        "confirmation_id": confirmation_id,
+        "decision_nonce": evidence.decision_nonce,
+        "approval_envelope_hash": evidence.approval_envelope_hash,
+        "action_digest": evidence.action_digest,
+        "approver_principal_id": evidence.approver_principal_id,
+        "credential_id": evidence.credential_id,
+        "fallback_used": evidence.fallback_used,
+    }
+    for key, expected in duplicated_fields.items():
+        default: Any = False if key == "fallback_used" else ""
+        if payload.get(key, default) != expected:
+            return False
+
+    optional_duplicates: dict[str, Any] = {
+        "intent_envelope_hash": evidence.intent_envelope_hash,
+        "signature": evidence.signature,
+        "signer_key_id": evidence.signer_key_id,
+        "review_surface": evidence.review_surface.value,
+        "blind_sign_detected": evidence.blind_sign_detected,
+    }
+    signer_payload_fields = frozenset(optional_duplicates)
+    if isinstance(backend, SignerConfirmationAdapter):
+        if not signer_payload_fields.issubset(payload):
+            return False
+    elif (
+        evidence.intent_envelope_hash
+        or evidence.signature
+        or evidence.signer_key_id
+        or evidence.blind_sign_detected
+    ):
+        return False
+    for key, expected in optional_duplicates.items():
+        if key in payload and payload[key] != expected:
+            return False
+    return True
+
+
 def confirmation_evidence_capabilities(evidence: ConfirmationEvidence) -> ConfirmationCapabilities:
     """Derive the effective runtime capabilities proven by one evidence record."""
 

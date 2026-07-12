@@ -78,6 +78,7 @@ from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
+    pending_action_state_view,
     pending_approval_contract_hash,
     pep_arguments_for_policy_evaluation,
 )
@@ -1608,14 +1609,27 @@ async def test_f2_pending_purge_failed_rollback_surfaces_degradation(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "drift",
-    ["arguments", "origin_identity", "expiry", "fallback"],
+    [
+        "arguments",
+        "origin_identity",
+        "expiry",
+        "fallback",
+        "execute_after_removed",
+        "execute_after_shortened",
+        "execute_after_naive",
+    ],
 )
 async def test_f2_confirmation_rejects_valid_shape_approval_contract_drift(
     tmp_path: Path,
     drift: str,
 ) -> None:
     harness = _AtomicConfirmationHarness(tmp_path)
-    pending = _pending_action(nonce="expected")
+    execute_after = (
+        datetime.now(UTC) + timedelta(seconds=30)
+        if drift.startswith("execute_after_")
+        else None
+    )
+    pending = _pending_action(nonce="expected", execute_after=execute_after)
     if drift == "arguments":
         pending.arguments = {"query": "different query"}
     elif drift == "origin_identity":
@@ -1628,6 +1642,12 @@ async def test_f2_confirmation_rejects_valid_shape_approval_contract_drift(
             mode="allow_levels",
             allow_levels=[ConfirmationLevel.SOFTWARE],
         )
+    elif drift == "execute_after_removed":
+        pending.execute_after = None
+    elif drift == "execute_after_shortened":
+        pending.execute_after = datetime.now(UTC) - timedelta(seconds=1)
+    elif drift == "execute_after_naive":
+        pending.execute_after = datetime.now()
     harness._pending_actions[pending.confirmation_id] = pending
     harness._persist_pending_actions()
 
@@ -1639,6 +1659,55 @@ async def test_f2_confirmation_rejects_valid_shape_approval_contract_drift(
     assert result["reason"] == "approval_contract_mismatch"
     assert pending.status == "failed"
     assert pending.decision_nonce == ""
+    assert harness.effect_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ["backend_id", "evidence_hash"])
+async def test_f2_confirmation_rejects_noncanonical_backend_evidence(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+
+    class _SelfAssertingBackend(SoftwareConfirmationBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backend_id = "self-asserting.default"
+
+        def verify(
+            self,
+            *,
+            pending_action: object,
+            params: dict[str, object],
+            now: datetime | None = None,
+        ) -> ConfirmationEvidence:
+            evidence = super().verify(
+                pending_action=pending_action,
+                params=params,
+                now=now,
+            )
+            return evidence.model_copy(
+                update=(
+                    {"backend_id": "fabricated.backend"}
+                    if tamper == "backend_id"
+                    else {"evidence_hash": "sha256:" + ("0" * 64)}
+                )
+            )
+
+    harness._confirmation_backend_registry.register(_SelfAssertingBackend())
+    pending = _pending_action(nonce="expected")
+    pending.selected_backend_id = "self-asserting.default"
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "approval_contract_mismatch"
+    assert pending.confirmation_evidence is None
     assert harness.effect_calls == 0
 
 
@@ -1733,6 +1802,39 @@ def test_f1_live_pending_with_expiry_nonce_backfill_is_persisted(tmp_path: Path)
     assert loaded.decision_nonce
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
     assert persisted["decision_nonce"] == loaded.decision_nonce
+
+
+@pytest.mark.parametrize("drift", ["removed", "shortened", "naive"])
+def test_f2_load_terminalizes_execute_after_contract_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    pending = _pending_action(
+        nonce="expected",
+        execute_after=datetime.now(UTC) + timedelta(seconds=30),
+    )
+    payload = HandlerImplementation._pending_to_dict(pending)
+    if drift == "removed":
+        payload["execute_after"] = ""
+    elif drift == "shortened":
+        payload["execute_after"] = (
+            pending.created_at + timedelta(seconds=1)
+        ).isoformat()
+    else:
+        assert pending.execute_after is not None
+        payload["execute_after"] = pending.execute_after.replace(tzinfo=None).isoformat()
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_contract_mismatch"
+    assert loaded.decision_nonce == ""
 
 
 def test_f1_legacy_confirmation_alias_migrates_to_distinct_action_identity(
@@ -3694,6 +3796,8 @@ async def test_f1_confirmation_resolution_carries_complete_audit_and_task_identi
         "thread_id": "",
         "workspace_hint": "",
     }
+    assert rejected.result_id == pending_action_state_view(rejected_pending).identity.result_id
+    assert rejected.result_id.startswith("result-")
 
 
 @pytest.mark.parametrize("event_type", [ToolApproved, ToolRejected, ToolExecuted])
@@ -3973,6 +4077,8 @@ async def test_f1_decision_race_observes_disabled_task_before_execution(
         if isinstance(event, ToolRejected) and event.reason == "task_disabled"
     ]
     assert len(cancelled) == 1
+    assert cancelled[0].result_id == pending_action_state_view(pending).identity.result_id
+    assert cancelled[0].result_id.startswith("result-")
 
 
 @pytest.mark.asyncio
@@ -4499,10 +4605,12 @@ async def test_m1_pf11_confirmation_cooldown_active_and_expired(tmp_path) -> Non
     assert float(cooling["retry_after_seconds"]) > 0
 
     harness = _ConfirmationImplHarness(tmp_path)
-    harness._pending_actions["c-1"] = _pending_action(
-        nonce="expected",
-        execute_after=datetime.now(UTC) - timedelta(seconds=1),
-    )
+    now = datetime.now(UTC)
+    expired_cooldown = _pending_action(nonce="expected")
+    expired_cooldown.created_at = now - timedelta(seconds=5)
+    expired_cooldown.execute_after = now - timedelta(seconds=1)
+    _bind_pending_action_identity(expired_cooldown)
+    harness._pending_actions["c-1"] = expired_cooldown
     expired = await harness.do_action_confirm(
         {"confirmation_id": "c-1", "decision_nonce": "expected"}
     )
@@ -4560,7 +4668,7 @@ async def test_gh42_direct_confirmation_rechecks_expiry_after_short_cooldown(
     now = datetime.now(UTC)
     pending = _pending_action(
         nonce="expected",
-        execute_after=now + timedelta(seconds=0.08),
+        execute_after=now + timedelta(seconds=0.03),
     )
     pending.expires_at = now + timedelta(seconds=0.04)
     _bind_pending_action_identity(pending)

@@ -127,6 +127,7 @@ def pending_approval_contract_payload(pending: Any) -> dict[str, Any]:
         "approval": {
             "reason": str(getattr(pending, "reason", "")),
             "created_at": getattr(pending, "created_at", None),
+            "execute_after": getattr(pending, "execute_after", None),
             "expires_at": getattr(pending, "expires_at", None),
             "required_level": str(
                 getattr(getattr(pending, "required_level", ""), "value", "")

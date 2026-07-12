@@ -30,6 +30,7 @@ from shisad.core.approval import (
     approval_envelope_hash,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
+    confirmation_evidence_is_canonical,
     confirmation_evidence_satisfies_requirement,
     generate_recovery_codes,
     generate_totp_secret,
@@ -422,6 +423,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         identity = pending_action_state_view(pending).identity
         created_at = getattr(pending, "created_at", None)
+        execute_after = getattr(pending, "execute_after", None)
         expires_at = getattr(pending, "expires_at", None)
         envelope_expires_at = getattr(approval_envelope, "expires_at", None)
         if not (
@@ -436,6 +438,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
         ):
             return "approval_contract_mismatch"
         if expires_at != envelope_expires_at or expires_at <= created_at:
+            return "approval_contract_mismatch"
+        if execute_after is not None and (
+            not isinstance(execute_after, datetime)
+            or execute_after.tzinfo is None
+            or execute_after.utcoffset() is None
+            or execute_after < created_at
+            or execute_after > expires_at
+        ):
             return "approval_contract_mismatch"
         if (
             str(getattr(approval_envelope, "approval_id", "")).strip()
@@ -555,6 +565,20 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 != stored_envelope_hash
                 or str(getattr(evidence, "action_digest", "")).strip()
                 != expected_action_digest
+                or str(getattr(evidence, "decision_nonce", "")).strip()
+                != str(getattr(pending, "decision_nonce", "")).strip()
+                or bool(getattr(evidence, "fallback_used", False))
+                != bool(getattr(pending, "fallback_used", False))
+                or not isinstance(getattr(evidence, "verified_at", None), datetime)
+                or evidence.verified_at.tzinfo is None
+                or evidence.verified_at.utcoffset() is None
+                or evidence.verified_at < created_at
+                or evidence.verified_at > expires_at
+                or not confirmation_evidence_is_canonical(
+                    evidence=evidence,
+                    backend=backend,
+                    confirmation_id=identity.confirmation_id,
+                )
                 or not confirmation_evidence_satisfies_requirement(
                     requirement=self._pending_confirmation_requirement(pending),
                     evidence=evidence,
@@ -562,6 +586,18 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             ):
                 return "approval_contract_mismatch"
+            allowed_channel_principals = {
+                str(item).strip()
+                for item in getattr(pending, "allowed_channel_principals", ())
+                if str(item).strip()
+            }
+            if allowed_channel_principals:
+                evidence_channel_principal = str(
+                    evidence.evidence_payload.get("channel_principal_id", "")
+                    or evidence.approver_principal_id
+                ).strip()
+                if evidence_channel_principal not in allowed_channel_principals:
+                    return "approval_contract_mismatch"
         return ""
 
     def _pending_approval_stale_reason(self, pending: Any) -> str:
@@ -680,9 +716,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
         rollback_snapshot: _PendingAttemptSnapshot | None = None,
     ) -> None:
         decision_timestamp = datetime.now(UTC).isoformat()
-        event_fields = self._pending_approval_event_fields(
-            pending,
-            decision_timestamp=decision_timestamp,
+        decision_nonce = str(getattr(pending, "decision_nonce", ""))
+        evidence_fields = approval_audit_fields(
+            getattr(pending, "confirmation_evidence", None)
         )
         self._commit_pending_terminal_state(
             pending,
@@ -690,6 +726,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             reason=status_reason,
             rollback_snapshot=rollback_snapshot,
         )
+        event_fields = self._pending_approval_event_fields(
+            pending,
+            decision_timestamp=decision_timestamp,
+        )
+        event_fields["approval_decision_nonce"] = decision_nonce
+        event_fields.update(evidence_fields)
         self._sync_task_confirmation_status(pending)
         self._record_task_confirmation_failure(pending)
         await self._event_bus.publish(
@@ -2197,9 +2239,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         "reason": "cooldown_active",
                         "retry_after_seconds": round(remaining, 3),
                     }
-                pending.execute_after = None
-            else:
-                pending.execute_after = None
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             await self._commit_and_publish_pending_terminal(
                 pending,
