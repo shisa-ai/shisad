@@ -1024,6 +1024,7 @@ async def _decision(
             decision_nonce = ""
             channel_principal_id = ""
             selected_backend_method = ""
+            used_unfiltered_fallback = False
             pending_queries = (
                 {
                     "confirmation_id": confirmation_id,
@@ -1068,6 +1069,7 @@ async def _decision(
                         channel_principal_id = allowed_channel_principals[0]
                     break
                 if decision_nonce:
+                    used_unfiltered_fallback = "status" not in pending_query
                     break
             if not decision_nonce:
                 print("decision_nonce not found for confirmation_id")
@@ -1086,10 +1088,15 @@ async def _decision(
                 else:
                     print(f"{selected_backend_method} cannot use a typed proof code here")
                     return
-            elif method == "action.confirm" and selected_backend_method in {
-                "totp",
-                "recovery_code",
-            }:
+            elif (
+                method == "action.confirm"
+                and selected_backend_method
+                in {
+                    "totp",
+                    "recovery_code",
+                }
+                and not used_unfiltered_fallback
+            ):
                 required_label = approval_proof_placeholder(selected_backend_method).strip("<>")
                 print(f"{required_label} required for this confirmation")
                 return

@@ -1901,6 +1901,13 @@ async def test_gh34_browser_navigate_alias_uses_task_specific_url_selection() ->
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": "Open the specific Tabelog result."}
     )
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-1",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
+    validated.delivery_target = delivery_target
     planner_context = SessionMessagePlannerContextResult(
         validated=validated,
         conversation_context="",
@@ -1982,6 +1989,9 @@ async def test_gh34_browser_navigate_alias_uses_task_specific_url_selection() ->
 
     assert result.executed == 2
     assert len(harness.execution_calls) == 2
+    for execution_call in harness.execution_calls:
+        assert execution_call["workspace_id"] == validated.workspace_id
+        assert execution_call["delivery_target"] == delivery_target
     navigate_call = harness.execution_calls[1]
     assert str(navigate_call["tool_name"]) == "browser.navigate"
     assert navigate_call["arguments"] == {

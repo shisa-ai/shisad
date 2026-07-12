@@ -775,12 +775,29 @@ async def test_g3_due_run_honors_caution_and_full_lockdown(
 
         background_sid = await _wait_for_task_session_id(client, task_id=str(created["id"]))
 
-        await _wait_for_audit_event(
+        approved = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=background_sid,
+            predicate=lambda _event: True,
+        )
+        executed = await _wait_for_audit_event(
             client,
             event_type="ToolExecuted",
             session_id=background_sid,
             predicate=lambda _event: True,
         )
+        for event in (approved, executed):
+            data = event.get("data", {})
+            assert data.get("user_id") == "alice"
+            assert data.get("workspace_id") == "ws1"
+            assert data.get("task_id") == created["id"]
+            assert data.get("delivery_target") == {
+                "channel": "discord",
+                "recipient": "ops-room",
+                "thread_id": "",
+                "workspace_hint": "",
+            }
 
         await client.call(
             "lockdown.set",

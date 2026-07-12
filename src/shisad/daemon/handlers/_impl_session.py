@@ -12218,6 +12218,11 @@ class SessionImplMixin(HandlerMixinBase):
             execution_result = await self._execute_approved_action(
                 sid=sid,
                 user_id=validated.user_id,
+                workspace_id=validated.workspace_id,
+                delivery_target=(
+                    validated.delivery_target
+                    or _stored_delivery_target_from_session(validated.session)
+                ),
                 tool_name=read_tool_name,
                 arguments=read_arguments,
                 capabilities=planner_context.effective_caps,
@@ -13106,6 +13111,11 @@ class SessionImplMixin(HandlerMixinBase):
             execution_result = await self._execute_approved_action(
                 sid=sid,
                 user_id=validated.user_id,
+                workspace_id=validated.workspace_id,
+                delivery_target=(
+                    validated.delivery_target
+                    or _stored_delivery_target_from_session(validated.session)
+                ),
                 tool_name=canonical_proposal_tool,
                 arguments=proposal_arguments,
                 capabilities=planner_context.effective_caps,

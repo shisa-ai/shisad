@@ -1748,6 +1748,78 @@ async def test_f1_tui_decision_retries_unfiltered_nonce_lookup_after_expiry(
 
 
 @pytest.mark.asyncio
+async def test_f1_tui_expired_stepup_confirmation_reaches_locked_daemon_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                if payload.get("status") == "pending":
+                    return {"actions": [], "count": 0}
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-expired-stepup",
+                            "decision_nonce": "nonce-expired-stepup",
+                            "lifecycle_state": "expired",
+                            "selected_backend_method": "totp",
+                            "allowed_channel_principals": ["alice"],
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": False, "reason": "approval_expired"}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-expired-stepup",
+    )
+
+    assert created[0].calls[-1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "conf-expired-stepup",
+            "decision_nonce": "nonce-expired-stepup",
+            "principal_id": "alice",
+        },
+    )
+    assert not any("totp-code required" in line for line in printed)
+    assert any("approval_expired" in line for line in printed)
+
+
+@pytest.mark.asyncio
 async def test_tui_decision_fails_when_targeted_nonce_lookup_misses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

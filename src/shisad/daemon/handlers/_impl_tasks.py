@@ -599,6 +599,9 @@ class TasksImplMixin(HandlerMixinBase):
         execution = await self._execute_approved_action(
             sid=sid,
             user_id=UserId(str(getattr(task, "created_by", ""))),
+            workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
+            task_id=str(task.id),
+            delivery_target=self._task_delivery_target(task),
             tool_name=_BACKGROUND_MESSAGE_SEND,
             arguments=delivery_arguments,
             capabilities=effective_capabilities,
