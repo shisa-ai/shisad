@@ -5283,6 +5283,10 @@ def test_action_pending_sanitizes_terminal_preview_output(
                 }
             ],
             "count": 1,
+            "persistence_status": "degraded",
+            "persistence_reason": "pending_state_rollback_uncommitted",
+            "persistence_stage": "parent_fsync",
+            "persistence_transition": "queue",
         }
         if response_model is None:
             return payload
@@ -5302,6 +5306,10 @@ def test_action_pending_sanitizes_terminal_preview_output(
     assert "expires_at=2026-07-12T11:00:00+00:00" in result.output
     assert "origin_turn=turn-42" in result.output
     assert "state_reason=approval_expired" in result.output
+    assert "Pending-state persistence is degraded" in result.output
+    assert "transition=queue" in result.output
+    assert "stage=parent_fsync" in result.output
+    assert "reason=pending_state_rollback_uncommitted" in result.output
     assert "preview line\nsecond line" in result.output
 
 

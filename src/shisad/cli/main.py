@@ -1918,6 +1918,18 @@ def _render_action_rows(
     *,
     status_filter: str | None = "pending",
 ) -> None:
+    if result.persistence_status == "degraded":
+        transition = sanitize_terminal_field(result.persistence_transition)
+        stage = sanitize_terminal_field(result.persistence_stage)
+        reason = sanitize_terminal_field(result.persistence_reason)
+        _echo(
+            "Pending-state persistence is degraded: "
+            f"transition={transition} stage={stage} reason={reason}. "
+            "Do not assume an unlisted or unresolved action is fresh; inspect retained state "
+            "and restart only after storage durability is restored.",
+            fg="red",
+            err=True,
+        )
     rows = result.actions
     if not rows:
         if status_filter is None:

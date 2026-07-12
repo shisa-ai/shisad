@@ -33,6 +33,7 @@ from shisad.core.approval import (
     hash_recovery_code,
     match_totp_window,
 )
+from shisad.core.atomic_state import AtomicWriteError, StatePersistenceDegradedError
 from shisad.core.events import (
     PlanAmended,
     SignerKeyRegistered,
@@ -84,6 +85,42 @@ _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
         "web.fetch",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingAttemptSnapshot:
+    status: str
+    status_reason: str
+    action_digest: str
+    approval_evidence_hash: str
+    execution_attempt_id: str
+    result_id: str
+    confirmation_evidence: ConfirmationEvidence | None
+
+
+def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
+    return _PendingAttemptSnapshot(
+        status=str(getattr(pending, "status", "pending")),
+        status_reason=str(getattr(pending, "status_reason", "")),
+        action_digest=str(getattr(pending, "action_digest", "")),
+        approval_evidence_hash=str(getattr(pending, "approval_evidence_hash", "")),
+        execution_attempt_id=str(getattr(pending, "execution_attempt_id", "")),
+        result_id=str(getattr(pending, "result_id", "")),
+        confirmation_evidence=getattr(pending, "confirmation_evidence", None),
+    )
+
+
+def _restore_pending_attempt_snapshot(
+    pending: Any,
+    snapshot: _PendingAttemptSnapshot,
+) -> None:
+    pending.status = snapshot.status
+    pending.status_reason = snapshot.status_reason
+    pending.action_digest = snapshot.action_digest
+    pending.approval_evidence_hash = snapshot.approval_evidence_hash
+    pending.execution_attempt_id = snapshot.execution_attempt_id
+    pending.result_id = snapshot.result_id
+    pending.confirmation_evidence = snapshot.confirmation_evidence
 
 
 def _channel_principal_rejection_reason(
@@ -496,6 +533,33 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "action_id": state_view.identity.action_id,
             "identity": state_view.identity.to_payload(),
             "lifecycle_state": state_view.lifecycle_state,
+        }
+
+    def _pending_state_degradation_fields(self) -> dict[str, str]:
+        degradation = getattr(self, "_pending_state_degradation", None)
+        if not isinstance(degradation, Mapping):
+            return {}
+        return {
+            "persistence_status": "degraded",
+            "persistence_reason": str(degradation.get("reason", "")),
+            "persistence_stage": str(degradation.get("stage", "")),
+            "persistence_transition": str(degradation.get("transition", "")),
+        }
+
+    def _pending_state_degraded_decision_response(
+        self,
+        *,
+        confirmation_id: str,
+        decision_field: Literal["confirmed", "rejected"],
+    ) -> dict[str, Any] | None:
+        fields = self._pending_state_degradation_fields()
+        if not fields:
+            return None
+        return {
+            decision_field: False,
+            "confirmation_id": confirmation_id,
+            "reason": "pending_state_persistence_degraded",
+            **fields,
         }
 
     def _sync_task_confirmation_status(self, pending: Any) -> None:
@@ -1277,9 +1341,19 @@ class ConfirmationImplMixin(HandlerMixinBase):
             rows.append(payload)
             if len(rows) >= limit:
                 break
-        return {"actions": rows, "count": len(rows)}
+        result: dict[str, Any] = {"actions": rows, "count": len(rows)}
+        result.update(self._pending_state_degradation_fields())
+        return result
 
     async def do_action_purge(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        degradation = self._pending_state_degradation_fields()
+        if degradation:
+            raise StatePersistenceDegradedError(
+                authority="pending_actions",
+                transition=degradation["persistence_transition"],
+                stage=degradation["persistence_stage"],
+                reason=degradation["persistence_reason"],
+            )
         session_filter = str(params.get("session_id") or "").strip()
         status_filter = str(params.get("status") or "terminal").strip().lower() or "terminal"
         older_than_days_raw = params.get("older_than_days")
@@ -1429,6 +1503,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
+        degraded_response = self._pending_state_degraded_decision_response(
+            confirmation_id=confirmation_id,
+            decision_field="confirmed",
+        )
+        if degraded_response is not None:
+            return degraded_response
         if self._pending_actions.get(confirmation_id) is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
         waited_for_short_cooldown = False
@@ -1673,6 +1753,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if lifecycle_response is not None:
             return lifecycle_response
         assert pending is not None
+        pre_decision_attempt = _capture_pending_attempt_snapshot(pending)
         disabled_task_response = await self._disabled_task_action_response(
             pending,
             confirmation_id=confirmation_id,
@@ -2195,6 +2276,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_at = datetime.fromisoformat(decision_timestamp)
+        if not str(getattr(pending, "action_digest", "")).strip():
+            approval_envelope = getattr(pending, "approval_envelope", None)
+            pending.action_digest = str(
+                getattr(approval_envelope, "action_digest", "")
+            ).strip()
+        pending.approval_evidence_hash = str(
+            getattr(pending.confirmation_evidence, "evidence_hash", "")
+        ).strip()
         if not str(getattr(pending, "execution_attempt_id", "")).strip():
             pending.execution_attempt_id = f"attempt-{uuid.uuid4().hex}"
         if not str(getattr(pending, "result_id", "")).strip():
@@ -2203,8 +2292,24 @@ class ConfirmationImplMixin(HandlerMixinBase):
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         pending.status = "executing"
         pending.status_reason = "confirmation_execution_started"
+        executing_attempt = _capture_pending_attempt_snapshot(pending)
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError as write_error:
+            _restore_pending_attempt_snapshot(pending, pre_decision_attempt)
+            if write_error.publication_may_have_committed:
+                try:
+                    self._persist_pending_actions()
+                except AtomicWriteError as rollback_error:
+                    _restore_pending_attempt_snapshot(pending, executing_attempt)
+                    self._pending_state_degradation = {
+                        "transition": "executing",
+                        "stage": rollback_error.stage.value,
+                        "reason": "pending_state_rollback_uncommitted",
+                    }
+                    raise rollback_error from write_error
+            raise
         self._sync_task_confirmation_status(pending)
-        self._persist_pending_actions()
         execution_result = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
@@ -2351,6 +2456,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             or str(params.get("reason", "")).strip()
             or pending.status
         )
+        self._persist_pending_actions()
         self._sync_task_confirmation_status(pending)
         task_auto_disabled = await self._record_task_run_outcome(
             str(getattr(pending, "task_id", "")),
@@ -2358,7 +2464,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
             cancel_pending=False,
             confirmation_id=str(getattr(pending, "confirmation_id", "")),
         )
-        self._persist_pending_actions()
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
             decision="approve" if success else "reject",
@@ -2397,6 +2502,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
+        degraded_response = self._pending_state_degraded_decision_response(
+            confirmation_id=confirmation_id,
+            decision_field="rejected",
+        )
+        if degraded_response is not None:
+            return degraded_response
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}

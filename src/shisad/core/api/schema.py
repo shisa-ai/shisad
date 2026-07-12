@@ -1931,6 +1931,10 @@ class ActionPendingEntry(BaseModel):
 class ActionPendingResult(BaseModel):
     actions: list[ActionPendingEntry] = Field(default_factory=list)
     count: int = 0
+    persistence_status: Literal["healthy", "degraded"] = "healthy"
+    persistence_reason: str = ""
+    persistence_stage: str = ""
+    persistence_transition: str = ""
 
 
 class ActionPurgeResult(BaseModel):
@@ -1955,6 +1959,10 @@ class ActionConfirmResult(BaseModel):
     approval_level: str | None = None
     approval_method: str | None = None
     tool_outputs: list[dict[str, Any]] = Field(default_factory=list)
+    persistence_status: Literal["healthy", "degraded"] = "healthy"
+    persistence_reason: str = ""
+    persistence_stage: str = ""
+    persistence_transition: str = ""
 
 
 class ActionRejectResult(BaseModel):
@@ -1966,6 +1974,10 @@ class ActionRejectResult(BaseModel):
     status: str | None = None
     status_reason: str | None = None
     reason: str | None = None
+    persistence_status: Literal["healthy", "degraded"] = "healthy"
+    persistence_reason: str = ""
+    persistence_stage: str = ""
+    persistence_transition: str = ""
 
 
 class TwoFactorRegisterBeginParams(_StrictParams):

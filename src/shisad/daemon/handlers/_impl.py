@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import contextlib
 import hashlib
 import inspect
 import json
@@ -65,6 +64,11 @@ from shisad.core.approval import (
     legacy_software_confirmation_requirement,
     new_approval_nonce,
     resolve_confirmation_destinations,
+)
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    StatePersistenceDegradedError,
+    atomic_write_bytes,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.clock import current_time_payload
@@ -1527,6 +1531,8 @@ class PendingAction:
     status_reason: str = ""
     action_id: str = ""
     origin_turn_id: str = ""
+    action_digest: str = ""
+    approval_evidence_hash: str = ""
     execution_attempt_id: str = ""
     result_id: str = ""
     followup_id: str = ""
@@ -2963,6 +2969,8 @@ class HandlerImplementation(
             "action_id": state_view.identity.action_id,
             "identity": identity_payload,
             "origin_turn_id": state_view.identity.origin_turn_id,
+            "action_digest": pending.action_digest,
+            "approval_evidence_hash": pending.approval_evidence_hash,
             "execution_attempt_id": state_view.identity.execution_attempt_id,
             "result_id": state_view.identity.result_id,
             "followup_id": state_view.identity.followup_id,
@@ -3177,6 +3185,14 @@ class HandlerImplementation(
         continuation_mode: str = "",
         origin_turn_id: str = "",
     ) -> PendingAction:
+        degradation = getattr(self, "_pending_state_degradation", None)
+        if isinstance(degradation, Mapping):
+            raise StatePersistenceDegradedError(
+                authority="pending_actions",
+                transition=str(degradation.get("transition", "")),
+                stage=str(degradation.get("stage", "")),
+                reason=str(degradation.get("reason", "pending_state_persistence_degraded")),
+            )
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
         confirmation_id = uuid.uuid4().hex
@@ -3382,6 +3398,7 @@ class HandlerImplementation(
             decision_nonce=decision_nonce,
             action_id=action_id,
             origin_turn_id=str(origin_turn_id).strip(),
+            action_digest=action_digest,
             followup_id=followup_id,
             session_id=session_id,
             user_id=user_id,
@@ -3468,17 +3485,40 @@ class HandlerImplementation(
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
-        self._persist_pending_actions()
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError as write_error:
+            self._pending_actions.pop(confirmation_id, None)
+            session_pending_ids = self._pending_by_session.get(session_id, [])
+            remaining_ids = [
+                pending_id for pending_id in session_pending_ids if pending_id != confirmation_id
+            ]
+            if remaining_ids:
+                self._pending_by_session[session_id] = remaining_ids
+            else:
+                self._pending_by_session.pop(session_id, None)
+            if write_error.publication_may_have_committed:
+                try:
+                    self._persist_pending_actions()
+                except AtomicWriteError as rollback_error:
+                    self._pending_actions[confirmation_id] = pending
+                    self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
+                    self._pending_state_degradation = {
+                        "transition": "queue",
+                        "stage": rollback_error.stage.value,
+                        "reason": "pending_state_rollback_uncommitted",
+                    }
+                    raise rollback_error from write_error
+            raise
         return pending
 
     def _persist_pending_actions(self) -> None:
         payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
-        self._pending_actions_file.parent.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):
-            self._pending_actions_file.parent.chmod(0o700)
-        self._pending_actions_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        with contextlib.suppress(OSError):
-            self._pending_actions_file.chmod(0o600)
+        atomic_write_bytes(
+            self._pending_actions_file,
+            json.dumps(payload, indent=2).encode("utf-8"),
+            fault_injector=getattr(self, "_pending_state_fault_injector", None),
+        )
 
     def _load_pending_actions(self) -> None:
         if not self._pending_actions_file.exists():
@@ -3524,6 +3564,7 @@ class HandlerImplementation(
         migrated_legacy_action_identity = False
         migrated_legacy_decision_nonce = False
         migrated_expired_approval = False
+        migrated_attempt_metadata = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -3630,6 +3671,22 @@ class HandlerImplementation(
                 loaded_decision_nonce = str(item.get("decision_nonce", "")).strip()
                 if legacy_null_expiry and loaded_status == "pending":
                     expires_at = datetime.now(UTC) - timedelta(microseconds=1)
+                loaded_action_digest = str(item.get("action_digest", "")).strip()
+                if not loaded_action_digest and approval_envelope is not None:
+                    loaded_action_digest = str(approval_envelope.action_digest).strip()
+                    migrated_attempt_metadata = (
+                        migrated_attempt_metadata or bool(loaded_action_digest)
+                    )
+                loaded_approval_evidence_hash = str(
+                    item.get("approval_evidence_hash", "")
+                ).strip()
+                if not loaded_approval_evidence_hash and confirmation_evidence is not None:
+                    loaded_approval_evidence_hash = str(
+                        confirmation_evidence.evidence_hash
+                    ).strip()
+                    migrated_attempt_metadata = (
+                        migrated_attempt_metadata or bool(loaded_approval_evidence_hash)
+                    )
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=loaded_decision_nonce,
@@ -3638,6 +3695,8 @@ class HandlerImplementation(
                         str(item.get("origin_turn_id", "")).strip()
                         or str(identity_fields.get("origin_turn_id", "")).strip()
                     ),
+                    action_digest=loaded_action_digest,
+                    approval_evidence_hash=loaded_approval_evidence_hash,
                     execution_attempt_id=(
                         str(item.get("execution_attempt_id", "")).strip()
                         or str(identity_fields.get("execution_attempt_id", "")).strip()
@@ -3796,6 +3855,7 @@ class HandlerImplementation(
             or migrated_legacy_action_identity
             or migrated_legacy_decision_nonce
             or migrated_expired_approval
+            or migrated_attempt_metadata
         ):
             self._persist_pending_actions()
 

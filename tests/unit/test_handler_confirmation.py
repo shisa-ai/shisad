@@ -38,6 +38,11 @@ from shisad.core.approval import (
     hash_recovery_code,
     intent_envelope_hash,
 )
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StatePersistenceDegradedError,
+)
 from shisad.core.events import (
     ToolApproved,
     ToolExecuted,
@@ -538,6 +543,23 @@ class _QueuePendingHarness(HandlerImplementation):
         self._registry = registry
 
 
+class _AtomicConfirmationHarness(_ConfirmationImplHarness):
+    _pending_to_dict = staticmethod(HandlerImplementation._pending_to_dict)
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self._pending_actions_file = tmp_path / "pending_actions.json"
+        self._pending_state_fault_injector = None
+        self.effect_calls = 0
+
+    def _persist_pending_actions(self) -> None:
+        HandlerImplementation._persist_pending_actions(self)  # type: ignore[arg-type]
+
+    async def _execute_approved_action(self, **kwargs: object) -> object:
+        self.effect_calls += 1
+        return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+
 def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> PendingAction:
     created_at = datetime.now(UTC)
     expires_at = created_at + timedelta(hours=1)
@@ -1019,6 +1041,239 @@ def test_f2_load_expired_task_action_reconciles_scheduler_shadow_once(
     assert shadow["status_reason"] == "approval_expired"
     assert shadow["run_outcome_recorded"] is True
     assert task.failure_count == 1
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f2_queue_persistence_failure_restores_only_durable_old_state(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    failures_remaining = 1
+
+    def _fail_once(stage: AtomicWriteStage) -> None:
+        nonlocal failures_remaining
+        if stage == fault_stage and failures_remaining:
+            failures_remaining -= 1
+            raise OSError(f"injected queue fault:{stage.value}")
+
+    harness._pending_state_fault_injector = _fail_once
+
+    with pytest.raises(AtomicWriteError):
+        harness._queue_pending_action(
+            session_id=SessionId("s-queue-atomic-fault"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "must not remain fresh"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+        )
+
+    assert harness._pending_actions == {}
+    assert harness._pending_by_session == {}
+    if harness._pending_actions_file.exists():
+        assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+async def test_f2_pre_effect_attempt_fault_invokes_nothing_and_restores_pending(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+    failures_remaining = 1
+
+    def _fail_once(stage: AtomicWriteStage) -> None:
+        nonlocal failures_remaining
+        if stage == fault_stage and failures_remaining:
+            failures_remaining -= 1
+            raise OSError(f"injected executing fault:{stage.value}")
+
+    harness._pending_state_fault_injector = _fail_once
+
+    with pytest.raises(AtomicWriteError):
+        await harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+
+    assert harness.effect_calls == 0
+    assert pending.status == "pending"
+    assert pending.execution_attempt_id == ""
+    assert pending.result_id == ""
+    assert pending.confirmation_evidence is None
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == "pending"
+    assert durable["execution_attempt_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_pending_attempt_state_is_durable_before_effect(tmp_path: Path) -> None:
+    class _InspectingHarness(_AtomicConfirmationHarness):
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            durable = json.loads(self._pending_actions_file.read_text(encoding="utf-8"))[0]
+            assert durable["status"] == "executing"
+            assert durable["execution_attempt_id"]
+            assert durable["result_id"]
+            assert durable["action_digest"] == durable["approval_envelope"]["action_digest"]
+            assert durable["approval_evidence_hash"].startswith("sha256:")
+            return await super()._execute_approved_action(**kwargs)
+
+    harness = _InspectingHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert harness.effect_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+async def test_f2_post_effect_terminal_fault_never_rolls_back_over_executing(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    class _TerminalFaultHarness(_AtomicConfirmationHarness):
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            result = await super()._execute_approved_action(**kwargs)
+            failures_remaining = 1
+
+            def _fail_terminal_write(stage: AtomicWriteStage) -> None:
+                nonlocal failures_remaining
+                if stage == fault_stage and failures_remaining:
+                    failures_remaining -= 1
+                    raise OSError("injected terminal persistence fault")
+
+            self._pending_state_fault_injector = _fail_terminal_write
+            return result
+
+    harness = _TerminalFaultHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    with pytest.raises(AtomicWriteError):
+        await harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+
+    assert harness.effect_calls == 1
+    assert pending.status == "approved"
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == (
+        "approved" if fault_stage == AtomicWriteStage.PARENT_FSYNC else "executing"
+    )
+    assert durable["execution_attempt_id"] == pending.execution_attempt_id
+
+
+@pytest.mark.asyncio
+async def test_f2_failed_queue_rollback_surfaces_typed_persistence_degradation(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+
+    def _fail_parent_fsync(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.PARENT_FSYNC:
+            raise OSError("injected queue and rollback parent-fsync fault")
+
+    harness._pending_state_fault_injector = _fail_parent_fsync
+
+    with pytest.raises(AtomicWriteError):
+        harness._queue_pending_action(
+            session_id=SessionId("s-queue-degraded"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "retain possible publication"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+        )
+
+    assert len(harness._pending_actions) == 1
+    pending = next(iter(harness._pending_actions.values()))
+    assert pending.status == "pending"
+    result = await harness.do_action_pending({"status": "all"})
+    assert result["persistence_status"] == "degraded"
+    assert result["persistence_reason"] == "pending_state_rollback_uncommitted"
+    assert result["persistence_stage"] == "parent_fsync"
+    assert result["persistence_transition"] == "queue"
+
+    harness._pending_state_fault_injector = None
+    with pytest.raises(StatePersistenceDegradedError):
+        harness._queue_pending_action(
+            session_id=SessionId("s-queue-must-stay-blocked"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("w-1"),
+            tool_name=ToolName("web.search"),
+            arguments={"query": "must require restart recovery"},
+            reason="requires_confirmation",
+            capabilities={Capability.HTTP_REQUEST},
+        )
+    assert len(harness._pending_actions) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["confirm", "reject"])
+async def test_f2_persistence_degradation_blocks_decisions_until_recovery(
+    tmp_path: Path,
+    decision: str,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+    harness._pending_state_degradation = {
+        "transition": "executing",
+        "stage": "parent_fsync",
+        "reason": "pending_state_rollback_uncommitted",
+    }
+
+    handler = harness.do_action_confirm if decision == "confirm" else harness.do_action_reject
+    result = await handler(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result[f"{decision}ed"] is False
+    assert result["reason"] == "pending_state_persistence_degraded"
+    assert result["persistence_stage"] == "parent_fsync"
+    assert harness.effect_calls == 0
+    assert pending.status == "pending"
 
 
 @pytest.mark.parametrize("status_reason", ["task_disabled", "max_runs_reached"])
