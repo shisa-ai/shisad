@@ -9442,6 +9442,7 @@ class SessionImplMixin(HandlerMixinBase):
             tool_outputs: Sequence[dict[str, Any]] | None = None,
             output_confirmation_user_goal: str | None = None,
             response_pending_confirmation_ids: Sequence[str] | None = None,
+            response_action_confirmation_ids: Sequence[str] | None = None,
             system_generated_pending_confirmations: bool = False,
         ) -> dict[str, Any]:
             returned_tool_outputs = list(tool_outputs or [])
@@ -9524,6 +9525,15 @@ class SessionImplMixin(HandlerMixinBase):
                 if response_pending_confirmation_ids is not None
                 else result_pending_confirmation_ids
             )
+            visible_result_ids = set(result_pending_confirmation_ids)
+            returned_response_action_confirmation_ids = list(
+                dict.fromkeys(
+                    confirmation_id
+                    for raw_confirmation_id in (response_action_confirmation_ids or ())
+                    if (confirmation_id := str(raw_confirmation_id).strip())
+                    and confirmation_id in visible_result_ids
+                )
+            )
             normalized_pending_response = _normalized_pending_confirmation_text(response_text)
             if returned_pending_confirmation_ids and system_generated_pending_confirmations:
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
@@ -9575,6 +9585,9 @@ class SessionImplMixin(HandlerMixinBase):
                 "proposals": [],
                 "cleanroom_block_reasons": [],
                 "pending_confirmation_ids": returned_pending_confirmation_ids,
+                "response_action_confirmation_ids": (
+                    returned_response_action_confirmation_ids
+                ),
                 "output_policy": _output_policy_response_payload(output_result),
                 "planner_error": "",
                 "tool_outputs": returned_tool_outputs,
@@ -9602,6 +9615,11 @@ class SessionImplMixin(HandlerMixinBase):
                     blocked_actions=0,
                     executed_actions=0,
                     checkpoint_ids=[],
+                    response_action_confirmation_ids=[
+                        str(getattr(pending, "confirmation_id", "")).strip()
+                        for pending in displayed_pending_rows
+                        if str(getattr(pending, "confirmation_id", "")).strip()
+                    ],
                 )
             if _chat_confirmation_typo_targets_id_like_token(
                 content,
@@ -9683,6 +9701,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 return None
         system_generated_pending_confirmation_response = False
+        response_action_confirmation_ids: list[str] = []
         confirmed_tool_outputs: list[dict[str, Any]] = []
         continuation_user_goals: list[str] = []
 
@@ -9745,6 +9764,11 @@ class SessionImplMixin(HandlerMixinBase):
                         ),
                         pending_rows=visible_totp_rows or totp_rows,
                     )
+                    response_action_confirmation_ids = [
+                        str(getattr(pending, "confirmation_id", "")).strip()
+                        for pending in (visible_totp_rows or totp_rows)
+                        if str(getattr(pending, "confirmation_id", "")).strip()
+                    ]
                 elif (
                     is_internal_ingress
                     and delivery_target is not None
@@ -9772,6 +9796,11 @@ class SessionImplMixin(HandlerMixinBase):
                     heading="Multiple TOTP confirmations are pending.",
                     pending_rows=visible_totp_rows,
                 )
+                response_action_confirmation_ids = [
+                    str(getattr(pending, "confirmation_id", "")).strip()
+                    for pending in visible_totp_rows
+                    if str(getattr(pending, "confirmation_id", "")).strip()
+                ]
             else:
                 target_pending = visible_totp_rows[0]
                 response_text = ""
@@ -9829,6 +9858,11 @@ class SessionImplMixin(HandlerMixinBase):
                             allow_chat_approval=not is_internal_ingress,
                         )
                     )
+                    response_action_confirmation_ids = [
+                        str(getattr(pending, "confirmation_id", "")).strip()
+                        for pending in visible_remaining
+                        if str(getattr(pending, "confirmation_id", "")).strip()
+                    ]
         else:
             if intent is None:
                 intent = _classify_chat_confirmation_intent(content)
@@ -9894,6 +9928,11 @@ class SessionImplMixin(HandlerMixinBase):
                         allow_chat_approval=not is_internal_ingress,
                     )
                     system_generated_pending_confirmation_response = True
+                    response_action_confirmation_ids = [
+                        str(getattr(pending, "confirmation_id", "")).strip()
+                        for pending in displayed_pending_rows
+                        if str(getattr(pending, "confirmation_id", "")).strip()
+                    ]
                 executed_actions = 0
                 blocked_actions = 0
                 checkpoint_ids = []
@@ -10007,6 +10046,11 @@ class SessionImplMixin(HandlerMixinBase):
                             allow_chat_approval=not is_internal_ingress,
                         )
                     )
+                    response_action_confirmation_ids = [
+                        str(getattr(pending, "confirmation_id", "")).strip()
+                        for pending in visible_remaining
+                        if str(getattr(pending, "confirmation_id", "")).strip()
+                    ]
 
         remaining_for_continuation = self._pending_confirmations_for_binding(
             session_id=sid,
@@ -10058,6 +10102,7 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text=response_text,
             ),
             system_generated_pending_confirmations=system_generated_pending_confirmation_response,
+            response_action_confirmation_ids=response_action_confirmation_ids,
         )
 
     async def do_session_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -14310,6 +14355,7 @@ class SessionImplMixin(HandlerMixinBase):
         )
         post_tool_synthesis_result = PostToolSynthesisResult()
         system_generated_pending_confirmation_response = False
+        response_action_confirmation_ids: list[str] = []
         if execution.pending_confirmation_ids:
             fallback_notice = ""
             provider_response = planner_dispatch.planner_result.provider_response
@@ -14368,7 +14414,18 @@ class SessionImplMixin(HandlerMixinBase):
                     and callable(can_build_view)
                 ):
                     candidate_metadata = build_delivery_metadata(
-                        {"pending_confirmation_ids": visible_pending_confirmation_ids},
+                        {
+                            "pending_confirmation_ids": visible_pending_confirmation_ids,
+                            "response_action_confirmation_ids": (
+                                visible_pending_confirmation_ids
+                            ),
+                        },
+                        principal_id=str(validated.user_id),
+                        workspace_id=str(validated.workspace_id),
+                        delivery_target=(
+                            validated.delivery_target
+                            or _stored_delivery_target_from_session(validated.session)
+                        ),
                         supports_totp_modal=supports_totp_modal,
                     )
                     discord_components_available = bool(candidate_metadata) and bool(
@@ -14458,6 +14515,7 @@ class SessionImplMixin(HandlerMixinBase):
                 discord_totp_modal_confirmation_ids=discord_totp_modal_confirmation_ids,
                 discord_totp_modal_available=discord_totp_modal_available,
             )
+            response_action_confirmation_ids = list(visible_pending_confirmation_ids)
             system_generated_pending_confirmation_response = True
             if fallback_notice:
                 response_text = f"{fallback_notice}\n\n{response_text}"
@@ -14649,6 +14707,7 @@ class SessionImplMixin(HandlerMixinBase):
         if response_text != pre_internal_coercion_response_text:
             protected_tool_output_start = None
             protected_tool_output_end = None
+            response_action_confirmation_ids = []
         if not response_text.strip():
             if execution.pending_confirmation > 0:
                 response_text = (
@@ -14713,6 +14772,7 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if public_sensitive_taints:
             response_text = "Response blocked by public-channel output policy."
+            response_action_confirmation_ids = []
         returned_tool_outputs = [] if public_sensitive_taints else raw_serialized_tool_outputs
         output_confirmation_user_goal = _output_confirmation_user_goal_for_response(
             current_turn=validated.firewall_result.sanitized_text,
@@ -14734,6 +14794,7 @@ class SessionImplMixin(HandlerMixinBase):
                 output_result=output_result,
             )
             returned_tool_outputs = []
+            response_action_confirmation_ids = []
         else:
             response_text = output_result.sanitized_text
             if _should_prefix_output_confirmation(
@@ -14757,6 +14818,14 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = f"{response_text}\n\n{lockdown_notice_fragment}"
 
         returned_pending_confirmation_ids = _current_visible_pending_confirmation_ids()
+        current_visible_pending_ids = set(returned_pending_confirmation_ids)
+        response_action_confirmation_ids = list(
+            dict.fromkeys(
+                confirmation_id
+                for confirmation_id in response_action_confirmation_ids
+                if confirmation_id in current_visible_pending_ids
+            )
+        )
 
         notification_delivery_target = validated.delivery_target
         if notification_delivery_target is None and validated.is_internal_ingress:
@@ -14957,6 +15026,7 @@ class SessionImplMixin(HandlerMixinBase):
             ),
             "cleanroom_block_reasons": sorted(set(execution.cleanroom_block_reasons)),
             "pending_confirmation_ids": returned_pending_confirmation_ids,
+            "response_action_confirmation_ids": response_action_confirmation_ids,
             "output_policy": _output_policy_response_payload(output_result),
             "planner_error": planner_dispatch.planner_failure_code,
             "tool_outputs": returned_tool_outputs,

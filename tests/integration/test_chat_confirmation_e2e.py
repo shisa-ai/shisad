@@ -515,6 +515,115 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_gh92_session_result_separates_unrelated_reply_from_stale_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _planner_with_one_pending_action(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (tools, persona_tone_override)
+        user_goal = _extract_user_goal(user_content)
+        if "queue one action" not in user_goal.lower():
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="It's 1:51 PM JST right now.",
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        proposal = ActionProposal(
+            action_id="gh92-action",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": str(README_PATH), "max_bytes": 4096},
+            reasoning="exercise response-to-action binding",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="The action requires approval.",
+                actions=[proposal],
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_with_one_pending_action)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_software_fs_read_policy(), encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+        log_level="INFO",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
+        services.identity_map.allow_identity(channel="discord", external_user_id="alice")
+        handlers = DaemonControlHandlers(services=services)
+        ctx = RequestContext()
+
+        first = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "queue one action",
+                    "message_id": "gh92-1",
+                    "reply_target": "chan-1",
+                }
+            ),
+            ctx,
+        )
+        pending_id = str(first.pending_confirmation_ids[0])
+        assert first.response_action_confirmation_ids == [pending_id]
+
+        second = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "what time is it right now?",
+                    "message_id": "gh92-2",
+                    "reply_target": "chan-1",
+                }
+            ),
+            ctx,
+        )
+
+        assert second.response == "It's 1:51 PM JST right now."
+        assert second.pending_confirmation_ids == [pending_id]
+        assert second.response_action_confirmation_ids == []
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
+            ctx,
+        )
+        assert [action.confirmation_id for action in pending.actions] == [pending_id]
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_m6_crc_chat_reject_resolves_pending_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

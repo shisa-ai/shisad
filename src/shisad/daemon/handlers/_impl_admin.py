@@ -2080,10 +2080,20 @@ class AdminImplMixin(HandlerMixinBase):
         self,
         response: Mapping[str, Any],
         *,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        delivery_target: DeliveryTarget | None = None,
         supports_totp_modal: bool = True,
     ) -> dict[str, Any]:
-        raw_ids = response.get("pending_confirmation_ids")
-        if not isinstance(raw_ids, list):
+        raw_ids = response.get("response_action_confirmation_ids")
+        normalized_principal_id = str(principal_id or "").strip()
+        normalized_workspace_id = str(workspace_id or "").strip()
+        if (
+            not isinstance(raw_ids, list)
+            or not normalized_principal_id
+            or not normalized_workspace_id
+            or delivery_target is None
+        ):
             return {}
         components: list[dict[str, Any]] = []
         attached_confirmation_ids: list[str] = []
@@ -2118,6 +2128,32 @@ class AdminImplMixin(HandlerMixinBase):
                 continue
             pending = getattr(self, "_pending_actions", {}).get(confirmation_id)
             if pending is None or not pending_action_is_live_pending(pending):
+                continue
+            allowed_channel_principals = {
+                str(value).strip()
+                for value in getattr(pending, "allowed_channel_principals", ())
+                if str(value).strip()
+            }
+            if (
+                str(getattr(pending, "user_id", "")).strip() != normalized_principal_id
+                or normalized_principal_id not in allowed_channel_principals
+                or str(getattr(pending, "workspace_id", "")).strip()
+                != normalized_workspace_id
+            ):
+                continue
+            pending_delivery_target = getattr(pending, "delivery_target", None)
+            if isinstance(pending_delivery_target, Mapping):
+                try:
+                    pending_delivery_target = DeliveryTarget.model_validate(
+                        pending_delivery_target
+                    )
+                except (TypeError, ValueError):
+                    pending_delivery_target = None
+            if (
+                not isinstance(pending_delivery_target, DeliveryTarget)
+                or pending_delivery_target.model_dump(mode="json")
+                != delivery_target.model_dump(mode="json")
+            ):
                 continue
             decision_nonce = str(getattr(pending, "decision_nonce", "")).strip()
             if not decision_nonce:
@@ -2543,6 +2579,9 @@ class AdminImplMixin(HandlerMixinBase):
             if bool(getattr(discord_channel, "supports_components", False)):
                 candidate_metadata = self._discord_pending_delivery_metadata(
                     response,
+                    principal_id=str(identity_user_id),
+                    workspace_id=str(identity_workspace_id),
+                    delivery_target=delivery_target,
                     supports_totp_modal=bool(
                         getattr(discord_channel, "supports_totp_modal", False)
                     ),

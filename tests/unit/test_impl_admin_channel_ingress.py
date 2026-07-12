@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
+from shisad.channels.discord_policy import DiscordChannelPolicyDecision
 from shisad.channels.identity import ChannelIdentityMap
-from shisad.core.types import SessionId, TaintLabel
+from shisad.core.types import Capability, SessionId, TaintLabel, ToolName, UserId, WorkspaceId
+from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
@@ -36,9 +40,41 @@ class _DeliveryResult:
 
 
 class _DeliveryStub:
-    async def send(self, *, target: object, message: str) -> _DeliveryResult:
-        _ = (target, message)
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def send(
+        self,
+        *,
+        target: object,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> _DeliveryResult:
+        self.calls.append({"target": target, "message": message, "metadata": metadata})
         return _DeliveryResult()
+
+
+class _DiscordChannelStub:
+    supports_components = True
+    supports_totp_modal = False
+
+    @staticmethod
+    def can_build_view_from_metadata(metadata: dict[str, Any]) -> bool:
+        return bool(metadata.get("discord_components"))
+
+    @staticmethod
+    def workspace_for_guild(guild_id: str) -> str:
+        return guild_id
+
+    @staticmethod
+    def policy_decision_for(
+        *,
+        guild_id: str,
+        channel_id: str,
+        external_user_id: str,
+    ) -> DiscordChannelPolicyDecision:
+        _ = (guild_id, channel_id, external_user_id)
+        return DiscordChannelPolicyDecision()
 
 
 class _TranscriptStoreStub:
@@ -119,6 +155,7 @@ class _AdminChannelIngressHarness(AdminImplMixin):
         self._transcript_store = _TranscriptStoreStub()
         self._session_manager = _SessionManagerStub()
         self._delivery = _DeliveryStub()
+        self._pending_actions: dict[str, PendingAction] = {}
         self._channel_proactive_last_sent_at: dict[str, object] = {}
         self._internal_ingress_marker = object()
         self._event_bus = SimpleNamespace(publish=self._publish)
@@ -160,6 +197,184 @@ class _AdminChannelIngressHarness(AdminImplMixin):
     async def do_session_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.message_payloads.append(dict(payload))
         return {"session_id": str(payload["session_id"]), "response": "ok"}
+
+
+def _gh92_pending_action(*, confirmation_id: str = "old-reminder") -> PendingAction:
+    return PendingAction(
+        confirmation_id=confirmation_id,
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-channel"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("guild-1"),
+        tool_name=ToolName("reminder.create"),
+        arguments={"message": "do laundry", "when": "in 2 minutes"},
+        reason="manual",
+        capabilities={Capability.MEMORY_WRITE},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="chan-1",
+            workspace_hint="guild-1",
+        ),
+        allowed_channel_principals=["alice"],
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+
+
+def test_gh92_discord_metadata_builder_uses_only_current_response_actions(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    pending = _gh92_pending_action()
+    harness._pending_actions[pending.confirmation_id] = pending
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="chan-1",
+        workspace_hint="guild-1",
+    )
+
+    unrelated = harness._discord_pending_delivery_metadata(
+        {
+            "pending_confirmation_ids": [pending.confirmation_id],
+            "response_action_confirmation_ids": [],
+        },
+        principal_id="alice",
+        workspace_id="guild-1",
+        delivery_target=delivery_target,
+    )
+    related = harness._discord_pending_delivery_metadata(
+        {
+            "pending_confirmation_ids": [pending.confirmation_id],
+            "response_action_confirmation_ids": [pending.confirmation_id],
+        },
+        principal_id="alice",
+        workspace_id="guild-1",
+        delivery_target=delivery_target,
+    )
+
+    assert unrelated == {}
+    assert related["discord_component_confirmation_ids"] == [pending.confirmation_id]
+
+
+def test_gh92_discord_metadata_builder_revalidates_current_action_binding(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    live = _gh92_pending_action(confirmation_id="live")
+    expired = _gh92_pending_action(confirmation_id="expired")
+    expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    superseded = _gh92_pending_action(confirmation_id="superseded")
+    superseded.status = "superseded"
+    completed = _gh92_pending_action(confirmation_id="completed")
+    completed.status = "approved"
+    missing_nonce = _gh92_pending_action(confirmation_id="missing-nonce")
+    missing_nonce.decision_nonce = ""
+    foreign_principal = _gh92_pending_action(confirmation_id="foreign-principal")
+    foreign_principal.user_id = UserId("bob")
+    foreign_principal.allowed_channel_principals = ["bob"]
+    foreign_workspace = _gh92_pending_action(confirmation_id="foreign-workspace")
+    foreign_workspace.workspace_id = WorkspaceId("guild-2")
+    foreign_target = _gh92_pending_action(confirmation_id="foreign-target")
+    foreign_target.delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="chan-2",
+        workspace_hint="guild-1",
+    )
+    candidates = [
+        live,
+        expired,
+        superseded,
+        completed,
+        missing_nonce,
+        foreign_principal,
+        foreign_workspace,
+        foreign_target,
+    ]
+    harness._pending_actions = {pending.confirmation_id: pending for pending in candidates}
+
+    metadata = harness._discord_pending_delivery_metadata(
+        {
+            "pending_confirmation_ids": [pending.confirmation_id for pending in candidates],
+            "response_action_confirmation_ids": [
+                pending.confirmation_id for pending in candidates
+            ],
+        },
+        principal_id="alice",
+        workspace_id="guild-1",
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="chan-1",
+            workspace_hint="guild-1",
+        ),
+    )
+
+    assert metadata["discord_component_confirmation_ids"] == ["live"]
+
+
+@pytest.mark.asyncio
+async def test_gh92_unrelated_reply_never_carries_stale_action_controls(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
+    harness._discord_channel = _DiscordChannelStub()
+    pending = _gh92_pending_action()
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    async def _unrelated_response(payload: dict[str, Any]) -> dict[str, Any]:
+        harness.message_payloads.append(dict(payload))
+        return {
+            "session_id": str(payload["session_id"]),
+            "response": "It's 1:51 PM JST right now.",
+            "pending_confirmation_ids": [pending.confirmation_id],
+            "response_action_confirmation_ids": [],
+        }
+
+    harness.do_session_message = _unrelated_response  # type: ignore[method-assign]
+
+    result = await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-1",
+                "message_id": "msg-time",
+                "content": "hello, what time is it right now",
+            }
+        }
+    )
+
+    assert result["response"] == "It's 1:51 PM JST right now."
+    assert harness._delivery.calls[-1]["metadata"] is None
+
+    async def _related_response(payload: dict[str, Any]) -> dict[str, Any]:
+        harness.message_payloads.append(dict(payload))
+        return {
+            "session_id": str(payload["session_id"]),
+            "response": "This reminder is awaiting approval.",
+            "pending_confirmation_ids": [pending.confirmation_id],
+            "response_action_confirmation_ids": [pending.confirmation_id],
+        }
+
+    harness.do_session_message = _related_response  # type: ignore[method-assign]
+    await harness.do_channel_ingest(
+        {
+            "session_id": "sess-channel",
+            "message": {
+                "channel": "discord",
+                "external_user_id": "alice",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-1",
+                "message_id": "msg-pending",
+                "content": "show the pending reminder",
+            },
+        }
+    )
+
+    metadata = harness._delivery.calls[-1]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["discord_component_confirmation_ids"] == [pending.confirmation_id]
 
 
 @pytest.mark.asyncio

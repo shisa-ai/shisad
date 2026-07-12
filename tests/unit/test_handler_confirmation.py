@@ -1268,6 +1268,7 @@ async def test_a1_software_channel_confirmation_accepts_bound_principal(
 
 def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
     harness = object.__new__(HandlerImplementation)
+    delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
     pending_actions: dict[str, PendingAction] = {}
     pending_ids: list[str] = []
     for index in range(13):
@@ -1275,6 +1276,8 @@ def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
         pending = _pending_action(nonce=f"nonce-{index}")
         pending.confirmation_id = confirmation_id
         pending.decision_nonce = f"nonce-{index}"
+        pending.delivery_target = delivery_target
+        pending.allowed_channel_principals = ["alice"]
         pending_actions[confirmation_id] = pending
         pending_ids.append(confirmation_id)
     harness._pending_actions = pending_actions
@@ -1282,7 +1285,13 @@ def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
 
     metadata = HandlerImplementation._discord_pending_delivery_metadata(
         harness,
-        {"pending_confirmation_ids": pending_ids},
+        {
+            "pending_confirmation_ids": pending_ids,
+            "response_action_confirmation_ids": pending_ids,
+        },
+        principal_id="alice",
+        workspace_id="w-1",
+        delivery_target=delivery_target,
     )
 
     components = metadata["discord_components"]
@@ -1299,6 +1308,7 @@ def test_a2_discord_pending_delivery_metadata_caps_component_budget() -> None:
 
 def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability() -> None:
     harness = object.__new__(HandlerImplementation)
+    delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
     expired = _pending_action(nonce="expired-nonce")
     expired.confirmation_id = "c-expired"
     expired.expires_at = datetime.now(UTC) - timedelta(minutes=1)
@@ -1308,6 +1318,9 @@ def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability
     unavailable.selected_backend_method = "totp"
     live = _pending_action(nonce="live-nonce")
     live.confirmation_id = "c-live"
+    for pending in (expired, unavailable, live):
+        pending.delivery_target = delivery_target
+        pending.allowed_channel_principals = ["alice"]
     harness._pending_actions = {
         expired.confirmation_id: expired,
         unavailable.confirmation_id: unavailable,
@@ -1317,7 +1330,17 @@ def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability
 
     metadata = HandlerImplementation._discord_pending_delivery_metadata(
         harness,
-        {"pending_confirmation_ids": ["c-expired", "c-unavailable", "c-live"]},
+        {
+            "pending_confirmation_ids": ["c-expired", "c-unavailable", "c-live"],
+            "response_action_confirmation_ids": [
+                "c-expired",
+                "c-unavailable",
+                "c-live",
+            ],
+        },
+        principal_id="alice",
+        workspace_id="w-1",
+        delivery_target=delivery_target,
     )
 
     custom_ids = [str(component["custom_id"]) for component in metadata["discord_components"]]
@@ -1329,16 +1352,25 @@ def test_a2_discord_pending_delivery_metadata_respects_live_backend_carryability
 
 def test_a2_discord_pending_delivery_metadata_skips_totp_approve_without_modal_support() -> None:
     harness = object.__new__(HandlerImplementation)
+    delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
     pending = _totp_pending_action(nonce="totp-nonce", required_methods=["totp"])
     pending.confirmation_id = "c-totp"
     pending.selected_backend_id = "totp.default"
     pending.selected_backend_method = "totp"
+    pending.delivery_target = delivery_target
+    pending.allowed_channel_principals = ["alice"]
     harness._pending_actions = {pending.confirmation_id: pending}
     harness._pending_selected_backend_available = lambda _pending: True
 
     metadata = HandlerImplementation._discord_pending_delivery_metadata(
         harness,
-        {"pending_confirmation_ids": ["c-totp"]},
+        {
+            "pending_confirmation_ids": ["c-totp"],
+            "response_action_confirmation_ids": ["c-totp"],
+        },
+        principal_id="alice",
+        workspace_id="w-1",
+        delivery_target=delivery_target,
         supports_totp_modal=False,
     )
 
