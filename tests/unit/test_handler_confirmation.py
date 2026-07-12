@@ -2941,6 +2941,25 @@ async def test_m6_s8_reject_requires_valid_decision_nonce(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_f1_expired_reject_returns_approval_expired(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_reject(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["rejected"] is False
+    assert result["reason"] == "approval_expired"
+    assert result["status"] == "failed"
+    assert result["status_reason"] == "approval_expired"
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_expired"
+
+
+@pytest.mark.asyncio
 async def test_a2_reject_requires_bound_channel_principal(tmp_path: Path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")

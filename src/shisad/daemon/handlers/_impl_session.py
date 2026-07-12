@@ -10218,7 +10218,10 @@ class SessionImplMixin(HandlerMixinBase):
                         if rejected:
                             blocked_actions += 1
                         status = str(
-                            result.get("status") or result.get("reason") or "failed"
+                            result.get("status_reason")
+                            or result.get("reason")
+                            or result.get("status")
+                            or "failed"
                         ).strip()
                         outcome_lines.append(
                             f"rejected {index + 1} ({pending.tool_name}): {status}"
@@ -14670,7 +14673,7 @@ class SessionImplMixin(HandlerMixinBase):
                 except ValidationError:
                     stored_delivery_target = None
             visible_pending_rows = _visible_pending_rows_for_delivery_target(
-                pending_rows=pending_rows,
+                pending_rows=_live_pending_rows(pending_rows),
                 is_internal_ingress=validated.is_internal_ingress,
                 delivery_target=validated.delivery_target,
                 fallback_target=stored_delivery_target,

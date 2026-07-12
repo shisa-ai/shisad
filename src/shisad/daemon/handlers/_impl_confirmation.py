@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
@@ -1415,11 +1415,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if locks is not None and locks.get(confirmation_id) is lock:
             locks.pop(confirmation_id, None)
 
-    def _expired_action_confirm_response(
+    def _expired_action_decision_response(
         self,
         pending: Any,
         *,
         confirmation_id: str,
+        decision_field: Literal["confirmed", "rejected"],
     ) -> dict[str, Any] | None:
         expires_at = getattr(pending, "expires_at", None)
         if expires_at is None or expires_at > datetime.now(UTC):
@@ -1430,7 +1431,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         self._record_task_confirmation_outcome(pending, success=False)
         self._persist_pending_actions()
         return {
-            "confirmed": False,
+            decision_field: False,
             "confirmation_id": confirmation_id,
             "reason": "approval_expired",
             "status": pending.status,
@@ -1501,9 +1502,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": f"already_{pending.status}",
             }
-        expired = self._expired_action_confirm_response(
+        expired = self._expired_action_decision_response(
             pending,
             confirmation_id=confirmation_id,
+            decision_field="confirmed",
         )
         if expired is not None:
             return expired
@@ -2247,6 +2249,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": f"already_{pending.status}",
             }
+        expired = self._expired_action_decision_response(
+            pending,
+            confirmation_id=confirmation_id,
+            decision_field="rejected",
+        )
+        if expired is not None:
+            return expired
         channel_principal_reason = _channel_principal_rejection_reason(pending, params)
         if channel_principal_reason:
             return {

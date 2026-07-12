@@ -21,6 +21,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.handlers._impl import PendingAction
+from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._impl_session import (
     ChatConfirmationIntent,
     ChatTotpSubmission,
@@ -874,6 +875,33 @@ class _ChatConfirmationHarness(SessionImplMixin):
         pending.status = "rejected"
         pending.status_reason = "chat_confirmation"
         return {"rejected": True, "status": "rejected"}
+
+
+class _CanonicalRejectChatHarness(_ChatConfirmationHarness, ConfirmationImplMixin):
+    def __init__(self, tmp_path) -> None:
+        super().__init__(tmp_path)
+        self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
+        self.persist_calls = 0
+
+    async def do_action_reject(self, params: dict[str, object]) -> dict[str, object]:
+        return await ConfirmationImplMixin.do_action_reject(self, params)
+
+    def _sync_task_confirmation_status(self, _pending: PendingAction) -> None:
+        return None
+
+    def _record_task_confirmation_outcome(
+        self,
+        _pending: PendingAction,
+        *,
+        success: bool,
+    ) -> None:
+        _ = success
+
+    def _persist_pending_actions(self) -> None:
+        self.persist_calls += 1
+
+    async def _maybe_emit_confirmation_hygiene_alert(self, **_kwargs: object) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -3760,6 +3788,51 @@ async def test_gh42_chat_confirm_delegates_expired_totp_to_locked_handler(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_f1_chat_reject_delegates_expired_action_to_locked_handler(tmp_path) -> None:
+    harness = _CanonicalRejectChatHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC) - timedelta(minutes=2),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+    )
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="reject 1",
+        firewall_result=FirewallResult(
+            sanitized_text="reject 1",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert result is not None
+    assert "approval_expired" in str(result["response"])
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_expired"
+    assert harness.persist_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_f1_expired_only_chat_status_has_no_pending_action_or_controls(tmp_path) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(
@@ -4649,6 +4722,58 @@ async def test_gh42_action_resolve_delegates_expired_totp_confirm_to_locked_hand
         }
     ]
     assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_f1_action_resolve_reject_delegates_expired_action_to_locked_handler(
+    tmp_path,
+) -> None:
+    harness = _CanonicalRejectChatHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-expired",
+        decision_nonce="nonce-expired",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC) - timedelta(minutes=2),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(
+            sanitized_text="reject c-expired",
+            original_hash="0" * 64,
+        ),
+    )
+
+    result = await SessionImplMixin._execute_planner_action_resolve(
+        harness,
+        validated=validated,
+        arguments={"decision": "reject", "target": "c-expired", "scope": "one"},
+        pending_action_binding_ids=("c-expired",),
+        requires_explicit_current_turn_intent=True,
+    )
+
+    assert result.success is False
+    assert result.executed == 0
+    assert result.rejected == 1
+    assert result.rejection_reasons == ["approval_expired"]
+    assert "approval_expired" in result.summary
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_expired"
 
 
 def test_u9_action_resolve_pending_context_filters_rows_by_delivery_target() -> None:

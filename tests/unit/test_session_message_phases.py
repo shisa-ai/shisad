@@ -7675,6 +7675,53 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
 
 
 @pytest.mark.asyncio
+async def test_f1_finalize_response_excludes_expired_row_when_live_action_is_pending() -> None:
+    harness = _FinalizeEvidenceHarness()
+    now = datetime.now(UTC)
+    harness._pending_actions = {
+        "c-expired": SimpleNamespace(
+            confirmation_id="c-expired",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=now - timedelta(minutes=2),
+            expires_at=now - timedelta(minutes=1),
+            safe_preview="ACTION CONFIRMATION\nAction: fs.read\nPARAMETERS:\n  path: expired.txt",
+            reason="requires_confirmation",
+            decision_nonce="nonce-expired",
+            status="pending",
+        ),
+        "c-live": SimpleNamespace(
+            confirmation_id="c-live",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=now,
+            expires_at=now + timedelta(minutes=1),
+            safe_preview="ACTION CONFIRMATION\nAction: fs.write\nPARAMETERS:\n  path: live.txt",
+            reason="requires_confirmation",
+            decision_nonce="nonce-live",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Queued it.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-live"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "c-live" in text
+    assert "live.txt" in text
+    assert "c-expired" not in text
+    assert "expired.txt" not in text
+    assert response["pending_confirmation_ids"] == ["c-live"]
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_formats_discord_pending_summary() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {
