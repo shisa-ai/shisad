@@ -7607,6 +7607,133 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
 
 
 @pytest.mark.asyncio
+async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_reminder_ids: list[str] = []
+
+    async def _gh70_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        planner_input = messages[-1].content if messages else ""
+        goal = _extract_user_goal(planner_input)
+        if "how's that reminder coming" not in goal.lower():
+            return await _stub_complete(self, messages, tools)
+        normalized_input = planner_input.replace("^", "")
+        if (
+            len(current_reminder_ids) == 1
+            and "=== REMINDER STATUS (TRUSTED CONTROL STATE) ===" in normalized_input
+            and "selection=selected" in normalized_input
+            and f"selected_task_id={current_reminder_ids[0]}" in normalized_input
+        ):
+            response = (
+                f"Reminder {current_reminder_ids[0]} ('test our ledger') is still pending."
+            )
+        elif (
+            len(current_reminder_ids) == 2
+            and "=== REMINDER STATUS (TRUSTED CONTROL STATE) ===" in normalized_input
+            and "selection=ambiguous" in normalized_input
+            and all(task_id in normalized_input for task_id in current_reminder_ids)
+        ):
+            response = (
+                "Which reminder did you mean: "
+                f"{current_reminder_ids[0]} or {current_reminder_ids[1]}?"
+            )
+        else:
+            response = "The older reminder already fired."
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _gh70_complete, raising=True)
+        old_sid = await _create_session(harness.client)
+        old_created = await harness.client.call(
+            "session.message",
+            {"session_id": old_sid, "content": "remind me to test our ledger in 1 second"},
+        )
+        old_payload = _extract_tool_outputs(old_created)["reminder.create"][0]
+        old_task_id = str((old_payload.get("task") or {}).get("id", "")).strip()
+        assert old_task_id
+        await _wait_for_audit_event(
+            harness.client,
+            event_type="TaskTriggered",
+            predicate=lambda event: str(event.get("data", {}).get("task_id", ""))
+            == old_task_id,
+            timeout=5.0,
+        )
+
+        current_sid = await _create_session(harness.client)
+        current_created = await harness.client.call(
+            "session.message",
+            {"session_id": current_sid, "content": "remind me to test our ledger in 2 minutes"},
+        )
+        current_payload = _extract_tool_outputs(current_created)["reminder.create"][0]
+        current_task_id = str((current_payload.get("task") or {}).get("id", "")).strip()
+        assert current_task_id
+        current_reminder_ids.append(current_task_id)
+
+        selected_list = await harness.client.call(
+            "session.message",
+            {"session_id": current_sid, "content": "list my reminders"},
+        )
+        selected_list_payload = _extract_tool_outputs(selected_list)["reminder.list"][0]
+        assert selected_list_payload.get("selection") == "selected"
+        assert selected_list_payload.get("selected_task_id") == current_task_id
+        selected_row = next(
+            row
+            for row in selected_list_payload.get("tasks", [])
+            if str(row.get("id", "")) == current_task_id
+        )
+        assert selected_row.get("current_binding") is True
+        assert selected_row.get("lifecycle_state") == "pending"
+
+        active_reply = await harness.client.call(
+            "session.message",
+            {"session_id": current_sid, "content": "how's that reminder coming?"},
+        )
+        active_text = str(active_reply.get("response", ""))
+        assert current_task_id in active_text
+        assert "still pending" in active_text.lower()
+        assert old_task_id not in active_text
+        assert "already fired" not in active_text.lower()
+
+        tied_created = await harness.client.call(
+            "session.message",
+            {"session_id": current_sid, "content": "remind me to test our ledger in 3 minutes"},
+        )
+        tied_payload = _extract_tool_outputs(tied_created)["reminder.create"][0]
+        tied_task_id = str((tied_payload.get("task") or {}).get("id", "")).strip()
+        assert tied_task_id
+        current_reminder_ids.append(tied_task_id)
+
+        ambiguous_list = await harness.client.call(
+            "session.message",
+            {"session_id": current_sid, "content": "list my reminders"},
+        )
+        ambiguous_list_payload = _extract_tool_outputs(ambiguous_list)["reminder.list"][0]
+        assert ambiguous_list_payload.get("selection") == "ambiguous"
+        assert set(ambiguous_list_payload.get("candidate_task_ids", [])) == set(
+            current_reminder_ids
+        )
+
+        tied_reply = await harness.client.call(
+            "session.message",
+            {"session_id": current_sid, "content": "how's that reminder coming?"},
+        )
+        tied_text = str(tied_reply.get("response", ""))
+        assert "which reminder" in tied_text.lower()
+        assert all(task_id in tied_text for task_id in current_reminder_ids)
+        assert old_task_id not in tied_text
+
+
+@pytest.mark.asyncio
 async def test_contract_polite_set_reminder_clock_time_executes_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

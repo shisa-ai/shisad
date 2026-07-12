@@ -15,6 +15,13 @@ import pytest
 
 import shisad.daemon.handlers._impl_session as impl_session
 from shisad.channels.base import DeliveryTarget
+from shisad.core.action_state import (
+    ReminderActionIdentity,
+    ReminderLifecycleState,
+    ReminderStatusView,
+    reminder_lifecycle_state,
+    select_reminder_status_view,
+)
 from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.plan_steps import PlanStepStore
 from shisad.core.planner import (
@@ -61,6 +68,8 @@ from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import compose_channel_binding
 from shisad.memory.schema import MemorySource
 from shisad.memory.timeline import TimelineIndex
+from shisad.scheduler.manager import SchedulerManager
+from shisad.scheduler.schema import Schedule, ScheduleKind
 from shisad.security.control_plane.consensus import ActionMonitorVoter, ConsensusInput
 from shisad.security.control_plane.schema import (
     ActionKind,
@@ -132,6 +141,122 @@ def test_gh82_mcp_tool_delegation_is_not_unknown_action_kind() -> None:
     assert "unknown_action_kind" not in advisory.reason_codes
     assert "side_effect_action" in advisory.reason_codes
     assert advisory.tools == ("mcp.todoist.find-tasks-by-date",)
+
+
+def _gh70_reminder_view(
+    *,
+    task_id: str,
+    current_binding: bool,
+    lifecycle_state: ReminderLifecycleState,
+    created_at: datetime,
+) -> ReminderStatusView:
+    return ReminderStatusView(
+        identity=ReminderActionIdentity(
+            task_id=task_id,
+            session_id="sess-g1" if current_binding else "sess-old",
+            user_id="user-g1",
+            workspace_id="workspace-g1",
+            delivery_target=(("channel", "session"), ("recipient", "sess-g1")),
+        ),
+        message="test our ledger",
+        lifecycle_state=lifecycle_state,
+        current_binding=current_binding,
+        created_at=created_at,
+    )
+
+
+def test_gh70_reminder_selection_prefers_current_active_and_disambiguates_tie() -> None:
+    now = datetime.now(UTC)
+    old_fired = _gh70_reminder_view(
+        task_id="old-fired",
+        current_binding=False,
+        lifecycle_state="executed",
+        created_at=now + timedelta(seconds=10),
+    )
+    current_active = _gh70_reminder_view(
+        task_id="current-active",
+        current_binding=True,
+        lifecycle_state="pending",
+        created_at=now,
+    )
+
+    selected = select_reminder_status_view([old_fired, current_active])
+
+    assert selected.status == "selected"
+    assert selected.selected is current_active
+    assert select_reminder_status_view([old_fired]).status == "none"
+
+    second_active = _gh70_reminder_view(
+        task_id="second-active",
+        current_binding=True,
+        lifecycle_state="pending",
+        created_at=now + timedelta(seconds=20),
+    )
+    ambiguous = select_reminder_status_view(
+        [old_fired, current_active, second_active]
+    )
+
+    assert ambiguous.status == "ambiguous"
+    assert {item.identity.task_id for item in ambiguous.candidates} == {
+        "current-active",
+        "second-active",
+    }
+
+
+def test_gh70_reminder_lifecycle_distinguishes_terminal_outcomes_from_cancellation() -> None:
+    common = {
+        "pending_confirmation_count": 0,
+        "trigger_count": 1,
+        "max_runs": 1,
+    }
+
+    assert reminder_lifecycle_state(
+        enabled=False,
+        success_count=1,
+        failure_count=0,
+        **common,
+    ) == "executed"
+    assert reminder_lifecycle_state(
+        enabled=True,
+        success_count=0,
+        failure_count=1,
+        **common,
+    ) == "failed"
+    assert reminder_lifecycle_state(
+        enabled=False,
+        success_count=0,
+        failure_count=0,
+        trigger_count=0,
+        max_runs=1,
+        pending_confirmation_count=0,
+    ) == "cancelled"
+
+
+def test_gh70_reminder_status_context_survives_scheduler_restart(tmp_path: Path) -> None:
+    storage = tmp_path / "tasks"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task = scheduler.create_task(
+        name="test-our-ledger",
+        goal="Reminder: test our ledger",
+        schedule=Schedule(kind=ScheduleKind.INTERVAL, expression="120s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        delivery_target={"channel": "session", "recipient": "sess-g1"},
+        max_runs=1,
+    )
+    harness = object.__new__(_PhaseHarness)
+    harness._scheduler = SchedulerManager(storage_dir=storage)
+
+    context = SessionImplMixin._planner_reminder_status_context(
+        harness,
+        validated=_validation_result(params={"content": "how is that reminder?"}),
+    )
+
+    assert "selection=selected" in context
+    assert f"selected_task_id={task.id}" in context
+    assert "lifecycle=pending" in context
 
 
 def _clear_validation_owner(validated: SessionMessageValidationResult) -> None:

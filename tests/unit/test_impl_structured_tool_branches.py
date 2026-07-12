@@ -1557,7 +1557,14 @@ async def test_m1_structured_reminder_list_tolerates_null_limit() -> None:
 
     payload = await _structured_reminder_list(handler, {"limit": None}, context)
 
-    assert payload == {"ok": True, "tasks": [], "count": 0}
+    assert payload == {
+        "ok": True,
+        "tasks": [],
+        "count": 0,
+        "selection": "none",
+        "selected_task_id": "",
+        "candidate_task_ids": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -1613,7 +1620,10 @@ async def test_gh59_structured_reminder_list_renders_one_shot_interval() -> None
         max_runs=1,
     )
     handler = SimpleNamespace(
-        _scheduler=SimpleNamespace(list_tasks=lambda: [task, fired_task, triggered_task])
+        _scheduler=SimpleNamespace(
+            list_tasks=lambda: [task, fired_task, triggered_task],
+            pending_confirmations=lambda _task_id: [],
+        )
     )
 
     payload = await _structured_reminder_list(handler, {}, context)
@@ -1628,13 +1638,62 @@ async def test_gh59_structured_reminder_list_renders_one_shot_interval() -> None
         == "one-shot, was due about 2 minutes after creation and has already fired"
     )
     assert fired_reminder["schedule_kind"] == "one_shot_interval"
+    assert fired_reminder["lifecycle_state"] == "executed"
     assert "every" not in fired_reminder["schedule_summary"].lower()
     assert (
         triggered_reminder["schedule_summary"]
         == "one-shot, was due about 2 minutes after creation and has already fired"
     )
     assert triggered_reminder["schedule_kind"] == "one_shot_interval"
+    assert triggered_reminder["lifecycle_state"] == "executing"
     assert "every" not in triggered_reminder["schedule_summary"].lower()
+
+
+@pytest.mark.asyncio
+async def test_gh70_reminder_list_limit_does_not_hide_structural_ambiguity() -> None:
+    session = Session(
+        id=SessionId("s-gh70-reminder-list"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    context = StructuredToolContext(
+        session_id=SessionId("s-gh70-reminder-list"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=session,
+    )
+    tasks = [
+        ScheduledTask(
+            id=f"task-gh70-{index}",
+            name=f"reminder:gh70-{index}",
+            goal=f"Reminder: test the ledger {index}",
+            schedule=Schedule(kind="interval", expression="120s"),
+            capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+            policy_snapshot_ref="planner:reminder.create",
+            created_by=UserId("user-1"),
+            workspace_id=WorkspaceId("ws-1"),
+            delivery_target={
+                "channel": "session",
+                "recipient": "s-gh70-reminder-list",
+            },
+            max_runs=1,
+        )
+        for index in range(2)
+    ]
+    handler = SimpleNamespace(
+        _scheduler=SimpleNamespace(
+            list_tasks=lambda: tasks,
+            pending_confirmations=lambda _task_id: [],
+        )
+    )
+
+    payload = await _structured_reminder_list(handler, {"limit": 1}, context)
+
+    assert payload["count"] == 1
+    assert len(payload["tasks"]) == 1
+    assert payload["selection"] == "ambiguous"
+    assert set(payload["candidate_task_ids"]) == {"task-gh70-0", "task-gh70-1"}
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,11 @@ from pydantic import ValidationError
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
 from shisad.channels.base import DeliveryTarget
+from shisad.core.action_state import (
+    ReminderStatusView,
+    reminder_status_view_for_task,
+    select_reminder_status_view,
+)
 from shisad.core.approval import (
     ApprovalEnvelope,
     ApprovalRoutingError,
@@ -1219,6 +1224,12 @@ async def _structured_reminder_list(
 ) -> Mapping[str, Any]:
     limit = _argument_int(arguments, "limit", default=20, minimum=1)
     rows: list[dict[str, Any]] = []
+    views: list[ReminderStatusView] = []
+    current_target_payload = _resolve_session_delivery_target(
+        context.session,
+        session_id=context.session_id,
+    )
+    pending_confirmations = getattr(handler._scheduler, "pending_confirmations", None)
     for task in handler._scheduler.list_tasks():
         if str(getattr(task, "created_by", "")).strip() != str(context.user_id).strip():
             continue
@@ -1226,12 +1237,38 @@ async def _structured_reminder_list(
             continue
         if not str(getattr(task, "goal", "")).startswith("Reminder: "):
             continue
-        row = task.model_dump(mode="json")
-        row.update(task_schedule_rendering(task))
-        rows.append(row)
-        if len(rows) >= limit:
-            break
-    return {"ok": True, "tasks": rows, "count": len(rows)}
+        task_id = str(getattr(task, "id", "")).strip()
+        pending_count = 0
+        if task_id and callable(pending_confirmations):
+            try:
+                pending_count = len(pending_confirmations(task_id))
+            except (AttributeError, TypeError, ValueError):
+                pending_count = 0
+        view = reminder_status_view_for_task(
+            task,
+            current_delivery_target=current_target_payload,
+            pending_confirmation_count=pending_count,
+        )
+        if view is None:
+            continue
+        views.append(view)
+        if len(rows) < limit:
+            row = task.model_dump(mode="json")
+            row.update(task_schedule_rendering(task))
+            row["lifecycle_state"] = view.lifecycle_state
+            row["current_binding"] = view.current_binding
+            rows.append(row)
+    selection = select_reminder_status_view(views)
+    return {
+        "ok": True,
+        "tasks": rows,
+        "count": len(rows),
+        "selection": selection.status,
+        "selected_task_id": (
+            selection.selected.identity.task_id if selection.selected is not None else ""
+        ),
+        "candidate_task_ids": [item.identity.task_id for item in selection.candidates],
+    }
 
 
 async def _structured_evidence_read(
