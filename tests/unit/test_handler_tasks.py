@@ -224,7 +224,12 @@ async def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None
     assert queued_event.action_id == "act-task-1"
     assert queued_event.origin_turn_id.startswith("task-run:")
     assert queued_event.followup_id == "followup-task-1"
+    assert queued_event.approval_session_id == "scheduler-session-1"
+    assert queued_event.approval_task_envelope_id == ""
     assert queued_event.approval_confirmation_id == "confirm-task-1"
+    assert queued_event.execution_attempt_id == ""
+    assert queued_event.result_id == ""
+    assert queued_event.approval_decision_nonce == ""
 
 
 @pytest.mark.asyncio

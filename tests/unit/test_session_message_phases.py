@@ -2337,7 +2337,12 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert queued_event.action_id == "act-planner-1"
     assert queued_event.origin_turn_id
     assert queued_event.followup_id == "followup-planner-1"
+    assert queued_event.approval_session_id == "sess-g1"
+    assert queued_event.approval_task_envelope_id == ""
     assert queued_event.approval_confirmation_id == "c-1"
+    assert queued_event.execution_attempt_id == ""
+    assert queued_event.result_id == ""
+    assert queued_event.approval_decision_nonce == ""
 
 
 @pytest.mark.asyncio

@@ -2034,7 +2034,12 @@ async def test_mcp_h2_control_plane_require_confirmation_queues_tool_execute() -
     assert queued_event.action_id == "act-direct-1"
     assert queued_event.origin_turn_id.startswith("control-api:")
     assert queued_event.followup_id == "followup-direct-1"
+    assert queued_event.approval_session_id == str(harness.session_id)
+    assert queued_event.approval_task_envelope_id == ""
     assert queued_event.approval_confirmation_id == "confirm-1"
+    assert queued_event.execution_attempt_id == ""
+    assert queued_event.result_id == ""
+    assert queued_event.approval_decision_nonce == ""
 
 
 @pytest.mark.asyncio
