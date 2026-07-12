@@ -70,6 +70,39 @@ def test_tool_payload_templates_cover_memory_and_reminder_tools() -> None:
         assert tool_name in templates
         assert templates[tool_name]["arguments"]
     assert Path(templates["attachment.ingest"]["arguments"]["path"]).exists()
+    assert templates["time.now"]["arguments"] == {}
+
+
+def test_fixture_bound_control_tools_are_explicitly_omitted_from_direct_probe() -> None:
+    module = _load_live_tool_matrix_module()
+
+    registered = [
+        "fs.read",
+        "time.now",
+        "action.resolve",
+        "lockdown.resume",
+        "thread.list",
+        "thread.inspect",
+        "thread.resume",
+        "thread.close",
+        "thread.why",
+    ]
+
+    assert module._probeable_tool_names(registered) == ["fs.read", "time.now"]
+    assert (
+        frozenset(
+            {
+                "action.resolve",
+                "lockdown.resume",
+                "thread.list",
+                "thread.inspect",
+                "thread.resume",
+                "thread.close",
+                "thread.why",
+            }
+        )
+        == module._FIXTURE_BOUND_TOOL_NAMES
+    )
 
 
 def test_email_read_template_requires_configured_or_search_derived_id(monkeypatch) -> None:

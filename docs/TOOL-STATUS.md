@@ -3,7 +3,7 @@
 This file records a point-in-time snapshot of the tool surface from a local `shisad` run. Exact status depends on configuration, enabled channels, and environment. Regenerate it in your own environment with:
 
 ```bash
-uv run python scripts/live_tool_matrix.py --tool-status
+uv run --frozen python scripts/live_tool_matrix.py --tool-status
 ```
 
 Status meanings:
@@ -11,8 +11,16 @@ Status meanings:
 - `WORKS`: available in the tested configuration
 - `GATED`: available, but routed through an approval or anomaly gate in the tested configuration
 - `DISABLED`: unavailable in the tested configuration because a required dependency or configuration value was missing
+- `BROKEN`: the probe could not exercise an expected tool path; release snapshots
+  must record zero broken rows
 
 Current snapshot:
+
+This snapshot was generated on 2026-07-12 from a fresh isolated data directory
+with external channels, browser, msgvault, and the web-search backend disabled.
+The filesystem root was the source checkout. The direct-RPC probe is deliberately
+fast; later safe tools can therefore appear as `GATED` when the behavioral
+sequence control sees the synthetic burst.
 
 Note:
 
@@ -30,8 +38,10 @@ Note:
   `email_read_probe_message_id_unconfigured`.
 - `tool.evidence.read` and `tool.evidence.promote` are `DISABLED` in this recorded snapshot because the probe does not seed a current-session evidence reference. They are covered by the evidence behavioral suite.
 - `tool.time.now` is a planner-visible structured clock tool for current
-  date/time answers. It has no external dependency and is covered by
-  session-message behavioral tests rather than this direct-RPC snapshot.
+  date/time answers. It has no external dependency. The direct-RPC snapshot
+  exercises it; in this run the synthetic probe burst reached the behavioral
+  sequence gate, so the row is `GATED`. Session-message behavioral tests cover
+  the normal current-time journey independently.
 - `tool.attachment.ingest` is the local attachment MVP. It reads allowlisted
   local paths only, returns tainted ArtifactLedger manifest refs, and stores
   unsupported, malformed, oversized, or transcript-risky media as quarantined
@@ -42,6 +52,9 @@ Note:
   `thread.close`, and `thread.why`) are live control/API surfaces, but this
   static snapshot omits them until the live probe seeds an `open_thread`
   fixture. Their user-visible contract is covered by behavioral tests.
+- `tool.action.resolve` is omitted until the live probe seeds a pending action
+  bound to the probe's current trusted turn. Its confirmation/rejection contract
+  is covered by command-chat behavioral tests.
 - Timeline tools (`memory.timeline.search`, `memory.timeline.read`, and
   `memory.timeline.promote`) are live control/API and CLI surfaces in the
   v0.7.3 line, but this static snapshot omits them until the live probe seeds a
@@ -54,7 +67,9 @@ Note:
 - The browser rows remain live in the published `v0.7.x` line even though this point-in-time table intentionally omits them.
 - `tool.lockdown.resume` is a planner-driven structured control tool exposed only
   to trusted command-chat sessions at `caution` lockdown level. It records the
-  audit actor chain `human_confirmation -> planner_lockdown_resume`.
+  audit actor chain `human_confirmation -> planner_lockdown_resume`. The static
+  snapshot omits it until the probe creates a bounded caution-level fixture;
+  lockdown behavioral tests cover the stateful journey.
 - `shisad memory benchmark` and `shisad memory sut` are CLI evaluation
   surfaces, not live assistant tools, so they are intentionally omitted from
   this tool table. See `docs/memory-evals.md` for memory evaluation commands.
@@ -67,10 +82,11 @@ Note:
 | tool.retrieve_rag | WORKS | allowed |
 | tool.shell.exec | WORKS | allowed |
 | tool.http.request | WORKS | allowed |
-| tool.file.read | GATED | consensus:veto:BehavioralSequenceAnalyzer |
+| tool.file.read | WORKS | allowed |
 | tool.file.write | GATED | consensus:veto:BehavioralSequenceAnalyzer |
 | tool.web.search | DISABLED | web_search_backend_unconfigured |
 | tool.web.fetch | WORKS | ok |
+| tool.time.now | GATED | consensus:veto:BehavioralSequenceAnalyzer |
 | tool.email.search | DISABLED | msgvault_disabled |
 | tool.email.read | DISABLED | msgvault_disabled |
 | tool.attachment.ingest | GATED | consensus:veto:BehavioralSequenceAnalyzer |
@@ -92,12 +108,11 @@ Note:
 | tool.evidence.read | DISABLED | no_evidence_ref_available |
 | tool.evidence.promote | DISABLED | no_evidence_ref_available |
 | tool.report_anomaly | GATED | consensus:veto:BehavioralSequenceAnalyzer |
-| tool.lockdown.resume | GATED | trusted command chat only; caution-level sessions only; audit actors human_confirmation -> planner_lockdown_resume |
 
 Summary:
 
-- `WORKS`: 13
-- `GATED`: 13
+- `WORKS`: 14
+- `GATED`: 12
 - `DISABLED`: 6
-- `FAIL`: 0
+- `BROKEN`: 0
 - `TOTAL`: 32
