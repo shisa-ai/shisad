@@ -254,6 +254,8 @@ class SchedulerManager:
     def queue_confirmation(self, task_id: str, action: dict[str, Any]) -> None:
         payload = dict(action)
         payload["status"] = str(payload.get("status", "pending") or "pending")
+        payload["run_outcome_recorded"] = False
+        payload.pop("run_outcome_success", None)
         payload["queued_at"] = (
             str(payload.get("queued_at", "")).strip() or datetime.now(UTC).isoformat()
         )
@@ -264,6 +266,8 @@ class SchedulerManager:
 
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
         pending: list[dict[str, Any]] = []
+        current = datetime.now(UTC)
+        reconciled_expiry = False
         for row in self._pending_confirmations.get(task_id, []):
             status = str(row.get("status", "pending") or "pending").strip().lower()
             expires_at: datetime | None = None
@@ -277,12 +281,64 @@ class SchedulerManager:
                 status=status,
                 status_reason=str(row.get("status_reason", "") or ""),
                 expires_at=expires_at,
+                now=current,
             )
+            if status == "pending" and lifecycle_state == "expired":
+                row["status"] = "failed"
+                row["status_reason"] = "approval_expired"
+                row["lifecycle_state"] = "expired"
+                row["resolved_at"] = current.isoformat()
+                self._record_confirmation_outcome_row(task_id, row=row, success=False)
+                self._audit(
+                    "task.confirmation_resolved",
+                    {
+                        "task_id": task_id,
+                        "confirmation_id": str(row.get("confirmation_id", "")).strip(),
+                        "status": "failed",
+                    },
+                )
+                reconciled_expiry = True
+                continue
             if lifecycle_state == "pending":
                 payload = dict(row)
                 payload["lifecycle_state"] = lifecycle_state
                 pending.append(payload)
+        if reconciled_expiry:
+            self._prune_confirmation_rows(task_id)
+            self._persist_pending_confirmations()
         return pending
+
+    def _record_confirmation_outcome_row(
+        self,
+        task_id: str,
+        *,
+        row: dict[str, Any],
+        success: bool,
+    ) -> bool:
+        if bool(row.get("run_outcome_recorded", False)):
+            return True
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        row["run_outcome_recorded"] = True
+        row["run_outcome_success"] = bool(success)
+        if success:
+            task.success_count += 1
+        else:
+            task.failure_count += 1
+        self._persist_tasks()
+        self._persist_pending_confirmations()
+        self._audit(
+            "task.run_outcome",
+            {
+                "task_id": task_id,
+                "confirmation_id": str(row.get("confirmation_id", "")).strip(),
+                "success": success,
+                "success_count": task.success_count,
+                "failure_count": task.failure_count,
+            },
+        )
+        return True
 
     def resolve_confirmation(
         self,
@@ -334,6 +390,22 @@ class SchedulerManager:
                 },
             )
             return True
+        return False
+
+    def record_confirmation_outcome(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+        success: bool,
+    ) -> bool:
+        normalized_confirmation = confirmation_id.strip()
+        if not normalized_confirmation:
+            return False
+        for row in self._pending_confirmations.get(task_id, []):
+            if str(row.get("confirmation_id", "")).strip() != normalized_confirmation:
+                continue
+            return self._record_confirmation_outcome_row(task_id, row=row, success=success)
         return False
 
     def record_run_outcome(self, task_id: str, *, success: bool) -> bool:

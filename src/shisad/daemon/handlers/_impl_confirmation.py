@@ -526,6 +526,18 @@ class ConfirmationImplMixin(HandlerMixinBase):
         scheduler = getattr(self, "_scheduler", None)
         if scheduler is None:
             return
+        confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+        confirmation_recorder = getattr(scheduler, "record_confirmation_outcome", None)
+        if (
+            confirmation_id
+            and callable(confirmation_recorder)
+            and confirmation_recorder(
+                task_id,
+                confirmation_id=confirmation_id,
+                success=False,
+            )
+        ):
+            return
         recorder = getattr(scheduler, "record_run_outcome", None)
         if callable(recorder):
             recorder(task_id, success=False)

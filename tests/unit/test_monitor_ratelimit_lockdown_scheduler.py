@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.core.action_state import reminder_status_view_for_task
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
@@ -843,13 +844,17 @@ def test_f1_scheduler_pending_projection_excludes_expired_confirmation(
     storage = tmp_path / "tasks"
     scheduler = SchedulerManager(storage_dir=storage)
     created = scheduler.create_task(
-        name="digest",
-        goal="summarize updates",
+        name="reminder:deployment-check",
+        goal="Reminder: check deployment status",
         schedule=Schedule.from_event("message.received"),
         capability_snapshot={Capability.MEMORY_READ},
         policy_snapshot_ref="p1",
         created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        delivery_target={"channel": "session", "recipient": "sess-1"},
+        max_runs=1,
     )
+    created.trigger_count = 1
     scheduler.queue_confirmation(
         created.id,
         {
@@ -861,9 +866,37 @@ def test_f1_scheduler_pending_projection_excludes_expired_confirmation(
     )
 
     assert scheduler.pending_confirmations(created.id) == []
-    rows = scheduler.task_status_snapshot(limit=8, created_by=UserId("alice"))
+    assert scheduler.pending_confirmations(created.id) == []
+    assert created.failure_count == 1
+    resolved = scheduler._pending_confirmations[created.id][0]
+    assert resolved["status"] == "failed"
+    assert resolved["status_reason"] == "approval_expired"
+    assert resolved["lifecycle_state"] == "expired"
+    view = reminder_status_view_for_task(
+        created,
+        current_delivery_target={"channel": "session", "recipient": "sess-1"},
+        pending_confirmation_count=0,
+    )
+    assert view is not None
+    assert view.lifecycle_state == "failed"
+
+    rows = scheduler.task_status_snapshot(
+        limit=8,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
     assert rows[0]["pending_confirmation_count"] == 0
     assert rows[0]["confirmation_needed"] is False
+    assert rows[0]["failure_count"] == 1
+
+    restarted = SchedulerManager(storage_dir=storage)
+    reloaded = restarted.get_task(created.id)
+    assert reloaded is not None
+    assert restarted.pending_confirmations(created.id) == []
+    assert reloaded.failure_count == 1
+    persisted = restarted._pending_confirmations[created.id][0]
+    assert persisted["run_outcome_recorded"] is True
+    assert persisted["status_reason"] == "approval_expired"
 
 
 def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmations(

@@ -3429,6 +3429,52 @@ async def test_f1_expired_reject_returns_approval_expired(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_f1_scheduler_expiry_and_late_decision_record_one_failed_outcome(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    scheduler = SchedulerManager(storage_dir=tmp_path / "scheduler")
+    task = scheduler.create_task(
+        name="reminder:deployment-check",
+        goal="Reminder: check deployment status",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        max_runs=1,
+    )
+    task.trigger_count = 1
+    pending = _pending_action(nonce="expected")
+    pending.task_id = task.id
+    pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._scheduler = scheduler
+    scheduler.queue_confirmation(
+        task.id,
+        {
+            "confirmation_id": pending.confirmation_id,
+            "task_id": task.id,
+            "status": "pending",
+            "lifecycle_state": "pending",
+            "expires_at": pending.expires_at.isoformat(),
+        },
+    )
+
+    assert scheduler.pending_confirmations(task.id) == []
+    assert task.failure_count == 1
+
+    result = await harness.do_action_reject(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["reason"] == "approval_expired"
+    assert task.failure_count == 1
+    resolved = scheduler._pending_confirmations[task.id][0]
+    assert resolved["run_outcome_recorded"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("decision_nonce", [None, "wrong"])
 async def test_f1_expired_reject_projects_expiry_before_nonce_validation(
     tmp_path: Path,
