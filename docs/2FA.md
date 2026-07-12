@@ -84,6 +84,19 @@ does not extend the action's deadline. `shisad action list` shows canonical
 state, age, creation/expiry timestamps, origin turn, and terminal state reason
 so an operator can distinguish an expired action from a live approval request.
 
+If the daemon restarts after an approved effect may have started but before its
+result is durable, the action is not returned to the approval queue. Exact
+trusted retry metadata permits one bounded automatic recovery only for the
+in-process `time.now` route or an adapter-backed operation using the same
+persisted idempotency key. Other operations become `outcome_unknown`, with the
+old decision nonce cleared. This state does not mean the effect failed: inspect
+the action/attempt/result/provider identifiers shown by `shisad action list
+--status outcome_unknown`, check provider or local evidence, and then
+re-request the action if you choose to retry. The re-request creates a new
+pending action and requires fresh approval; the old confirmation ID or nonce
+cannot be reused. v0.8.1 does not provide universal provider reconciliation or
+exactly-once guarantees for arbitrary external services.
+
 ### What is a "factor"
 
 A factor is a registered credential that the daemon can verify. Examples:
@@ -113,6 +126,7 @@ any time.
 |---|---|
 | `shisad action list --session <SID>` | List actions waiting for your approval |
 | `shisad action list --session <SID> --json` | List pending actions as JSON for scripts or state inspection |
+| `shisad action list --session <SID> --status outcome_unknown` | Inspect uncertain attempts and informed fresh-approval guidance |
 | `shisad action confirm <ID>` | Approve a pending action (auto-resolves nonce from pending state) |
 | `shisad action confirm <ID> --nonce <NONCE>` | Approve with an explicit decision nonce (from `action list` output) |
 | `shisad action reject <ID> --nonce <NONCE>` | Reject a pending action |

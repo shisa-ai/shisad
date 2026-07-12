@@ -84,6 +84,33 @@ load and their old decision nonce is invalidated. The action must be requested
 again; a TOTP window or approval-web link lifetime is a separate challenge or
 capability deadline and cannot extend the pending action.
 
+Approved execution is also crash-aware. Before invoking a tool effect, the
+daemon durably records the action digest, approval-evidence hash, execution
+attempt ID, result ID, and `executing` state. On restart, only the exact
+in-process `time.now` route or a trusted adapter carrying the same persisted
+provider idempotency key may receive one bounded automatic recovery call. The
+daemon revalidates the live tool schema, action and retry descriptors, session
+and principal, delivery scope, current policy, approval evidence, and expiry
+before that call. Every missing, corrupt, drifted, exhausted, or unclassified
+case becomes `outcome_unknown`; arbitrary web requests, message delivery,
+dynamic skills, MCP tools, and other external effects are not replayed merely
+because they look read-like or use HTTP GET.
+
+`outcome_unknown` means the external effect may or may not have happened. The
+old decision nonce is invalidated, while `shisad action list --status
+outcome_unknown` retains known action/attempt/result/provider identifiers and
+gives an informed manual-retry instruction. Inspect provider or local evidence
+first; retrying means re-requesting the action and satisfying a new approval.
+Provider reconciliation is not generally available in v0.8.1, and shisad does
+not claim universal exactly-once behavior for arbitrary external services.
+Stable provider idempotency keys remain in private durable state and are not
+returned by the public pending-action API.
+
+Concurrent confirmation clicks for one action are serialized by an in-memory
+per-confirmation lock while that daemon process is running. That lock is a
+local concurrency guard, not durable exactly-once evidence; the persisted
+attempt/result lifecycle above is the restart authority.
+
 **8. Context control is a first-class security primitive.** Because we construct the LLM's context each turn, we can choose exactly what the model sees — and more importantly, what it *doesn't* see. This is unique to LLM-based systems and has no equivalent in traditional software. Evidence references are the primary application: large untrusted content (web pages, email bodies, tool output) is stored out-of-band in a content-addressed evidence store, and the LLM receives only an opaque reference stub with metadata. The raw tainted content never enters the conversation history, so it cannot persist as an injection surface across turns. When the model needs to re-examine content, it makes an explicit `evidence.read` tool call — which goes through PEP enforcement and returns content into a single-turn isolated context, not the persistent transcript. This turns the usual LLM limitation (no persistent memory) into a security advantage: we can quarantine, exclude, or replace any piece of context at any time, and the model cannot tell the difference.
 
 ---

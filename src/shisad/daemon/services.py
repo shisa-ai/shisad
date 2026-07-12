@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -42,7 +43,7 @@ from shisad.core.soul import load_effective_persona_text
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.tools.schema import ToolDefinition, ToolParameter, ToolRetryClass
 from shisad.core.trace import TracePersistencePolicy, TraceRecorder
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, TaintLabel, ToolName
@@ -92,6 +93,8 @@ if TYPE_CHECKING:
     from shisad.executors.browser import BrowserSandbox
 
 logger = logging.getLogger(__name__)
+
+IdempotentOperationAdapter = Callable[[Mapping[str, Any], str], Mapping[str, Any]]
 
 
 def _wipe_dir_contents(directory: Path) -> None:
@@ -609,6 +612,9 @@ class DaemonServices:
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
     identity_allowlists_baseline: dict[str, frozenset[str]]
+    idempotent_recovery_adapters: dict[str, IdempotentOperationAdapter] = field(
+        default_factory=dict
+    )
     active_rpc_calls: int = field(default=0)
     rpc_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reset_in_progress: bool = field(default=False)
@@ -1711,6 +1717,7 @@ def _build_tool_registry(
                 ),
             ],
             require_confirmation=False,
+            retry_class=ToolRetryClass.STRUCTURAL_READ,
         )
     )
     registry.register(

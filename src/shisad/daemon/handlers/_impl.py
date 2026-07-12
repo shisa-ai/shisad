@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from time import monotonic as _monotonic
+from time import sleep as _sleep
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
@@ -59,6 +61,7 @@ from shisad.core.approval import (
     approval_envelope_hash,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
+    confirmation_evidence_satisfies_requirement,
     effective_pending_action_ttl_seconds,
     intent_envelope_hash,
     legacy_software_confirmation_requirement,
@@ -97,7 +100,11 @@ from shisad.core.session import Session
 from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
 from shisad.core.tools.names import canonical_tool_name
-from shisad.core.tools.schema import ToolDefinition
+from shisad.core.tools.schema import (
+    ToolDefinition,
+    ToolRetryClass,
+    ToolRetryDescriptor,
+)
 from shisad.core.types import (
     Capability,
     SessionId,
@@ -128,6 +135,7 @@ from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_con
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
+    build_policy_context_for_pending_action,
     pending_action_state_view,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
@@ -179,6 +187,7 @@ from shisad.security.control_plane.sidecar import (
     ControlPlaneUnavailableError,
 )
 from shisad.security.leakcheck import CrossThreadLeakDetector
+from shisad.security.pep import PolicyContext
 from shisad.security.reputation import ReputationScorer
 from shisad.security.taint import label_tool_output, normalize_retrieval_taints
 from shisad.skills.manifest import parse_manifest
@@ -200,6 +209,7 @@ _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
 _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _GH12_READ_ONLY_SHELL_COMMANDS = frozenset({"fd", "find", "grep", "ls", "rg"})
+_AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS = 0.05
 _SENSITIVE_PENDING_TEXT_REDACTION = "[sensitive text redacted]"
 _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
@@ -1533,6 +1543,12 @@ class PendingAction:
     origin_turn_id: str = ""
     action_digest: str = ""
     approval_evidence_hash: str = ""
+    retry_descriptor: ToolRetryDescriptor | None = None
+    retry_generation: int = 0
+    recovery_started_at: datetime | None = None
+    recovery_result: dict[str, Any] = field(default_factory=dict)
+    stable_idempotency_key: str = ""
+    provider_operation_id: str = ""
     execution_attempt_id: str = ""
     result_id: str = ""
     followup_id: str = ""
@@ -1595,6 +1611,7 @@ class ApprovedToolExecutionResult:
     tool_output: ToolOutputRecord | None = None
     sandbox_result: SandboxResult | None = None
     error: str = ""
+    provider_operation_id: str = ""
 
 
 class HandlerImplementation(
@@ -2971,6 +2988,18 @@ class HandlerImplementation(
             "origin_turn_id": state_view.identity.origin_turn_id,
             "action_digest": pending.action_digest,
             "approval_evidence_hash": pending.approval_evidence_hash,
+            "retry_descriptor": (
+                pending.retry_descriptor.model_dump(mode="json")
+                if pending.retry_descriptor is not None
+                else None
+            ),
+            "retry_generation": pending.retry_generation,
+            "recovery_started_at": (
+                pending.recovery_started_at.isoformat() if pending.recovery_started_at else ""
+            ),
+            "recovery_result": dict(pending.recovery_result),
+            "stable_idempotency_key": pending.stable_idempotency_key,
+            "provider_operation_id": pending.provider_operation_id,
             "execution_attempt_id": state_view.identity.execution_attempt_id,
             "result_id": state_view.identity.result_id,
             "followup_id": state_view.identity.followup_id,
@@ -3068,6 +3097,41 @@ class HandlerImplementation(
                 payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(
                     mode="json"
                 )
+        if public:
+            payload.pop("stable_idempotency_key", None)
+            payload["stable_idempotency_key_present"] = bool(
+                pending.stable_idempotency_key
+            )
+            retry_descriptor_payload = payload.get("retry_descriptor")
+            if isinstance(retry_descriptor_payload, dict):
+                retry_descriptor_payload.pop("stable_idempotency_key", None)
+            public_structural_clock_result = (
+                pending.retry_descriptor is not None
+                and pending.retry_descriptor.retry_class
+                == ToolRetryClass.STRUCTURAL_READ
+                and str(pending.tool_name) == "time.now"
+            )
+            if not public_structural_clock_result:
+                payload.pop("recovery_result", None)
+                payload["recovery_result_available"] = bool(pending.recovery_result)
+            if state_view.lifecycle_state == "outcome_unknown":
+                payload["uncertainty_evidence"] = {
+                    "action_digest": pending.action_digest,
+                    "execution_attempt_id": pending.execution_attempt_id,
+                    "result_id": pending.result_id,
+                    "provider_operation_id": pending.provider_operation_id,
+                    "retry_generation": pending.retry_generation,
+                }
+                payload["manual_retry"] = {
+                    "requires_fresh_approval": True,
+                    "reuse_confirmation_id": False,
+                    "provider_reconciliation_available": False,
+                    "instruction": (
+                        "Inspect provider or local evidence before retrying. If you choose "
+                        "to retry, re-request the action; a new approval is required. Do "
+                        "not reuse this confirmation ID or decision nonce."
+                    ),
+                }
         return payload
 
     def _pending_selected_backend_available(self, pending: PendingAction) -> bool:
@@ -3325,26 +3389,33 @@ class HandlerImplementation(
             confirmation_arguments,
         )
         tool_definition = self._registry.get_tool(tool_name)
+        effective_tool_definition = tool_definition or ToolDefinition(
+            name=tool_name,
+            description="",
+            parameters=[],
+            capabilities_required=[],
+        )
+        stable_idempotency_key = ""
+        if effective_tool_definition.retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            stable_idempotency_key = "shisad-" + hashlib.sha256(
+                (
+                    f"{action_id}\x00{effective_tool_definition.name}\x00"
+                    f"{effective_tool_definition.schema_hash()}"
+                ).encode()
+            ).hexdigest()
+        retry_descriptor = ToolRetryDescriptor.from_tool_definition(
+            effective_tool_definition,
+            stable_idempotency_key=stable_idempotency_key,
+        )
         resolved_destinations = resolve_confirmation_destinations(
-            tool_definition=tool_definition
-            or ToolDefinition(
-                name=tool_name,
-                description="",
-                parameters=[],
-                capabilities_required=[],
-            ),
+            tool_definition=effective_tool_definition,
             arguments=normalized_arguments,
         )
         action_digest = compute_action_digest(
-            tool_definition=tool_definition
-            or ToolDefinition(
-                name=tool_name,
-                description="",
-                parameters=[],
-                capabilities_required=[],
-            ),
+            tool_definition=effective_tool_definition,
             arguments=normalized_arguments,
             destinations=resolved_destinations,
+            stable_idempotency_key=stable_idempotency_key,
         )
         action_summary = f"{summary.action}: " + ", ".join(
             f"{key}={value}" for key, value in summary.parameters[:6]
@@ -3399,6 +3470,8 @@ class HandlerImplementation(
             action_id=action_id,
             origin_turn_id=str(origin_turn_id).strip(),
             action_digest=action_digest,
+            retry_descriptor=retry_descriptor,
+            stable_idempotency_key=stable_idempotency_key,
             followup_id=followup_id,
             session_id=session_id,
             user_id=user_id,
@@ -3573,62 +3646,137 @@ class HandlerImplementation(
                 confirmation_id = str(item.get("confirmation_id", "")).strip()
                 if not confirmation_id:
                     continue
+                recovery_authority_invalid = False
                 created_at = datetime.fromisoformat(str(item.get("created_at", "")).strip())
                 session_id = SessionId(str(item.get("session_id", "")))
                 delivery_target_payload = item.get("delivery_target")
-                delivery_target = (
-                    DeliveryTarget.model_validate(delivery_target_payload)
-                    if isinstance(delivery_target_payload, Mapping)
-                    else None
-                )
+                try:
+                    delivery_target = (
+                        DeliveryTarget.model_validate(delivery_target_payload)
+                        if isinstance(delivery_target_payload, Mapping)
+                        else None
+                    )
+                except ValidationError:
+                    delivery_target = None
+                    recovery_authority_invalid = True
                 preflight_action_payload = item.get("preflight_action")
-                preflight_action = (
-                    ControlPlaneAction.model_validate(preflight_action_payload)
-                    if isinstance(preflight_action_payload, dict)
-                    else None
-                )
+                try:
+                    preflight_action = (
+                        ControlPlaneAction.model_validate(preflight_action_payload)
+                        if isinstance(preflight_action_payload, dict)
+                        else None
+                    )
+                except ValidationError:
+                    preflight_action = None
+                    recovery_authority_invalid = True
                 merged_policy_payload = item.get("merged_policy")
-                merged_policy = (
-                    ToolExecutionPolicy.model_validate(merged_policy_payload)
-                    if isinstance(merged_policy_payload, dict)
-                    else None
-                )
+                try:
+                    merged_policy = (
+                        ToolExecutionPolicy.model_validate(merged_policy_payload)
+                        if isinstance(merged_policy_payload, dict)
+                        else None
+                    )
+                except ValidationError:
+                    merged_policy = None
+                    recovery_authority_invalid = True
                 execute_after_raw = str(item.get("execute_after", "")).strip()
-                execute_after = (
-                    datetime.fromisoformat(execute_after_raw) if execute_after_raw else None
-                )
+                try:
+                    execute_after = (
+                        datetime.fromisoformat(execute_after_raw) if execute_after_raw else None
+                    )
+                except ValueError:
+                    execute_after = None
+                    recovery_authority_invalid = True
                 expires_at_raw = str(item.get("expires_at", "")).strip()
-                expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
+                try:
+                    expires_at = (
+                        datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
+                    )
+                except ValueError:
+                    expires_at = None
+                    recovery_authority_invalid = True
                 legacy_null_expiry = not expires_at_raw
                 pep_context_payload = item.get("pep_context")
-                pep_context = (
-                    pending_pep_context_from_payload(pep_context_payload)
-                    if isinstance(pep_context_payload, Mapping)
-                    else None
-                )
+                try:
+                    pep_context = (
+                        pending_pep_context_from_payload(pep_context_payload)
+                        if isinstance(pep_context_payload, Mapping)
+                        else None
+                    )
+                except (TypeError, ValueError, ValidationError):
+                    pep_context = None
+                    recovery_authority_invalid = True
                 pep_elevation_payload = item.get("pep_elevation")
-                pep_elevation = (
-                    pending_pep_elevation_from_payload(pep_elevation_payload)
-                    if isinstance(pep_elevation_payload, Mapping)
-                    else None
-                )
+                try:
+                    pep_elevation = (
+                        pending_pep_elevation_from_payload(pep_elevation_payload)
+                        if isinstance(pep_elevation_payload, Mapping)
+                        else None
+                    )
+                except (TypeError, ValueError, ValidationError):
+                    pep_elevation = None
+                    recovery_authority_invalid = True
                 approval_envelope_payload = item.get("approval_envelope")
-                approval_envelope = (
-                    ApprovalEnvelope.model_validate(approval_envelope_payload)
-                    if isinstance(approval_envelope_payload, Mapping)
-                    else None
-                )
+                try:
+                    approval_envelope = (
+                        ApprovalEnvelope.model_validate(approval_envelope_payload)
+                        if isinstance(approval_envelope_payload, Mapping)
+                        else None
+                    )
+                except ValidationError:
+                    approval_envelope = None
+                    recovery_authority_invalid = True
                 intent_envelope_payload = item.get("intent_envelope")
-                intent_envelope = (
-                    IntentEnvelope.model_validate(intent_envelope_payload)
-                    if isinstance(intent_envelope_payload, Mapping)
-                    else None
-                )
+                try:
+                    intent_envelope = (
+                        IntentEnvelope.model_validate(intent_envelope_payload)
+                        if isinstance(intent_envelope_payload, Mapping)
+                        else None
+                    )
+                except ValidationError:
+                    intent_envelope = None
+                    recovery_authority_invalid = True
                 confirmation_evidence_payload = item.get("confirmation_evidence")
-                confirmation_evidence = (
-                    ConfirmationEvidence.model_validate(confirmation_evidence_payload)
-                    if isinstance(confirmation_evidence_payload, Mapping)
-                    else None
+                try:
+                    confirmation_evidence = (
+                        ConfirmationEvidence.model_validate(confirmation_evidence_payload)
+                        if isinstance(confirmation_evidence_payload, Mapping)
+                        else None
+                    )
+                except ValidationError:
+                    confirmation_evidence = None
+                    recovery_authority_invalid = True
+                retry_descriptor_payload = item.get("retry_descriptor")
+                try:
+                    retry_descriptor = (
+                        ToolRetryDescriptor.model_validate(retry_descriptor_payload)
+                        if isinstance(retry_descriptor_payload, Mapping)
+                        else None
+                    )
+                except ValidationError:
+                    retry_descriptor = None
+                if recovery_authority_invalid:
+                    retry_descriptor = None
+                try:
+                    retry_generation = max(0, int(item.get("retry_generation", 0) or 0))
+                except (TypeError, ValueError):
+                    retry_generation = 0
+                    retry_descriptor = None
+                recovery_started_at_raw = str(item.get("recovery_started_at", "")).strip()
+                try:
+                    recovery_started_at = (
+                        datetime.fromisoformat(recovery_started_at_raw)
+                        if recovery_started_at_raw
+                        else None
+                    )
+                except ValueError:
+                    recovery_started_at = None
+                    retry_descriptor = None
+                recovery_result_payload = item.get("recovery_result")
+                recovery_result = (
+                    dict(recovery_result_payload)
+                    if isinstance(recovery_result_payload, Mapping)
+                    else {}
                 )
                 raw_arguments = dict(item.get("arguments", {}))
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
@@ -3697,6 +3845,14 @@ class HandlerImplementation(
                     ),
                     action_digest=loaded_action_digest,
                     approval_evidence_hash=loaded_approval_evidence_hash,
+                    retry_descriptor=retry_descriptor,
+                    retry_generation=retry_generation,
+                    recovery_started_at=recovery_started_at,
+                    recovery_result=recovery_result,
+                    stable_idempotency_key=str(
+                        item.get("stable_idempotency_key", "")
+                    ).strip(),
+                    provider_operation_id=str(item.get("provider_operation_id", "")).strip(),
                     execution_attempt_id=(
                         str(item.get("execution_attempt_id", "")).strip()
                         or str(identity_fields.get("execution_attempt_id", "")).strip()
@@ -3780,6 +3936,11 @@ class HandlerImplementation(
                 )
             except (TypeError, ValueError, ValidationError):
                 continue
+            if recovery_authority_invalid and pending.status == "pending":
+                pending.status = "failed"
+                pending.status_reason = "pending_state_metadata_invalid"
+                pending.decision_nonce = ""
+                pruned_stale = True
             if (
                 pending.status == "pending"
                 and pending_action_state_view(pending).lifecycle_state == "expired"
@@ -3858,6 +4019,236 @@ class HandlerImplementation(
             or migrated_attempt_metadata
         ):
             self._persist_pending_actions()
+        self._recover_loaded_pending_attempts()
+
+    def _recovery_descriptor_is_current(
+        self,
+        pending: PendingAction,
+        *,
+        retry_class: ToolRetryClass,
+    ) -> bool:
+        descriptor = pending.retry_descriptor
+        if descriptor is None:
+            return False
+        if descriptor.retry_class != retry_class:
+            return False
+        if descriptor.tool_name != str(pending.tool_name):
+            return False
+        stable_idempotency_key = pending.stable_idempotency_key
+        if retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            if not stable_idempotency_key:
+                return False
+            if descriptor.stable_idempotency_key != stable_idempotency_key:
+                return False
+        elif descriptor.stable_idempotency_key or stable_idempotency_key:
+            return False
+        if pending.retry_generation >= descriptor.max_auto_attempts:
+            return False
+        tool_definition = self._registry.get_tool(pending.tool_name)
+        if tool_definition is None or tool_definition.retry_class != retry_class:
+            return False
+        expected_descriptor = ToolRetryDescriptor.from_tool_definition(
+            tool_definition,
+            stable_idempotency_key=stable_idempotency_key,
+        )
+        if descriptor != expected_descriptor:
+            return False
+        normalized_arguments = pep_arguments_for_policy_evaluation(
+            pending.tool_name,
+            pending.arguments,
+        )
+        destinations = resolve_confirmation_destinations(
+            tool_definition=tool_definition,
+            arguments=normalized_arguments,
+        )
+        expected_action_digest = compute_action_digest(
+            tool_definition=tool_definition,
+            arguments=normalized_arguments,
+            destinations=destinations,
+            stable_idempotency_key=stable_idempotency_key,
+        )
+        if pending.action_digest != expected_action_digest:
+            return False
+        approval_envelope = pending.approval_envelope
+        if approval_envelope is None or approval_envelope.action_digest != expected_action_digest:
+            return False
+        if approval_envelope_hash(approval_envelope) != pending.approval_envelope_hash:
+            return False
+        evidence = pending.confirmation_evidence
+        if evidence is None or not pending.approval_evidence_hash:
+            return False
+        if evidence.evidence_hash != pending.approval_evidence_hash:
+            return False
+        if evidence.action_digest != expected_action_digest:
+            return False
+        if evidence.approval_envelope_hash != pending.approval_envelope_hash:
+            return False
+        if evidence.decision_nonce != pending.decision_nonce:
+            return False
+        session = self._session_manager.get(pending.session_id)
+        if session is None:
+            return False
+        if session.user_id != pending.user_id or session.workspace_id != pending.workspace_id:
+            return False
+        if pending.delivery_target is not None:
+            return False
+        if not pending.execution_attempt_id or not pending.result_id:
+            return False
+        if not self._recovery_policy_allows(pending, session=session):
+            return False
+        expires_at = pending.expires_at
+        return expires_at is not None and expires_at > datetime.now(UTC)
+
+    def _recovery_policy_allows(
+        self,
+        pending: PendingAction,
+        *,
+        session: Session,
+    ) -> bool:
+        snapshot = pending.pep_context
+        if snapshot is not None:
+            context = build_policy_context_for_pending_action(
+                session=session,
+                pending_session_id=pending.session_id,
+                pending_workspace_id=pending.workspace_id,
+                pending_user_id=pending.user_id,
+                snapshot=snapshot,
+                elevation=pending.pep_elevation,
+            )
+            context.capabilities.intersection_update(session.capabilities)
+        else:
+            context = PolicyContext(
+                capabilities=set(pending.capabilities).intersection(session.capabilities),
+                session_id=pending.session_id,
+                workspace_id=pending.workspace_id,
+                user_id=pending.user_id,
+                filesystem_roots=tuple(self._config.assistant_fs_roots),
+                trust_level="untrusted",
+            )
+
+        live_policy = self._policy_loader.policy
+        live_allowlist: set[ToolName] | None = None
+        if live_policy.session_tool_allowlist:
+            live_allowlist = set(live_policy.session_tool_allowlist)
+        elif live_policy.default_deny and live_policy.tools:
+            live_allowlist = set(live_policy.tools)
+        if live_allowlist is not None:
+            context.tool_allowlist = (
+                live_allowlist
+                if context.tool_allowlist is None
+                else context.tool_allowlist.intersection(live_allowlist)
+            )
+
+        decision = self._pep.evaluate(
+            pending.tool_name,
+            pep_arguments_for_policy_evaluation(pending.tool_name, pending.arguments),
+            context,
+        )
+        if decision.kind.value == "reject":
+            return False
+        if decision.kind.value != "require_confirmation":
+            return True
+        requirement_payload = decision.confirmation_requirement
+        if not isinstance(requirement_payload, Mapping):
+            return False
+        try:
+            requirement = ConfirmationRequirement.model_validate(requirement_payload)
+        except ValidationError:
+            return False
+        backend = self._confirmation_backend_registry.get_backend(
+            pending.selected_backend_id or "software.default"
+        )
+        return (
+            pending.confirmation_evidence is not None
+            and backend is not None
+            and confirmation_evidence_satisfies_requirement(
+                requirement=requirement,
+                evidence=pending.confirmation_evidence,
+                backend=backend,
+            )
+        )
+
+    def _time_now_recovery_descriptor_is_current(self, pending: PendingAction) -> bool:
+        return str(pending.tool_name) == "time.now" and self._recovery_descriptor_is_current(
+            pending,
+            retry_class=ToolRetryClass.STRUCTURAL_READ,
+        )
+
+    def _stable_key_recovery_adapter(self, pending: PendingAction) -> Any | None:
+        if not self._recovery_descriptor_is_current(
+            pending,
+            retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+        ):
+            return None
+        adapter = self._services.idempotent_recovery_adapters.get(str(pending.tool_name))
+        return adapter if callable(adapter) else None
+
+    def _recover_loaded_pending_attempts(self) -> None:
+        recovery_not_before = _monotonic() + _AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS
+        recovery_backoff_applied = False
+        executing = [
+            pending
+            for pending in self._pending_actions.values()
+            if str(pending.status).strip().lower() == "executing"
+        ]
+        for pending in executing:
+            structural_read_recovery = self._time_now_recovery_descriptor_is_current(pending)
+            stable_key_adapter = self._stable_key_recovery_adapter(pending)
+            if not structural_read_recovery and stable_key_adapter is None:
+                pending.status = "outcome_unknown"
+                pending.status_reason = "uncertain_effect_requires_fresh_approval"
+                pending.decision_nonce = ""
+                self._persist_pending_actions()
+                self._sync_task_confirmation_status(pending)
+                continue
+
+            pending.retry_generation += 1
+            pending.recovery_started_at = datetime.now(UTC)
+            pending.status_reason = (
+                "structural_retry_started"
+                if structural_read_recovery
+                else "stable_idempotency_key_retry_started"
+            )
+            self._persist_pending_actions()
+            if not recovery_backoff_applied:
+                remaining_backoff = recovery_not_before - _monotonic()
+                if remaining_backoff > 0:
+                    _sleep(remaining_backoff)
+                recovery_backoff_applied = True
+            if structural_read_recovery:
+                result = current_time_payload(
+                    timezone=str(pending.arguments.get("timezone", "")).strip()
+                )
+                recovered_reason = "recovered_structural_read"
+                failure_reason = "structural_read_failed"
+            else:
+                assert stable_key_adapter is not None
+                try:
+                    result = dict(
+                        stable_key_adapter(
+                            dict(pending.arguments),
+                            pending.stable_idempotency_key,
+                        )
+                    )
+                    json.dumps(result, ensure_ascii=True, sort_keys=True)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    result = {"ok": False, "error": "idempotent_adapter_failed"}
+                recovered_reason = "recovered_stable_idempotency_key"
+                failure_reason = "stable_idempotency_key_retry_failed"
+            pending.recovery_result = dict(result)
+            pending.provider_operation_id = str(
+                result.get("provider_operation_id", pending.provider_operation_id)
+            ).strip()
+            pending.decision_nonce = ""
+            if result.get("ok") is True:
+                pending.status = "approved"
+                pending.status_reason = recovered_reason
+            else:
+                pending.status = "failed"
+                error = str(result.get("error", failure_reason)).strip()
+                pending.status_reason = f"{failure_reason}:{error}"
+            self._persist_pending_actions()
+            self._sync_task_confirmation_status(pending)
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
         if channel == "matrix" and self._matrix_channel is not None:
@@ -4080,6 +4471,96 @@ class HandlerImplementation(
                             )
                         ),
                         success=False,
+                        taint_labels=label_tool_output(str(tool_name)),
+                        arguments=dict(arguments),
+                    ),
+                ),
+            )
+
+        if tool is not None and tool.retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            stable_idempotency_key = ""
+            pending_actions = getattr(self, "_pending_actions", {})
+            pending_attempt = (
+                pending_actions.get(approval_confirmation_id)
+                if isinstance(pending_actions, Mapping)
+                else None
+            )
+            if (
+                pending_attempt is not None
+                and pending_attempt.status == "executing"
+                and pending_attempt.tool_name == tool_name
+                and pending_attempt.action_id == operation_identity.action_id
+                and pending_attempt.execution_attempt_id
+                == operation_identity.execution_attempt_id
+            ):
+                stable_idempotency_key = pending_attempt.stable_idempotency_key
+            adapter = self._services.idempotent_recovery_adapters.get(str(tool_name))
+            provider_payload: dict[str, Any]
+            provider_operation_id = ""
+            if not stable_idempotency_key:
+                provider_payload = {
+                    "ok": False,
+                    "error": "stable_idempotency_key_missing",
+                }
+            elif not callable(adapter):
+                provider_payload = {
+                    "ok": False,
+                    "error": "idempotent_adapter_unavailable",
+                }
+            else:
+                try:
+                    provider_payload = dict(adapter(dict(arguments), stable_idempotency_key))
+                    json.dumps(provider_payload, ensure_ascii=True, sort_keys=True)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    provider_payload = {
+                        "ok": False,
+                        "error": "idempotent_adapter_failed",
+                    }
+            success = provider_payload.get("ok") is True
+            provider_operation_id = str(
+                provider_payload.get("provider_operation_id", "")
+            ).strip()
+            error = "" if success else str(provider_payload.get("error", "adapter_failed"))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=error,
+                        **approval_event_fields,
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                    error=error,
+                    **approval_event_fields,
+                )
+            )
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=success,
+            )
+            return ApprovedToolExecutionResult(
+                success=success,
+                checkpoint_id=checkpoint_id,
+                error=error,
+                provider_operation_id=provider_operation_id,
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=self._sanitize_tool_output_text(
+                            json.dumps(provider_payload, ensure_ascii=True, sort_keys=True)
+                        ),
+                        success=success,
                         taint_labels=label_tool_output(str(tool_name)),
                         arguments=dict(arguments),
                     ),

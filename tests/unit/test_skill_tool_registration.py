@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +12,7 @@ import yaml
 
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import tool_definitions_to_openai
+from shisad.core.tools.schema import ToolRetryClass, tool_definitions_to_openai
 from shisad.core.types import Capability, ToolName
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle, SkillPolicy
@@ -129,6 +131,77 @@ async def test_m1_skill_install_registers_declared_tools(tmp_path: Path) -> None
     assert tool is not None
     assert Capability.HTTP_REQUEST in set(tool.capabilities_required)
     assert tool.destinations == ["api.good.example"]
+    assert tool.retry_class == ToolRetryClass.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    state_dir = tmp_path / "state"
+    manager = SkillManager(
+        storage_dir=state_dir,
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=registry,
+    )
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Look up calendar entries.",
+                    "parameters": [{"name": "query", "type": "string", "required": True}],
+                    "destinations": ["api.good.example"],
+                }
+            ]
+        ),
+        files={"SKILL.md": "safe helper"},
+    )
+    decision = await manager.install(skill, approve_untrusted=True)
+    assert decision.allowed is True
+    tool_name = ToolName("skill.calendar-helper.lookup")
+    tool = registry.get_tool(tool_name)
+    assert tool is not None
+    current_hash = tool.schema_hash()
+    legacy_canonical = json.dumps(
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": [parameter.model_dump() for parameter in tool.parameters],
+            "capabilities_required": sorted(tool.capabilities_required),
+            "destinations": sorted(tool.destinations),
+            "require_confirmation": tool.require_confirmation,
+            "sandbox_type": tool.sandbox_type or "",
+        },
+        sort_keys=True,
+    )
+    legacy_hash = hashlib.sha256(legacy_canonical.encode()).hexdigest()
+    assert legacy_hash != current_hash
+    inventory_path = state_dir / "inventory.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory[0]["tool_schema_hashes"]["lookup"] = legacy_hash
+    inventory_path.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+
+    restarted_registry = ToolRegistry()
+    SkillManager(
+        storage_dir=state_dir,
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=restarted_registry,
+    )
+
+    restored = restarted_registry.get_tool(tool_name)
+    assert restored is not None
+    assert restored.retry_class == ToolRetryClass.UNKNOWN
+    migrated_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    assert migrated_inventory[0]["tool_schema_hashes"]["lookup"] == current_hash
 
 
 @pytest.mark.asyncio

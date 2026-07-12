@@ -538,6 +538,7 @@ def compute_action_digest(
     tool_definition: ToolDefinition,
     arguments: dict[str, Any],
     destinations: list[str] | None = None,
+    stable_idempotency_key: str = "",
 ) -> str:
     payload = {
         "schema_version": "shisad.action_digest.v1",
@@ -547,6 +548,7 @@ def compute_action_digest(
         "destinations": sorted(
             {str(item).strip() for item in (destinations or []) if str(item).strip()}
         ),
+        "stable_idempotency_key": stable_idempotency_key.strip(),
     }
     return canonical_sha256(payload)
 

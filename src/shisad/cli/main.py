@@ -1964,6 +1964,25 @@ def _render_action_rows(
         if status_reason:
             lifetime_parts.append(f"state_reason={status_reason}")
         click.echo(" ".join(lifetime_parts))
+        if str(row.lifecycle_state or row.status) == "outcome_unknown":
+            evidence = row.uncertainty_evidence
+            evidence_parts: list[str] = []
+            for label, key in (
+                ("attempt", "execution_attempt_id"),
+                ("result", "result_id"),
+                ("provider_operation", "provider_operation_id"),
+                ("action_digest", "action_digest"),
+            ):
+                value = sanitize_terminal_field(str(evidence.get(key, "")))
+                if value:
+                    evidence_parts.append(f"{label}={value}")
+            if evidence_parts:
+                click.echo("uncertainty_evidence " + " ".join(evidence_parts))
+            instruction = sanitize_terminal_text(
+                str(row.manual_retry.get("instruction", ""))
+            ).strip()
+            if instruction:
+                click.echo(f"Outcome is unknown. {instruction}")
         preview = sanitize_terminal_text(row.safe_preview or "").strip()
         if preview:
             click.echo(preview)

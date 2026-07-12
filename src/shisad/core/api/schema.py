@@ -1879,6 +1879,15 @@ class ActionPendingEntry(BaseModel):
     action_id: str = ""
     identity: ActionIdentityEntry = Field(default_factory=ActionIdentityEntry)
     origin_turn_id: str = ""
+    action_digest: str = ""
+    approval_evidence_hash: str = ""
+    retry_descriptor: dict[str, Any] | None = None
+    retry_generation: int = 0
+    recovery_started_at: str = ""
+    recovery_result: dict[str, Any] = Field(default_factory=dict)
+    recovery_result_available: bool = False
+    stable_idempotency_key_present: bool = False
+    provider_operation_id: str = ""
     execution_attempt_id: str = ""
     result_id: str = ""
     followup_id: str = ""
@@ -1919,6 +1928,8 @@ class ActionPendingEntry(BaseModel):
     selected_backend_method: str = ""
     fallback_used: bool = False
     status_reason: str | None = None
+    uncertainty_evidence: dict[str, Any] = Field(default_factory=dict)
+    manual_retry: dict[str, Any] = Field(default_factory=dict)
     preflight_action: dict[str, Any] | None = None
     merged_policy: dict[str, Any] | None = None
     approval_url: str | None = None

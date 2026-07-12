@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import ToolDefinition
+from shisad.core.tools.schema import ToolDefinition, ToolRetryClass
 from shisad.core.types import Capability, ToolName
 from shisad.security.policy import SkillPolicy
 from shisad.skills.analyzer import (
@@ -361,6 +361,7 @@ class SkillManager:
     def _register_inventory_tools(self) -> None:
         if self._tool_registry is None:
             return
+        inventory_migrated = False
         for installed in self._inventory.values():
             if installed.state != ArtifactState.PUBLISHED:
                 continue
@@ -374,11 +375,16 @@ class SkillManager:
                 )
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
+            expected_hashes = getattr(installed, "tool_schema_hashes", {})
+            previous_hashes = dict(expected_hashes)
             self._register_skill_tools(
                 bundle.manifest,
-                expected_hashes=getattr(installed, "tool_schema_hashes", {}),
+                expected_hashes=expected_hashes,
                 registration_source="inventory_reload",
             )
+            inventory_migrated = inventory_migrated or expected_hashes != previous_hashes
+        if inventory_migrated:
+            self._persist_inventory()
 
     def _register_skill_tools(
         self,
@@ -400,18 +406,31 @@ class SkillManager:
                 capabilities_required=sorted(required_caps, key=str),
                 destinations=list(declared_tool.destinations),
                 require_confirmation=bool(declared_tool.require_confirmation),
+                registration_source="skill",
+                registration_source_id=str(manifest.name),
+                upstream_tool_name=str(declared_tool.name),
             )
             expected_hash = str((expected_hashes or {}).get(declared_tool.name, "")).strip()
             actual_hash = tool_def.schema_hash()
             if expected_hash and expected_hash != actual_hash:
-                self._record_registration_drop(
-                    manifest=manifest,
-                    tool_name=tool_name,
-                    registration_source=registration_source,
-                    expected_hash=expected_hash,
-                    actual_hash=actual_hash,
-                )
-                continue
+                legacy_hash = tool_def.legacy_schema_hash_without_retry_metadata()
+                if (
+                    registration_source == "inventory_reload"
+                    and tool_def.retry_class is ToolRetryClass.UNKNOWN
+                    and expected_hash == legacy_hash
+                    and expected_hashes is not None
+                ):
+                    expected_hashes[declared_tool.name] = actual_hash
+                    expected_hash = actual_hash
+                else:
+                    self._record_registration_drop(
+                        manifest=manifest,
+                        tool_name=tool_name,
+                        registration_source=registration_source,
+                        expected_hash=expected_hash,
+                        actual_hash=actual_hash,
+                    )
+                    continue
             try:
                 self._tool_registry.register(
                     tool_def,
@@ -513,6 +532,9 @@ def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
             capabilities_required=sorted(required_caps, key=str),
             destinations=list(declared_tool.destinations),
             require_confirmation=bool(declared_tool.require_confirmation),
+            registration_source="skill",
+            registration_source_id=str(manifest.name),
+            upstream_tool_name=str(declared_tool.name),
         )
         hashes[declared_tool.name] = tool_def.schema_hash()
     return hashes

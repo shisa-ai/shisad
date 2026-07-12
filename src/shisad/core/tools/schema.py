@@ -10,7 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any
+from enum import StrEnum
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,50 @@ class ToolParameter(BaseModel):
     model_config = {"frozen": True}
 
 
+class ToolRetryClass(StrEnum):
+    """Trusted recovery posture for an exact registered tool implementation."""
+
+    UNKNOWN = "unknown"
+    STRUCTURAL_READ = "structural_read"
+    STABLE_IDEMPOTENCY_KEY = "stable_idempotency_key"
+
+
+class ToolRetryDescriptor(BaseModel):
+    """Persisted recovery authority derived only from trusted registry metadata."""
+
+    schema_version: Literal["shisad.tool_retry.v1"] = "shisad.tool_retry.v1"
+    retry_class: ToolRetryClass
+    tool_name: str
+    tool_schema_hash: str
+    registration_source: str
+    registration_source_id: str = ""
+    upstream_tool_name: str = ""
+    stable_idempotency_key: str = ""
+    max_auto_attempts: int = Field(default=0, ge=0, le=1)
+
+    model_config = {"frozen": True}
+
+    @classmethod
+    def from_tool_definition(
+        cls,
+        tool: ToolDefinition,
+        *,
+        stable_idempotency_key: str = "",
+    ) -> ToolRetryDescriptor:
+        retry_class = tool.retry_class
+        max_auto_attempts = 0 if retry_class == ToolRetryClass.UNKNOWN else 1
+        return cls(
+            retry_class=retry_class,
+            tool_name=str(tool.name),
+            tool_schema_hash=f"sha256:{tool.schema_hash()}",
+            registration_source=str(tool.registration_source),
+            registration_source_id=str(tool.registration_source_id),
+            upstream_tool_name=str(tool.upstream_tool_name),
+            stable_idempotency_key=stable_idempotency_key,
+            max_auto_attempts=max_auto_attempts,
+        )
+
+
 class ToolDefinition(BaseModel):
     """Definition of a tool available to the agent.
 
@@ -49,11 +94,37 @@ class ToolDefinition(BaseModel):
     registration_source: str = "local"
     registration_source_id: str = ""
     upstream_tool_name: str = ""
+    retry_class: ToolRetryClass = ToolRetryClass.UNKNOWN
 
     model_config = {"frozen": True}
 
     def schema_hash(self) -> str:
         """Compute a deterministic hash of the tool schema for integrity verification."""
+        canonical = json.dumps(
+            {
+                "name": self.name,
+                "description": self.description,
+                "parameters": [p.model_dump() for p in self.parameters],
+                "capabilities_required": sorted(self.capabilities_required),
+                "destinations": sorted(self.destinations),
+                "require_confirmation": self.require_confirmation,
+                "sandbox_type": self.sandbox_type or "",
+                "registration_source": self.registration_source,
+                "registration_source_id": self.registration_source_id,
+                "upstream_tool_name": self.upstream_tool_name,
+                "retry_class": self.retry_class.value,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def legacy_schema_hash_without_retry_metadata(self) -> str:
+        """Return the exact pre-F2 hash for one-way inventory migration.
+
+        This intentionally excludes every source-identity and retry field added
+        by F2. Callers must additionally require the conservative ``unknown``
+        retry class before accepting this hash as a migration source.
+        """
         canonical = json.dumps(
             {
                 "name": self.name,

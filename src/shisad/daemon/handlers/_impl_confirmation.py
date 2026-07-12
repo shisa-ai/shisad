@@ -2339,6 +2339,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 pending.should_strip_direct_tool_execute_envelope_keys()
             ),
         )
+        pending.provider_operation_id = str(
+            getattr(execution_result, "provider_operation_id", "")
+        ).strip()
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)

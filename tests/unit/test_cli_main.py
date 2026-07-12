@@ -5313,6 +5313,71 @@ def test_action_pending_sanitizes_terminal_preview_output(
     assert "preview line\nsecond line" in result.output
 
 
+def test_f2_action_list_renders_informed_outcome_unknown_manual_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        assert method == "action.pending"
+        payload = {
+            "actions": [
+                {
+                    "confirmation_id": "c-unknown",
+                    "decision_nonce": "",
+                    "status": "outcome_unknown",
+                    "lifecycle_state": "outcome_unknown",
+                    "tool_name": "message.send",
+                    "reason": "manual_review",
+                    "status_reason": "uncertain_effect_requires_fresh_approval",
+                    "uncertainty_evidence": {
+                        "action_digest": "sha256:abc",
+                        "execution_attempt_id": "attempt-1",
+                        "result_id": "result-1",
+                        "provider_operation_id": "provider-1",
+                        "retry_generation": 0,
+                    },
+                    "manual_retry": {
+                        "requires_fresh_approval": True,
+                        "reuse_confirmation_id": False,
+                        "provider_reconciliation_available": False,
+                        "instruction": (
+                            "Inspect provider or local evidence, then re-request the action; "
+                            "a new approval is required."
+                        ),
+                    },
+                }
+            ],
+            "count": 1,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["action", "list", "--status", "outcome_unknown"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "attempt=attempt-1" in result.output
+    assert "provider_operation=provider-1" in result.output
+    assert "outcome is unknown" in result.output.lower()
+    assert "re-request the action" in result.output
+    assert "new approval is required" in result.output
+
+
 def test_action_pending_keeps_escaped_preview_newlines_literal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

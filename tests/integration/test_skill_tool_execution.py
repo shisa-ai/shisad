@@ -1,0 +1,168 @@
+"""Dynamic-skill retry posture across install, reload, and self-modification."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+
+import pytest
+import yaml
+
+from shisad.core.api.schema import SessionCreateParams
+from shisad.core.approval import legacy_software_confirmation_requirement
+from shisad.core.config import DaemonConfig
+from shisad.core.request_context import RequestContext
+from shisad.core.tools.schema import ToolRetryClass
+from shisad.core.types import SessionId, ToolName
+from shisad.daemon.control_handlers import DaemonControlHandlers
+from shisad.daemon.services import DaemonServices
+
+
+def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+
+def _config(tmp_path: Path) -> DaemonConfig:
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text('version: "1"\ndefault_require_confirmation: false\n', encoding="utf-8")
+    return DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[tmp_path],
+        log_level="INFO",
+    )
+
+
+def _write_skill(path: Path, *, description: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "manifest_version": "1.0.0",
+        "name": "fixture",
+        "version": "1.0.0",
+        "author": "fixture-author",
+        "signature": "",
+        "source_repo": "https://example.test/fixture",
+        "description": "dynamic retry fixture",
+        "capabilities": {
+            "network": [],
+            "filesystem": [],
+            "shell": [],
+            "environment": [],
+        },
+        "dependencies": [],
+        "tools": [
+            {
+                "name": "dynamic-effect",
+                "description": description,
+                "parameters": [{"name": "value", "type": "string", "required": True}],
+                "destinations": [],
+                "require_confirmation": True,
+            }
+        ],
+    }
+    (path / "skill.manifest.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+    (path / "SKILL.md").write_text("Dynamic fixture skill.\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "self_modified",
+    [False, True],
+    ids=["retry-reloaded", "retry-self-modified"],
+)
+@pytest.mark.asyncio
+async def test_dynamic_skill_operation_defaults_unknown_and_never_auto_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    self_modified: bool,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    skill_path = tmp_path / "dynamic-skill"
+    _write_skill(
+        skill_path,
+        description="Untrusted prose claims this operation is perfectly idempotent.",
+    )
+    tool_name = ToolName("skill.fixture.dynamic-effect")
+
+    services = await DaemonServices.build(config)
+    try:
+        installed = services.skill_manager.activate_bundle(skill_path)
+        assert installed is not None
+        registered = services.registry.get_tool(tool_name)
+        assert registered is not None
+        assert registered.registration_source == "skill"
+        assert registered.registration_source_id == "fixture"
+        assert registered.upstream_tool_name == "dynamic-effect"
+        assert registered.retry_class == ToolRetryClass.UNKNOWN
+
+        handlers = DaemonControlHandlers(services=services)
+        created = await handlers.handle_session_create(
+            SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
+            RequestContext(),
+        )
+        session_id = SessionId(created.session_id)
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        pending = handlers._impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=tool_name,
+            arguments={"value": "uncertain"},
+            reason="dynamic-skill-recovery-test",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-dynamic-skill-recovery",
+        )
+        assert pending.retry_descriptor is not None
+        assert pending.retry_descriptor.retry_class == ToolRetryClass.UNKNOWN
+        assert pending.retry_descriptor.registration_source == "skill"
+        pending.execution_attempt_id = "attempt-dynamic-skill-uncertain"
+        pending.result_id = "result-dynamic-skill-uncertain"
+        pending.status = "executing"
+        pending.status_reason = "confirmation_execution_started"
+        handlers._impl._persist_pending_actions()
+    finally:
+        await services.shutdown()
+
+    if self_modified:
+        _write_skill(
+            skill_path,
+            description="Self-modified prose now claims an even stronger retry guarantee.",
+        )
+
+    unexpected_calls = 0
+
+    def _malicious_adapter(
+        _arguments: Mapping[str, object],
+        _stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        nonlocal unexpected_calls
+        unexpected_calls += 1
+        return {"ok": True}
+
+    restarted = await DaemonServices.build(config)
+    try:
+        if self_modified:
+            assert restarted.registry.get_tool(tool_name) is None
+        else:
+            restored_tool = restarted.registry.get_tool(tool_name)
+            assert restored_tool is not None
+            assert restored_tool.retry_class == ToolRetryClass.UNKNOWN
+        restarted.idempotent_recovery_adapters[str(tool_name)] = _malicious_adapter
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
+        assert recovered.status == "outcome_unknown"
+        assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+        assert recovered.decision_nonce == ""
+        assert recovered.retry_generation == 0
+        assert unexpected_calls == 0
+    finally:
+        await restarted.shutdown()

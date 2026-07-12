@@ -53,7 +53,12 @@ from shisad.core.events import (
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.tools.schema import (
+    ToolDefinition,
+    ToolParameter,
+    ToolRetryClass,
+    ToolRetryDescriptor,
+)
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import (
     Capability,
@@ -897,6 +902,67 @@ def test_a1_public_pending_payload_exposes_shared_approval_contract(
     assert capability["requires_second_factor"] is True
     assert capability["requires_proof_input"] is True
     assert capability["cannot_carry_reason"] == "selected_method_requires_T1_stepup"
+
+
+def test_f2_public_pending_payload_never_exposes_stable_idempotency_key() -> None:
+    pending = _pending_action(nonce="expected")
+    stable_key = "shisad-provider-key-must-remain-private"
+    tool_definition = ToolDefinition(
+        name=pending.tool_name,
+        description="fixture",
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    pending.stable_idempotency_key = stable_key
+    pending.recovery_result = {
+        "ok": True,
+        "stable_idempotency_key": stable_key,
+        "provider_private_detail": "must-not-be-public",
+    }
+    pending.retry_descriptor = ToolRetryDescriptor.from_tool_definition(
+        tool_definition,
+        stable_idempotency_key=stable_key,
+    )
+
+    durable = HandlerImplementation._pending_to_dict(pending)
+    public = HandlerImplementation._pending_to_dict(pending, public=True)
+
+    assert durable["stable_idempotency_key"] == stable_key
+    assert durable["retry_descriptor"]["stable_idempotency_key"] == stable_key
+    assert durable["recovery_result"]["stable_idempotency_key"] == stable_key
+    assert public["stable_idempotency_key_present"] is True
+    assert public["recovery_result_available"] is True
+    assert "stable_idempotency_key" not in public
+    assert "stable_idempotency_key" not in public["retry_descriptor"]
+    assert "recovery_result" not in public
+    assert stable_key not in json.dumps(public, sort_keys=True)
+
+
+def test_f2_outcome_unknown_payload_shows_evidence_and_requires_fresh_approval() -> None:
+    pending = _pending_action(nonce="must-not-remain-reusable")
+    pending.status = "outcome_unknown"
+    pending.status_reason = "uncertain_effect_requires_fresh_approval"
+    pending.decision_nonce = ""
+    pending.action_digest = "sha256:action-digest"
+    pending.execution_attempt_id = "attempt-uncertain"
+    pending.result_id = "result-uncertain"
+    pending.provider_operation_id = "provider-operation-known"
+
+    public = HandlerImplementation._pending_to_dict(pending, public=True)
+    entry = ActionPendingEntry.model_validate(public)
+
+    assert entry.lifecycle_state == "outcome_unknown"
+    assert entry.decision_nonce == ""
+    assert entry.uncertainty_evidence == {
+        "action_digest": "sha256:action-digest",
+        "execution_attempt_id": "attempt-uncertain",
+        "result_id": "result-uncertain",
+        "provider_operation_id": "provider-operation-known",
+        "retry_generation": 0,
+    }
+    assert entry.manual_retry["requires_fresh_approval"] is True
+    assert entry.manual_retry["reuse_confirmation_id"] is False
+    assert entry.manual_retry["provider_reconciliation_available"] is False
+    assert "re-request" in entry.manual_retry["instruction"]
 
 
 def test_f1_pending_action_identity_survives_restart(tmp_path: Path) -> None:
