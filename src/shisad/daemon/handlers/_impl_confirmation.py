@@ -391,7 +391,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending.status = "failed"
         pending.status_reason = reason
         self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_outcome(pending, success=False)
+        self._record_task_confirmation_failure(pending)
         if persist:
             self._persist_pending_actions()
 
@@ -518,7 +518,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             result_id=state_view.identity.result_id,
         )
 
-    def _record_task_confirmation_outcome(self, pending: Any, *, success: bool) -> None:
+    def _record_task_confirmation_failure(self, pending: Any) -> None:
         task_id = str(getattr(pending, "task_id", "")).strip()
         if not task_id:
             return
@@ -527,7 +527,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             return
         recorder = getattr(scheduler, "record_run_outcome", None)
         if callable(recorder):
-            recorder(task_id, success=success)
+            recorder(task_id, success=False)
 
     async def do_confirmation_metrics(self, params: Mapping[str, Any]) -> dict[str, Any]:
         window_seconds = max(60, int(params.get("window_seconds", 900)))
@@ -1497,7 +1497,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending.status = "failed"
         pending.status_reason = "approval_expired"
         self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_outcome(pending, success=False)
+        self._record_task_confirmation_failure(pending)
         self._persist_pending_actions()
         return {
             decision_field: False,
@@ -1723,7 +1723,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             )
             self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_outcome(pending, success=False)
+            self._record_task_confirmation_failure(pending)
             self._persist_pending_actions()
             self._confirmation_analytics.record(
                 user_id=str(pending.user_id),
@@ -1758,7 +1758,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             )
             self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_outcome(pending, success=False)
+            self._record_task_confirmation_failure(pending)
             self._persist_pending_actions()
             self._confirmation_analytics.record(
                 user_id=str(pending.user_id),
@@ -1804,7 +1804,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             )
             self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_outcome(pending, success=False)
+            self._record_task_confirmation_failure(pending)
             self._persist_pending_actions()
             return {
                 "confirmed": False,
@@ -1912,7 +1912,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     )
                 )
                 self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_outcome(pending, success=False)
+                self._record_task_confirmation_failure(pending)
                 self._persist_pending_actions()
                 self._confirmation_analytics.record(
                     user_id=str(pending.user_id),
@@ -1972,7 +1972,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     )
                 )
                 self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_outcome(pending, success=False)
+                self._record_task_confirmation_failure(pending)
                 self._persist_pending_actions()
                 self._confirmation_analytics.record(
                     user_id=str(pending.user_id),
@@ -2023,7 +2023,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     )
                 )
                 self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_outcome(pending, success=False)
+                self._record_task_confirmation_failure(pending)
                 self._persist_pending_actions()
                 self._confirmation_analytics.record(
                     user_id=str(pending.user_id),
@@ -2074,7 +2074,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     )
                 )
                 self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_outcome(pending, success=False)
+                self._record_task_confirmation_failure(pending)
                 self._persist_pending_actions()
                 self._confirmation_analytics.record(
                     user_id=str(pending.user_id),
@@ -2135,7 +2135,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         )
                     )
                     self._sync_task_confirmation_status(pending)
-                    self._record_task_confirmation_outcome(pending, success=False)
+                    self._record_task_confirmation_failure(pending)
                     self._persist_pending_actions()
                     self._confirmation_analytics.record(
                         user_id=str(pending.user_id),
@@ -2310,7 +2310,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
             or pending.status
         )
         self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_outcome(pending, success=success)
+        await self._record_task_run_outcome(
+            str(getattr(pending, "task_id", "")),
+            success=success,
+        )
         self._persist_pending_actions()
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
@@ -2441,7 +2444,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
         )
         self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_outcome(pending, success=False)
+        self._record_task_confirmation_failure(pending)
         self._persist_pending_actions()
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),

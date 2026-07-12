@@ -69,6 +69,8 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.memory.timeline import TimelineIndex
+from shisad.scheduler.manager import SchedulerManager
+from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import (
@@ -3120,6 +3122,62 @@ async def test_f1_confirmation_and_disable_share_task_then_confirmation_lock_ord
     assert disabled == {"disabled": True, "task_id": "task-1"}
     assert scheduled_task.enabled is False
     assert len(harness.execution_kwargs) == 1
+
+
+@pytest.mark.asyncio
+async def test_f1_max_runs_success_cancels_sibling_pending_confirmations(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    scheduler = SchedulerManager(storage_dir=tmp_path / "scheduler")
+    task = scheduler.create_task(
+        name="one-success-only",
+        goal="Deliver once",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.HTTP_REQUEST},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        max_runs=1,
+    )
+    harness._scheduler = scheduler
+
+    first = _pending_action(nonce="nonce-1")
+    first.task_id = task.id
+    second = _pending_action(nonce="nonce-2")
+    second.confirmation_id = "c-2"
+    second.task_id = task.id
+    _bind_pending_action_identity(second)
+    harness._pending_actions = {"c-1": first, "c-2": second}
+    for pending in (first, second):
+        scheduler.queue_confirmation(
+            task.id,
+            {
+                "confirmation_id": pending.confirmation_id,
+                "status": "pending",
+                "identity": {"action_id": pending.action_id},
+            },
+        )
+
+    confirmed = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "nonce-1"}
+    )
+
+    assert confirmed["confirmed"] is True
+    assert scheduler.get_task(task.id).enabled is False  # type: ignore[union-attr]
+    assert first.status == "approved"
+    assert second.status == "cancelled"
+    assert second.status_reason == "max_runs_reached"
+    assert second.decision_nonce == ""
+    assert scheduler.pending_confirmations(task.id) == []
+    cancelled = [
+        event
+        for event in harness.published_events
+        if isinstance(event, ToolRejected)
+        and event.approval_confirmation_id == "c-2"
+        and event.reason == "max_runs_reached"
+    ]
+    assert len(cancelled) == 1
 
 
 @pytest.mark.asyncio

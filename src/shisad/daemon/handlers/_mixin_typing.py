@@ -34,6 +34,13 @@ if TYPE_CHECKING:
             lock: asyncio.Lock,
         ) -> None: ...
 
+        async def _record_task_run_outcome(
+            self,
+            task_id: str,
+            *,
+            success: bool,
+        ) -> bool: ...
+
         def __getattr__(self, name: str) -> Any: ...
 
 else:
@@ -73,3 +80,41 @@ else:
             locks = getattr(self, "_task_lifecycle_locks", None)
             if isinstance(locks, dict) and locks.get(task_id) is lock:
                 locks.pop(task_id, None)
+
+        async def _record_task_run_outcome(
+            self,
+            task_id: str,
+            *,
+            success: bool,
+        ) -> bool:
+            normalized_task_id = task_id.strip()
+            scheduler = getattr(self, "_scheduler", None)
+            recorder = getattr(scheduler, "record_run_outcome", None)
+            if not normalized_task_id or not callable(recorder):
+                return False
+            recorded = bool(recorder(normalized_task_id, success=success))
+            if not recorded or not success:
+                return recorded
+
+            get_task = getattr(scheduler, "get_task", None)
+            task = get_task(normalized_task_id) if callable(get_task) else None
+            if (
+                task is None
+                or not bool(getattr(task, "enabled", False))
+                or int(getattr(task, "max_runs", 0)) <= 0
+                or int(getattr(task, "success_count", 0)) < int(getattr(task, "max_runs", 0))
+            ):
+                return recorded
+
+            disable_task = getattr(scheduler, "disable_task", None)
+            if not callable(disable_task) or not bool(disable_task(normalized_task_id)):
+                return recorded
+            cancel_pending = getattr(self, "_cancel_pending_actions_for_task", None)
+            if callable(cancel_pending):
+                cancellation = cancel_pending(
+                    normalized_task_id,
+                    reason="max_runs_reached",
+                )
+                if inspect.isawaitable(cancellation):
+                    await cancellation
+            return recorded

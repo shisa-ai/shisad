@@ -354,8 +354,6 @@ class SchedulerManager:
                 "failure_count": task.failure_count,
             },
         )
-        if success and task.max_runs > 0 and task.success_count >= task.max_runs and task.enabled:
-            self.disable_task(task_id)
         return True
 
     def task_status_snapshot(

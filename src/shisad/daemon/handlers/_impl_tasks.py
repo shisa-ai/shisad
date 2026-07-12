@@ -353,7 +353,10 @@ class TasksImplMixin(HandlerMixinBase):
                 ),
             )
         )
-        self._scheduler.record_run_outcome(str(getattr(task, "id", "")), success=False)
+        await self._record_task_run_outcome(
+            str(getattr(task, "id", "")),
+            success=False,
+        )
         return {"accepted": False, "queued_confirmation": False, "executed": False}
 
     async def _execute_task_run(
@@ -396,7 +399,7 @@ class TasksImplMixin(HandlerMixinBase):
                 description=f"Task plan commitment mismatch blocked execution for task {task.id}",
                 recommended_action="review_task_commitment",
             )
-            self._scheduler.record_run_outcome(task.id, success=False)
+            await self._record_task_run_outcome(task.id, success=False)
             return {"accepted": False, "queued_confirmation": False, "executed": False}
 
         delivery_arguments = self._task_delivery_arguments(task)
@@ -414,7 +417,7 @@ class TasksImplMixin(HandlerMixinBase):
                 description=f"Background task missing delivery target for task {task.id}",
                 recommended_action="update_task_delivery_target",
             )
-            self._scheduler.record_run_outcome(task.id, success=False)
+            await self._record_task_run_outcome(task.id, success=False)
             return {"accepted": False, "queued_confirmation": False, "executed": False}
 
         session = self._ensure_task_execution_session(task)
@@ -644,7 +647,7 @@ class TasksImplMixin(HandlerMixinBase):
             execution_action=cp_eval.action,
             user_confirmed=False,
         )
-        self._scheduler.record_run_outcome(task.id, success=execution.success)
+        await self._record_task_run_outcome(task.id, success=execution.success)
         if not execution.success:
             await self._publish_task_anomaly(
                 session_id=sid,
