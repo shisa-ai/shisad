@@ -5609,6 +5609,125 @@ def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(
     assert '"approval_method": "webauthn"' in result.output
 
 
+@pytest.mark.parametrize(
+    ("confirmation_id", "status", "lifecycle_state", "status_reason", "daemon_reason"),
+    [
+        ("c-expired", "pending", "expired", "approval_expired", "approval_expired"),
+        ("c-disabled", "cancelled", "cancelled", "task_disabled", "already_cancelled"),
+        ("c-max-runs", "cancelled", "cancelled", "max_runs_reached", "already_cancelled"),
+    ],
+)
+def test_f1_action_confirm_webauthn_routes_unsuccessful_terminal_wait_through_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    confirmation_id: str,
+    status: str,
+    lifecycle_state: str,
+    status_reason: str,
+    daemon_reason: str,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    pending_responses = [
+        {
+            "actions": [
+                {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": "n-initial",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                    "required_level": "bound_approval",
+                    "selected_backend_method": "webauthn",
+                    "approval_url": f"https://approve.example.com/approve/{confirmation_id}",
+                }
+            ],
+            "count": 1,
+        },
+        {
+            "actions": [
+                {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": "",
+                    "status": status,
+                    "lifecycle_state": lifecycle_state,
+                    "status_reason": status_reason,
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                    "required_level": "bound_approval",
+                    "selected_backend_method": "webauthn",
+                }
+            ],
+            "count": 1,
+        },
+    ]
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "action.pending":
+            payload: dict[str, object] = pending_responses.pop(0)
+        else:
+            assert method == "action.confirm"
+            payload = {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": daemon_reason,
+                "status": "failed" if lifecycle_state == "expired" else "cancelled",
+                "status_reason": status_reason,
+                "lifecycle_state": lifecycle_state,
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["action", "confirm", confirmation_id, "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": confirmation_id,
+                "status": "pending",
+                "limit": 1,
+                "include_ui": True,
+            },
+        ),
+        (
+            "action.pending",
+            {
+                "confirmation_id": confirmation_id,
+                "status": None,
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": "",
+                "reason": "",
+            },
+        ),
+    ]
+    assert f'"reason": "{daemon_reason}"' in result.output
+    assert f'"status_reason": "{status_reason}"' in result.output
+
+
 def test_two_factor_register_webauthn_opens_browser_and_waits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

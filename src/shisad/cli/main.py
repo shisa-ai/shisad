@@ -2070,6 +2070,24 @@ def _synthetic_pending_confirm_result(row: ActionPendingEntry) -> ActionConfirmR
     )
 
 
+def _canonical_terminal_confirm_result(
+    *,
+    config: DaemonConfig,
+    row: ActionPendingEntry,
+    reason: str,
+) -> ActionConfirmResult:
+    return rpc_call(
+        config,
+        "action.confirm",
+        {
+            "confirmation_id": row.confirmation_id,
+            "decision_nonce": (row.decision_nonce or "").strip(),
+            "reason": reason,
+        },
+        response_model=ActionConfirmResult,
+    )
+
+
 def _preview_cli_text(value: object, *, max_chars: int = 1600, max_lines: int = 24) -> str:
     text = sanitize_terminal_text(str(value or "")).strip()
     if not text:
@@ -2345,15 +2363,10 @@ def action_confirm(
             existing_row is not None
             and (existing_row.lifecycle_state or existing_row.status).lower() != "pending"
         ):
-            terminal_result = rpc_call(
-                config,
-                "action.confirm",
-                {
-                    "confirmation_id": confirmation_id,
-                    "decision_nonce": (existing_row.decision_nonce or "").strip(),
-                    "reason": reason,
-                },
-                response_model=ActionConfirmResult,
+            terminal_result = _canonical_terminal_confirm_result(
+                config=config,
+                row=existing_row,
+                reason=reason,
             )
             click.echo(
                 _dump_model(terminal_result)
@@ -2419,7 +2432,14 @@ def action_confirm(
             confirmation_id=confirmation_id,
             timeout_seconds=wait_timeout,
         )
-        click.echo(_dump_model(_synthetic_pending_confirm_result(resolved_row)))
+        resolved_result = _synthetic_pending_confirm_result(resolved_row)
+        if not resolved_result.confirmed:
+            resolved_result = _canonical_terminal_confirm_result(
+                config=config,
+                row=resolved_row,
+                reason=reason,
+            )
+        click.echo(_dump_model(resolved_result))
         return
     elif method_value:
         payload["approval_method"] = method_value
