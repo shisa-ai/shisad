@@ -56,6 +56,7 @@ from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.handlers._impl_session import (
     _PENDING_SKILL_SUGGESTION_ID_KEY,
     _PENDING_STRONG_INVALIDATION_KEY,
+    PlannerActionResolveResult,
     SessionImplMixin,
     SessionMessageExecutionResult,
     SessionMessagePlannerContextResult,
@@ -1399,6 +1400,156 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
     ) -> dict[str, object]:
         _ = (session, tool_name)
         return dict(arguments)
+
+
+class _PlannerActionResolveContinuationHarness(_PendingPolicySnapshotHarness):
+    def __init__(self, *, remaining_origin_turn_id: str) -> None:
+        super().__init__()
+        self.continuation_calls: list[dict[str, object]] = []
+        self._pending_actions = {
+            "c-remaining": PendingAction(
+                confirmation_id="c-remaining",
+                decision_nonce="nonce-remaining",
+                session_id=SessionId("sess-g1"),
+                user_id=UserId("user-g1"),
+                workspace_id=WorkspaceId("workspace-g1"),
+                tool_name=ToolName("web.search"),
+                arguments={"query": "remaining"},
+                reason="manual",
+                capabilities={Capability.HTTP_REQUEST},
+                created_at=datetime.now(UTC),
+                origin_turn_id=remaining_origin_turn_id,
+            )
+        }
+        self._registry = SimpleNamespace(
+            get_tool=lambda _tool_name: ToolDefinition(
+                name=ToolName("action.resolve"),
+                description="resolve pending actions",
+            )
+        )
+        self._pep = SimpleNamespace(
+            evaluate=lambda tool_name, _arguments, _context: PEPDecision(
+                kind=PEPDecisionKind.ALLOW,
+                reason="allow",
+                tool_name=tool_name,
+                risk_score=0.0,
+            )
+        )
+
+    async def _execute_planner_action_resolve(
+        self,
+        **_kwargs: object,
+    ) -> PlannerActionResolveResult:
+        result = PlannerActionResolveResult(
+            executed=1,
+            rejected=0,
+            serialized_tool_outputs=[
+                {
+                    "tool_name": "fs.list",
+                    "success": True,
+                    "payload": {"ok": True, "entries": []},
+                    "taint_labels": [],
+                }
+            ],
+            continuation_user_goal="List the files",
+            continuation_followup_id="followup-current",
+            continuation_origin_turn_id="turn-current",
+            success=True,
+            summary="confirmed",
+        )
+        return result
+
+    async def _build_confirmed_pending_continuation_execution(
+        self,
+        **kwargs: object,
+    ) -> object:
+        self.continuation_calls.append(dict(kwargs))
+        return SimpleNamespace(continued=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("remaining_origin_turn_id", "expect_continuation"),
+    [("turn-current", False), ("turn-other", True)],
+    ids=["related-blocks", "unrelated-continues"],
+)
+async def test_f1_planner_action_resolve_scopes_remaining_action_continuation(
+    remaining_origin_turn_id: str,
+    expect_continuation: bool,
+) -> None:
+    harness = _PlannerActionResolveContinuationHarness(
+        remaining_origin_turn_id=remaining_origin_turn_id
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "confirm 1"},
+    )
+    validated.operator_owned_cli_input = True
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps=set(),
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+        pending_action_binding_ids=("c-current",),
+    )
+    proposal = ActionProposal(
+        action_id="resolve-current",
+        tool_name=ToolName("action.resolve"),
+        arguments={"decision": "confirm", "target": "1", "scope": "one"},
+        reasoning="Resolve the user's explicit confirmation.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Resolving.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert bool(harness.continuation_calls) is expect_continuation
+    if expect_continuation:
+        assert getattr(result, "continued", False) is True
+    else:
+        assert isinstance(result, SessionMessageExecutionResult)
 
 
 class _SensitiveBrowserControlPlaneHarness(_PendingPolicySnapshotHarness):

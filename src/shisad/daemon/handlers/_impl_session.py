@@ -654,6 +654,7 @@ class PlannerActionResolveResult:
     serialized_tool_outputs: list[dict[str, Any]] = field(default_factory=list)
     continuation_user_goal: str = ""
     continuation_followup_id: str = ""
+    continuation_origin_turn_id: str = ""
     success: bool = False
     summary: str = ""
 
@@ -1884,6 +1885,23 @@ def _pending_matches_continuation_scope(
     if delivery_target is None:
         return pending_target is None
     return pending_target is not None and _delivery_targets_match(delivery_target, pending_target)
+
+
+def _live_pending_rows_for_continuation_scope(
+    pending_rows: Sequence[Any],
+    *,
+    origin_turn_id: str,
+    delivery_target: DeliveryTarget | None,
+) -> list[Any]:
+    return [
+        pending
+        for pending in _live_pending_rows(pending_rows)
+        if _pending_matches_continuation_scope(
+            pending,
+            origin_turn_id=origin_turn_id,
+            delivery_target=delivery_target,
+        )
+    ]
 
 
 def _targetless_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
@@ -10329,15 +10347,11 @@ class SessionImplMixin(HandlerMixinBase):
             continuation_bindings[0] if len(continuation_bindings) == 1 else ("", "", "")
         )
         continuation_delivery_target = delivery_target or stored_delivery_target
-        visible_remaining_for_continuation = [
-            pending
-            for pending in _visible_pending_rows(remaining_for_continuation)
-            if _pending_matches_continuation_scope(
-                pending,
-                origin_turn_id=continuation_binding[2],
-                delivery_target=continuation_delivery_target,
-            )
-        ]
+        visible_remaining_for_continuation = _live_pending_rows_for_continuation_scope(
+            remaining_for_continuation,
+            origin_turn_id=continuation_binding[2],
+            delivery_target=continuation_delivery_target,
+        )
         if (
             executed_actions > 0
             and blocked_actions == 0
@@ -11699,7 +11713,7 @@ class SessionImplMixin(HandlerMixinBase):
         checkpoint_ids: list[str] = []
         tool_outputs: list[Any] = []
         serialized_tool_outputs: list[dict[str, Any]] = []
-        continuation_bindings: list[tuple[str, str]] = []
+        continuation_bindings: list[tuple[str, str, str]] = []
         outcome_lines: list[str] = []
 
         for pending in selected_rows:
@@ -11788,7 +11802,12 @@ class SessionImplMixin(HandlerMixinBase):
                         if isinstance(identity, Mapping)
                         else ""
                     )
-                    binding = (goal, followup_id)
+                    origin_turn_id = (
+                        str(identity.get("origin_turn_id", "")).strip()
+                        if isinstance(identity, Mapping)
+                        else ""
+                    )
+                    binding = (goal, followup_id, origin_turn_id)
                     if all(binding) and binding not in continuation_bindings:
                         continuation_bindings.append(binding)
                 if confirmed:
@@ -11842,7 +11861,7 @@ class SessionImplMixin(HandlerMixinBase):
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
 
         continuation_binding = (
-            continuation_bindings[0] if len(continuation_bindings) == 1 else ("", "")
+            continuation_bindings[0] if len(continuation_bindings) == 1 else ("", "", "")
         )
         return PlannerActionResolveResult(
             executed=executed,
@@ -11853,6 +11872,7 @@ class SessionImplMixin(HandlerMixinBase):
             serialized_tool_outputs=serialized_tool_outputs,
             continuation_user_goal=continuation_binding[0],
             continuation_followup_id=continuation_binding[1],
+            continuation_origin_turn_id=continuation_binding[2],
             success=executed > 0 and rejected == 0,
             summary="\n".join(outcome_lines),
         )
@@ -12619,30 +12639,41 @@ class SessionImplMixin(HandlerMixinBase):
                     and resolve_result.rejected == 0
                     and resolve_result.continuation_user_goal
                     and resolve_result.continuation_followup_id
+                    and resolve_result.continuation_origin_turn_id
                     and resolve_result.serialized_tool_outputs
                     and len(planner_result.evaluated) == 1
                 ):
-                    continuation_execution = (
-                        await self._build_confirmed_pending_continuation_execution(
-                            sid=sid,
-                            channel=validated.channel,
-                            session_mode=validated.session_mode,
-                            user_id=validated.user_id,
-                            workspace_id=validated.workspace_id,
-                            trust_level=validated.trust_level,
-                            is_internal_ingress=validated.is_internal_ingress,
-                            delivery_target=validated.delivery_target,
-                            stored_delivery_target=_stored_delivery_target_from_session(
-                                validated.session
-                            ),
-                            continuation_user_goal=resolve_result.continuation_user_goal,
-                            continuation_followup_id=(resolve_result.continuation_followup_id),
-                            confirmed_tool_outputs=resolve_result.serialized_tool_outputs,
-                            checkpoint_ids=resolve_result.checkpoint_ids,
-                        )
+                    stored_delivery_target = _stored_delivery_target_from_session(validated.session)
+                    remaining_for_continuation = self._pending_confirmations_for_binding(
+                        session_id=sid,
+                        user_id=validated.user_id,
+                        workspace_id=validated.workspace_id,
                     )
-                    if continuation_execution is not None:
-                        return continuation_execution
+                    related_remaining = _live_pending_rows_for_continuation_scope(
+                        remaining_for_continuation,
+                        origin_turn_id=resolve_result.continuation_origin_turn_id,
+                        delivery_target=validated.delivery_target or stored_delivery_target,
+                    )
+                    if not related_remaining:
+                        continuation_execution = (
+                            await self._build_confirmed_pending_continuation_execution(
+                                sid=sid,
+                                channel=validated.channel,
+                                session_mode=validated.session_mode,
+                                user_id=validated.user_id,
+                                workspace_id=validated.workspace_id,
+                                trust_level=validated.trust_level,
+                                is_internal_ingress=validated.is_internal_ingress,
+                                delivery_target=validated.delivery_target,
+                                stored_delivery_target=stored_delivery_target,
+                                continuation_user_goal=resolve_result.continuation_user_goal,
+                                continuation_followup_id=(resolve_result.continuation_followup_id),
+                                confirmed_tool_outputs=resolve_result.serialized_tool_outputs,
+                                checkpoint_ids=resolve_result.checkpoint_ids,
+                            )
+                        )
+                        if continuation_execution is not None:
+                            return continuation_execution
                 continue
 
             if str(proposal.tool_name) == "lockdown.resume":

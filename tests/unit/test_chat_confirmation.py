@@ -4363,8 +4363,51 @@ async def test_rc_lus_action_resolve_uses_current_turn_intent_over_bad_planner_d
         reason="manual",
         capabilities={Capability.FILE_READ},
         created_at=datetime.now(UTC),
+        action_id="action-1",
+        origin_turn_id="turn-1",
+        execution_attempt_id="attempt-1",
+        result_id="result-1",
+        followup_id="followup-1",
+        continuation_user_goal="Read README.md",
+        continuation_mode="planner",
     )
     harness._pending_actions[pending.confirmation_id] = pending
+    identity = {
+        "action_id": pending.action_id,
+        "origin_turn_id": pending.origin_turn_id,
+        "session_id": str(pending.session_id),
+        "user_id": str(pending.user_id),
+        "workspace_id": str(pending.workspace_id),
+        "task_id": "",
+        "delivery_target": None,
+        "confirmation_id": pending.confirmation_id,
+        "execution_attempt_id": pending.execution_attempt_id,
+        "result_id": pending.result_id,
+        "followup_id": pending.followup_id,
+    }
+
+    async def _confirm_with_continuation(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        pending.status = "approved"
+        pending.status_reason = "planner_action_resolve"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "identity": identity,
+            "continuation_mode": pending.continuation_mode,
+            "continuation_user_goal": pending.continuation_user_goal,
+            "tool_outputs": [
+                {
+                    "tool_name": "fs.read",
+                    "success": True,
+                    "payload": {"ok": True, "path": "README.md", "content": "# shisad"},
+                    "taint_labels": [],
+                    "action_identity": identity,
+                }
+            ],
+        }
+
+    harness.do_action_confirm = _confirm_with_continuation  # type: ignore[method-assign]
     validated = SimpleNamespace(
         sid=SessionId("sess-chat"),
         channel="cli",
@@ -4389,6 +4432,9 @@ async def test_rc_lus_action_resolve_uses_current_turn_intent_over_bad_planner_d
     assert result.success is True
     assert result.executed == 1
     assert result.rejected == 0
+    assert result.continuation_user_goal == "Read README.md"
+    assert result.continuation_followup_id == "followup-1"
+    assert result.continuation_origin_turn_id == "turn-1"
     assert harness.confirm_calls == [
         {
             "confirmation_id": "c-1",
