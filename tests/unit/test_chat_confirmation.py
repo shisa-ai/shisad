@@ -2070,7 +2070,8 @@ async def test_chat_confirmation_prefixes_action_url_without_prior_user_goal(
 
     assert result is not None
     response = str(result["response"])
-    assert response.startswith("[CONFIRMATION REQUIRED]")
+    assert response.startswith("[OUTPUT REVIEW REQUIRED]")
+    assert "[CONFIRMATION REQUIRED]" not in response
     assert fetch_url in response
 
 

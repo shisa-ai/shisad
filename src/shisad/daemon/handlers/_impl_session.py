@@ -3980,6 +3980,7 @@ def _normalize_context_role(role: str) -> str:
 
 
 _CONFIRMATION_REQUIRED_PREFIX = "[CONFIRMATION REQUIRED]"
+_OUTPUT_REVIEW_REQUIRED_PREFIX = "[OUTPUT REVIEW REQUIRED]"
 _PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
 _DISCORD_PENDING_CONFIRMATIONS_HEADER = "**Pending confirmations**"
 _PENDING_CONFIRMATIONS_HEADERS = (
@@ -4044,8 +4045,10 @@ _OUTPUT_POLICY_BLOCK_REASON_PRIORITY = (
 
 def _is_mixed_pending_confirmation_context(text: str) -> bool:
     stripped = str(text or "").strip()
-    if stripped.startswith(_CONFIRMATION_REQUIRED_PREFIX):
-        stripped = stripped[len(_CONFIRMATION_REQUIRED_PREFIX) :].lstrip()
+    for prefix in (_CONFIRMATION_REQUIRED_PREFIX, _OUTPUT_REVIEW_REQUIRED_PREFIX):
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix) :].lstrip()
+            break
     if not _is_pending_confirmation_text(stripped):
         return False
 
@@ -4140,9 +4143,11 @@ def _is_server_pending_confirmation_entry(entry: TranscriptEntry) -> bool:
 
 def _pending_confirmation_text_after_prefixes(text: str) -> str:
     normalized = str(text or "").strip()
-    confirmation_prefix = f"{_CONFIRMATION_REQUIRED_PREFIX} "
-    if normalized.startswith(confirmation_prefix):
-        normalized = normalized[len(confirmation_prefix) :].lstrip()
+    for prefix in (_CONFIRMATION_REQUIRED_PREFIX, _OUTPUT_REVIEW_REQUIRED_PREFIX):
+        rendered_prefix = f"{prefix} "
+        if normalized.startswith(rendered_prefix):
+            normalized = normalized[len(rendered_prefix) :].lstrip()
+            break
     if normalized.startswith("[PLANNER FALLBACK:"):
         _, separator, pending_text = normalized.partition("\n\n")
         if separator:
@@ -8728,7 +8733,14 @@ def _pending_confirmation_followup_text(
     normalized = _normalized_pending_confirmation_text(text)
     if normalized is None:
         return None
-    had_output_confirmation_prefix = text.strip().startswith(f"{_CONFIRMATION_REQUIRED_PREFIX} ")
+    output_policy_prefix = next(
+        (
+            prefix
+            for prefix in (_CONFIRMATION_REQUIRED_PREFIX, _OUTPUT_REVIEW_REQUIRED_PREFIX)
+            if text.strip().startswith(f"{prefix} ")
+        ),
+        "",
+    )
     result_portion = _mixed_pending_confirmation_result_portion(normalized)
     if result_portion is not None:
         if active_pending_confirmation_ids is not None:
@@ -8738,8 +8750,8 @@ def _pending_confirmation_followup_text(
                 and not text_confirmation_ids.issubset(active_pending_confirmation_ids)
             )
             if stale_pending_context:
-                if had_output_confirmation_prefix:
-                    return f"{_CONFIRMATION_REQUIRED_PREFIX} {result_portion}"
+                if output_policy_prefix:
+                    return f"{output_policy_prefix} {result_portion}"
                 return result_portion
         return text
     if active_pending_confirmation_ids is not None:
@@ -9475,7 +9487,12 @@ class SessionImplMixin(HandlerMixinBase):
                         else content
                     ),
                 ):
-                    response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+                    prefix = (
+                        _OUTPUT_REVIEW_REQUIRED_PREFIX
+                        if returned_tool_outputs
+                        else _CONFIRMATION_REQUIRED_PREFIX
+                    )
+                    response_text = f"{prefix} {response_text}"
             lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
                 self._lockdown_notice_response_fragment(session_id=sid)
             )
@@ -13406,6 +13423,7 @@ class SessionImplMixin(HandlerMixinBase):
         response: str,
         taint_labels: set[TaintLabel] | None = None,
         output_confirmation_user_goal: str = "",
+        completed_result: bool = False,
     ) -> dict[str, Any]:
         response_taint_labels = set(taint_labels or set())
         public_sensitive_taints = (
@@ -13429,13 +13447,21 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if (
             not output_result.blocked
-            and not response_text.startswith(f"{_CONFIRMATION_REQUIRED_PREFIX} ")
+            and not any(
+                response_text.startswith(f"{prefix} ")
+                for prefix in (_CONFIRMATION_REQUIRED_PREFIX, _OUTPUT_REVIEW_REQUIRED_PREFIX)
+            )
             and _should_prefix_output_confirmation(
                 output_result=output_result,
                 user_goal=output_confirmation_user_goal or validated.firewall_result.sanitized_text,
             )
         ):
-            response_text = f"{_CONFIRMATION_REQUIRED_PREFIX} {response_text}"
+            prefix = (
+                _OUTPUT_REVIEW_REQUIRED_PREFIX
+                if completed_result
+                else _CONFIRMATION_REQUIRED_PREFIX
+            )
+            response_text = f"{prefix} {response_text}"
         lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
             self._lockdown_notice_response_fragment(session_id=validated.sid)
         )
@@ -13503,6 +13529,7 @@ class SessionImplMixin(HandlerMixinBase):
             response=response.text,
             taint_labels=set(response.taint_labels),
             output_confirmation_user_goal=response.output_confirmation_user_goal,
+            completed_result=True,
         )
 
     @staticmethod
@@ -14802,7 +14829,12 @@ class SessionImplMixin(HandlerMixinBase):
                 user_goal=output_confirmation_user_goal,
                 allowed_structural_response_text=allowed_structural_response_text,
             ):
-                response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+                prefix = (
+                    _OUTPUT_REVIEW_REQUIRED_PREFIX
+                    if execution.executed_tool_outputs
+                    else _CONFIRMATION_REQUIRED_PREFIX
+                )
+                response_text = f"{prefix} {response_text}"
         if not public_sensitive_taints and not output_result.blocked:
             self._commit_identity_candidate_suggestion(candidate_suggestion)
             self._commit_strong_invalidation_suggestion(
@@ -15852,7 +15884,7 @@ class SessionImplMixin(HandlerMixinBase):
         else:
             response_text = output_result.sanitized_text
             if _should_prefix_output_confirmation(output_result=output_result):
-                response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+                response_text = f"{_OUTPUT_REVIEW_REQUIRED_PREFIX} {response_text}"
 
         lockdown_notice_fragment, lockdown_notice_state, lockdown_recovery_prompt = (
             self._lockdown_notice_response_fragment(session_id=sid)
@@ -15874,7 +15906,7 @@ class SessionImplMixin(HandlerMixinBase):
         else:
             summary_text = summary_output_result.sanitized_text
             if _should_prefix_output_confirmation(output_result=summary_output_result):
-                summary_text = f"[CONFIRMATION REQUIRED] {summary_text}"
+                summary_text = f"{_OUTPUT_REVIEW_REQUIRED_PREFIX} {summary_text}"
 
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,

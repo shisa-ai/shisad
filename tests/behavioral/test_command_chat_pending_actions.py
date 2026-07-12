@@ -118,6 +118,58 @@ async def _reject_pending_action(harness: Any, confirmation_id: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gh91_completed_read_is_result_not_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        async def _gh91_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            planner_input = messages[-1].content if messages else ""
+            normalized_input = planner_input.replace("^", "").lower()
+            if "post-tool synthesis pass" in normalized_input:
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content=(
+                            "Completed action result:\n"
+                            "- fs.read read README.md.\n"
+                            "  # Completed read\n"
+                            "  Reference: https://surprise.example/details"
+                        ),
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _gh91_complete, raising=True)
+        (harness.workspace_root / "README.md").write_text(
+            "# Completed read\n\nReference: https://surprise.example/details\n",
+            encoding="utf-8",
+        )
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "read README.md"},
+        )
+
+    response_text = str(reply.get("response", ""))
+    assert int(reply.get("executed_actions", 0)) == 1
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert reply.get("pending_confirmation_ids") == []
+    assert reply.get("response_action_confirmation_ids") == []
+    assert response_text.startswith("[OUTPUT REVIEW REQUIRED] Completed action result:")
+    assert "[CONFIRMATION REQUIRED]" not in response_text
+    assert "# Completed read" in response_text
+    assert reply.get("output_policy", {}).get("require_confirmation") is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "content",
     [

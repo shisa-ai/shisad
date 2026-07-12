@@ -2580,8 +2580,8 @@ async def test_m2_task_summary_obeys_output_firewall(
         )
 
         task_result = dict(result.get("task_result") or {})
-        assert result["response"].startswith("[CONFIRMATION REQUIRED] ")
-        assert task_result["summary"].startswith("[CONFIRMATION REQUIRED] ")
+        assert result["response"].startswith("[OUTPUT REVIEW REQUIRED] ")
+        assert task_result["summary"].startswith("[OUTPUT REVIEW REQUIRED] ")
         assert "https://docs.python.org/3/" in task_result["summary"]
     finally:
         await _shutdown_daemon(daemon_task, client)

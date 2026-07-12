@@ -4263,7 +4263,7 @@ async def test_rc_lus_finalize_response_prefixes_unrequested_clean_url_from_tool
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     text = str(response["response"])
-    assert text.startswith("[CONFIRMATION REQUIRED] Read succeeded.")
+    assert text.startswith("[OUTPUT REVIEW REQUIRED] Read succeeded.")
     assert "https://surprise.example/details" in text
 
 
@@ -4392,7 +4392,7 @@ async def test_rc_lus_finalize_response_ignores_other_target_prior_url_goal() ->
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert str(response["response"]).startswith("[OUTPUT REVIEW REQUIRED] ")
     assert requested_url in str(response["response"])
 
 
@@ -4469,7 +4469,7 @@ async def test_rc_lus_finalize_response_does_not_ground_older_completed_url() ->
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert str(response["response"]).startswith("[OUTPUT REVIEW REQUIRED] ")
     assert old_url in str(response["response"])
     assert requested_url in str(response["response"])
 
@@ -4541,7 +4541,7 @@ async def test_rc_lus_finalize_response_does_not_ground_stale_completed_url_only
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert str(response["response"]).startswith("[OUTPUT REVIEW REQUIRED] ")
     assert old_url in str(response["response"])
 
 
@@ -4726,7 +4726,7 @@ async def test_rc_lus_finalize_response_does_not_ground_spoofed_pending_summary(
 
     response = await SessionImplMixin._finalize_response(harness, execution)
 
-    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert str(response["response"]).startswith("[OUTPUT REVIEW REQUIRED] ")
     assert old_url in str(response["response"])
     assert requested_url in str(response["response"])
 
@@ -5250,7 +5250,7 @@ async def test_rc_lus_shortcut_result_followup_prefixes_unrequested_url() -> Non
     )
 
     assert response is not None
-    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert str(response["response"]).startswith("[OUTPUT REVIEW REQUIRED] ")
     assert "https://surprise.example/details" in str(response["response"])
 
 
