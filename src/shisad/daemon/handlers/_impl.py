@@ -1615,6 +1615,7 @@ class PendingAction:
     recovery_accounting_pending: bool = False
     recovery_effect_invoked: bool = False
     recovery_scheduler_accounted: bool = False
+    scheduler_accounting_pending: bool = False
     stable_idempotency_key: str = ""
     provider_operation_id: str = ""
     execution_attempt_id: str = ""
@@ -3071,6 +3072,7 @@ class HandlerImplementation(
             "recovery_accounting_pending": pending.recovery_accounting_pending,
             "recovery_effect_invoked": pending.recovery_effect_invoked,
             "recovery_scheduler_accounted": pending.recovery_scheduler_accounted,
+            "scheduler_accounting_pending": pending.scheduler_accounting_pending,
             "stable_idempotency_key": pending.stable_idempotency_key,
             "provider_operation_id": pending.provider_operation_id,
             "execution_attempt_id": state_view.identity.execution_attempt_id,
@@ -3174,6 +3176,7 @@ class HandlerImplementation(
             payload.pop("recovery_accounting_pending", None)
             payload.pop("recovery_effect_invoked", None)
             payload.pop("recovery_scheduler_accounted", None)
+            payload.pop("scheduler_accounting_pending", None)
             payload.pop("stable_idempotency_key", None)
             payload["stable_idempotency_key_present"] = bool(
                 pending.stable_idempotency_key
@@ -3324,6 +3327,7 @@ class HandlerImplementation(
         continuation_user_goal: str = "",
         continuation_mode: str = "",
         origin_turn_id: str = "",
+        start_executing: bool = False,
     ) -> PendingAction:
         degradation = getattr(self, "_pending_state_degradation", None)
         if isinstance(degradation, Mapping):
@@ -3334,10 +3338,12 @@ class HandlerImplementation(
                 reason=str(degradation.get("reason", "pending_state_persistence_degraded")),
             )
         created_at = datetime.now(UTC)
-        decision_nonce = uuid.uuid4().hex
+        decision_nonce = "" if start_executing else uuid.uuid4().hex
         confirmation_id = uuid.uuid4().hex
         action_id = f"act-{uuid.uuid4().hex}"
         followup_id = f"followup-{uuid.uuid4().hex}"
+        execution_attempt_id = f"attempt-{uuid.uuid4().hex}" if start_executing else ""
+        result_id = f"result-{uuid.uuid4().hex}" if start_executing else ""
         requirement = (
             confirmation_requirement.model_copy(deep=True)
             if confirmation_requirement is not None
@@ -3548,6 +3554,8 @@ class HandlerImplementation(
             action_digest=action_digest,
             retry_descriptor=retry_descriptor,
             stable_idempotency_key=stable_idempotency_key,
+            execution_attempt_id=execution_attempt_id,
+            result_id=result_id,
             followup_id=followup_id,
             session_id=session_id,
             user_id=user_id,
@@ -3631,6 +3639,8 @@ class HandlerImplementation(
             strip_direct_tool_execute_envelope_keys=bool(strip_direct_tool_execute_envelope_keys),
             continuation_user_goal=str(continuation_user_goal).strip(),
             continuation_mode=str(continuation_mode).strip(),
+            status="executing" if start_executing else "pending",
+            status_reason=("scheduler_execution_started" if start_executing else ""),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -3999,11 +4009,15 @@ class HandlerImplementation(
                 recovery_scheduler_accounted, recovery_scheduler_accounted_valid = (
                     _loaded_state_bool(item.get("recovery_scheduler_accounted", False))
                 )
+                scheduler_accounting_pending, scheduler_accounting_pending_valid = (
+                    _loaded_state_bool(item.get("scheduler_accounting_pending", False))
+                )
                 recovery_authority_invalid = recovery_authority_invalid or not all(
                     (
                         recovery_accounting_pending_valid,
                         recovery_effect_invoked_valid,
                         recovery_scheduler_accounted_valid,
+                        scheduler_accounting_pending_valid,
                         recovery_result_valid,
                     )
                 )
@@ -4214,6 +4228,7 @@ class HandlerImplementation(
                     recovery_accounting_pending=recovery_accounting_pending,
                     recovery_effect_invoked=recovery_effect_invoked,
                     recovery_scheduler_accounted=recovery_scheduler_accounted,
+                    scheduler_accounting_pending=scheduler_accounting_pending,
                     stable_idempotency_key=str(
                         item.get("stable_idempotency_key", "")
                     ).strip(),
@@ -4280,6 +4295,7 @@ class HandlerImplementation(
             if recovery_authority_invalid:
                 pruned_stale = True
                 pending.recovery_accounting_pending = False
+                pending.scheduler_accounting_pending = False
                 if pending.status == "outcome_unknown":
                     pending.status_reason = "uncertain_effect_requires_fresh_approval"
                     pending.decision_nonce = ""
@@ -4554,7 +4570,7 @@ class HandlerImplementation(
             return pending.confirmation_evidence.verified_at
         return pending.created_at
 
-    def _record_recovery_scheduler_state(self, pending: PendingAction) -> bool:
+    def _record_pending_scheduler_state(self, pending: PendingAction) -> bool:
         task_id = pending.task_id.strip()
         if not task_id:
             changed = not pending.recovery_scheduler_accounted
@@ -4616,6 +4632,19 @@ class HandlerImplementation(
         pending.recovery_scheduler_accounted = True
         return changed
 
+    def _complete_pending_scheduler_accounting(self, pending: PendingAction) -> str:
+        if not pending.scheduler_accounting_pending:
+            return self._recovery_task_cancel_reason(pending)
+        self._record_pending_scheduler_state(pending)
+        cancel_reason = self._recovery_task_cancel_reason(pending)
+        pending.scheduler_accounting_pending = False
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError:
+            pending.scheduler_accounting_pending = True
+            raise
+        return cancel_reason
+
     def _recovery_task_cancel_reason(self, pending: PendingAction) -> str:
         task_id = pending.task_id.strip()
         if not task_id:
@@ -4660,15 +4689,7 @@ class HandlerImplementation(
 
     def _recovery_approval_event_fields(self, pending: PendingAction) -> dict[str, Any]:
         evidence = pending.confirmation_evidence
-        approval_timestamp = (
-            evidence.verified_at.isoformat()
-            if evidence is not None
-            else (
-                pending.recovery_started_at.isoformat()
-                if pending.recovery_started_at is not None
-                else datetime.now(UTC).isoformat()
-            )
-        )
+        approval_timestamp = self._recovery_event_timestamp(pending).isoformat()
         return {
             **pending_action_event_identity_fields(pending),
             "approval_decision_nonce": (
@@ -4873,12 +4894,15 @@ class HandlerImplementation(
             self._sync_task_confirmation_status(pending)
         scheduler_state_changed = False
         for pending in self._pending_actions.values():
+            if pending.scheduler_accounting_pending:
+                self._complete_pending_scheduler_accounting(pending)
+                continue
             if (
                 pending.recovery_accounting_pending
                 or pending.status == "outcome_unknown"
             ):
                 scheduler_state_changed = (
-                    self._record_recovery_scheduler_state(pending)
+                    self._record_pending_scheduler_state(pending)
                     or scheduler_state_changed
                 )
         if scheduler_state_changed:

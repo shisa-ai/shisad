@@ -397,20 +397,23 @@ class ControlPlaneEngine:
         success: bool,
         idempotency_key: str = "",
     ) -> None:
-        recorded = self._history_store.append_action(
+        self._history_store.append_action(
             action,
             decision_status=ControlDecision.ALLOW.value,
             execution_status="success" if success else "failed",
             idempotency_key=idempotency_key,
         )
-        if not recorded:
-            return
         if success:
+            normalized_key = idempotency_key.strip()
             self._trace_verifier.record_dependency_path(
                 session_id=action.origin.session_id,
                 action=action,
+                idempotency_key=(f"{normalized_key}:dependency" if normalized_key else ""),
             )
-            self._trace_verifier.record_action(session_id=action.origin.session_id)
+            self._trace_verifier.record_action(
+                session_id=action.origin.session_id,
+                idempotency_key=f"{normalized_key}:action" if normalized_key else "",
+            )
 
     def observe_denied_action(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from shisad.core.tools.schema import (
 )
 from shisad.core.types import Capability, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
+from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
 from shisad.daemon.services import DaemonServices
 from shisad.scheduler.schema import Schedule
 
@@ -132,6 +134,388 @@ async def _seed_unresolved_scheduled_time_attempt(
 
 
 @pytest.mark.asyncio
+async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_contains_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    pending_path = config.data_dir / "pending_actions.json"
+    durable_before_effect: list[dict[str, object]] = []
+    effect_calls = 0
+
+    class _CrashAfterEffect(RuntimeError):
+        pass
+
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name="direct-scheduler-crash",
+            goal="Deliver this reminder once",
+            schedule=Schedule(kind="interval", expression="1s"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="direct-scheduler-crash",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            allowed_recipients=["ops-room"],
+            delivery_target={"channel": "discord", "recipient": "ops-room"},
+            max_runs=3,
+        )
+        runs = services.scheduler.trigger_due(
+            now=task.created_at + timedelta(seconds=2),
+        )
+        assert len(runs) == 1
+
+        async def _crash_after_effect(**_kwargs: object) -> object:
+            nonlocal effect_calls
+            if pending_path.exists():
+                durable_before_effect.extend(json.loads(pending_path.read_text(encoding="utf-8")))
+            effect_calls += 1
+            raise _CrashAfterEffect("process stopped after provider accepted delivery")
+
+        monkeypatch.setattr(impl, "_execute_approved_action", _crash_after_effect)
+        with pytest.raises(_CrashAfterEffect):
+            await impl._execute_task_run(
+                runs[0],
+                event_type="scheduler.due",
+                due_run=True,
+            )
+
+        matching = [row for row in durable_before_effect if str(row.get("task_id", "")) == task.id]
+        assert len(matching) == 1
+        assert matching[0]["status"] == "executing"
+        assert str(matching[0].get("execution_attempt_id", "")).startswith("attempt-")
+        assert str(matching[0].get("result_id", "")).startswith("result-")
+        assert effect_calls == 1
+        contained_task = services.scheduler.get_task(task.id)
+        assert contained_task is not None
+        assert contained_task.failure_count == 1
+        assert contained_task.enabled is False
+        assert services.scheduler.trigger_due(
+            now=task.created_at + timedelta(seconds=3),
+        ) == []
+    finally:
+        await services.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        recovered = next(
+            pending
+            for pending in restarted_handlers._impl._pending_actions.values()
+            if pending.task_id == task.id
+        )
+        assert recovered.status == "outcome_unknown"
+        assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+        recovered_task = restarted.scheduler.get_task(task.id)
+        assert recovered_task is not None
+        assert recovered_task.success_count == 0
+        assert recovered_task.failure_count == 1
+        assert recovered_task.enabled is False
+        assert (
+            restarted.scheduler.trigger_due(
+                now=task.created_at + timedelta(seconds=4),
+            )
+            == []
+        )
+        assert effect_calls == 1
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    effect_calls = 0
+
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name="direct-terminal-write-crash",
+            goal="Deliver this reminder once",
+            schedule=Schedule(kind="interval", expression="1s"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="direct-terminal-write-crash",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            allowed_recipients=["ops-room"],
+            delivery_target={"channel": "discord", "recipient": "ops-room"},
+            max_runs=3,
+        )
+        runs = services.scheduler.trigger_due(
+            now=task.created_at + timedelta(seconds=2),
+        )
+        assert len(runs) == 1
+
+        async def _successful_effect(**_kwargs: object) -> ApprovedToolExecutionResult:
+            nonlocal effect_calls
+            effect_calls += 1
+            return ApprovedToolExecutionResult(success=True)
+
+        publication = 0
+
+        def _fail_terminal_write(stage: AtomicWriteStage) -> None:
+            nonlocal publication
+            if stage == AtomicWriteStage.TEMP_OPEN:
+                publication += 1
+            if publication == 2 and stage == AtomicWriteStage.FILE_FSYNC:
+                raise OSError("process stopped before direct terminal publication")
+
+        monkeypatch.setattr(impl, "_execute_approved_action", _successful_effect)
+        impl._pending_state_fault_injector = _fail_terminal_write
+        with pytest.raises(AtomicWriteError):
+            await impl._execute_task_run(
+                runs[0],
+                event_type="scheduler.due",
+                due_run=True,
+            )
+
+        durable = next(
+            row
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
+            if row["task_id"] == task.id
+        )
+        assert durable["status"] == "executing"
+        contained_task = services.scheduler.get_task(task.id)
+        assert contained_task is not None
+        assert contained_task.success_count == 0
+        assert contained_task.failure_count == 0
+        assert contained_task.enabled is False
+        assert services.scheduler.trigger_due(
+            now=task.created_at + timedelta(seconds=3),
+        ) == []
+        assert effect_calls == 1
+    finally:
+        await services.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        recovered = next(
+            pending
+            for pending in restarted_handlers._impl._pending_actions.values()
+            if pending.task_id == task.id
+        )
+        assert recovered.status == "outcome_unknown"
+        recovered_task = restarted.scheduler.get_task(task.id)
+        assert recovered_task is not None
+        assert recovered_task.success_count == 0
+        assert recovered_task.failure_count == 1
+        assert recovered_task.enabled is False
+        assert effect_calls == 1
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.parametrize("crash_point", ["before_accounting", "after_accounting"])
+@pytest.mark.asyncio
+async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_point: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+
+    class _CrashBeforeAccounting(RuntimeError):
+        pass
+
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name=f"confirmed-accounting-{crash_point}",
+            goal="Record one confirmed scheduled run",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="confirmed-accounting-crash",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=1,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reason="confirmed-accounting-crash",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id=f"turn-confirmed-accounting-{crash_point}",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
+        )
+
+        if crash_point == "before_accounting":
+
+            def _crash_before_accounting(
+                _task_id: str,
+                *,
+                confirmation_id: str,
+                success: bool,
+            ) -> bool:
+                _ = confirmation_id, success
+                raise _CrashBeforeAccounting("process stopped before scheduler accounting")
+
+            monkeypatch.setattr(
+                services.scheduler,
+                "record_confirmation_outcome",
+                _crash_before_accounting,
+            )
+            expected_error: type[BaseException] = _CrashBeforeAccounting
+        else:
+            publication = 0
+
+            def _crash_after_accounting(stage: AtomicWriteStage) -> None:
+                nonlocal publication
+                if stage == AtomicWriteStage.TEMP_OPEN:
+                    publication += 1
+                if publication == 3 and stage == AtomicWriteStage.FILE_FSYNC:
+                    raise OSError("process stopped before scheduler marker clear")
+
+            impl._pending_state_fault_injector = _crash_after_accounting
+            expected_error = AtomicWriteError
+
+        with pytest.raises(expected_error):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+
+        durable = next(
+            row
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
+            if row["confirmation_id"] == pending.confirmation_id
+        )
+        assert durable["status"] == "approved"
+        assert durable["scheduler_accounting_pending"] is True
+        contained_task = services.scheduler.get_task(task.id)
+        assert contained_task is not None
+        assert contained_task.enabled is False
+    finally:
+        await services.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        reconciled_task = restarted.scheduler.get_task(task.id)
+        assert reconciled_task is not None
+        assert reconciled_task.success_count == 1
+        assert reconciled_task.failure_count == 0
+        assert reconciled_task.enabled is False
+        rows = restarted.scheduler._pending_confirmations[task.id]
+        scheduler_row = next(
+            row for row in rows if row["confirmation_id"] == pending.confirmation_id
+        )
+        assert scheduler_row["run_outcome_recorded"] is True
+        assert scheduler_row["run_outcome_success"] is True
+        durable = next(
+            row
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
+            if row["confirmation_id"] == pending.confirmation_id
+        )
+        assert durable["scheduler_accounting_pending"] is False
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_timestamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    confirmation_id, _task_id = await _seed_unresolved_scheduled_time_attempt(config)
+    pending_path = config.data_dir / "pending_actions.json"
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+    durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
+    durable["confirmation_evidence"]["level"] = "not-a-confirmation-level"
+    persisted_created_at = str(durable["created_at"])
+    pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        impl = handlers._impl
+
+        def _fail_marker_clear(stage: AtomicWriteStage) -> None:
+            if stage == AtomicWriteStage.FILE_FSYNC:
+                raise OSError("process stopped before corrupt-evidence marker clear")
+
+        impl._pending_state_fault_injector = _fail_marker_clear
+        accounting_tasks = list(impl._recovery_accounting_tasks)
+        assert len(accounting_tasks) == 1
+        with pytest.raises(AtomicWriteError):
+            await asyncio.gather(*accounting_tasks)
+        recovery_rejections = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolRejected"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
+        ]
+        assert len(recovery_rejections) == 1
+    finally:
+        await restarted.shutdown()
+
+    await asyncio.sleep(0.01)
+    replayed = await DaemonServices.build(config)
+    try:
+        replayed_handlers = DaemonControlHandlers(services=replayed)
+        await _wait_for_recovery_accounting(replayed_handlers._impl)
+        recovery_rejections = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolRejected"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
+        ]
+        assert len(recovery_rejections) == 1
+        assert (
+            recovery_rejections[0].get("data", {}).get("approval_timestamp") == persisted_created_at
+        )
+        durable = next(
+            row
+            for row in json.loads(pending_path.read_text(encoding="utf-8"))
+            if row["confirmation_id"] == confirmation_id
+        )
+        assert durable["recovery_accounting_pending"] is False
+    finally:
+        await replayed.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_time_now_structural_read_unresolved_attempt_retries_automatically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -234,9 +618,7 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         assert recovered_task.enabled is False
         confirmation_rows = restarted.scheduler._pending_confirmations[task.id]
         recovered_row = next(
-            row
-            for row in confirmation_rows
-            if row["confirmation_id"] == pending.confirmation_id
+            row for row in confirmation_rows if row["confirmation_id"] == pending.confirmation_id
         )
         assert recovered_row["run_outcome_recorded"] is True
         assert recovered_row["run_outcome_success"] is True
@@ -245,8 +627,7 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolExecuted"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
         assert len(recovery_events) == 1
         recovery_execution_records = [
@@ -384,6 +765,7 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
         assert durable["recovery_accounting_pending"] is False
     finally:
         await replayed.shutdown()
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -854,8 +1236,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             row
             for row in _audit_rows(config)
             if row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id")
-            == pending.confirmation_id
+            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
         executed_events = [
             row for row in recovery_events if row.get("event_type") == "ToolExecuted"
@@ -878,9 +1259,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         elif recovery_case == "adapter-error":
             assert len(executed_events) == 1
             assert len(rejected_events) == 1
-            assert [row.get("execution_status") for row in recovery_execution_records] == [
-                "failed"
-            ]
+            assert [row.get("execution_status") for row in recovery_execution_records] == ["failed"]
         else:
             assert executed_events == []
             assert len(rejected_events) == 1

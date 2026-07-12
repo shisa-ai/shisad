@@ -149,6 +149,8 @@ class CommittedPlan(BaseModel):
     cancelled: bool = False
     cancelled_reason: str = ""
     executed_actions: int = 0
+    recorded_dependency_keys: set[str] = Field(default_factory=set)
+    recorded_action_keys: set[str] = Field(default_factory=set)
 
 
 class PlanVerificationResult(BaseModel, frozen=True):
@@ -316,11 +318,24 @@ class ExecutionTraceVerifier:
             risk_tier=RiskTier.LOW,
         )
 
-    def record_action(self, *, session_id: str) -> None:
+    def record_action(
+        self,
+        *,
+        session_id: str,
+        idempotency_key: str = "",
+    ) -> None:
         plan = self._plans.get(session_id)
         if plan is None:
             return
+        normalized_key = idempotency_key.strip()
+        if normalized_key and normalized_key in plan.recorded_action_keys:
+            # A prior mutation may have reached memory but failed persistence.
+            # Persist the same state again so replay repairs that boundary.
+            self._persist()
+            return
         plan.executed_actions += 1
+        if normalized_key:
+            plan.recorded_action_keys.add(normalized_key)
         self._persist()
 
     def record_dependency_path(
@@ -328,13 +343,22 @@ class ExecutionTraceVerifier:
         *,
         session_id: str,
         action: ControlPlaneAction,
+        idempotency_key: str = "",
     ) -> None:
         plan = self._plans.get(session_id)
         if plan is None:
             return
         if not self._tdg_enforcement_applies(action):
             return
+        normalized_key = idempotency_key.strip()
+        if normalized_key and normalized_key in plan.recorded_dependency_keys:
+            # Re-persist duplicate replay so an interrupted prior write is
+            # repaired without applying the dependency mutation twice.
+            self._persist()
+            return
         plan.reachable_resources.update(item for item in action.resource_ids if item)
+        if normalized_key:
+            plan.recorded_dependency_keys.add(normalized_key)
         self._persist()
 
     def cancel(self, *, session_id: str, reason: str) -> bool:
@@ -376,6 +400,8 @@ class ExecutionTraceVerifier:
             amendment_of=current.plan_hash,
         )
         amended.reachable_resources = set(current.reachable_resources)
+        amended.recorded_dependency_keys = set(current.recorded_dependency_keys)
+        amended.recorded_action_keys = set(current.recorded_action_keys)
         self._plans[session_id] = amended
         self._persist()
         return amended

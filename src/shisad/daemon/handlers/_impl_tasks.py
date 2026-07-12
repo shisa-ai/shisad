@@ -243,6 +243,7 @@ class TasksImplMixin(HandlerMixinBase):
         capabilities: set[Capability],
         preflight_action: Any | None,
         confirmation_requirement: ConfirmationRequirement | None = None,
+        start_executing: bool = False,
     ) -> str:
         pending = self._queue_pending_action(
             session_id=session.id,
@@ -268,6 +269,7 @@ class TasksImplMixin(HandlerMixinBase):
                     ).encode()
                 ).hexdigest()[:32]
             ),
+            start_executing=start_executing,
         )
         action_state = pending_action_state_view(pending)
         self._scheduler.queue_confirmation(
@@ -286,20 +288,22 @@ class TasksImplMixin(HandlerMixinBase):
                 "plan_commitment": str(getattr(run, "plan_commitment", "")),
                 "payload_taint": str(getattr(run, "payload_taint", "")),
                 "reason": reason,
-                "status": "pending",
+                "status": str(pending.status),
+                "status_reason": str(pending.status_reason),
                 "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
             },
         )
-        await self._event_bus.publish(
-            ToolRejected(
-                session_id=session.id,
-                actor="scheduler",
-                tool_name=_BACKGROUND_MESSAGE_SEND,
-                decision=PEPDecisionKind.REQUIRE_CONFIRMATION,
-                reason=f"{reason} ({pending.confirmation_id})",
-                **pending_action_event_identity_fields(pending),
+        if not start_executing:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=session.id,
+                    actor="scheduler",
+                    tool_name=_BACKGROUND_MESSAGE_SEND,
+                    decision=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                    reason=f"{reason} ({pending.confirmation_id})",
+                    **pending_action_event_identity_fields(pending),
+                )
             )
-        )
         return str(pending.confirmation_id)
 
     @staticmethod
@@ -358,6 +362,14 @@ class TasksImplMixin(HandlerMixinBase):
             success=False,
         )
         return {"accepted": False, "queued_confirmation": False, "executed": False}
+
+    def _contain_unresolved_task_attempt(self, task_id: str) -> None:
+        normalized_task_id = task_id.strip()
+        task = self._scheduler.get_task(normalized_task_id)
+        if task is None or not bool(getattr(task, "enabled", False)):
+            return
+        if not self._scheduler.disable_task(normalized_task_id):
+            raise RuntimeError("scheduler_attempt_containment_failed")
 
     async def _execute_task_run(
         self,
@@ -634,20 +646,88 @@ class TasksImplMixin(HandlerMixinBase):
                 )
             return {"accepted": True, "queued_confirmation": True, "executed": False}
 
-        execution = await self._execute_approved_action(
-            sid=sid,
-            user_id=UserId(str(getattr(task, "created_by", ""))),
-            workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
-            task_id=str(task.id),
-            delivery_target=self._task_delivery_target(task),
-            tool_name=_BACKGROUND_MESSAGE_SEND,
+        confirmation_id = await self._queue_task_confirmation(
+            task=task,
+            run=run,
+            event_type=event_type,
+            session=session,
             arguments=delivery_arguments,
+            reason="scheduler_execution_started",
             capabilities=effective_capabilities,
-            approval_actor="scheduler",
-            execution_action=cp_eval.action,
-            user_confirmed=False,
+            preflight_action=cp_eval.action,
+            start_executing=True,
         )
-        await self._record_task_run_outcome(task.id, success=execution.success)
+        pending = self._pending_actions[confirmation_id]
+        action_identity = pending_action_state_view(pending).identity
+        try:
+            execution = await self._execute_approved_action(
+                sid=sid,
+                user_id=UserId(str(getattr(task, "created_by", ""))),
+                workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
+                task_id=str(task.id),
+                delivery_target=self._task_delivery_target(task),
+                tool_name=_BACKGROUND_MESSAGE_SEND,
+                arguments=delivery_arguments,
+                capabilities=effective_capabilities,
+                approval_actor="scheduler",
+                execution_action=cp_eval.action,
+                user_confirmed=False,
+                action_id=action_identity.action_id,
+                origin_turn_id=action_identity.origin_turn_id,
+                execution_attempt_id=action_identity.execution_attempt_id,
+                result_id=action_identity.result_id,
+                followup_id=action_identity.followup_id,
+                approval_confirmation_id=pending.confirmation_id,
+                approval_timestamp=pending.created_at.isoformat(),
+            )
+        except Exception:
+            # The due-run pump survives ordinary execution exceptions. Treat
+            # that boundary as uncertain immediately so it cannot redeliver
+            # while waiting for a process restart to reconcile the attempt.
+            try:
+                pending.status = "outcome_unknown"
+                pending.status_reason = "uncertain_effect_requires_fresh_approval"
+                pending.decision_nonce = ""
+                pending.recovery_accounting_pending = True
+                pending.recovery_effect_invoked = False
+                pending.scheduler_accounting_pending = True
+                self._persist_pending_actions()
+                self._sync_task_confirmation_status(pending)
+                cancel_reason = self._complete_pending_scheduler_accounting(pending)
+                if cancel_reason:
+                    await self._cancel_pending_actions_for_task(
+                        str(task.id),
+                        reason=cancel_reason,
+                    )
+                self._schedule_recovery_accounting(pending)
+            except Exception:
+                self._contain_unresolved_task_attempt(str(task.id))
+                raise
+            raise
+        pending.provider_operation_id = str(execution.provider_operation_id).strip()
+        pending.recovery_effect_invoked = True
+        if execution.success:
+            pending.status = "approved"
+            pending.status_reason = "scheduler_execution_succeeded"
+        elif execution.outcome_unknown:
+            pending.status = "outcome_unknown"
+            pending.status_reason = execution.error or "scheduler_execution_outcome_unknown"
+        else:
+            pending.status = "failed"
+            pending.status_reason = execution.error or "scheduler_execution_failed"
+        pending.scheduler_accounting_pending = True
+        try:
+            self._persist_pending_actions()
+            self._sync_task_confirmation_status(pending)
+            cancel_reason = self._complete_pending_scheduler_accounting(pending)
+            if cancel_reason:
+                await self._cancel_pending_actions_for_task(
+                    str(task.id),
+                    reason=cancel_reason,
+                )
+        except Exception:
+            self._contain_unresolved_task_attempt(str(task.id))
+            raise
         if not execution.success:
             await self._publish_task_anomaly(
                 session_id=sid,

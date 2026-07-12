@@ -970,6 +970,74 @@ def test_m5_t9_trace_rejects_forbidden_action() -> None:
     assert result.reason_code == "trace:forbidden_action"
 
 
+@pytest.mark.parametrize("failed_trace_write", [1, 2])
+def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_trace_write: int,
+) -> None:
+    data_dir = tmp_path / f"cp-f2-trace-replay-{failed_trace_write}"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = _origin(f"s-f2-trace-replay-{failed_trace_write}")
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=f"read {tmp_path / 'source.txt'}",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=5,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    verifier = engine._trace_verifier
+    real_persist = verifier._persist
+    trace_writes = 0
+
+    def _fail_one_trace_write() -> None:
+        nonlocal trace_writes
+        trace_writes += 1
+        if trace_writes == failed_trace_write:
+            raise OSError("simulated trace persistence interruption")
+        real_persist()
+
+    monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
+    idempotency_key = f"f2-trace-replay-{failed_trace_write}"
+    with pytest.raises(OSError, match="trace persistence interruption"):
+        engine.record_execution(
+            action=action,
+            success=True,
+            idempotency_key=idempotency_key,
+        )
+
+    engine.record_execution(
+        action=action,
+        success=True,
+        idempotency_key=idempotency_key,
+    )
+
+    reloaded = ExecutionTraceVerifier(
+        storage_path=data_dir / "control_plane" / "plans.json",
+        workspace_roots=[tmp_path],
+    )
+    plan = reloaded.active_plan(origin.session_id)
+    assert plan is not None
+    assert plan.executed_actions == 1
+    assert set(action.resource_ids).issubset(plan.reachable_resources)
+    execution_rows = [
+        json.loads(line)
+        for line in (data_dir / "control_plane" / "history.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(execution_rows) == 1
+    assert execution_rows[0]["idempotency_key"] == idempotency_key
+
+
 class _StaticVoter:
     def __init__(self, vote: VoterDecision) -> None:
         self._vote = vote

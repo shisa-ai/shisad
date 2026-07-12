@@ -607,6 +607,54 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if callable(recorder):
             recorder(task_id, success=False)
 
+    async def _complete_confirmation_scheduler_accounting(
+        self,
+        pending: Any,
+        *,
+        success: bool,
+        outcome_unknown: bool,
+    ) -> str:
+        complete_accounting = getattr(
+            self,
+            "_complete_pending_scheduler_accounting",
+            None,
+        )
+        if callable(complete_accounting):
+            return str(complete_accounting(pending))
+
+        task_id = str(getattr(pending, "task_id", "")).strip()
+        task_auto_disabled = await self._record_task_run_outcome(
+            task_id,
+            success=success,
+            cancel_pending=False,
+            confirmation_id=str(getattr(pending, "confirmation_id", "")),
+        )
+        task_uncertainty_disabled = False
+        if outcome_unknown and task_id:
+            disable_task = getattr(self._scheduler, "disable_task", None)
+            if callable(disable_task):
+                task_uncertainty_disabled = bool(disable_task(task_id))
+        pending.scheduler_accounting_pending = False
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError:
+            pending.scheduler_accounting_pending = True
+            raise
+        if task_auto_disabled:
+            return "max_runs_reached"
+        if task_uncertainty_disabled:
+            return "outcome_unknown"
+        return ""
+
+    def _contain_confirmation_scheduler_attempt(self, task_id: str) -> None:
+        contain_attempt = getattr(self, "_contain_unresolved_task_attempt", None)
+        if callable(contain_attempt):
+            contain_attempt(task_id)
+            return
+        disable_task = getattr(getattr(self, "_scheduler", None), "disable_task", None)
+        if not callable(disable_task) or not bool(disable_task(task_id)):
+            raise RuntimeError("scheduler_attempt_containment_failed")
+
     async def do_confirmation_metrics(self, params: Mapping[str, Any]) -> dict[str, Any]:
         window_seconds = max(60, int(params.get("window_seconds", 900)))
         requested_user = str(params.get("user_id") or "").strip()
@@ -2469,20 +2517,24 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         if outcome_unknown:
             pending.decision_nonce = ""
-        self._persist_pending_actions()
-        self._sync_task_confirmation_status(pending)
         pending_task_id = str(getattr(pending, "task_id", "")).strip()
-        task_auto_disabled = await self._record_task_run_outcome(
-            pending_task_id,
-            success=success,
-            cancel_pending=False,
-            confirmation_id=str(getattr(pending, "confirmation_id", "")),
-        )
-        task_uncertainty_disabled = False
-        if outcome_unknown and pending_task_id:
-            disable_task = getattr(self._scheduler, "disable_task", None)
-            if callable(disable_task):
-                task_uncertainty_disabled = bool(disable_task(pending_task_id))
+        pending.scheduler_accounting_pending = bool(pending_task_id)
+        try:
+            self._persist_pending_actions()
+            self._sync_task_confirmation_status(pending)
+            task_cancel_reason = (
+                await self._complete_confirmation_scheduler_accounting(
+                    pending,
+                    success=success,
+                    outcome_unknown=outcome_unknown,
+                )
+                if pending_task_id
+                else ""
+            )
+        except Exception:
+            if pending_task_id:
+                self._contain_confirmation_scheduler_attempt(pending_task_id)
+            raise
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
             decision="approve" if success or outcome_unknown else "reject",
@@ -2513,9 +2565,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "continuation_user_goal": str(getattr(pending, "continuation_user_goal", "")).strip(),
             "continuation_mode": str(getattr(pending, "continuation_mode", "")).strip(),
         }
-        if task_auto_disabled:
+        if task_cancel_reason == "max_runs_reached":
             response[_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY] = "max_runs_reached"
-        elif task_uncertainty_disabled:
+        elif task_cancel_reason == "outcome_unknown":
             response[_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY] = "outcome_unknown"
         return response
 

@@ -16,7 +16,7 @@ from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.request_context import RequestContext
 from shisad.core.types import Capability
 from shisad.security.control_plane.consensus import ConsensusDecision
-from shisad.security.control_plane.engine import ControlPlaneEvaluation
+from shisad.security.control_plane.engine import ControlPlaneEngine, ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
     ControlDecision,
     Origin,
@@ -29,9 +29,10 @@ from shisad.security.control_plane.sidecar import (
     ControlPlaneUnavailableError,
     _ControlPlaneSidecarHandlers,
     _EvaluateActionParams,
+    _RecordExecutionParams,
     start_control_plane_sidecar,
 )
-from shisad.security.control_plane.trace import PlanVerificationResult
+from shisad.security.control_plane.trace import ExecutionTraceVerifier, PlanVerificationResult
 
 
 def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,6 +43,78 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "false")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
+
+
+@pytest.mark.parametrize("failed_trace_write", [1, 2])
+@pytest.mark.asyncio
+async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_trace_write: int,
+) -> None:
+    data_dir = tmp_path / f"cp-f2-sidecar-trace-{failed_trace_write}"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = Origin(
+        session_id=f"sess-f2-sidecar-trace-{failed_trace_write}",
+        user_id="alice",
+        workspace_id="ws-f2",
+        actor="recovery",
+    )
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=f"read {tmp_path / 'source.txt'}",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=5,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    handlers = _ControlPlaneSidecarHandlers(engine=engine)
+    verifier = engine._trace_verifier
+    real_persist = verifier._persist
+    trace_writes = 0
+
+    def _fail_one_trace_write() -> None:
+        nonlocal trace_writes
+        trace_writes += 1
+        if trace_writes == failed_trace_write:
+            raise OSError("simulated sidecar trace persistence interruption")
+        real_persist()
+
+    monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
+    idempotency_key = f"f2-sidecar-trace-{failed_trace_write}"
+    params = _RecordExecutionParams(
+        action=action,
+        success=True,
+        idempotency_key=idempotency_key,
+    )
+    with pytest.raises(OSError, match="sidecar trace persistence interruption"):
+        await handlers.handle_record_execution(params, RequestContext())
+
+    await handlers.handle_record_execution(params, RequestContext())
+
+    reloaded = ExecutionTraceVerifier(
+        storage_path=data_dir / "control_plane" / "plans.json",
+        workspace_roots=[tmp_path],
+    )
+    plan = reloaded.active_plan(origin.session_id)
+    assert plan is not None
+    assert plan.executed_actions == 1
+    assert set(action.resource_ids).issubset(plan.reachable_resources)
+    execution_rows = [
+        json.loads(line)
+        for line in (data_dir / "control_plane" / "history.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(execution_rows) == 1
+    assert execution_rows[0]["idempotency_key"] == idempotency_key
 
 
 @pytest.mark.asyncio
