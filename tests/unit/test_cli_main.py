@@ -4258,6 +4258,105 @@ def test_action_confirm_auto_binds_single_allowed_channel_principal(
     )
 
 
+@pytest.mark.parametrize(
+    ("confirmation_id", "status", "lifecycle_state", "status_reason", "daemon_reason"),
+    [
+        ("c-expired", "pending", "expired", "approval_expired", "approval_expired"),
+        ("c-disabled", "cancelled", "cancelled", "task_disabled", "already_cancelled"),
+        ("c-max-runs", "cancelled", "cancelled", "max_runs_reached", "already_cancelled"),
+    ],
+)
+def test_f1_action_confirm_routes_nonce_less_terminal_projection_through_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    confirmation_id: str,
+    status: str,
+    lifecycle_state: str,
+    status_reason: str,
+    daemon_reason: str,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "action.pending":
+            if params and params.get("status") == "pending":
+                payload: dict[str, object] = {"actions": [], "count": 0}
+            else:
+                payload = {
+                    "actions": [
+                        {
+                            "confirmation_id": confirmation_id,
+                            "decision_nonce": "",
+                            "status": status,
+                            "status_reason": status_reason,
+                            "lifecycle_state": lifecycle_state,
+                            "tool_name": "web.search",
+                            "reason": "manual",
+                        }
+                    ],
+                    "count": 1,
+                }
+        else:
+            assert method == "action.confirm"
+            payload = {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": daemon_reason,
+                "status": "failed" if lifecycle_state == "expired" else "cancelled",
+                "status_reason": status_reason,
+                "lifecycle_state": lifecycle_state,
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(cli_main.cli, ["action", "confirm", confirmation_id])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": confirmation_id,
+                "status": "pending",
+                "limit": 1,
+                "include_ui": True,
+            },
+        ),
+        (
+            "action.pending",
+            {
+                "confirmation_id": confirmation_id,
+                "status": None,
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": "",
+                "reason": "",
+            },
+        ),
+    ]
+    assert daemon_reason in result.output
+    assert status_reason in result.output
+
+
 def test_action_reject_auto_binds_single_allowed_channel_principal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

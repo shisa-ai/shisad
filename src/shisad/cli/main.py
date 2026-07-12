@@ -2188,12 +2188,19 @@ def _render_action_confirm_result(result: ActionConfirmResult) -> str:
             first = f"{first}: {status}"
     else:
         status = sanitize_terminal_field(
-            str(result.status_reason or result.reason or result.status or "").strip()
+            str(result.reason or result.status_reason or result.status or "").strip()
         )
         first = f"Confirmation failed for {confirmation_id}"
         if status:
             first = f"{first}: {status}"
     lines = [first]
+    if (
+        not result.confirmed
+        and result.reason
+        and result.status_reason
+        and result.reason != result.status_reason
+    ):
+        lines.append(f"status_reason={sanitize_terminal_field(result.status_reason)}")
     if not result.confirmed and result.retry_after_seconds is not None:
         retry_after = sanitize_terminal_field(str(result.retry_after_seconds))
         lines.append(f"retry_after_seconds={retry_after}")
@@ -2338,11 +2345,20 @@ def action_confirm(
             existing_row is not None
             and (existing_row.lifecycle_state or existing_row.status).lower() != "pending"
         ):
-            synthetic_result = _synthetic_pending_confirm_result(existing_row)
+            terminal_result = rpc_call(
+                config,
+                "action.confirm",
+                {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": (existing_row.decision_nonce or "").strip(),
+                    "reason": reason,
+                },
+                response_model=ActionConfirmResult,
+            )
             click.echo(
-                _dump_model(synthetic_result)
+                _dump_model(terminal_result)
                 if output_json
-                else _render_action_confirm_result(synthetic_result)
+                else _render_action_confirm_result(terminal_result)
             )
             return
         raise click.ClickException(
