@@ -539,7 +539,11 @@ class _QueuePendingHarness(HandlerImplementation):
 
 
 def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> PendingAction:
-    envelope = _software_approval_envelope(tool_name=ToolName("web.search"))
+    created_at = datetime.now(UTC)
+    expires_at = created_at + timedelta(hours=1)
+    envelope = _software_approval_envelope(tool_name=ToolName("web.search")).model_copy(
+        update={"expires_at": expires_at}
+    )
     return PendingAction(
         confirmation_id="c-1",
         decision_nonce=nonce,
@@ -550,10 +554,11 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         arguments={"query": "hello"},
         reason="manual",
         capabilities={Capability.HTTP_REQUEST},
-        created_at=datetime.now(UTC),
+        created_at=created_at,
         execute_after=execute_after,
         approval_envelope=envelope,
         approval_envelope_hash=approval_envelope_hash(envelope),
+        expires_at=expires_at,
         selected_backend_id="software.default",
         selected_backend_method="software",
     )
@@ -903,6 +908,119 @@ def test_f1_pending_action_identity_survives_restart(tmp_path: Path) -> None:
     assert after["lifecycle_state"] == "pending"
 
 
+def test_f2_queue_applies_default_and_caps_explicit_approval_lifetime(
+    tmp_path: Path,
+) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+
+    default_lifetime = harness._queue_pending_action(
+        session_id=SessionId("s-default-lifetime"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "default lifetime"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    capped_lifetime = harness._queue_pending_action(
+        session_id=SessionId("s-capped-lifetime"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "capped lifetime"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        confirmation_requirement=ConfirmationRequirement(
+            timeout_seconds=7 * 24 * 60 * 60,
+        ),
+    )
+
+    assert default_lifetime.expires_at is not None
+    assert default_lifetime.expires_at - default_lifetime.created_at == timedelta(hours=1)
+    assert capped_lifetime.expires_at is not None
+    assert capped_lifetime.expires_at - capped_lifetime.created_at == timedelta(hours=24)
+
+
+def test_f2_legacy_null_expiry_is_terminal_and_invalidates_nonce_on_restart(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="legacy-reusable-nonce")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload["expires_at"] = ""
+    approval_envelope = payload.get("approval_envelope")
+    assert isinstance(approval_envelope, dict)
+    approval_envelope["expires_at"] = None
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    public = HandlerImplementation._pending_to_dict(loaded, public=True)
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_expired"
+    assert loaded.decision_nonce == ""
+    assert loaded.expires_at is not None
+    assert loaded.expires_at <= datetime.now(UTC)
+    assert public["lifecycle_state"] == "expired"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["decision_nonce"] == ""
+    assert persisted["status_reason"] == "approval_expired"
+    assert persisted["expires_at"]
+
+
+def test_f2_load_expired_task_action_reconciles_scheduler_shadow_once(
+    tmp_path: Path,
+) -> None:
+    scheduler = SchedulerManager(storage_dir=tmp_path / "scheduler")
+    task = scheduler.create_task(
+        name="reminder:legacy-expiry",
+        goal="Reminder: legacy expiry",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        max_runs=1,
+    )
+    task.trigger_count = 1
+    pending = _pending_action(nonce="legacy-task-nonce")
+    pending.task_id = task.id
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload["expires_at"] = ""
+    approval_envelope = payload.get("approval_envelope")
+    assert isinstance(approval_envelope, dict)
+    approval_envelope["expires_at"] = None
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    scheduler.queue_confirmation(
+        task.id,
+        {
+            "confirmation_id": pending.confirmation_id,
+            "task_id": task.id,
+            "status": "pending",
+            "lifecycle_state": "pending",
+            "expires_at": "",
+        },
+    )
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    harness._scheduler = scheduler
+
+    harness._load_pending_actions()
+
+    shadow = scheduler._pending_confirmations[task.id][0]
+    assert shadow["status"] == "failed"
+    assert shadow["lifecycle_state"] == "expired"
+    assert shadow["status_reason"] == "approval_expired"
+    assert shadow["run_outcome_recorded"] is True
+    assert task.failure_count == 1
+
+
 @pytest.mark.parametrize("status_reason", ["task_disabled", "max_runs_reached"])
 def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     tmp_path: Path,
@@ -927,7 +1045,7 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     assert loaded.decision_nonce == ""
 
 
-def test_f1_legacy_live_pending_nonce_backfill_is_persisted(tmp_path: Path) -> None:
+def test_f1_live_pending_with_expiry_nonce_backfill_is_persisted(tmp_path: Path) -> None:
     pending = _pending_action(nonce="")
     payload = HandlerImplementation._pending_to_dict(pending)
     pending_actions_file = tmp_path / "pending_actions.json"
@@ -1164,6 +1282,11 @@ async def test_a1_action_pending_suppresses_webauthn_link_when_expired(
 
     assert result["count"] == 1
     action = result["actions"][0]
+    assert action["age_seconds"] >= 0
+    assert action["created_at"]
+    assert action["expires_at"]
+    assert action["origin_turn_id"] == pending.origin_turn_id
+    assert action["decision_nonce"] == ""
     entry = ActionPendingEntry.model_validate(action)
     assert entry.lifecycle_state == "expired"
     assert entry.status_reason == "approval_expired"

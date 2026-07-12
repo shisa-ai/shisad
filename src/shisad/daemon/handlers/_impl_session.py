@@ -6015,6 +6015,24 @@ def _discord_pending_guidance_lines(
     ]
 
 
+def _pending_action_lifetime_metadata(pending: Any) -> str:
+    """Render structural action lifetime/origin fields for confirmation cards."""
+
+    state_view = pending_action_state_view(pending)
+    fields = [
+        f"status={state_view.lifecycle_state}",
+        f"age_seconds={state_view.age_seconds()}",
+        f"created_at={state_view.created_at.isoformat()}",
+    ]
+    if state_view.expires_at is not None:
+        fields.append(f"expires_at={state_view.expires_at.isoformat()}")
+    if state_view.identity.origin_turn_id:
+        fields.append(f"origin_turn={state_view.identity.origin_turn_id}")
+    if state_view.status_reason:
+        fields.append(f"state_reason={state_view.status_reason}")
+    return " ".join(fields)
+
+
 def _discord_pending_confirmation_response_text(
     *,
     indexed_confirmation_ids: Sequence[str],
@@ -6055,6 +6073,11 @@ def _discord_pending_confirmation_response_text(
                 f"ID: {_markdown_code_span(confirmation_id)}",
             ]
         )
+        if pending is not None:
+            lines.append(
+                "Lifecycle: "
+                + _markdown_code_span(_pending_action_lifetime_metadata(pending))
+            )
         _ = pending_number, allow_chat_approval, totp_guidance_ids, single_totp_confirmation_id
         component_available = (
             confirmation_id in discord_component_confirmation_ids
@@ -6189,6 +6212,8 @@ def _daemon_pending_confirmation_response_text(
             pending_number = pending_index_by_id.get(confirmation_id, pending_number)
         pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
         lines.append(f"{pending_number}. {confirmation_id}")
+        if pending is not None:
+            lines.append(f"   {_pending_action_lifetime_metadata(pending)}")
         if pending is not None and _pending_uses_totp(pending):
             if confirmation_id in totp_guidance_ids:
                 if single_totp_confirmation_id == confirmation_id:

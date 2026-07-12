@@ -145,6 +145,17 @@ class ActionStateView:
     def is_live_pending(self) -> bool:
         return self.lifecycle_state == "pending"
 
+    def age_seconds(self, *, now: datetime | None = None) -> int:
+        """Return nonnegative whole seconds since the action was created."""
+
+        current = now or datetime.now(self.created_at.tzinfo or UTC)
+        created_at = self.created_at
+        if created_at.tzinfo is None and current.tzinfo is not None:
+            current = current.replace(tzinfo=None)
+        elif created_at.tzinfo is not None and current.tzinfo is None:
+            current = current.replace(tzinfo=created_at.tzinfo)
+        return max(0, int((current - created_at).total_seconds()))
+
 
 def derive_legacy_action_id(
     *,

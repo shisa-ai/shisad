@@ -77,6 +77,13 @@ the originating session, task-envelope ID, confirmation ID, decision nonce,
 and timestamp. Approval is evidence about *who approved what*, not a trust
 upgrade for the underlying content.
 
+Pending approval authority is time-bounded in the supported profile: 1 hour by
+default and at most 24 hours, including when a policy requests a longer window.
+Legacy pending rows without an expiry are terminalized on first post-upgrade
+load and their old decision nonce is invalidated. The action must be requested
+again; a TOTP window or approval-web link lifetime is a separate challenge or
+capability deadline and cannot extend the pending action.
+
 **8. Context control is a first-class security primitive.** Because we construct the LLM's context each turn, we can choose exactly what the model sees — and more importantly, what it *doesn't* see. This is unique to LLM-based systems and has no equivalent in traditional software. Evidence references are the primary application: large untrusted content (web pages, email bodies, tool output) is stored out-of-band in a content-addressed evidence store, and the LLM receives only an opaque reference stub with metadata. The raw tainted content never enters the conversation history, so it cannot persist as an injection surface across turns. When the model needs to re-examine content, it makes an explicit `evidence.read` tool call — which goes through PEP enforcement and returns content into a single-turn isolated context, not the persistent transcript. This turns the usual LLM limitation (no persistent memory) into a security advantage: we can quarantine, exclude, or replace any piece of context at any time, and the model cannot tell the difference.
 
 ---

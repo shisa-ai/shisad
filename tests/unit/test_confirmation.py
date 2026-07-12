@@ -20,6 +20,7 @@ from shisad.ui.confirmation import (
     render_structured_confirmation,
     safe_summary,
 )
+from shisad.ui.tui import _safe_pending_action_rows
 
 
 def test_m6_t1_safe_summary_generator_escapes_user_content() -> None:
@@ -305,6 +306,40 @@ def test_f1_pending_action_renderer_uses_canonical_lifecycle_projection() -> Non
 
     assert "status=superseded" in rendered
     assert "status=pending" not in rendered
+
+
+def test_f2_pending_action_renderer_surfaces_lifetime_and_origin() -> None:
+    action = {
+        "confirmation_id": "c1",
+        "tool_name": "web.fetch",
+        "status": "failed",
+        "lifecycle_state": "expired",
+        "status_reason": "approval_expired",
+        "risk_level": "high",
+        "required_proof_tier": "T0_identity",
+        "selected_backend_method": "software",
+        "created_at": "2026-07-12T10:00:00+00:00",
+        "age_seconds": 90,
+        "expires_at": "2026-07-12T11:00:00+00:00",
+        "origin_turn_id": "turn-42",
+        "channel_capability": {
+            "approval_route": "host_cli",
+            "can_carry": False,
+            "can_reject": False,
+            "cannot_carry_reason": "approval_expired",
+        },
+    }
+
+    safe_row = _safe_pending_action_rows([action])[0]
+    rendered = render_pending_action(safe_row)
+
+    assert safe_row["age_seconds"] == 90
+    assert safe_row["expires_at"] == "2026-07-12T11:00:00+00:00"
+    assert safe_row["status_reason"] == "approval_expired"
+    assert "age=90s" in rendered
+    assert "expires_at=2026-07-12T11:00:00+00:00" in rendered
+    assert "origin_turn=turn-42" in rendered
+    assert "state_reason=approval_expired" in rendered
 
 
 def test_pending_action_renderer_shows_selected_totp_collection_for_t0_fallback() -> None:

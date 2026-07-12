@@ -1938,6 +1938,20 @@ def _render_action_rows(
             f"{confirmation_id} nonce={nonce_value} status={status_value} "
             f"tool={tool_name} reason={reason_value}"
         )
+        lifetime_parts = [f"age={max(0, int(row.age_seconds))}s"]
+        created_at = sanitize_terminal_field(row.created_at or "")
+        if created_at:
+            lifetime_parts.append(f"created_at={created_at}")
+        expires_at = sanitize_terminal_field(row.expires_at or "")
+        if expires_at:
+            lifetime_parts.append(f"expires_at={expires_at}")
+        origin_turn_id = sanitize_terminal_field(row.origin_turn_id or "")
+        if origin_turn_id:
+            lifetime_parts.append(f"origin_turn={origin_turn_id}")
+        status_reason = sanitize_terminal_field(row.status_reason or "")
+        if status_reason:
+            lifetime_parts.append(f"state_reason={status_reason}")
+        click.echo(" ".join(lifetime_parts))
         preview = sanitize_terminal_text(row.safe_preview or "").strip()
         if preview:
             click.echo(preview)

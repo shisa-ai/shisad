@@ -72,6 +72,17 @@ audit trails. Use the level that matches the risk of the action.
    the action.
 
 If you do not respond before the timeout, the action is denied (fail-closed).
+The supported pending-action lifetime is 1 hour by default. A policy may set a
+shorter or longer `timeout_seconds`, but the effective lifetime is capped at 24
+hours. Pending rows from older releases that have no expiry are marked expired
+on their first post-upgrade load, their decision nonce is invalidated, and the
+action must be requested again.
+
+The pending-action deadline is separate from TOTP code windows, enrollment
+deadlines, and approval-web capability-link TTLs. Issuing or refreshing a link
+does not extend the action's deadline. `shisad action list` shows canonical
+state, age, creation/expiry timestamps, origin turn, and terminal state reason
+so an operator can distinguish an expired action from a live approval request.
 
 ### What is a "factor"
 
@@ -578,7 +589,7 @@ policy does not allow a fallback level, the action is denied.
 | `SHISAD_APPROVAL_RP_ID` | Derived from `SHISAD_APPROVAL_ORIGIN` hostname |
 | `SHISAD_APPROVAL_BIND_HOST` | `127.0.0.1` (or derived from origin for loopback) |
 | `SHISAD_APPROVAL_BIND_PORT` | `8787` (or derived from origin for loopback) |
-| `SHISAD_APPROVAL_LINK_TTL_SECONDS` | Default link expiry for registration and approval links |
+| `SHISAD_APPROVAL_LINK_TTL_SECONDS` | Default capability-link expiry for registration and browser approval links; it does not extend the pending action's 1-hour default / 24-hour maximum lifetime |
 | `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` | Default rate-limit window for ceremony POST attempts |
 | `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS` | Default max attempts per rate-limit window |
 | `SHISAD_SIGNER_KMS_BEARER_TOKEN` | No bearer token sent to KMS endpoint |

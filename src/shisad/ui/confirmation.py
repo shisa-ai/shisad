@@ -188,6 +188,25 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
         f"{confirmation_id} tool={tool_name} status={status}",
         f"risk={risk_level} proof={proof_tier} method={selected_method} route={route}",
     ]
+    lifetime_parts: list[str] = []
+    try:
+        age_seconds = max(0, int(action.get("age_seconds", 0) or 0))
+    except (TypeError, ValueError):
+        age_seconds = 0
+    lifetime_parts.append(f"age={age_seconds}s")
+    created_at = str(action.get("created_at", "")).strip()
+    if created_at:
+        lifetime_parts.append(f"created_at={created_at}")
+    expires_at = str(action.get("expires_at", "")).strip()
+    if expires_at:
+        lifetime_parts.append(f"expires_at={expires_at}")
+    origin_turn_id = str(action.get("origin_turn_id", "")).strip()
+    if origin_turn_id:
+        lifetime_parts.append(f"origin_turn={origin_turn_id}")
+    status_reason = str(action.get("status_reason", "")).strip()
+    if status_reason:
+        lifetime_parts.append(f"state_reason={status_reason}")
+    lines.append(" ".join(lifetime_parts))
     if can_carry or can_collect_inline_totp:
         if requires_second_factor:
             proof_placeholder = approval_proof_placeholder(selected_method)

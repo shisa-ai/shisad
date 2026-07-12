@@ -83,6 +83,41 @@ def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthroug
     )
 
 
+@pytest.mark.parametrize("delivery_channel", ["slack", "discord"])
+def test_f2_pending_confirmation_response_surfaces_lifetime_and_origin(
+    delivery_channel: str,
+) -> None:
+    created_at = datetime.now(UTC) - timedelta(seconds=90)
+    expires_at = created_at + timedelta(hours=1)
+    pending = PendingAction(
+        confirmation_id="c-f2-lifetime",
+        decision_nonce="nonce-f2-lifetime",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://example.test"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=created_at,
+        expires_at=expires_at,
+        origin_turn_id="turn-f2-lifetime",
+        safe_preview="Fetch example.test",
+    )
+
+    response = _daemon_pending_confirmation_response_text(
+        pending_confirmation_ids=[pending.confirmation_id],
+        pending_actions={pending.confirmation_id: pending},
+        binding_pending_rows=[pending],
+        delivery_channel=delivery_channel,
+    )
+
+    assert "age_seconds=" in response
+    assert expires_at.isoformat() in response
+    assert "turn-f2-lifetime" in response
+    assert "pending" in response.casefold()
+
+
 def test_f1_pending_continuation_scope_requires_origin_and_exact_delivery_target() -> None:
     target = DeliveryTarget(channel="discord", recipient="chan-1")
     other_target = DeliveryTarget(channel="discord", recipient="chan-2")

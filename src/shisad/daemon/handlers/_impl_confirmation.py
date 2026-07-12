@@ -391,6 +391,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> None:
         pending.status = "failed"
         pending.status_reason = reason
+        pending.decision_nonce = ""
         self._sync_task_confirmation_status(pending)
         self._record_task_confirmation_failure(pending)
         if persist:
@@ -1226,6 +1227,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 continue
             if session_filter and str(item.session_id) != session_filter:
                 continue
+            if (
+                str(getattr(item, "status", "")).strip().lower() == "pending"
+                and pending_action_state_view(item).lifecycle_state == "expired"
+            ):
+                self._mark_stale_pending_action(item, reason="approval_expired")
             state_view = pending_action_state_view(item)
             expected_lifecycle = "executed" if status_filter == "approved" else status_filter
             if (
@@ -1517,11 +1523,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         expires_at = getattr(pending, "expires_at", None)
         if expires_at is None or expires_at > datetime.now(UTC):
             return None
-        pending.status = "failed"
-        pending.status_reason = "approval_expired"
-        self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_failure(pending)
-        self._persist_pending_actions()
+        self._mark_stale_pending_action(pending, reason="approval_expired")
         return {
             decision_field: False,
             "confirmation_id": confirmation_id,
@@ -1545,10 +1547,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
             }
         if pending.status != "pending":
             state_view = pending_action_state_view(pending)
+            reason = (
+                "approval_expired"
+                if state_view.lifecycle_state == "expired"
+                else f"already_{pending.status}"
+            )
             return {
                 decision_field: False,
                 "confirmation_id": confirmation_id,
-                "reason": f"already_{pending.status}",
+                "reason": reason,
                 "status": pending.status,
                 "status_reason": str(getattr(pending, "status_reason", "")),
                 "lifecycle_state": state_view.lifecycle_state,

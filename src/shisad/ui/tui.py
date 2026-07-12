@@ -389,6 +389,10 @@ def _safe_pending_action_rows(raw_actions: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(item, Mapping):
             continue
         capability = item.get("channel_capability", {})
+        try:
+            age_seconds = max(0, int(item.get("age_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            age_seconds = 0
         rows.append(
             {
                 "confirmation_id": str(item.get("confirmation_id", "")),
@@ -403,7 +407,11 @@ def _safe_pending_action_rows(raw_actions: list[Any]) -> list[dict[str, Any]]:
                 "tool_name": str(item.get("tool_name", "")),
                 "status": str(item.get("status", "")),
                 "lifecycle_state": str(item.get("lifecycle_state", "")),
+                "status_reason": str(item.get("status_reason", "")),
                 "created_at": str(item.get("created_at", "")),
+                "age_seconds": age_seconds,
+                "expires_at": str(item.get("expires_at", "")),
+                "origin_channel": str(item.get("origin_channel", "")),
                 "risk_level": str(item.get("risk_level", "")),
                 "required_proof_tier": str(item.get("required_proof_tier", "")),
                 "required_level": str(item.get("required_level", "")),

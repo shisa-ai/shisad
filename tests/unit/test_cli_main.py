@@ -5274,6 +5274,11 @@ def test_action_pending_sanitizes_terminal_preview_output(
                     "lifecycle_state": "expired",
                     "tool_name": "shell.exec\x1b[31m",
                     "reason": "manual_review",
+                    "status_reason": "approval_expired",
+                    "created_at": "2026-07-12T10:00:00+00:00",
+                    "age_seconds": 90,
+                    "expires_at": "2026-07-12T11:00:00+00:00",
+                    "origin_turn_id": "turn-42",
                     "safe_preview": "preview line\rsecond line\x1b[31m",
                 }
             ],
@@ -5293,6 +5298,10 @@ def test_action_pending_sanitizes_terminal_preview_output(
     assert "c-1 nonce=n-" in result.output
     assert "status=expired" in result.output
     assert "tool=shell.exec" in result.output
+    assert "age=90s" in result.output
+    assert "expires_at=2026-07-12T11:00:00+00:00" in result.output
+    assert "origin_turn=turn-42" in result.output
+    assert "state_reason=approval_expired" in result.output
     assert "preview line\nsecond line" in result.output
 
 

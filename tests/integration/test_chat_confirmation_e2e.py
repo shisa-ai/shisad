@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core.api.schema import (
+    ActionDecisionParams,
     ActionPendingParams,
     AuditQueryParams,
     ChannelIngestParams,
@@ -99,6 +100,99 @@ def _install_totp_fs_read_planner(
         )
 
     monkeypatch.setattr(Planner, "propose", _planner_fs_read)
+
+
+@pytest.mark.asyncio
+async def test_pending_action_expiry_and_legacy_null_do_not_revive_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    _install_totp_fs_read_planner(
+        monkeypatch,
+        target_path=README_PATH,
+        marker="f2-legacy-null",
+    )
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_software_fs_read_policy(), encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+        log_level="INFO",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=services)
+        ctx = RequestContext()
+        created = await handlers.handle_session_create(
+            SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
+            ctx,
+        )
+        queued = await handlers.handle_session_message(
+            SessionMessageParams(
+                session_id=created.session_id,
+                content="queue an approval that predates bounded lifetimes",
+            ),
+            ctx,
+        )
+        confirmation_id = str(queued.pending_confirmation_ids[0])
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(confirmation_id=confirmation_id),
+            ctx,
+        )
+        legacy_nonce = pending.actions[0].decision_nonce
+        assert legacy_nonce
+    finally:
+        await services.shutdown()
+
+    pending_path = config.data_dir / "pending_actions.json"
+    raw = json.loads(pending_path.read_text(encoding="utf-8"))
+    row = next(item for item in raw if item["confirmation_id"] == confirmation_id)
+    row["expires_at"] = ""
+    row["approval_envelope"]["expires_at"] = None
+    pending_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        ctx = RequestContext()
+        expired = await handlers.handle_action_pending(
+            ActionPendingParams(confirmation_id=confirmation_id, status="expired"),
+            ctx,
+        )
+        assert expired.count == 1
+        expired_row = expired.actions[0]
+        assert expired_row.lifecycle_state == "expired"
+        assert expired_row.status_reason == "approval_expired"
+        assert expired_row.decision_nonce == ""
+        assert expired_row.expires_at
+
+        stale_decision = await handlers.handle_action_confirm(
+            ActionDecisionParams(
+                confirmation_id=confirmation_id,
+                decision_nonce=legacy_nonce,
+                reason="must not revive after restart",
+            ),
+            ctx,
+        )
+        assert stale_decision.confirmed is False
+        assert stale_decision.reason == "approval_expired"
+        assert stale_decision.lifecycle_state == "expired"
+    finally:
+        await restarted.shutdown()
+
+    persisted = json.loads(pending_path.read_text(encoding="utf-8"))
+    persisted_row = next(
+        item for item in persisted if item["confirmation_id"] == confirmation_id
+    )
+    assert persisted_row["decision_nonce"] == ""
+    assert persisted_row["status_reason"] == "approval_expired"
+    assert persisted_row["expires_at"]
 
 
 def _totp_fs_read_policy() -> str:

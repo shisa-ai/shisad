@@ -46,6 +46,20 @@ from shisad.security.credentials import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PENDING_ACTION_TTL_SECONDS = 60 * 60
+MAX_PENDING_ACTION_TTL_SECONDS = 24 * 60 * 60
+
+
+def effective_pending_action_ttl_seconds(timeout_seconds: int | None) -> int:
+    """Return the supported bounded lifetime for one pending approval action."""
+
+    requested = (
+        DEFAULT_PENDING_ACTION_TTL_SECONDS
+        if timeout_seconds is None
+        else max(1, int(timeout_seconds))
+    )
+    return min(requested, MAX_PENDING_ACTION_TTL_SECONDS)
+
 
 def _default_origin_port(scheme: str) -> int | None:
     normalized = scheme.strip().lower()

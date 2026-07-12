@@ -1896,6 +1896,7 @@ class ActionPendingEntry(BaseModel):
     risk_level: str = ""
     capabilities: list[str] = Field(default_factory=list)
     created_at: str = ""
+    age_seconds: int = 0
     execute_after: str | None = None
     safe_preview: str | None = None
     warnings: list[str] = Field(default_factory=list)

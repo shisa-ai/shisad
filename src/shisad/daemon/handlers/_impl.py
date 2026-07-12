@@ -60,6 +60,7 @@ from shisad.core.approval import (
     approval_envelope_hash,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
+    effective_pending_action_ttl_seconds,
     intent_envelope_hash,
     legacy_software_confirmation_requirement,
     new_approval_nonce,
@@ -2978,6 +2979,7 @@ class HandlerImplementation(
             "risk_level": risk_level,
             "capabilities": sorted(cap.value for cap in pending.capabilities),
             "created_at": pending.created_at.isoformat(),
+            "age_seconds": state_view.age_seconds(),
             "delivery_target": (
                 pending.delivery_target.model_dump(mode="json")
                 if pending.delivery_target is not None
@@ -3297,10 +3299,8 @@ class HandlerImplementation(
         execute_after: datetime | None = None
         if self._is_high_risk_confirmation(tool_name, arguments):
             execute_after = created_at + timedelta(seconds=3)
-        expires_at = (
-            created_at + timedelta(seconds=int(requirement.timeout_seconds))
-            if requirement.timeout_seconds is not None
-            else None
+        expires_at = created_at + timedelta(
+            seconds=effective_pending_action_ttl_seconds(requirement.timeout_seconds)
         )
         session = self._session_manager.get(session_id)
         normalized_arguments = pep_arguments_for_policy_evaluation(tool_name, arguments)
@@ -3523,6 +3523,7 @@ class HandlerImplementation(
         migrated_legacy_channel_principal = False
         migrated_legacy_action_identity = False
         migrated_legacy_decision_nonce = False
+        migrated_expired_approval = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -3557,6 +3558,7 @@ class HandlerImplementation(
                 )
                 expires_at_raw = str(item.get("expires_at", "")).strip()
                 expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
+                legacy_null_expiry = not expires_at_raw
                 pep_context_payload = item.get("pep_context")
                 pep_context = (
                     pending_pep_context_from_payload(pep_context_payload)
@@ -3626,6 +3628,8 @@ class HandlerImplementation(
                 loaded_status = str(item.get("status", "pending")).strip() or "pending"
                 loaded_status_reason = str(item.get("status_reason", "")).strip()
                 loaded_decision_nonce = str(item.get("decision_nonce", "")).strip()
+                if legacy_null_expiry and loaded_status == "pending":
+                    expires_at = datetime.now(UTC) - timedelta(microseconds=1)
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=loaded_decision_nonce,
@@ -3718,6 +3722,16 @@ class HandlerImplementation(
             except (TypeError, ValueError, ValidationError):
                 continue
             if (
+                pending.status == "pending"
+                and pending_action_state_view(pending).lifecycle_state == "expired"
+            ):
+                self._mark_stale_pending_action(
+                    pending,
+                    reason="approval_expired",
+                    persist=False,
+                )
+                migrated_expired_approval = True
+            if (
                 not pending.strip_direct_tool_execute_envelope_keys
                 and pending.should_strip_direct_tool_execute_envelope_keys()
             ):
@@ -3781,6 +3795,7 @@ class HandlerImplementation(
             or migrated_legacy_channel_principal
             or migrated_legacy_action_identity
             or migrated_legacy_decision_nonce
+            or migrated_expired_approval
         ):
             self._persist_pending_actions()
 
