@@ -1414,16 +1414,34 @@ class ConfirmationImplMixin(HandlerMixinBase):
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
         waited_for_short_cooldown = False
         while True:
-            lock = self._action_confirmation_lock(confirmation_id)
+            pending = self._pending_actions.get(confirmation_id)
+            task_id = str(getattr(pending, "task_id", "")).strip()
+            task_lock = self._task_lifecycle_lock(task_id) if task_id else None
+            confirmation_lock = self._action_confirmation_lock(confirmation_id)
+            task_lock_acquired = False
+            confirmation_lock_acquired = False
             try:
-                async with lock:
-                    result = await self._do_action_confirm_locked(
-                        params,
-                        confirmation_id=confirmation_id,
-                        allow_short_cooldown_wait=not waited_for_short_cooldown,
-                    )
+                if task_lock is not None:
+                    await task_lock.acquire()
+                    task_lock_acquired = True
+                await confirmation_lock.acquire()
+                confirmation_lock_acquired = True
+                result = await self._do_action_confirm_locked(
+                    params,
+                    confirmation_id=confirmation_id,
+                    allow_short_cooldown_wait=not waited_for_short_cooldown,
+                )
             finally:
-                self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
+                if confirmation_lock_acquired:
+                    confirmation_lock.release()
+                self._discard_action_confirmation_lock_if_idle(
+                    confirmation_id,
+                    confirmation_lock,
+                )
+                if task_lock is not None:
+                    if task_lock_acquired:
+                        task_lock.release()
+                    self._discard_task_lifecycle_lock_if_idle(task_id, task_lock)
             wait_seconds_raw = result.pop(_CONFIRMATION_INTERNAL_SHORT_WAIT_KEY, None)
             if wait_seconds_raw is None:
                 pending = self._pending_actions.get(confirmation_id)
@@ -2329,21 +2347,39 @@ class ConfirmationImplMixin(HandlerMixinBase):
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
-        if self._pending_actions.get(confirmation_id) is None:
+        pending = self._pending_actions.get(confirmation_id)
+        if pending is None:
             return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}
-        lock = self._action_confirmation_lock(confirmation_id)
+        task_id = str(getattr(pending, "task_id", "")).strip()
+        task_lock = self._task_lifecycle_lock(task_id) if task_id else None
+        confirmation_lock = self._action_confirmation_lock(confirmation_id)
+        task_lock_acquired = False
+        confirmation_lock_acquired = False
         try:
-            async with lock:
-                result = await self._do_action_reject_locked(
-                    params,
-                    confirmation_id=confirmation_id,
-                )
-                pending = self._pending_actions.get(confirmation_id)
-                if pending is not None:
-                    result.update(self._pending_action_response_identity_fields(pending))
-                return result
+            if task_lock is not None:
+                await task_lock.acquire()
+                task_lock_acquired = True
+            await confirmation_lock.acquire()
+            confirmation_lock_acquired = True
+            result = await self._do_action_reject_locked(
+                params,
+                confirmation_id=confirmation_id,
+            )
+            pending = self._pending_actions.get(confirmation_id)
+            if pending is not None:
+                result.update(self._pending_action_response_identity_fields(pending))
+            return result
         finally:
-            self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
+            if confirmation_lock_acquired:
+                confirmation_lock.release()
+            self._discard_action_confirmation_lock_if_idle(
+                confirmation_id,
+                confirmation_lock,
+            )
+            if task_lock is not None:
+                if task_lock_acquired:
+                    task_lock.release()
+                self._discard_task_lifecycle_lock_if_idle(task_id, task_lock)
 
     async def _do_action_reject_locked(
         self,

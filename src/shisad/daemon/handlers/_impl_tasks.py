@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Mapping
 from typing import Any, cast
@@ -100,28 +99,6 @@ def _join_reason_codes(*codes: str) -> str:
 
 
 class TasksImplMixin(HandlerMixinBase):
-    def _task_lifecycle_lock(self, task_id: str) -> asyncio.Lock:
-        locks = getattr(self, "_task_lifecycle_locks", None)
-        if not isinstance(locks, dict):
-            locks = {}
-            self._task_lifecycle_locks = locks
-        lock = locks.get(task_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            locks[task_id] = lock
-        return lock
-
-    def _discard_task_lifecycle_lock_if_idle(
-        self,
-        task_id: str,
-        lock: asyncio.Lock,
-    ) -> None:
-        if lock.locked() or bool(getattr(lock, "_waiters", None)):
-            return
-        locks = getattr(self, "_task_lifecycle_locks", None)
-        if isinstance(locks, dict) and locks.get(task_id) is lock:
-            locks.pop(task_id, None)
-
     async def _publish_task_anomaly(
         self,
         *,

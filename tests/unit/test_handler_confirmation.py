@@ -62,6 +62,7 @@ from shisad.core.types import (
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
+from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
@@ -3067,6 +3068,58 @@ async def test_f1_decision_race_observes_disabled_task_before_execution(
         if isinstance(event, ToolRejected) and event.reason == "task_disabled"
     ]
     assert len(cancelled) == 1
+
+
+@pytest.mark.asyncio
+async def test_f1_confirmation_and_disable_share_task_then_confirmation_lock_order(
+    tmp_path: Path,
+) -> None:
+    class _RaceHarness(_ConfirmationImplHarness, TasksImplMixin):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.execution_started = asyncio.Event()
+            self.release_execution = asyncio.Event()
+
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            self.execution_started.set()
+            await self.release_execution.wait()
+            return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+    harness = _RaceHarness(tmp_path)
+    scheduled_task = SimpleNamespace(id="task-1", enabled=True)
+
+    def _disable_task(_task_id: str) -> bool:
+        scheduled_task.enabled = False
+        return True
+
+    harness._scheduler = SimpleNamespace(
+        get_task=lambda _task_id: scheduled_task,
+        disable_task=_disable_task,
+        resolve_confirmation=lambda *_args, **_kwargs: True,
+        record_run_outcome=lambda *_args, **_kwargs: True,
+    )
+    pending = _pending_action(nonce="expected")
+    pending.task_id = "task-1"
+    harness._pending_actions["c-1"] = pending
+
+    confirm_task = asyncio.create_task(
+        harness.do_action_confirm({"confirmation_id": "c-1", "decision_nonce": "expected"})
+    )
+    await harness.execution_started.wait()
+    disable_task = asyncio.create_task(harness.do_task_disable({"task_id": "task-1"}))
+    await asyncio.sleep(0)
+
+    assert disable_task.done() is False
+    assert scheduled_task.enabled is True
+
+    harness.release_execution.set()
+
+    confirmed = await confirm_task
+    disabled = await disable_task
+    assert confirmed["confirmed"] is True
+    assert disabled == {"disabled": True, "task_id": "task-1"}
+    assert scheduled_task.enabled is False
+    assert len(harness.execution_kwargs) == 1
 
 
 @pytest.mark.asyncio
