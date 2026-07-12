@@ -449,6 +449,163 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         await restarted.shutdown()
 
 
+@pytest.mark.parametrize("producer", ["direct", "confirmed"])
+@pytest.mark.parametrize(
+    "corruption",
+    ["unrelated_metadata", "marker", "marker_and_identity"],
+)
+@pytest.mark.asyncio
+async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    producer: str,
+    corruption: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+
+    class _ProcessStopped(BaseException):
+        pass
+
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name=f"terminal-corruption-{producer}-{corruption}",
+            goal="Account one scheduled effect",
+            schedule=Schedule(kind="interval", expression="1s"),
+            capability_snapshot=(
+                {Capability.MESSAGE_SEND} if producer == "direct" else set()
+            ),
+            policy_snapshot_ref="terminal-corruption-recovery",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            allowed_recipients=["ops-room"] if producer == "direct" else [],
+            delivery_target=(
+                {"channel": "discord", "recipient": "ops-room"}
+                if producer == "direct"
+                else {}
+            ),
+            max_runs=1,
+        )
+
+        def _stop_before_accounting(
+            _task_id: str,
+            *,
+            confirmation_id: str,
+            success: bool,
+        ) -> bool:
+            _ = confirmation_id, success
+            raise _ProcessStopped("process stopped before scheduler accounting")
+
+        monkeypatch.setattr(
+            services.scheduler,
+            "record_confirmation_outcome",
+            _stop_before_accounting,
+        )
+
+        if producer == "direct":
+            runs = services.scheduler.trigger_due(
+                now=task.created_at + timedelta(seconds=2),
+            )
+            assert len(runs) == 1
+
+            async def _successful_effect(**_kwargs: object) -> ApprovedToolExecutionResult:
+                return ApprovedToolExecutionResult(success=True)
+
+            monkeypatch.setattr(impl, "_execute_approved_action", _successful_effect)
+            with pytest.raises(_ProcessStopped):
+                await impl._execute_task_run(
+                    runs[0],
+                    event_type="scheduler.due",
+                    due_run=True,
+                )
+            pending = next(
+                item for item in impl._pending_actions.values() if item.task_id == task.id
+            )
+        else:
+            pending = impl._queue_pending_action(
+                session_id=session_id,
+                user_id=session.user_id,
+                workspace_id=session.workspace_id,
+                tool_name=ToolName("time.now"),
+                arguments={"timezone": "UTC"},
+                reason="terminal-corruption-recovery",
+                capabilities=set(),
+                confirmation_requirement=legacy_software_confirmation_requirement(),
+                origin_turn_id=f"turn-terminal-corruption-{corruption}",
+                task_id=task.id,
+            )
+            services.scheduler.queue_confirmation(
+                task.id,
+                impl._pending_to_dict(pending, public=True),
+            )
+            with pytest.raises(_ProcessStopped):
+                await impl.do_action_confirm(
+                    {
+                        "confirmation_id": pending.confirmation_id,
+                        "decision_nonce": pending.decision_nonce,
+                    }
+                )
+
+        durable = next(
+            row
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
+            if row["confirmation_id"] == pending.confirmation_id
+        )
+        assert durable["status"] == "approved"
+        assert durable["scheduler_accounting_pending"] is True
+        interrupted_task = services.scheduler.get_task(task.id)
+        assert interrupted_task is not None
+        assert interrupted_task.success_count == 0
+        assert interrupted_task.enabled is True
+    finally:
+        await services.shutdown()
+
+    pending_path = config.data_dir / "pending_actions.json"
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+    durable = next(row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id)
+    if corruption in {"marker", "marker_and_identity"}:
+        durable["scheduler_accounting_pending"] = "not-a-boolean"
+    if corruption == "marker_and_identity":
+        durable["execution_attempt_id"] = ["not", "text"]
+        durable["result_id"] = ["not", "text"]
+        durable["identity"]["execution_attempt_id"] = ["not", "text"]
+        durable["identity"]["result_id"] = ["not", "text"]
+    elif corruption == "unrelated_metadata" and producer == "direct":
+        durable["preflight_action"] = "not-a-mapping"
+    elif corruption == "unrelated_metadata":
+        durable["confirmation_evidence"]["level"] = "not-a-confirmation-level"
+    pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        reconciled_task = restarted.scheduler.get_task(task.id)
+        assert reconciled_task is not None
+        if corruption == "marker_and_identity":
+            assert reconciled_task.success_count == 0
+            assert reconciled_task.failure_count == 1
+        else:
+            assert reconciled_task.success_count == 1
+            assert reconciled_task.failure_count == 0
+        assert reconciled_task.enabled is False
+        durable = next(
+            row
+            for row in json.loads(pending_path.read_text(encoding="utf-8"))
+            if row["confirmation_id"] == pending.confirmation_id
+        )
+        assert durable["scheduler_accounting_pending"] is False
+    finally:
+        await restarted.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_timestamp(
     tmp_path: Path,

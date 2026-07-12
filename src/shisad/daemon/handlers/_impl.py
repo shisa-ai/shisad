@@ -4295,7 +4295,6 @@ class HandlerImplementation(
             if recovery_authority_invalid:
                 pruned_stale = True
                 pending.recovery_accounting_pending = False
-                pending.scheduler_accounting_pending = False
                 if pending.status == "outcome_unknown":
                     pending.status_reason = "uncertain_effect_requires_fresh_approval"
                     pending.decision_nonce = ""
@@ -4303,6 +4302,22 @@ class HandlerImplementation(
                     pending.status = "failed"
                     pending.status_reason = "pending_state_metadata_invalid"
                     pending.decision_nonce = ""
+                scheduled_terminal = (
+                    bool(pending.task_id.strip())
+                    and pending.status in {"approved", "failed", "outcome_unknown"}
+                )
+                scheduled_terminal_attempt = (
+                    scheduled_terminal
+                    and bool(pending.execution_attempt_id.strip())
+                    and bool(pending.result_id.strip())
+                )
+                if scheduled_terminal_attempt:
+                    pending.scheduler_accounting_pending = True
+                elif scheduled_terminal or pending.scheduler_accounting_pending:
+                    pending.status = "outcome_unknown"
+                    pending.status_reason = "uncertain_effect_requires_fresh_approval"
+                    pending.decision_nonce = ""
+                    pending.scheduler_accounting_pending = False
             if (
                 pending.status == "pending"
                 and pending_action_state_view(pending).lifecycle_state == "expired"

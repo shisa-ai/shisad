@@ -29,6 +29,7 @@ class ActionHistoryRecord(BaseModel, frozen=True):
     reason_code: str = ""
     source: str = ""
     idempotency_key: str = ""
+    trace_plan_hash: str = ""
 
 
 class SessionActionHistoryStore:
@@ -71,6 +72,7 @@ class SessionActionHistoryStore:
         reason_code: str = "",
         source: str = "",
         idempotency_key: str = "",
+        trace_plan_hash: str = "",
     ) -> bool:
         record = ActionHistoryRecord(
             timestamp=action.timestamp,
@@ -85,8 +87,15 @@ class SessionActionHistoryStore:
             reason_code=reason_code,
             source=source,
             idempotency_key=idempotency_key.strip(),
+            trace_plan_hash=trace_plan_hash.strip(),
         )
         return self.append(record)
+
+    def idempotent_record(self, idempotency_key: str) -> ActionHistoryRecord | None:
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            return None
+        return self._idempotent_records.get(normalized_key)
 
     def append_denied_action(
         self,

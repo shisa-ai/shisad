@@ -323,9 +323,13 @@ class ExecutionTraceVerifier:
         *,
         session_id: str,
         idempotency_key: str = "",
+        expected_plan_hash: str = "",
     ) -> None:
         plan = self._plans.get(session_id)
         if plan is None:
+            return
+        normalized_plan_hash = expected_plan_hash.strip()
+        if normalized_plan_hash and plan.plan_hash != normalized_plan_hash:
             return
         normalized_key = idempotency_key.strip()
         if normalized_key and normalized_key in plan.recorded_action_keys:
@@ -344,9 +348,13 @@ class ExecutionTraceVerifier:
         session_id: str,
         action: ControlPlaneAction,
         idempotency_key: str = "",
+        expected_plan_hash: str = "",
     ) -> None:
         plan = self._plans.get(session_id)
         if plan is None:
+            return
+        normalized_plan_hash = expected_plan_hash.strip()
+        if normalized_plan_hash and plan.plan_hash != normalized_plan_hash:
             return
         if not self._tdg_enforcement_applies(action):
             return

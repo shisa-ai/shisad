@@ -46,21 +46,27 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("failed_trace_write", [1, 2])
+@pytest.mark.parametrize("replace_plan_before_replay", [False, True])
 @pytest.mark.asyncio
 async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     failed_trace_write: int,
+    replace_plan_before_replay: bool,
 ) -> None:
-    data_dir = tmp_path / f"cp-f2-sidecar-trace-{failed_trace_write}"
+    data_dir = tmp_path / (
+        f"cp-f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
+    )
     engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
     origin = Origin(
-        session_id=f"sess-f2-sidecar-trace-{failed_trace_write}",
+        session_id=(
+            f"sess-f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
+        ),
         user_id="alice",
         workspace_id="ws-f2",
         actor="recovery",
     )
-    engine.begin_precontent_plan(
+    original_plan_hash = engine.begin_precontent_plan(
         session_id=origin.session_id,
         goal=f"read {tmp_path / 'source.txt'}",
         origin=origin,
@@ -87,7 +93,9 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
         real_persist()
 
     monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
-    idempotency_key = f"f2-sidecar-trace-{failed_trace_write}"
+    idempotency_key = (
+        f"f2-sidecar-trace-{failed_trace_write}-{replace_plan_before_replay}"
+    )
     params = _RecordExecutionParams(
         action=action,
         success=True,
@@ -95,6 +103,16 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
     )
     with pytest.raises(OSError, match="sidecar trace persistence interruption"):
         await handlers.handle_record_execution(params, RequestContext())
+
+    if replace_plan_before_replay:
+        engine.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal=f"read {tmp_path / 'replacement.txt'}",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=5,
+            capabilities={Capability.FILE_READ},
+        )
 
     await handlers.handle_record_execution(params, RequestContext())
 
@@ -104,8 +122,13 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
     )
     plan = reloaded.active_plan(origin.session_id)
     assert plan is not None
-    assert plan.executed_actions == 1
-    assert set(action.resource_ids).issubset(plan.reachable_resources)
+    if replace_plan_before_replay:
+        assert plan.plan_hash != original_plan_hash
+        assert plan.executed_actions == 0
+        assert set(action.resource_ids).isdisjoint(plan.reachable_resources)
+    else:
+        assert plan.executed_actions == 1
+        assert set(action.resource_ids).issubset(plan.reachable_resources)
     execution_rows = [
         json.loads(line)
         for line in (data_dir / "control_plane" / "history.jsonl")
@@ -115,6 +138,7 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
     ]
     assert len(execution_rows) == 1
     assert execution_rows[0]["idempotency_key"] == idempotency_key
+    assert execution_rows[0]["trace_plan_hash"] == original_plan_hash
 
 
 @pytest.mark.asyncio

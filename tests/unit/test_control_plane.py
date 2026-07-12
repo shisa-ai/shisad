@@ -971,15 +971,19 @@ def test_m5_t9_trace_rejects_forbidden_action() -> None:
 
 
 @pytest.mark.parametrize("failed_trace_write", [1, 2])
+@pytest.mark.parametrize("replace_plan_before_replay", [False, True])
 def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failed_trace_write: int,
+    replace_plan_before_replay: bool,
 ) -> None:
-    data_dir = tmp_path / f"cp-f2-trace-replay-{failed_trace_write}"
+    data_dir = tmp_path / (
+        f"cp-f2-trace-replay-{failed_trace_write}-{replace_plan_before_replay}"
+    )
     engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
-    origin = _origin(f"s-f2-trace-replay-{failed_trace_write}")
-    engine.begin_precontent_plan(
+    origin = _origin(f"s-f2-trace-replay-{failed_trace_write}-{replace_plan_before_replay}")
+    original_plan_hash = engine.begin_precontent_plan(
         session_id=origin.session_id,
         goal=f"read {tmp_path / 'source.txt'}",
         origin=origin,
@@ -1005,12 +1009,22 @@ def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
         real_persist()
 
     monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
-    idempotency_key = f"f2-trace-replay-{failed_trace_write}"
+    idempotency_key = f"f2-trace-replay-{failed_trace_write}-{replace_plan_before_replay}"
     with pytest.raises(OSError, match="trace persistence interruption"):
         engine.record_execution(
             action=action,
             success=True,
             idempotency_key=idempotency_key,
+        )
+
+    if replace_plan_before_replay:
+        engine.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal=f"read {tmp_path / 'replacement.txt'}",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=5,
+            capabilities={Capability.FILE_READ},
         )
 
     engine.record_execution(
@@ -1025,8 +1039,13 @@ def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
     )
     plan = reloaded.active_plan(origin.session_id)
     assert plan is not None
-    assert plan.executed_actions == 1
-    assert set(action.resource_ids).issubset(plan.reachable_resources)
+    if replace_plan_before_replay:
+        assert plan.plan_hash != original_plan_hash
+        assert plan.executed_actions == 0
+        assert set(action.resource_ids).isdisjoint(plan.reachable_resources)
+    else:
+        assert plan.executed_actions == 1
+        assert set(action.resource_ids).issubset(plan.reachable_resources)
     execution_rows = [
         json.loads(line)
         for line in (data_dir / "control_plane" / "history.jsonl")
@@ -1036,6 +1055,7 @@ def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
     ]
     assert len(execution_rows) == 1
     assert execution_rows[0]["idempotency_key"] == idempotency_key
+    assert execution_rows[0]["trace_plan_hash"] == original_plan_hash
 
 
 class _StaticVoter:
