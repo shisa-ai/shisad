@@ -7049,6 +7049,12 @@ def _build_planner_memory_context_sections(
             )
             if not snippet:
                 continue
+            item_taints = normalize_retrieval_taints(
+                taint_labels=item.taint_labels,
+                collection=item.collection,
+            )
+            taints.update(item_taints)
+            amv_tainted = True
             cited_chunk_ids.append(item.chunk_id)
             untrusted_lines.append(
                 f"- [{index}] source={item.source_id} collection={item.collection} :: {snippet}"

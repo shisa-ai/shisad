@@ -69,6 +69,7 @@ from shisad.daemon.handlers._impl_session import (
 )
 from shisad.executors.sandbox import SandboxType
 from shisad.memory.consolidation import ConsolidationWorker
+from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import compose_channel_binding
@@ -799,6 +800,41 @@ class _PlannerContextControlPlane:
         self.last_begin_precontent_plan = dict(kwargs)
         self._active_plan_hash = "plan-gh28"
         return self._active_plan_hash
+
+
+@pytest.mark.asyncio
+async def test_f1_nonconfirmed_same_scope_memory_taints_planner_policy_context(
+    tmp_path: Path,
+) -> None:
+    harness = _PlannerContextBuildHarness(tmp_path)
+    memory_dir = tmp_path / "planner-policy-memory"
+    harness._ingestion = IngestionPipeline(memory_dir)
+    harness._memory_manager = MemoryManager(memory_dir)
+    harness._ingestion.ingest(
+        source_id="same-owner-unconfirmed-target",
+        source_type="user",
+        collection="user_curated",
+        content="The archived deployment target is production-east.",
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        user_id="user-g1",
+        workspace_id="workspace-g1",
+    )
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "Use the archived deployment target for the release.",
+        }
+    )
+    validated.session.capabilities = {Capability.MEMORY_READ}
+
+    planner_context = await SessionImplMixin._build_context_for_planner(harness, validated)
+
+    assert "production-east" in planner_context.memory_context
+    assert TaintLabel.UNTRUSTED in planner_context.memory_context_taints
+    assert planner_context.memory_context_tainted_for_amv is True
+    assert TaintLabel.UNTRUSTED in planner_context.context.taint_labels
 
 
 def test_t2_task_ledger_snapshot_forwards_next_run_at() -> None:

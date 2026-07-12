@@ -847,6 +847,9 @@ def test_m1_rr2_memory_context_builder_keeps_user_curated_clean_for_amv(
         source_type="user",
         collection="user_curated",
         content="Remember that my preferred language is Python.",
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
         user_id="ops",
         workspace_id="default",
     )
@@ -879,6 +882,9 @@ def test_c2_memory_context_same_scope_recall_uses_derived_framing(
         source_type="user",
         collection="user_curated",
         content="Remember that my preferred shell is zsh.",
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
         user_id="ops",
         workspace_id="default",
     )
@@ -900,6 +906,36 @@ def test_c2_memory_context_same_scope_recall_uses_derived_framing(
     # the anomaly aggregation (the detector would re-fire otherwise).
     assert TaintLabel.UNTRUSTED not in taints
     assert amv_tainted is False
+
+
+def test_f1_nonconfirmed_same_scope_memory_propagates_untrusted_taint(
+    tmp_path: Path,
+) -> None:
+    ingestion = IngestionPipeline(tmp_path / "memory")
+    ingestion.ingest(
+        source_id="ops-unconfirmed-deployment-target",
+        source_type="user",
+        collection="user_curated",
+        content="The archived deployment target is production-east.",
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        user_id="ops",
+        workspace_id="default",
+    )
+
+    rendered, taints, amv_tainted = _build_planner_memory_context(
+        ingestion=ingestion,
+        query="archived deployment target",
+        capabilities={Capability.MEMORY_READ},
+        top_k=5,
+        user_id="ops",
+        workspace_id="default",
+    )
+
+    assert "production-east" in rendered
+    assert TaintLabel.UNTRUSTED in taints
+    assert amv_tainted is True
 
 
 def test_c2_memory_context_cross_scope_leak_blocked(tmp_path: Path) -> None:
