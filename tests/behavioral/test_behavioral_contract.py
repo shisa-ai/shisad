@@ -1741,6 +1741,11 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
     pending_ids = proposed.get("pending_confirmation_ids")
     assert isinstance(pending_ids, list)
     assert pending_ids
+    pending_result = await contract_harness.client.call(
+        "action.pending",
+        {"confirmation_id": str(pending_ids[0])},
+    )
+    pending_identity = dict(pending_result["actions"][0]["identity"])
 
     confirmed = await contract_harness.client.call(
         "session.message",
@@ -1756,6 +1761,12 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
     assert "shell.exec" not in confirmed_outputs
     assert "todo.log" in json.dumps(confirmed_outputs["fs.list"], ensure_ascii=True)
     assert "todo.log" in str(confirmed.get("response", ""))
+    followup_identity = confirmed.get("action_followup_identity")
+    assert isinstance(followup_identity, dict)
+    assert followup_identity["action_id"] == pending_identity["action_id"]
+    assert followup_identity["confirmation_id"] == pending_identity["confirmation_id"]
+    assert followup_identity["followup_id"] == pending_identity["followup_id"]
+    assert str(followup_identity["result_id"]).startswith("result-")
 
     followup = await contract_harness.client.call(
         "session.message",
@@ -7629,9 +7640,7 @@ async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
             and "selection=selected" in normalized_input
             and f"selected_task_id={current_reminder_ids[0]}" in normalized_input
         ):
-            response = (
-                f"Reminder {current_reminder_ids[0]} ('test our ledger') is still pending."
-            )
+            response = f"Reminder {current_reminder_ids[0]} ('test our ledger') is still pending."
         elif (
             len(current_reminder_ids) == 2
             and "=== REMINDER STATUS (TRUSTED CONTROL STATE) ===" in normalized_input
@@ -7664,8 +7673,7 @@ async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
         await _wait_for_audit_event(
             harness.client,
             event_type="TaskTriggered",
-            predicate=lambda event: str(event.get("data", {}).get("task_id", ""))
-            == old_task_id,
+            predicate=lambda event: str(event.get("data", {}).get("task_id", "")) == old_task_id,
             timeout=5.0,
         )
 
@@ -7731,6 +7739,49 @@ async def test_gh70_active_reminder_identity_wins_or_tie_disambiguates(
         assert "which reminder" in tied_text.lower()
         assert all(task_id in tied_text for task_id in current_reminder_ids)
         assert old_task_id not in tied_text
+
+
+@pytest.mark.asyncio
+async def test_f1_reminder_identity_survives_restart_and_cancel_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _contract_harness_context(tmp_path, monkeypatch) as first:
+        sid = await _create_session(first.client)
+        created = await first.client.call(
+            "session.message",
+            {"session_id": sid, "content": "remind me to water the herbs in 2 minutes"},
+        )
+        task_id = str(
+            (_extract_tool_outputs(created)["reminder.create"][0].get("task") or {}).get("id", "")
+        ).strip()
+        assert task_id
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as restarted:
+        before_cancel = await restarted.client.call(
+            "session.message",
+            {"session_id": sid, "content": "list my reminders"},
+        )
+        before_payload = _extract_tool_outputs(before_cancel)["reminder.list"][0]
+        before_row = next(
+            row for row in before_payload.get("tasks", []) if str(row.get("id", "")) == task_id
+        )
+        assert before_row["lifecycle_state"] == "pending"
+        assert before_row["current_binding"] is True
+
+        disabled = await restarted.client.call("task.disable", {"task_id": task_id})
+        assert disabled == {"disabled": True, "task_id": task_id}
+
+        after_cancel = await restarted.client.call(
+            "session.message",
+            {"session_id": sid, "content": "list my reminders"},
+        )
+        after_payload = _extract_tool_outputs(after_cancel)["reminder.list"][0]
+        after_row = next(
+            row for row in after_payload.get("tasks", []) if str(row.get("id", "")) == task_id
+        )
+        assert after_row["lifecycle_state"] == "cancelled"
+        assert after_row["current_binding"] is True
 
 
 @pytest.mark.asyncio

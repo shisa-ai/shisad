@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -35,6 +36,7 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
+from shisad.daemon.handlers._pending_approval import pending_action_state_view
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.scheduler.schema import Schedule
@@ -251,11 +253,26 @@ class TasksImplMixin(HandlerMixinBase):
             preflight_action=preflight_action,
             taint_labels=list(_payload_taints(str(getattr(run, "payload_taint", "")))),
             confirmation_requirement=confirmation_requirement,
+            origin_turn_id=(
+                "task-run:"
+                + hashlib.sha256(
+                    (
+                        f"{getattr(task, 'id', '')}\x00"
+                        f"{getattr(task, 'trigger_count', '')}\x00"
+                        f"{getattr(run, 'plan_commitment', '')}\x00"
+                        f"{getattr(run, 'trigger_payload', '')}"
+                    ).encode()
+                ).hexdigest()[:32]
+            ),
         )
+        action_state = pending_action_state_view(pending)
         self._scheduler.queue_confirmation(
             str(getattr(task, "id", "")),
             {
                 "confirmation_id": pending.confirmation_id,
+                "action_id": action_state.identity.action_id,
+                "identity": action_state.identity.to_payload(),
+                "lifecycle_state": action_state.lifecycle_state,
                 "session_id": str(session.id),
                 "task_id": str(getattr(task, "id", "")),
                 "tool_name": str(_BACKGROUND_MESSAGE_SEND),
@@ -265,6 +282,7 @@ class TasksImplMixin(HandlerMixinBase):
                 "payload_taint": str(getattr(run, "payload_taint", "")),
                 "reason": reason,
                 "status": "pending",
+                "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
             },
         )
         return str(pending.confirmation_id)
@@ -273,12 +291,21 @@ class TasksImplMixin(HandlerMixinBase):
     def _public_task_confirmation_row(row: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "confirmation_id": optional_string(row.get("confirmation_id", "")),
+            "action_id": optional_string(row.get("action_id", "")),
+            "identity": dict(row.get("identity", {}))
+            if isinstance(row.get("identity"), Mapping)
+            else {},
             "task_id": optional_string(row.get("task_id", "")),
             "tool_name": optional_string(row.get("tool_name", "")),
             "event_type": optional_string(row.get("event_type", "")),
             "payload_taint": optional_string(row.get("payload_taint", "")),
             "reason": optional_string(row.get("reason", "")),
             "status": optional_string(row.get("status", "pending")) or "pending",
+            "lifecycle_state": (
+                optional_string(row.get("lifecycle_state", "pending")) or "pending"
+            ),
+            "result_id": optional_string(row.get("result_id", "")),
+            "expires_at": optional_string(row.get("expires_at", "")),
             "queued_at": optional_string(row.get("queued_at", "")),
         }
 

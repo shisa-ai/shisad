@@ -10,6 +10,15 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from shisad.core.action_state import (
+    ActionIdentity,
+    ActionLifecycleState,
+    ActionStateView,
+    action_lifecycle_state,
+    derive_action_followup_id,
+    derive_action_result_id,
+    derive_legacy_action_id,
+)
 from shisad.core.session import Session
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import (
@@ -52,20 +61,89 @@ class PendingPepElevationRequest:
     capability_grants: set[Capability] = field(default_factory=set)
 
 
-def pending_action_is_expired(pending: Any, *, now: datetime | None = None) -> bool:
-    expires_at = getattr(pending, "expires_at", None)
-    if not isinstance(expires_at, datetime):
-        return False
-    current = now or datetime.now(expires_at.tzinfo or UTC)
-    if expires_at.tzinfo is None and current.tzinfo is not None:
-        current = current.replace(tzinfo=None)
-    return expires_at <= current
-
-
 def pending_action_is_live_pending(pending: Any, *, now: datetime | None = None) -> bool:
-    return str(
-        getattr(pending, "status", "pending")
-    ).strip() == "pending" and not pending_action_is_expired(pending, now=now)
+    return pending_action_state_view(pending, now=now).is_live_pending
+
+
+def pending_action_identity(
+    pending: Any,
+    *,
+    lifecycle_state: ActionLifecycleState | None = None,
+) -> ActionIdentity:
+    """Build the canonical identity without trusting a renderer-local alias."""
+    confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+    session_id = str(getattr(pending, "session_id", "")).strip()
+    created_at = getattr(pending, "created_at", "")
+    action_id = str(getattr(pending, "action_id", "")).strip() or derive_legacy_action_id(
+        confirmation_id=confirmation_id,
+        session_id=session_id,
+        created_at=created_at,
+    )
+    delivery_target = getattr(pending, "delivery_target", None)
+    delivery_target_dump = getattr(delivery_target, "model_dump", None)
+    if callable(delivery_target_dump):
+        raw_delivery_target = delivery_target_dump(mode="json")
+    elif isinstance(delivery_target, Mapping):
+        raw_delivery_target = delivery_target
+    else:
+        raw_delivery_target = {}
+    normalized_delivery_target = tuple(
+        sorted(
+            (str(key), str(value))
+            for key, value in raw_delivery_target.items()
+            if value is not None
+        )
+    )
+    state = lifecycle_state or action_lifecycle_state(
+        status=str(getattr(pending, "status", "pending")),
+        status_reason=str(getattr(pending, "status_reason", "")),
+        expires_at=getattr(pending, "expires_at", None),
+    )
+    result_id = str(getattr(pending, "result_id", "")).strip()
+    if not result_id and state not in {"pending", "executing"}:
+        result_id = derive_action_result_id(action_id)
+    return ActionIdentity(
+        action_id=action_id,
+        origin_turn_id=str(getattr(pending, "origin_turn_id", "")).strip(),
+        session_id=session_id,
+        user_id=str(getattr(pending, "user_id", "")).strip(),
+        workspace_id=str(getattr(pending, "workspace_id", "")).strip(),
+        task_id=str(getattr(pending, "task_id", "")).strip(),
+        delivery_target=normalized_delivery_target,
+        confirmation_id=confirmation_id,
+        execution_attempt_id=str(getattr(pending, "execution_attempt_id", "")).strip(),
+        result_id=result_id,
+        followup_id=(
+            str(getattr(pending, "followup_id", "")).strip() or derive_action_followup_id(action_id)
+        ),
+    )
+
+
+def pending_action_state_view(
+    pending: Any,
+    *,
+    now: datetime | None = None,
+) -> ActionStateView:
+    lifecycle_state = action_lifecycle_state(
+        status=str(getattr(pending, "status", "pending")),
+        status_reason=str(getattr(pending, "status_reason", "")),
+        expires_at=getattr(pending, "expires_at", None),
+        now=now,
+    )
+    created_at = getattr(pending, "created_at", None)
+    if not isinstance(created_at, datetime):
+        created_at = datetime.min.replace(tzinfo=UTC)
+    expires_at = getattr(pending, "expires_at", None)
+    status_reason = str(getattr(pending, "status_reason", "")).strip()
+    if lifecycle_state == "expired" and not status_reason:
+        status_reason = "approval_expired"
+    return ActionStateView(
+        identity=pending_action_identity(pending, lifecycle_state=lifecycle_state),
+        lifecycle_state=lifecycle_state,
+        status_reason=status_reason,
+        created_at=created_at,
+        expires_at=expires_at if isinstance(expires_at, datetime) else None,
+    )
 
 
 def pep_arguments_for_policy_evaluation(

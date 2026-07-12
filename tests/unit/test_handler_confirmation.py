@@ -214,6 +214,9 @@ class _SchedulerRecorder:
         confirmation_id: str,
         status: str,
         status_reason: str = "",
+        lifecycle_state: str = "",
+        action_id: str = "",
+        result_id: str = "",
     ) -> bool:
         self.resolved_confirmations.append(
             {
@@ -221,6 +224,9 @@ class _SchedulerRecorder:
                 "confirmation_id": confirmation_id,
                 "status": status,
                 "status_reason": status_reason,
+                "lifecycle_state": lifecycle_state,
+                "action_id": action_id,
+                "result_id": result_id,
             }
         )
         return True
@@ -370,6 +376,11 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         execution_action: object | None = None,
         merged_policy: object | None = None,
         user_confirmed: bool = False,
+        action_id: str = "",
+        origin_turn_id: str = "",
+        execution_attempt_id: str = "",
+        result_id: str = "",
+        followup_id: str = "",
         approval_confirmation_id: str = "",
         approval_decision_nonce: str = "",
         approval_task_envelope_id: str = "",
@@ -392,6 +403,11 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             {
                 "tool_name": str(tool_name),
                 "capabilities": sorted(cap.value for cap in capabilities),
+                "action_id": action_id,
+                "origin_turn_id": origin_turn_id,
+                "execution_attempt_id": execution_attempt_id,
+                "result_id": result_id,
+                "followup_id": followup_id,
                 "approval_confirmation_id": approval_confirmation_id,
                 "approval_decision_nonce": approval_decision_nonce,
                 "approval_task_envelope_id": approval_task_envelope_id,
@@ -520,6 +536,21 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         selected_backend_id="software.default",
         selected_backend_method="software",
     )
+
+
+def _bind_pending_action_identity(pending: PendingAction) -> None:
+    """Rebind a mutated test fixture to the new queue-time envelope identity."""
+
+    assert pending.approval_envelope is not None
+    pending.approval_envelope = pending.approval_envelope.model_copy(
+        update={
+            "approval_id": pending.confirmation_id,
+            "pending_action_id": pending.action_id,
+            "session_id": str(pending.session_id),
+            "workspace_id": str(pending.workspace_id),
+        }
+    )
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
 
 
 @pytest.mark.asyncio
@@ -782,7 +813,19 @@ def test_a1_public_pending_payload_exposes_shared_approval_contract(
 
     assert "action_id" in ActionPendingEntry.model_fields
     entry = ActionPendingEntry.model_validate(public)
-    assert entry.action_id == pending.confirmation_id
+    assert entry.action_id
+    assert entry.action_id != pending.confirmation_id
+    assert entry.lifecycle_state == "pending"
+    assert entry.identity.action_id == entry.action_id
+    assert entry.identity.confirmation_id == pending.confirmation_id
+    assert pending.approval_envelope is not None
+    assert pending.approval_envelope.pending_action_id == entry.action_id
+    assert entry.identity.delivery_target == {
+        "channel": "discord",
+        "recipient": "chan-1",
+        "thread_id": "",
+        "workspace_hint": "",
+    }
     assert entry.action_kind == ActionKind.EGRESS.value
     assert entry.origin_channel == "discord"
     assert entry.required_proof_tier == "T0_identity"
@@ -806,6 +849,70 @@ def test_a1_public_pending_payload_exposes_shared_approval_contract(
     assert capability["requires_second_factor"] is True
     assert capability["requires_proof_input"] is True
     assert capability["cannot_carry_reason"] == "selected_method_requires_T1_stepup"
+
+
+def test_f1_pending_action_identity_survives_restart(tmp_path: Path) -> None:
+    harness = _QueuePendingHarness(tmp_path)
+    pending = harness._queue_pending_action(
+        session_id=SessionId("s-restart"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "restart identity"},
+        reason="requires_confirmation",
+        capabilities={Capability.HTTP_REQUEST},
+        delivery_target=DeliveryTarget(
+            channel="discord",
+            recipient="chan-1",
+            workspace_hint="guild-1",
+            thread_id="thread-1",
+        ),
+        origin_turn_id="tx-current",
+    )
+    before = harness._pending_to_dict(pending, public=True)
+
+    restarted = _QueuePendingHarness(tmp_path)
+    restarted._load_pending_actions()
+
+    loaded = restarted._pending_actions[pending.confirmation_id]
+    after = restarted._pending_to_dict(loaded, public=True)
+    assert after["identity"] == before["identity"]
+    assert after["action_id"] == pending.action_id
+    assert after["origin_turn_id"] == "tx-current"
+    assert after["lifecycle_state"] == "pending"
+
+
+def test_f1_legacy_confirmation_alias_migrates_to_distinct_action_identity(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload["action_id"] = pending.confirmation_id
+    for key in (
+        "identity",
+        "origin_turn_id",
+        "execution_attempt_id",
+        "result_id",
+        "followup_id",
+        "lifecycle_state",
+    ):
+        payload.pop(key, None)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.action_id.startswith("act-")
+    assert loaded.action_id != pending.confirmation_id
+    assert loaded.followup_id.startswith("followup-")
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["action_id"] == loaded.action_id
+    assert persisted["identity"]["action_id"] == loaded.action_id
+    assert persisted["followup_id"] == loaded.followup_id
 
 
 @pytest.mark.asyncio
@@ -995,6 +1102,8 @@ async def test_a1_action_pending_suppresses_webauthn_link_when_expired(
     assert result["count"] == 1
     action = result["actions"][0]
     entry = ActionPendingEntry.model_validate(action)
+    assert entry.lifecycle_state == "expired"
+    assert entry.status_reason == "approval_expired"
     capability = entry.channel_capability
     assert capability["backend_available"] is True
     assert capability["can_approve"] is False
@@ -1004,6 +1113,9 @@ async def test_a1_action_pending_suppresses_webauthn_link_when_expired(
     assert "approval_url" not in action
     assert "approval_qr_ascii" not in action
     assert approval_web.issued == []
+
+    live_pending = await harness.do_action_pending({"status": "pending"})
+    assert live_pending == {"actions": [], "count": 0}
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1495,11 @@ def test_a2_discord_pending_delivery_metadata_skips_totp_approve_without_modal_s
 def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")
+    pending.action_id = "act-1"
+    pending.origin_turn_id = "tx-current"
+    pending.execution_attempt_id = "attempt-1"
+    pending.result_id = "result-1"
+    pending.followup_id = "followup-1"
 
     harness._append_confirmed_tool_output_transcript(
         pending=pending,
@@ -1398,6 +1515,19 @@ def test_m5_confirmed_tool_output_transcript_records_owner_projection(tmp_path) 
     assert len(entries) == 1
     assert entries[0].metadata["user_id"] == "alice"
     assert entries[0].metadata["workspace_id"] == "w-1"
+    assert entries[0].metadata["action_identity"] == {
+        "action_id": "act-1",
+        "origin_turn_id": "tx-current",
+        "session_id": "s-1",
+        "user_id": "alice",
+        "workspace_id": "w-1",
+        "task_id": "",
+        "delivery_target": None,
+        "confirmation_id": "c-1",
+        "execution_attempt_id": "attempt-1",
+        "result_id": "result-1",
+        "followup_id": "followup-1",
+    }
 
 
 def test_confirmed_browser_tool_output_transcript_strips_page_title(tmp_path) -> None:
@@ -2119,6 +2249,7 @@ def test_gh33_load_pending_actions_preserves_blank_task_partial_overlap_sibling(
     sibling_pending.tool_name = ToolName("shell.exec")
     sibling_pending.arguments = {"command": ["echo", "identity"]}
     sibling_pending.safe_preview = "shell.exec command=identity"
+    _bind_pending_action_identity(sibling_pending)
     sibling_payload = HandlerImplementation._pending_to_dict(sibling_pending)
     sibling_payload["status"] = "pending"
     sibling_payload["status_reason"] = ""
@@ -2165,6 +2296,7 @@ def test_gh33_load_pending_actions_preserves_unrelated_blank_task_sibling(
     sibling_pending.tool_name = ToolName("shell.exec")
     sibling_pending.arguments = {"command": ["echo", "ordinary-value"]}
     sibling_pending.safe_preview = "shell.exec command=ordinary-value"
+    _bind_pending_action_identity(sibling_pending)
     sibling_payload = HandlerImplementation._pending_to_dict(sibling_pending)
     sibling_payload["status"] = "pending"
     sibling_payload["status_reason"] = ""
@@ -2375,14 +2507,15 @@ async def test_lt5_action_purge_can_clear_aged_pending_rows(tmp_path) -> None:
     assert recent.confirmation_id in harness._pending_actions
     assert "c-old" not in harness._pending_actions
     assert harness._pending_by_session[recent.session_id] == [recent.confirmation_id]
-    assert scheduler.resolved_confirmations == [
-        {
-            "task_id": "task-old",
-            "confirmation_id": "c-old",
-            "status": "failed",
-            "status_reason": "purged_stale_pending_action",
-        }
-    ]
+    assert len(scheduler.resolved_confirmations) == 1
+    resolution = scheduler.resolved_confirmations[0]
+    assert resolution["task_id"] == "task-old"
+    assert resolution["confirmation_id"] == "c-old"
+    assert resolution["status"] == "failed"
+    assert resolution["status_reason"] == "purged_stale_pending_action"
+    assert resolution["lifecycle_state"] == "superseded"
+    assert str(resolution["action_id"]).startswith("act-")
+    assert str(resolution["result_id"]).startswith("result-")
     assert scheduler.run_outcomes == [{"task_id": "task-old", "success": False}]
 
 
@@ -2462,6 +2595,17 @@ async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonc
     )
     assert valid["confirmed"] is True
     assert valid["status"] == "approved"
+    assert valid["lifecycle_state"] == "executed"
+    assert valid["action_id"] != valid["confirmation_id"]
+    assert valid["identity"]["execution_attempt_id"]
+    assert valid["identity"]["result_id"]
+    assert valid["identity"]["followup_id"]
+    assert harness.execution_kwargs[0]["action_id"] == valid["action_id"]
+    assert (
+        harness.execution_kwargs[0]["execution_attempt_id"]
+        == valid["identity"]["execution_attempt_id"]
+    )
+    assert harness.execution_kwargs[0]["result_id"] == valid["identity"]["result_id"]
 
     harness = _ConfirmationImplHarness(tmp_path)
     harness._pending_actions["c-1"] = _pending_action(nonce="expected")
@@ -2633,6 +2777,53 @@ async def test_lt3_action_confirm_fails_missing_action_digest_terminally(tmp_pat
     assert result["status"] == "failed"
     assert pending.status == "failed"
     assert pending.status_reason == "action_digest_missing"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_f1_action_confirm_rejects_identity_not_bound_by_approval_envelope(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    assert pending.approval_envelope is not None
+    pending.approval_envelope = pending.approval_envelope.model_copy(
+        update={"pending_action_id": pending.action_id}
+    )
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    pending.action_id = "act-tampered"
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "action_identity_mismatch"
+    assert result["lifecycle_state"] == "failed"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_f1_legacy_approval_alias_must_equal_its_confirmation_id(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    assert pending.approval_envelope is not None
+    pending.approval_envelope = pending.approval_envelope.model_copy(
+        update={"approval_id": "c-unrelated", "pending_action_id": "c-unrelated"}
+    )
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "action_identity_mismatch"
+    assert result["lifecycle_state"] == "failed"
     assert harness.execution_kwargs == []
 
 
@@ -2833,6 +3024,8 @@ async def test_gh42_direct_confirmation_waits_short_cross_session_cooldown(
     second.workspace_id = WorkspaceId("workspace-b")
     second.tool_name = ToolName("web.fetch")
     second.arguments = {"url": "https://example.com/"}
+    _bind_pending_action_identity(first)
+    _bind_pending_action_identity(second)
     harness._pending_actions[first.confirmation_id] = first
     harness._pending_actions[second.confirmation_id] = second
 

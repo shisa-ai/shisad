@@ -28,6 +28,8 @@ from shisad.channels.base import DeliveryTarget
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
+    derive_action_followup_id,
+    derive_legacy_action_id,
     parse_reminder_relative_duration,
     reminder_status_view_for_task,
     select_reminder_status_view,
@@ -120,8 +122,7 @@ from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_con
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
-    pending_action_is_expired,
-    pending_action_is_live_pending,
+    pending_action_state_view,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
     pending_pep_elevation_from_payload,
@@ -1400,9 +1401,10 @@ def _pending_channel_capability_payload(
     selected_method_proof_tier = _selected_method_proof_tier(selected_method)
     required_level = getattr(pending, "required_level", "")
     required_level_value = str(getattr(required_level, "value", required_level)).strip()
-    is_pending = str(getattr(pending, "status", "pending")).strip() == "pending"
-    is_expired = pending_action_is_expired(pending)
-    is_live_pending = pending_action_is_live_pending(pending)
+    state_view = pending_action_state_view(pending)
+    is_pending = state_view.is_live_pending
+    is_expired = state_view.lifecycle_state == "expired"
+    is_live_pending = state_view.is_live_pending
     backend_available = (
         True if selected_backend_available is None else bool(selected_backend_available)
     )
@@ -1428,10 +1430,10 @@ def _pending_channel_capability_payload(
     }.get(required_proof_tier, False)
     if can_carry_required_proof_tier:
         cannot_carry_reason = ""
-    elif not is_pending:
-        cannot_carry_reason = "approval_not_pending"
     elif is_expired:
         cannot_carry_reason = "approval_expired"
+    elif not is_pending:
+        cannot_carry_reason = "approval_not_pending"
     elif not backend_available:
         cannot_carry_reason = "confirmation_backend_unavailable"
     else:
@@ -1521,6 +1523,21 @@ class PendingAction:
     continuation_mode: str = ""
     status: str = "pending"
     status_reason: str = ""
+    action_id: str = ""
+    origin_turn_id: str = ""
+    execution_attempt_id: str = ""
+    result_id: str = ""
+    followup_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.action_id.strip():
+            self.action_id = derive_legacy_action_id(
+                confirmation_id=self.confirmation_id,
+                session_id=str(self.session_id),
+                created_at=self.created_at,
+            )
+        if not self.followup_id.strip():
+            self.followup_id = derive_action_followup_id(self.action_id)
 
     @staticmethod
     def _is_legacy_direct_mcp_tool_execute_shape(
@@ -2932,7 +2949,8 @@ class HandlerImplementation(
             if sensitive_summary is not None
             else pending.safe_preview
         )
-        action_id = pending.confirmation_id
+        state_view = pending_action_state_view(pending)
+        identity_payload = state_view.identity.to_payload()
         action_kind = _pending_action_kind_value(pending, pending.arguments)
         origin_channel = _pending_origin_channel(pending)
         required_proof_tier = _required_proof_tier(pending.required_level)
@@ -2940,7 +2958,12 @@ class HandlerImplementation(
         risk_level = str(getattr(preflight_risk_tier, "value", preflight_risk_tier)).strip()
         payload: dict[str, Any] = {
             "confirmation_id": pending.confirmation_id,
-            "action_id": action_id,
+            "action_id": state_view.identity.action_id,
+            "identity": identity_payload,
+            "origin_turn_id": state_view.identity.origin_turn_id,
+            "execution_attempt_id": state_view.identity.execution_attempt_id,
+            "result_id": state_view.identity.result_id,
+            "followup_id": state_view.identity.followup_id,
             "action_kind": action_kind,
             "decision_nonce": pending.decision_nonce,
             "session_id": str(pending.session_id),
@@ -2989,7 +3012,8 @@ class HandlerImplementation(
             "continuation_user_goal": pending.continuation_user_goal,
             "continuation_mode": pending.continuation_mode,
             "status": pending.status,
-            "status_reason": pending.status_reason,
+            "lifecycle_state": state_view.lifecycle_state,
+            "status_reason": state_view.status_reason,
         }
         if pending.sensitive_public_payload:
             payload["sensitive_public_payload"] = True
@@ -3148,10 +3172,13 @@ class HandlerImplementation(
         trusted_current_turn_reminder_create: bool = False,
         continuation_user_goal: str = "",
         continuation_mode: str = "",
+        origin_turn_id: str = "",
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
         confirmation_id = uuid.uuid4().hex
+        action_id = f"act-{uuid.uuid4().hex}"
+        followup_id = f"followup-{uuid.uuid4().hex}"
         requirement = (
             confirmation_requirement.model_copy(deep=True)
             if confirmation_requirement is not None
@@ -3312,7 +3339,7 @@ class HandlerImplementation(
             or requirement.require_capabilities.full_intent_signature
         ):
             intent_envelope = IntentEnvelope(
-                intent_id=confirmation_id,
+                intent_id=action_id,
                 agent_id=self._daemon_id,
                 workspace_id=str(workspace_id),
                 session_id=str(session_id),
@@ -3335,7 +3362,7 @@ class HandlerImplementation(
             intent_hash = intent_envelope_hash(intent_envelope)
         approval_envelope = ApprovalEnvelope(
             approval_id=confirmation_id,
-            pending_action_id=confirmation_id,
+            pending_action_id=action_id,
             workspace_id=str(workspace_id),
             daemon_id=self._daemon_id,
             session_id=str(session_id),
@@ -3352,6 +3379,9 @@ class HandlerImplementation(
         pending = PendingAction(
             confirmation_id=confirmation_id,
             decision_nonce=decision_nonce,
+            action_id=action_id,
+            origin_turn_id=str(origin_turn_id).strip(),
+            followup_id=followup_id,
             session_id=session_id,
             user_id=user_id,
             workspace_id=workspace_id,
@@ -3490,6 +3520,7 @@ class HandlerImplementation(
         pruned_stale = False
         migrated_legacy_strip_intent = False
         migrated_legacy_channel_principal = False
+        migrated_legacy_action_identity = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -3575,9 +3606,38 @@ class HandlerImplementation(
                     )
                 )
                 public_arguments = dict(raw_arguments) if sensitive_public_payload else None
+                identity_payload = item.get("identity")
+                identity_fields = identity_payload if isinstance(identity_payload, Mapping) else {}
+                loaded_action_id = (
+                    str(item.get("action_id", "")).strip()
+                    or str(identity_fields.get("action_id", "")).strip()
+                )
+                loaded_followup_id = (
+                    str(item.get("followup_id", "")).strip()
+                    or str(identity_fields.get("followup_id", "")).strip()
+                )
+                if not loaded_action_id or loaded_action_id == confirmation_id:
+                    loaded_action_id = ""
+                    migrated_legacy_action_identity = True
+                if not loaded_followup_id:
+                    migrated_legacy_action_identity = True
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=str(item.get("decision_nonce", "")) or uuid.uuid4().hex,
+                    action_id=loaded_action_id,
+                    origin_turn_id=(
+                        str(item.get("origin_turn_id", "")).strip()
+                        or str(identity_fields.get("origin_turn_id", "")).strip()
+                    ),
+                    execution_attempt_id=(
+                        str(item.get("execution_attempt_id", "")).strip()
+                        or str(identity_fields.get("execution_attempt_id", "")).strip()
+                    ),
+                    result_id=(
+                        str(item.get("result_id", "")).strip()
+                        or str(identity_fields.get("result_id", "")).strip()
+                    ),
+                    followup_id=loaded_followup_id,
                     session_id=session_id,
                     user_id=UserId(str(item.get("user_id", ""))),
                     workspace_id=WorkspaceId(str(item.get("workspace_id", ""))),
@@ -3707,7 +3767,12 @@ class HandlerImplementation(
                     persist=False,
                 )
                 pruned_stale = True
-        if pruned_stale or migrated_legacy_strip_intent or migrated_legacy_channel_principal:
+        if (
+            pruned_stale
+            or migrated_legacy_strip_intent
+            or migrated_legacy_channel_principal
+            or migrated_legacy_action_identity
+        ):
             self._persist_pending_actions()
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
@@ -3793,6 +3858,11 @@ class HandlerImplementation(
         execution_action: ControlPlaneAction | None = None,
         merged_policy: ToolExecutionPolicy | None = None,
         user_confirmed: bool = False,
+        action_id: str = "",
+        origin_turn_id: str = "",
+        execution_attempt_id: str = "",
+        result_id: str = "",
+        followup_id: str = "",
         approval_confirmation_id: str = "",
         approval_decision_nonce: str = "",
         approval_task_envelope_id: str = "",
@@ -3834,6 +3904,11 @@ class HandlerImplementation(
             checkpoint_id = checkpoint.checkpoint_id
 
         approval_event_fields = {
+            "action_id": action_id,
+            "origin_turn_id": origin_turn_id,
+            "execution_attempt_id": execution_attempt_id,
+            "result_id": result_id,
+            "followup_id": followup_id,
             "approval_session_id": str(sid),
             "approval_task_envelope_id": (
                 approval_task_envelope_id

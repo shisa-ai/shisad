@@ -166,7 +166,11 @@ def render_pending_action(action: Mapping[str, Any]) -> str:
     """Render a compact pending-action row from structured daemon state."""
     confirmation_id = str(action.get("confirmation_id", "")).strip()
     tool_name = str(action.get("tool_name", "")).strip() or "pending action"
-    status = str(action.get("status", "")).strip() or "pending"
+    status = (
+        str(action.get("lifecycle_state", "")).strip()
+        or str(action.get("status", "")).strip()
+        or "pending"
+    )
     risk_level = str(action.get("risk_level", "")).strip() or "unknown"
     proof_tier = str(action.get("required_proof_tier", "")).strip() or "unknown"
     selected_method = str(action.get("selected_backend_method", "")).strip() or "software"

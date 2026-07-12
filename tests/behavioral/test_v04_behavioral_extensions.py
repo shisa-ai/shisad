@@ -1095,9 +1095,17 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         actions = list(pending.get("actions", []))
         assert len(actions) == 1
         action = actions[0]
+        action_id = str(action["action_id"])
+        assert action_id.startswith("act-")
+        assert action_id != confirmation_id
+        assert action["lifecycle_state"] == "pending"
+        assert action["identity"]["action_id"] == action_id
+        assert action["identity"]["confirmation_id"] == confirmation_id
+        assert str(action["identity"]["origin_turn_id"]).startswith("control-api:")
         assert action["required_level"] == "software"
         assert action["selected_backend_id"] == "software.default"
         assert action["approval_envelope"]["schema_version"] == "shisad.approval.v1"
+        assert action["approval_envelope"]["pending_action_id"] == action_id
         assert str(action["approval_envelope"]["action_digest"]).startswith("sha256:")
         assert str(action["approval_envelope_hash"]).startswith("sha256:")
 
@@ -1111,6 +1119,12 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         )
         assert confirmed["confirmed"] is True
         assert confirmed["status"] == "approved"
+        assert confirmed["lifecycle_state"] == "executed"
+        assert confirmed["identity"]["action_id"] == action_id
+        assert confirmed["identity"]["confirmation_id"] == confirmation_id
+        assert str(confirmed["identity"]["execution_attempt_id"]).startswith("attempt-")
+        assert str(confirmed["identity"]["result_id"]).startswith("result-")
+        assert str(confirmed["identity"]["followup_id"]).startswith("followup-")
         assert confirmed["approval_level"] == "software"
         assert confirmed["approval_method"] == "software"
 
@@ -1143,6 +1157,12 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         )
         assert approved["event_type"] == "ToolApproved"
         assert executed["event_type"] == "ToolExecuted"
+        for event in (approved, executed):
+            data = event["data"]
+            assert data["action_id"] == action_id
+            assert data["execution_attempt_id"] == confirmed["identity"]["execution_attempt_id"]
+            assert data["result_id"] == confirmed["identity"]["result_id"]
+            assert data["followup_id"] == confirmed["identity"]["followup_id"]
     finally:
         await _shutdown_daemon(daemon_task, client)
 

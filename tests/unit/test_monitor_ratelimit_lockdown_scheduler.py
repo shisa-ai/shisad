@@ -835,6 +835,35 @@ def test_m2_scheduler_hydrates_pending_confirmations_after_restart(tmp_path: Pat
     assert pending[0]["task_id"] == created.id
 
 
+def test_f1_scheduler_pending_projection_excludes_expired_confirmation(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "tasks"
+    scheduler = SchedulerManager(storage_dir=storage)
+    created = scheduler.create_task(
+        name="digest",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    scheduler.queue_confirmation(
+        created.id,
+        {
+            "confirmation_id": "confirm-expired",
+            "status": "pending",
+            "lifecycle_state": "pending",
+            "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        },
+    )
+
+    assert scheduler.pending_confirmations(created.id) == []
+    rows = scheduler.task_status_snapshot(limit=8, created_by=UserId("alice"))
+    assert rows[0]["pending_confirmation_count"] == 0
+    assert rows[0]["confirmation_needed"] is False
+
+
 def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmations(
     tmp_path: Path,
 ) -> None:

@@ -216,12 +216,17 @@ async def test_t2_do_task_status_snapshot_binds_to_active_session_scope_and_reda
     assert row["pending_confirmations"] == [
         {
             "confirmation_id": "confirm-visible",
+            "action_id": "",
+            "identity": {},
             "task_id": "task-visible",
             "tool_name": "message.send",
             "event_type": "message.received",
             "payload_taint": "UNTRUSTED",
             "reason": "requires_confirmation",
             "status": "pending",
+            "lifecycle_state": "pending",
+            "result_id": "",
+            "expires_at": "",
             "queued_at": "2026-06-29T00:00:00+00:00",
         }
     ]

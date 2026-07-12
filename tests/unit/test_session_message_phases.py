@@ -16,9 +16,11 @@ import pytest
 import shisad.daemon.handlers._impl_session as impl_session
 from shisad.channels.base import DeliveryTarget
 from shisad.core.action_state import (
+    ActionIdentity,
     ReminderActionIdentity,
     ReminderLifecycleState,
     ReminderStatusView,
+    action_lifecycle_state,
     reminder_lifecycle_state,
     select_reminder_status_view,
 )
@@ -192,9 +194,7 @@ def test_gh70_reminder_selection_prefers_current_active_and_disambiguates_tie() 
         lifecycle_state="pending",
         created_at=now + timedelta(seconds=20),
     )
-    ambiguous = select_reminder_status_view(
-        [old_fired, current_active, second_active]
-    )
+    ambiguous = select_reminder_status_view([old_fired, current_active, second_active])
 
     assert ambiguous.status == "ambiguous"
     assert {item.identity.task_id for item in ambiguous.candidates} == {
@@ -210,26 +210,205 @@ def test_gh70_reminder_lifecycle_distinguishes_terminal_outcomes_from_cancellati
         "max_runs": 1,
     }
 
-    assert reminder_lifecycle_state(
-        enabled=False,
-        success_count=1,
-        failure_count=0,
-        **common,
-    ) == "executed"
-    assert reminder_lifecycle_state(
-        enabled=True,
-        success_count=0,
-        failure_count=1,
-        **common,
-    ) == "failed"
-    assert reminder_lifecycle_state(
-        enabled=False,
-        success_count=0,
-        failure_count=0,
-        trigger_count=0,
-        max_runs=1,
-        pending_confirmation_count=0,
-    ) == "cancelled"
+    assert (
+        reminder_lifecycle_state(
+            enabled=False,
+            success_count=1,
+            failure_count=0,
+            **common,
+        )
+        == "executed"
+    )
+    assert (
+        reminder_lifecycle_state(
+            enabled=True,
+            success_count=0,
+            failure_count=1,
+            **common,
+        )
+        == "failed"
+    )
+    assert (
+        reminder_lifecycle_state(
+            enabled=False,
+            success_count=0,
+            failure_count=0,
+            trigger_count=0,
+            max_runs=1,
+            pending_confirmation_count=0,
+        )
+        == "cancelled"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "status_reason", "expired", "expected"),
+    [
+        ("pending", "", False, "pending"),
+        ("pending", "", True, "expired"),
+        ("executing", "", False, "executing"),
+        ("approved", "approved", False, "executed"),
+        ("approved", "approval_expired", False, "executed"),
+        ("rejected", "manual_reject", False, "rejected"),
+        ("failed", "approval_expired", False, "expired"),
+        ("failed", "tool_failed", False, "failed"),
+        ("cancelled", "manual_cancel", False, "cancelled"),
+        ("superseded", "newer_action", False, "superseded"),
+        ("outcome_unknown", "effect_may_have_completed", False, "outcome_unknown"),
+    ],
+)
+def test_f1_action_lifecycle_projection_is_mutually_exclusive(
+    status: str,
+    status_reason: str,
+    expired: bool,
+    expected: str,
+) -> None:
+    expires_at = datetime.now(UTC) - timedelta(seconds=1) if expired else None
+
+    assert (
+        action_lifecycle_state(
+            status=status,
+            status_reason=status_reason,
+            expires_at=expires_at,
+        )
+        == expected
+    )
+
+
+def test_f1_action_identity_keeps_confirmation_and_followup_distinct() -> None:
+    identity = ActionIdentity(
+        action_id="act-1",
+        origin_turn_id="tx-current",
+        session_id="sess-g1",
+        user_id="user-g1",
+        workspace_id="workspace-g1",
+        task_id="task-1",
+        delivery_target=(("channel", "discord"), ("recipient", "room-1")),
+        confirmation_id="confirm-1",
+        execution_attempt_id="attempt-1",
+        result_id="result-1",
+        followup_id="followup-1",
+    )
+
+    assert identity.action_id != identity.confirmation_id
+    assert identity.followup_id != identity.result_id
+    assert identity.to_payload()["delivery_target"] == {
+        "channel": "discord",
+        "recipient": "room-1",
+    }
+
+
+def test_f1_action_followup_identity_binds_complete_result_scope() -> None:
+    delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-1",
+        thread_id="thread-1",
+    )
+    identity = ActionIdentity(
+        action_id="act-1",
+        origin_turn_id="turn-1",
+        session_id="sess-g1",
+        user_id="user-g1",
+        workspace_id="workspace-g1",
+        task_id="",
+        delivery_target=tuple(
+            sorted(
+                (str(key), str(value))
+                for key, value in delivery_target.model_dump(mode="json").items()
+                if value is not None
+            )
+        ),
+        confirmation_id="confirm-1",
+        execution_attempt_id="attempt-1",
+        result_id="result-1",
+        followup_id="followup-1",
+    )
+
+    validated = impl_session._validated_action_followup_identity(
+        identity.to_payload(),
+        expected_followup_id="followup-1",
+        session_id=SessionId("sess-g1"),
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        delivery_target=delivery_target,
+    )
+
+    assert validated == identity.to_payload()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("action_id", ""),
+        ("origin_turn_id", ""),
+        ("confirmation_id", ""),
+        ("execution_attempt_id", ""),
+        ("result_id", ""),
+        ("result_id", "act-1"),
+        ("followup_id", "followup-other"),
+        ("session_id", "sess-other"),
+        ("user_id", "user-other"),
+        ("workspace_id", "workspace-other"),
+    ],
+)
+def test_f1_action_followup_identity_rejects_incomplete_or_cross_scope_binding(
+    field: str,
+    value: str,
+) -> None:
+    payload = {
+        "action_id": "act-1",
+        "origin_turn_id": "turn-1",
+        "session_id": "sess-g1",
+        "user_id": "user-g1",
+        "workspace_id": "workspace-g1",
+        "task_id": "",
+        "delivery_target": None,
+        "confirmation_id": "confirm-1",
+        "execution_attempt_id": "attempt-1",
+        "result_id": "result-1",
+        "followup_id": "followup-1",
+    }
+    payload[field] = value
+
+    assert (
+        impl_session._validated_action_followup_identity(
+            payload,
+            expected_followup_id="followup-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            delivery_target=None,
+        )
+        == {}
+    )
+
+
+def test_f1_action_followup_identity_rejects_cross_delivery_target() -> None:
+    payload = {
+        "action_id": "act-1",
+        "origin_turn_id": "turn-1",
+        "session_id": "sess-g1",
+        "user_id": "user-g1",
+        "workspace_id": "workspace-g1",
+        "task_id": "",
+        "delivery_target": {"channel": "discord", "recipient": "room-other"},
+        "confirmation_id": "confirm-1",
+        "execution_attempt_id": "attempt-1",
+        "result_id": "result-1",
+        "followup_id": "followup-1",
+    }
+
+    assert (
+        impl_session._validated_action_followup_identity(
+            payload,
+            expected_followup_id="followup-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            delivery_target=DeliveryTarget(channel="discord", recipient="room-1"),
+        )
+        == {}
+    )
 
 
 def test_gh70_reminder_status_context_survives_scheduler_restart(tmp_path: Path) -> None:
@@ -2379,6 +2558,7 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
         params={
             "session_id": str(sid),
             "content": "what are the top open claw use cases in our docs?",
+            "_origin_turn_id": "followup-act-1",
         }
     )
     validated.operator_owned_cli_input = True
@@ -2459,6 +2639,7 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
         "what are the top open claw use cases in our docs?"
     )
     assert pending_call["continuation_mode"] == "planner"
+    assert pending_call["origin_turn_id"] == "followup-act-1"
 
 
 def test_gh88_69_planner_marker_does_not_authorize_unbound_reminder_values() -> None:

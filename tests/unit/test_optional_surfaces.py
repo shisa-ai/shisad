@@ -105,6 +105,14 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     assert "CHANNEL HEALTH:" in rendered
 
 
+def test_f1_tui_pending_status_style_uses_canonical_lifecycle() -> None:
+    from shisad.ui import tui as tui_module
+
+    assert tui_module._pending_status_style("executed") == "green"
+    assert tui_module._pending_status_style("superseded") == "red"
+    assert tui_module._pending_status_style("outcome_unknown") == "red"
+
+
 def test_u3_tui_plain_renderer_includes_summary_and_explicit_empty_states() -> None:
     rendered = render_plain(TuiSnapshot())
 

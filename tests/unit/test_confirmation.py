@@ -284,6 +284,29 @@ def test_pending_action_renderer_surfaces_warning_details_after_preview_truncati
     assert "approve: c c1 <totp-code>" in rendered
 
 
+def test_f1_pending_action_renderer_uses_canonical_lifecycle_projection() -> None:
+    rendered = render_pending_action(
+        {
+            "confirmation_id": "c1",
+            "tool_name": "web.fetch",
+            "status": "pending",
+            "lifecycle_state": "superseded",
+            "risk_level": "high",
+            "required_proof_tier": "T0_identity",
+            "selected_backend_method": "software",
+            "channel_capability": {
+                "approval_route": "host_cli",
+                "can_carry": False,
+                "can_reject": False,
+                "cannot_carry_reason": "action_superseded",
+            },
+        }
+    )
+
+    assert "status=superseded" in rendered
+    assert "status=pending" not in rendered
+
+
 def test_pending_action_renderer_shows_selected_totp_collection_for_t0_fallback() -> None:
     rendered = render_pending_action(
         {

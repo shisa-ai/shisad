@@ -171,6 +171,11 @@ class ToolApproved(BaseEvent):
 
     tool_name: ToolName
     decision: PEPDecisionKind = PEPDecisionKind.ALLOW
+    action_id: str = ""
+    origin_turn_id: str = ""
+    execution_attempt_id: str = ""
+    result_id: str = ""
+    followup_id: str = ""
     approval_session_id: str = ""
     approval_task_envelope_id: str = ""
     approval_confirmation_id: str = ""
@@ -196,6 +201,11 @@ class ToolRejected(BaseEvent):
     tool_name: ToolName
     decision: PEPDecisionKind = PEPDecisionKind.REJECT
     reason: str = ""
+    action_id: str = ""
+    origin_turn_id: str = ""
+    execution_attempt_id: str = ""
+    result_id: str = ""
+    followup_id: str = ""
     approval_session_id: str = ""
     approval_task_envelope_id: str = ""
     approval_confirmation_id: str = ""
@@ -222,6 +232,11 @@ class ToolExecuted(BaseEvent):
     success: bool = True
     error: str = ""
     details: dict[str, Any] = Field(default_factory=dict)
+    action_id: str = ""
+    origin_turn_id: str = ""
+    execution_attempt_id: str = ""
+    result_id: str = ""
+    followup_id: str = ""
     approval_session_id: str = ""
     approval_task_envelope_id: str = ""
     approval_confirmation_id: str = ""

@@ -5000,6 +5000,7 @@ def test_action_pending_sanitizes_terminal_preview_output(
                     "confirmation_id": "c-\x1b[31m1",
                     "decision_nonce": "n-\x1b]2;bad\x07",
                     "status": "pending",
+                    "lifecycle_state": "expired",
                     "tool_name": "shell.exec\x1b[31m",
                     "reason": "manual_review",
                     "safe_preview": "preview line\rsecond line\x1b[31m",
@@ -5019,6 +5020,7 @@ def test_action_pending_sanitizes_terminal_preview_output(
     assert result.exit_code == 0, result.output
     assert "\x1b" not in result.output
     assert "c-1 nonce=n-" in result.output
+    assert "status=expired" in result.output
     assert "tool=shell.exec" in result.output
     assert "preview line\nsecond line" in result.output
 
@@ -5240,7 +5242,8 @@ def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(
                 {
                     "confirmation_id": "c-1",
                     "decision_nonce": "n-1",
-                    "status": "approved",
+                    "status": "pending",
+                    "lifecycle_state": "executed",
                     "status_reason": "",
                     "tool_name": "shell.exec",
                     "reason": "manual",
@@ -5281,7 +5284,8 @@ def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(
     assert result.exit_code == 0, result.output
     assert launched == [("https://approve.example.com/approve/c-1?token=abc", False)]
     assert all(method != "action.confirm" for method, _params in calls)
-    assert '"status": "approved"' in result.output
+    assert '"status": "pending"' in result.output
+    assert '"lifecycle_state": "executed"' in result.output
     assert '"approval_method": "webauthn"' in result.output
 
 

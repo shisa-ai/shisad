@@ -1931,7 +1931,7 @@ def _render_action_rows(
     for row in rows:
         confirmation_id = sanitize_terminal_field(row.confirmation_id)
         nonce_value = sanitize_terminal_field(row.decision_nonce or "")
-        status_value = sanitize_terminal_field(row.status)
+        status_value = sanitize_terminal_field(row.lifecycle_state or row.status)
         tool_name = sanitize_terminal_field(row.tool_name)
         reason_value = sanitize_terminal_field(row.reason)
         click.echo(
@@ -2042,8 +2042,11 @@ def _single_allowed_channel_principal(row: ActionPendingEntry | None) -> str:
 
 def _synthetic_pending_confirm_result(row: ActionPendingEntry) -> ActionConfirmResult:
     return ActionConfirmResult(
-        confirmed=row.status == "approved",
+        confirmed=row.lifecycle_state == "executed" or row.status == "approved",
         confirmation_id=row.confirmation_id,
+        action_id=row.action_id,
+        identity=row.identity,
+        lifecycle_state=row.lifecycle_state or None,
         decision_nonce=row.decision_nonce or None,
         status=row.status or None,
         status_reason=row.status_reason,
@@ -2202,13 +2205,13 @@ def _wait_for_pending_action_resolution(
             confirmation_id=confirmation_id,
             include_ui=False,
         )
-        if latest is not None and latest.status.lower() != "pending":
+        if latest is not None and (latest.lifecycle_state or latest.status).lower() != "pending":
             return latest
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         time.sleep(min(poll_interval_seconds, remaining))
-    detail = latest.status if latest is not None else "not_found"
+    detail = (latest.lifecycle_state or latest.status) if latest is not None else "not_found"
     raise click.ClickException(
         f"Timed out waiting for browser approval on {confirmation_id} (last status: {detail})."
     )
@@ -2317,7 +2320,10 @@ def action_confirm(
             confirmation_id=confirmation_id,
             include_ui=False,
         )
-        if existing_row is not None and existing_row.status.lower() != "pending":
+        if (
+            existing_row is not None
+            and (existing_row.lifecycle_state or existing_row.status).lower() != "pending"
+        ):
             synthetic_result = _synthetic_pending_confirm_result(existing_row)
             click.echo(
                 _dump_model(synthetic_result)

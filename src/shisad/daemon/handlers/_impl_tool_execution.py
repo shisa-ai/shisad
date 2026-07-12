@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Mapping
 from typing import Any, cast
@@ -493,6 +494,15 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     confirmation_requirement=confirmation_requirement,
                     strip_direct_tool_execute_envelope_keys=(
                         strip_direct_tool_execute_envelope_keys
+                    ),
+                    origin_turn_id=(
+                        "control-api:"
+                        + hashlib.sha256(
+                            (
+                                f"{sid}\x00{tool_name}\x00"
+                                f"{getattr(cp_eval.action, 'timestamp', '')}"
+                            ).encode()
+                        ).hexdigest()[:32]
                     ),
                 )
             except ApprovalRoutingError as exc:

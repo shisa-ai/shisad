@@ -2,12 +2,205 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+
+ActionLifecycleState = Literal[
+    "pending",
+    "executing",
+    "executed",
+    "rejected",
+    "expired",
+    "failed",
+    "cancelled",
+    "superseded",
+    "outcome_unknown",
+]
+
+_ACTION_STATUS_TO_LIFECYCLE: dict[str, ActionLifecycleState] = {
+    "pending": "pending",
+    "executing": "executing",
+    "approved": "executed",
+    "executed": "executed",
+    "rejected": "rejected",
+    "expired": "expired",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "superseded": "superseded",
+    "outcome_unknown": "outcome_unknown",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ActionIdentity:
+    """End-to-end identity shared by approval, execution, result, and follow-up."""
+
+    action_id: str
+    origin_turn_id: str
+    session_id: str
+    user_id: str
+    workspace_id: str
+    task_id: str
+    delivery_target: tuple[tuple[str, str], ...]
+    confirmation_id: str
+    execution_attempt_id: str
+    result_id: str
+    followup_id: str
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> ActionIdentity:
+        """Parse an identity projection without accepting non-structural targets."""
+
+        raw_delivery_target = payload.get("delivery_target")
+        if raw_delivery_target is None or raw_delivery_target == "":
+            delivery_target: tuple[tuple[str, str], ...] = ()
+        elif isinstance(raw_delivery_target, Mapping):
+            delivery_target = tuple(
+                sorted(
+                    (str(key), str(value))
+                    for key, value in raw_delivery_target.items()
+                    if value is not None
+                )
+            )
+        else:
+            raise ValueError("delivery_target must be a mapping or null")
+
+        def _text(key: str) -> str:
+            value = payload.get(key)
+            return "" if value is None else str(value).strip()
+
+        return cls(
+            action_id=_text("action_id"),
+            origin_turn_id=_text("origin_turn_id"),
+            session_id=_text("session_id"),
+            user_id=_text("user_id"),
+            workspace_id=_text("workspace_id"),
+            task_id=_text("task_id"),
+            delivery_target=delivery_target,
+            confirmation_id=_text("confirmation_id"),
+            execution_attempt_id=_text("execution_attempt_id"),
+            result_id=_text("result_id"),
+            followup_id=_text("followup_id"),
+        )
+
+    @property
+    def is_complete_result_followup(self) -> bool:
+        """Return whether a terminal result has a fully bound continuation identity."""
+
+        required = (
+            self.action_id,
+            self.origin_turn_id,
+            self.session_id,
+            self.user_id,
+            self.workspace_id,
+            self.confirmation_id,
+            self.execution_attempt_id,
+            self.result_id,
+            self.followup_id,
+        )
+        operation_ids = {
+            self.action_id,
+            self.confirmation_id,
+            self.execution_attempt_id,
+            self.result_id,
+            self.followup_id,
+        }
+        return all(required) and len(operation_ids) == 5
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "origin_turn_id": self.origin_turn_id,
+            "session_id": self.session_id,
+            "user_id": self.user_id,
+            "workspace_id": self.workspace_id,
+            "task_id": self.task_id,
+            "delivery_target": dict(self.delivery_target) if self.delivery_target else None,
+            "confirmation_id": self.confirmation_id,
+            "execution_attempt_id": self.execution_attempt_id,
+            "result_id": self.result_id,
+            "followup_id": self.followup_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ActionStateView:
+    """Canonical, mutually exclusive lifecycle projection for runtime surfaces."""
+
+    identity: ActionIdentity
+    lifecycle_state: ActionLifecycleState
+    status_reason: str
+    created_at: datetime
+    expires_at: datetime | None
+
+    @property
+    def is_live_pending(self) -> bool:
+        return self.lifecycle_state == "pending"
+
+
+def derive_legacy_action_id(
+    *,
+    confirmation_id: str,
+    session_id: str,
+    created_at: datetime | str,
+) -> str:
+    """Derive a stable distinct operation ID for pre-F1 pending rows."""
+    created = created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
+    digest = hashlib.sha256(
+        f"legacy-pending-action\x00{session_id}\x00{confirmation_id}\x00{created}".encode()
+    ).hexdigest()
+    return f"act-{digest[:32]}"
+
+
+def derive_action_result_id(action_id: str) -> str:
+    digest = hashlib.sha256(f"action-result\x00{action_id}".encode()).hexdigest()
+    return f"result-{digest[:32]}"
+
+
+def derive_action_followup_id(action_id: str) -> str:
+    digest = hashlib.sha256(f"action-followup\x00{action_id}".encode()).hexdigest()
+    return f"followup-{digest[:32]}"
+
+
+def action_lifecycle_state(
+    *,
+    status: str,
+    status_reason: str = "",
+    expires_at: datetime | None = None,
+    now: datetime | None = None,
+) -> ActionLifecycleState:
+    """Project compatibility status fields into one canonical lifecycle state."""
+    normalized_status = str(status or "pending").strip().casefold() or "pending"
+    normalized_reason = str(status_reason or "").strip().casefold()
+    if normalized_reason == "approval_expired" and normalized_status in {
+        "pending",
+        "failed",
+        "expired",
+    }:
+        return "expired"
+    if normalized_reason == "purged_stale_pending_action" and normalized_status in {
+        "pending",
+        "failed",
+        "superseded",
+    }:
+        return "superseded"
+    if normalized_status == "pending" and isinstance(expires_at, datetime):
+        current = now or datetime.now(expires_at.tzinfo or UTC)
+        comparable_expiry = expires_at
+        if comparable_expiry.tzinfo is None and current.tzinfo is not None:
+            current = current.replace(tzinfo=None)
+        elif comparable_expiry.tzinfo is not None and current.tzinfo is None:
+            current = current.replace(tzinfo=comparable_expiry.tzinfo)
+        if comparable_expiry <= current:
+            return "expired"
+    return _ACTION_STATUS_TO_LIFECYCLE.get(normalized_status, "failed")
+
 
 ReminderLifecycleState = Literal[
     "pending",
@@ -311,9 +504,7 @@ def select_reminder_status_view(
     current = [item for item in ordered if item.current_binding]
     if not current:
         return ReminderStatusSelection(status="none")
-    active = [
-        item for item in current if item.lifecycle_state in {"pending", "executing"}
-    ]
+    active = [item for item in current if item.lifecycle_state in {"pending", "executing"}]
     candidates = tuple(active or current)
     if len(candidates) > 1:
         return ReminderStatusSelection(status="ambiguous", candidates=candidates)

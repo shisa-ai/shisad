@@ -25,6 +25,7 @@ from shisad.coding.models import CodingAgentConfig
 from shisad.core import daemon_notices as _daemon_notices
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
+    ActionIdentity,
     ReminderStatusView,
     reminder_create_arguments_are_current_turn_anchored,
     reminder_status_view_for_task,
@@ -116,6 +117,8 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     capability_elevation_for_missing_capabilities,
+    pending_action_is_live_pending,
+    pending_action_state_view,
     pep_arguments_for_policy_evaluation,
 )
 from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
@@ -646,6 +649,7 @@ class PlannerActionResolveResult:
     tool_outputs: list[Any] = field(default_factory=list)
     serialized_tool_outputs: list[dict[str, Any]] = field(default_factory=list)
     continuation_user_goal: str = ""
+    continuation_followup_id: str = ""
     success: bool = False
     summary: str = ""
 
@@ -1757,6 +1761,47 @@ def _pending_confirmation_is_expired(pending: Any) -> bool:
     return expires_at is not None and expires_at <= datetime.now(UTC)
 
 
+def _validated_action_followup_identity(
+    raw_identity: Any,
+    *,
+    expected_followup_id: str,
+    session_id: SessionId | str,
+    user_id: UserId | str,
+    workspace_id: WorkspaceId | str,
+    delivery_target: DeliveryTarget | None,
+) -> dict[str, Any]:
+    """Return a canonical result identity only when every continuation scope binds."""
+
+    if not isinstance(raw_identity, Mapping):
+        return {}
+    try:
+        identity = ActionIdentity.from_payload(raw_identity)
+    except ValueError:
+        return {}
+    expected_target = (
+        tuple(
+            sorted(
+                (str(key), str(value))
+                for key, value in delivery_target.model_dump(mode="json").items()
+                if value is not None
+            )
+        )
+        if delivery_target is not None
+        else ()
+    )
+    if (
+        not identity.is_complete_result_followup
+        or not str(expected_followup_id).strip()
+        or identity.followup_id != str(expected_followup_id).strip()
+        or identity.session_id != str(session_id).strip()
+        or identity.user_id != str(user_id).strip()
+        or identity.workspace_id != str(workspace_id).strip()
+        or identity.delivery_target != expected_target
+    ):
+        return {}
+    return identity.to_payload()
+
+
 def _totp_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
     return [pending for pending in pending_rows if _pending_uses_totp(pending)]
 
@@ -2337,8 +2382,7 @@ def _has_current_turn_reminder_create_intent(
     if (
         proposal is not None
         and "user_text:explicit_reminder_intent" in proposal.data_sources
-        and str(arguments.get("reminder_intent", "")).strip()
-        == CURRENT_TURN_REMINDER_CREATE_INTENT
+        and str(arguments.get("reminder_intent", "")).strip() == CURRENT_TURN_REMINDER_CREATE_INTENT
     ):
         return True
     structural_arguments = dict(arguments)
@@ -4556,6 +4600,7 @@ def _model_facing_serialized_tool_outputs(
 ) -> list[dict[str, Any]]:
     model_facing_tool_outputs = deepcopy(list(serialized_tool_outputs))
     for record in model_facing_tool_outputs:
+        record.pop("action_identity", None)
         tool_name = canonical_tool_name(
             str(record.get("tool_name", "")).strip(),
             warn_on_alias=False,
@@ -5698,12 +5743,17 @@ def _discord_pending_guidance_lines(
         )
 
     if pending is not None:
-        status = str(getattr(pending, "status", "pending")).strip() or "pending"
-        if status != "pending":
-            reason = str(getattr(pending, "status_reason", "") or status).strip()
+        state_view = pending_action_state_view(pending)
+        if not state_view.is_live_pending:
+            reason = str(
+                getattr(pending, "status_reason", "")
+                or (
+                    "approval_expired"
+                    if state_view.lifecycle_state == "expired"
+                    else state_view.lifecycle_state
+                )
+            ).strip()
             return [f"Approval is no longer pending: {_markdown_code_span(reason)}."]
-        if _pending_confirmation_is_expired(pending):
-            return ["Approval is no longer pending: `approval_expired`."]
     can_approve = True
     can_reject = pending is not None
     cannot_carry_reason = ""
@@ -8945,7 +8995,7 @@ def _active_pending_confirmation_ids_for_session(
     session_id_text = str(session_id)
     effective_delivery_target = delivery_target or fallback_target
     for fallback_id, pending in pending_actions.items():
-        if str(getattr(pending, "status", "")).strip() != "pending":
+        if not pending_action_is_live_pending(pending):
             continue
         if str(getattr(pending, "session_id", "")).strip() != session_id_text:
             continue
@@ -9139,7 +9189,7 @@ class SessionImplMixin(HandlerMixinBase):
         rows = [
             item
             for item in pending_actions.values()
-            if item.status == "pending"
+            if str(getattr(item, "status", "")).strip() == "pending"
             and item.session_id == session_id
             and item.user_id == user_id
             and item.workspace_id == workspace_id
@@ -9260,9 +9310,10 @@ class SessionImplMixin(HandlerMixinBase):
             ),
         ]
         for index, pending in enumerate(pending_rows, start=1):
+            state_view = pending_action_state_view(pending)
             confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
             tool_name = str(getattr(pending, "tool_name", "")).strip() or "unknown"
-            status = str(getattr(pending, "status", "")).strip() or "pending"
+            status = state_view.lifecycle_state
             reason = _compact_context_text(
                 str(getattr(pending, "reason", "") or "requires_confirmation"),
                 max_chars=160,
@@ -9313,8 +9364,8 @@ class SessionImplMixin(HandlerMixinBase):
         list_tasks = getattr(scheduler, "list_tasks", None)
         if not callable(list_tasks):
             return ""
-        current_target = (
-            validated.delivery_target or _stored_delivery_target_from_session(validated.session)
+        current_target = validated.delivery_target or _stored_delivery_target_from_session(
+            validated.session
         )
         if current_target is None:
             current_target = DeliveryTarget(channel="session", recipient=str(validated.sid))
@@ -9324,9 +9375,10 @@ class SessionImplMixin(HandlerMixinBase):
         for task in list_tasks():
             if str(getattr(task, "created_by", "")).strip() != str(validated.user_id).strip():
                 continue
-            if str(getattr(task, "workspace_id", "")).strip() != str(
-                validated.workspace_id
-            ).strip():
+            if (
+                str(getattr(task, "workspace_id", "")).strip()
+                != str(validated.workspace_id).strip()
+            ):
                 continue
             task_id = str(getattr(task, "id", "")).strip()
             pending_count = 0
@@ -9697,9 +9749,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "proposals": [],
                 "cleanroom_block_reasons": [],
                 "pending_confirmation_ids": returned_pending_confirmation_ids,
-                "response_action_confirmation_ids": (
-                    returned_response_action_confirmation_ids
-                ),
+                "response_action_confirmation_ids": (returned_response_action_confirmation_ids),
                 "output_policy": _output_policy_response_payload(output_result),
                 "planner_error": "",
                 "tool_outputs": returned_tool_outputs,
@@ -9815,7 +9865,7 @@ class SessionImplMixin(HandlerMixinBase):
         system_generated_pending_confirmation_response = False
         response_action_confirmation_ids: list[str] = []
         confirmed_tool_outputs: list[dict[str, Any]] = []
-        continuation_user_goals: list[str] = []
+        continuation_bindings: list[tuple[str, str]] = []
 
         def _extend_confirmed_tool_outputs(result: Mapping[str, Any]) -> None:
             raw_outputs = result.get("tool_outputs")
@@ -9827,8 +9877,15 @@ class SessionImplMixin(HandlerMixinBase):
             if str(result.get("continuation_mode", "")).strip() != "planner":
                 return
             continuation_goal = str(result.get("continuation_user_goal", "")).strip()
-            if continuation_goal and continuation_goal not in continuation_user_goals:
-                continuation_user_goals.append(continuation_goal)
+            identity = result.get("identity")
+            followup_id = (
+                str(identity.get("followup_id", "")).strip()
+                if isinstance(identity, Mapping)
+                else ""
+            )
+            binding = (continuation_goal, followup_id)
+            if all(binding) and binding not in continuation_bindings:
+                continuation_bindings.append(binding)
 
         def _append_confirmed_tool_output_summary(text: str) -> str:
             summary = _summarize_tool_outputs_for_user_response(
@@ -10174,7 +10231,7 @@ class SessionImplMixin(HandlerMixinBase):
             executed_actions > 0
             and blocked_actions == 0
             and not visible_remaining_for_continuation
-            and len(continuation_user_goals) == 1
+            and len(continuation_bindings) == 1
             and confirmed_tool_outputs
         ):
             continuation_response = await self._continue_after_confirmed_pending_action(
@@ -10187,7 +10244,8 @@ class SessionImplMixin(HandlerMixinBase):
                 is_internal_ingress=is_internal_ingress,
                 delivery_target=delivery_target,
                 stored_delivery_target=stored_delivery_target,
-                continuation_user_goal=continuation_user_goals[0],
+                continuation_user_goal=continuation_bindings[0][0],
+                continuation_followup_id=continuation_bindings[0][1],
                 confirmed_tool_outputs=confirmed_tool_outputs,
                 checkpoint_ids=checkpoint_ids,
             )
@@ -10695,6 +10753,11 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_rows=pending_action_rows,
                 validated=validated,
             )
+            pending_action_rows = [
+                pending
+                for pending in pending_action_rows
+                if pending_action_is_live_pending(pending)
+            ]
             pending_action_context = self._planner_pending_action_context(
                 pending_rows=pending_action_rows
             )
@@ -10703,9 +10766,7 @@ class SessionImplMixin(HandlerMixinBase):
                 for pending in pending_action_rows
                 if str(getattr(pending, "confirmation_id", "")).strip()
             )
-            reminder_status_context = self._planner_reminder_status_context(
-                validated=validated
-            )
+            reminder_status_context = self._planner_reminder_status_context(validated=validated)
         lockdown_state_context = ""
         if _is_trusted_command_chat_session(
             channel=str(session.channel),
@@ -11526,7 +11587,7 @@ class SessionImplMixin(HandlerMixinBase):
         checkpoint_ids: list[str] = []
         tool_outputs: list[Any] = []
         serialized_tool_outputs: list[dict[str, Any]] = []
-        continuation_user_goal = ""
+        continuation_bindings: list[tuple[str, str]] = []
         outcome_lines: list[str] = []
 
         for pending in selected_rows:
@@ -11609,8 +11670,15 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 if str(result.get("continuation_mode", "")).strip() == "planner":
                     goal = str(result.get("continuation_user_goal", "")).strip()
-                    if goal and not continuation_user_goal:
-                        continuation_user_goal = goal
+                    identity = result.get("identity")
+                    followup_id = (
+                        str(identity.get("followup_id", "")).strip()
+                        if isinstance(identity, Mapping)
+                        else ""
+                    )
+                    binding = (goal, followup_id)
+                    if all(binding) and binding not in continuation_bindings:
+                        continuation_bindings.append(binding)
                 if confirmed:
                     status = str(
                         result.get("status")
@@ -11661,6 +11729,9 @@ class SessionImplMixin(HandlerMixinBase):
                     ).strip()
                 outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
 
+        continuation_binding = (
+            continuation_bindings[0] if len(continuation_bindings) == 1 else ("", "")
+        )
         return PlannerActionResolveResult(
             executed=executed,
             rejected=rejected,
@@ -11668,7 +11739,8 @@ class SessionImplMixin(HandlerMixinBase):
             checkpoint_ids=checkpoint_ids,
             tool_outputs=tool_outputs,
             serialized_tool_outputs=serialized_tool_outputs,
-            continuation_user_goal=continuation_user_goal,
+            continuation_user_goal=continuation_binding[0],
+            continuation_followup_id=continuation_binding[1],
             success=executed > 0 and rejected == 0,
             summary="\n".join(outcome_lines),
         )
@@ -12205,9 +12277,7 @@ class SessionImplMixin(HandlerMixinBase):
                 proposal_arguments = dict(proposal_arguments)
                 proposal_arguments.pop("reminder_intent", None)
                 if current_turn_reminder_create_intent:
-                    proposal_arguments["reminder_intent"] = (
-                        CURRENT_TURN_REMINDER_CREATE_INTENT
-                    )
+                    proposal_arguments["reminder_intent"] = CURRENT_TURN_REMINDER_CREATE_INTENT
             navigation_url_selection: BrowserNavigationURLSelection | None = None
             if proposal_tool_name == "browser.navigate":
                 navigation_url_selection = _select_task_specific_navigation_url(
@@ -12398,6 +12468,7 @@ class SessionImplMixin(HandlerMixinBase):
                     resolve_result.executed > 0
                     and resolve_result.rejected == 0
                     and resolve_result.continuation_user_goal
+                    and resolve_result.continuation_followup_id
                     and resolve_result.serialized_tool_outputs
                     and len(planner_result.evaluated) == 1
                 ):
@@ -12415,6 +12486,7 @@ class SessionImplMixin(HandlerMixinBase):
                                 validated.session
                             ),
                             continuation_user_goal=resolve_result.continuation_user_goal,
+                            continuation_followup_id=(resolve_result.continuation_followup_id),
                             confirmed_tool_outputs=resolve_result.serialized_tool_outputs,
                             checkpoint_ids=resolve_result.checkpoint_ids,
                         )
@@ -12915,6 +12987,16 @@ class SessionImplMixin(HandlerMixinBase):
                         trusted_current_turn_reminder_create=(current_turn_reminder_create_intent),
                         continuation_user_goal=continuation_user_goal,
                         continuation_mode="planner" if continuation_user_goal else "",
+                        origin_turn_id=(
+                            str(validated.user_transcript_entry.entry_id).strip()
+                            if validated.user_transcript_entry is not None
+                            and str(validated.user_transcript_entry.entry_id).strip()
+                            else (
+                                str(validated.channel_message_id).strip()
+                                or str(validated.params.get("_origin_turn_id", "")).strip()
+                                or f"proposal:{proposal.action_id}"
+                            )
+                        ),
                         pep_context=(
                             _pending_pep_context_snapshot(planner_context.context)
                             if pep_elevation is not None
@@ -14116,18 +14198,33 @@ class SessionImplMixin(HandlerMixinBase):
         delivery_target: DeliveryTarget | None,
         stored_delivery_target: DeliveryTarget | None,
         continuation_user_goal: str,
+        continuation_followup_id: str,
         confirmed_tool_outputs: Sequence[Mapping[str, Any]],
         checkpoint_ids: Sequence[str],
     ) -> SessionMessageExecutionResult | None:
         goal = str(continuation_user_goal or "").strip()
         if not goal or not confirmed_tool_outputs:
             return None
+        continuation_delivery_target = delivery_target or stored_delivery_target
+        source_action_identity: dict[str, Any] = {}
+        for item in confirmed_tool_outputs:
+            raw_identity = item.get("action_identity") if isinstance(item, Mapping) else None
+            source_action_identity = _validated_action_followup_identity(
+                raw_identity,
+                expected_followup_id=continuation_followup_id,
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                delivery_target=continuation_delivery_target,
+            )
+            if source_action_identity:
+                break
+        if not source_action_identity:
+            return None
         session = self._session_manager.get(sid)
         planner = getattr(self, "_planner", None)
         if session is None or planner is None:
             return None
-        continuation_delivery_target = delivery_target or stored_delivery_target
-
         confirmed_records = [
             _tool_output_record_from_serialized_dict(item)
             for item in confirmed_tool_outputs
@@ -14149,7 +14246,12 @@ class SessionImplMixin(HandlerMixinBase):
         registry_tools = self._registry.list_tools()
         validated = SessionMessageValidationResult(
             sid=sid,
-            params={"session_id": str(sid), "content": goal},
+            params={
+                "session_id": str(sid),
+                "content": goal,
+                "_origin_turn_id": str(continuation_followup_id).strip(),
+                "_action_followup_identity": source_action_identity,
+            },
             content=goal,
             session=session,
             session_mode=session_mode,
@@ -14362,6 +14464,7 @@ class SessionImplMixin(HandlerMixinBase):
         delivery_target: DeliveryTarget | None,
         stored_delivery_target: DeliveryTarget | None,
         continuation_user_goal: str,
+        continuation_followup_id: str,
         confirmed_tool_outputs: Sequence[Mapping[str, Any]],
         checkpoint_ids: Sequence[str],
     ) -> dict[str, Any] | None:
@@ -14376,6 +14479,7 @@ class SessionImplMixin(HandlerMixinBase):
             delivery_target=delivery_target,
             stored_delivery_target=stored_delivery_target,
             continuation_user_goal=continuation_user_goal,
+            continuation_followup_id=continuation_followup_id,
             confirmed_tool_outputs=confirmed_tool_outputs,
             checkpoint_ids=checkpoint_ids,
         )
@@ -14391,6 +14495,18 @@ class SessionImplMixin(HandlerMixinBase):
         planner_context = planner_dispatch.planner_context
         validated = planner_context.validated
         sid = validated.sid
+
+        raw_followup_identity = validated.params.get("_action_followup_identity")
+        action_followup_identity = _validated_action_followup_identity(
+            raw_followup_identity,
+            expected_followup_id=str(validated.params.get("_origin_turn_id", "")).strip(),
+            session_id=sid,
+            user_id=validated.user_id,
+            workspace_id=validated.workspace_id,
+            delivery_target=(
+                validated.delivery_target or _stored_delivery_target_from_session(validated.session)
+            ),
+        )
 
         def _current_visible_pending_confirmation_ids() -> list[str]:
             pending_rows = self._pending_confirmations_for_binding(
@@ -14413,6 +14529,11 @@ class SessionImplMixin(HandlerMixinBase):
                 delivery_target=validated.delivery_target,
                 fallback_target=stored_delivery_target,
             )
+            visible_pending_rows = [
+                pending
+                for pending in visible_pending_rows
+                if pending_action_is_live_pending(pending)
+            ]
             return [
                 str(getattr(pending, "confirmation_id", "")).strip()
                 for pending in visible_pending_rows
@@ -14550,9 +14671,7 @@ class SessionImplMixin(HandlerMixinBase):
                     candidate_metadata = build_delivery_metadata(
                         {
                             "pending_confirmation_ids": visible_pending_confirmation_ids,
-                            "response_action_confirmation_ids": (
-                                visible_pending_confirmation_ids
-                            ),
+                            "response_action_confirmation_ids": (visible_pending_confirmation_ids),
                         },
                         principal_id=str(validated.user_id),
                         workspace_id=str(validated.workspace_id),
@@ -14995,6 +15114,10 @@ class SessionImplMixin(HandlerMixinBase):
             assistant_transcript_metadata["pending_confirmation_bridge"] = True
         if evidence_ref_ids:
             assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)
+        if action_followup_identity:
+            assistant_transcript_metadata["action_followup_identity"] = dict(
+                action_followup_identity
+            )
         transcript_delivery_target = (
             validated.delivery_target or _stored_delivery_target_from_session(validated.session)
         )
@@ -15169,6 +15292,7 @@ class SessionImplMixin(HandlerMixinBase):
             "output_policy": _output_policy_response_payload(output_result),
             "planner_error": planner_dispatch.planner_failure_code,
             "tool_outputs": returned_tool_outputs,
+            "action_followup_identity": action_followup_identity,
         }
 
     def _task_request_from_params(

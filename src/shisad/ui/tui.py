@@ -126,12 +126,18 @@ def _safe_task_pending_rows(raw_pending: Any) -> list[dict[str, Any]]:
         rows.append(
             {
                 "confirmation_id": str(raw.get("confirmation_id", "")).strip(),
+                "action_id": str(raw.get("action_id", "")).strip(),
+                "identity": dict(raw.get("identity", {}))
+                if isinstance(raw.get("identity"), Mapping)
+                else {},
                 "task_id": str(raw.get("task_id", "")).strip(),
                 "tool_name": str(raw.get("tool_name", "")).strip(),
                 "event_type": str(raw.get("event_type", "")).strip(),
                 "payload_taint": str(raw.get("payload_taint", "")).strip(),
                 "reason": str(raw.get("reason", "")).strip(),
                 "status": str(raw.get("status", "")).strip() or "pending",
+                "lifecycle_state": (str(raw.get("lifecycle_state", "")).strip() or "pending"),
+                "result_id": str(raw.get("result_id", "")).strip(),
                 "queued_at": str(raw.get("queued_at", "")).strip(),
             }
         )
@@ -387,8 +393,16 @@ def _safe_pending_action_rows(raw_actions: list[Any]) -> list[dict[str, Any]]:
             {
                 "confirmation_id": str(item.get("confirmation_id", "")),
                 "action_id": str(item.get("action_id", "")),
+                "identity": dict(item.get("identity", {}))
+                if isinstance(item.get("identity"), Mapping)
+                else {},
+                "origin_turn_id": str(item.get("origin_turn_id", "")),
+                "execution_attempt_id": str(item.get("execution_attempt_id", "")),
+                "result_id": str(item.get("result_id", "")),
+                "followup_id": str(item.get("followup_id", "")),
                 "tool_name": str(item.get("tool_name", "")),
                 "status": str(item.get("status", "")),
+                "lifecycle_state": str(item.get("lifecycle_state", "")),
                 "created_at": str(item.get("created_at", "")),
                 "risk_level": str(item.get("risk_level", "")),
                 "required_proof_tier": str(item.get("required_proof_tier", "")),
@@ -485,9 +499,9 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
             for action in _safe_pending_action_rows(
                 [item for item in exact_pending.get("actions", [])]
             ):
-                action_id = str(action.get("confirmation_id", "")).strip()
-                if action_id:
-                    pending_by_id[action_id] = action
+                confirmation_id = str(action.get("confirmation_id", "")).strip()
+                if confirmation_id:
+                    pending_by_id[confirmation_id] = action
         task_rows = _safe_task_rows(raw_task_rows)
         _enrich_task_rows_with_pending_actions(
             task_rows,
@@ -716,9 +730,17 @@ def _pending_status_style(status: object) -> str:
     normalized = str(status or "").strip().lower()
     if normalized == "pending":
         return "yellow"
-    if normalized == "approved":
+    if normalized in {"approved", "executed"}:
         return "green"
-    if normalized in {"rejected", "expired", "failed", "error"}:
+    if normalized in {
+        "rejected",
+        "expired",
+        "failed",
+        "cancelled",
+        "superseded",
+        "outcome_unknown",
+        "error",
+    }:
         return "red"
     return "dim"
 
@@ -809,13 +831,16 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     pending.add_column("Proof")
     pending.add_column("Details")
     for row in snapshot.pending_actions:
+        lifecycle_state = (
+            str(row.get("lifecycle_state", "")).strip() or str(row.get("status", "")).strip()
+        )
         pending.add_row(
             str(row.get("confirmation_id", "")),
             str(row.get("tool_name", "")),
-            str(row.get("status", "")),
+            lifecycle_state,
             str(row.get("required_proof_tier", "")),
             render_pending_action(row),
-            style=_pending_status_style(row.get("status", "")),
+            style=_pending_status_style(lifecycle_state),
         )
     if not snapshot.pending_actions:
         pending.add_row("(none)", "", "", "", "")

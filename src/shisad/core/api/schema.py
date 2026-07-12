@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from shisad.core.action_state import ActionLifecycleState
 from shisad.executors.sandbox import SandboxResult
 from shisad.memory.schema import MemoryEntryType
 
@@ -223,6 +224,7 @@ class SessionMessageResult(BaseModel):
     output_policy: dict[str, Any] = Field(default_factory=dict)
     planner_error: str = ""
     tool_outputs: list[dict[str, Any]] = Field(default_factory=list)
+    action_followup_identity: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
     task_result: SessionTaskResult | None = None
 
@@ -1856,11 +1858,30 @@ class ActionDecisionParams(_StrictParams):
     proof: dict[str, Any] | None = None
 
 
+class ActionIdentityEntry(BaseModel):
+    action_id: str = ""
+    origin_turn_id: str = ""
+    session_id: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    task_id: str = ""
+    delivery_target: dict[str, Any] | None = None
+    confirmation_id: str = ""
+    execution_attempt_id: str = ""
+    result_id: str = ""
+    followup_id: str = ""
+
+
 class ActionPendingEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     confirmation_id: str = ""
     action_id: str = ""
+    identity: ActionIdentityEntry = Field(default_factory=ActionIdentityEntry)
+    origin_turn_id: str = ""
+    execution_attempt_id: str = ""
+    result_id: str = ""
+    followup_id: str = ""
     action_kind: str = ""
     decision_nonce: str = ""
     session_id: str = ""
@@ -1868,6 +1889,7 @@ class ActionPendingEntry(BaseModel):
     workspace_id: str = ""
     origin_channel: str = ""
     status: str = ""
+    lifecycle_state: ActionLifecycleState | Literal[""] = ""
     tool_name: str = ""
     arguments: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
@@ -1920,6 +1942,9 @@ class ActionPurgeResult(BaseModel):
 class ActionConfirmResult(BaseModel):
     confirmed: bool
     confirmation_id: str
+    action_id: str = ""
+    identity: ActionIdentityEntry = Field(default_factory=ActionIdentityEntry)
+    lifecycle_state: ActionLifecycleState | None = None
     decision_nonce: str | None = None
     status: str | None = None
     status_reason: str | None = None
@@ -1934,6 +1959,9 @@ class ActionConfirmResult(BaseModel):
 class ActionRejectResult(BaseModel):
     rejected: bool
     confirmation_id: str
+    action_id: str = ""
+    identity: ActionIdentityEntry = Field(default_factory=ActionIdentityEntry)
+    lifecycle_state: ActionLifecycleState | None = None
     status: str | None = None
     status_reason: str | None = None
     reason: str | None = None

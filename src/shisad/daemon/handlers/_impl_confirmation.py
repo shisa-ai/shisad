@@ -53,6 +53,7 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._pending_approval import (
     build_policy_context_for_pending_action,
     pending_action_is_live_pending,
+    pending_action_state_view,
     pep_arguments_for_policy_evaluation,
 )
 from shisad.security.control_plane.schema import RiskTier, build_action
@@ -67,9 +68,9 @@ _STALE_PENDING_APPROVAL_REASONS = frozenset(
     {
         "approval_envelope_missing",
         "action_digest_missing",
+        "action_identity_mismatch",
     }
 )
-_TERMINAL_PENDING_ACTION_STATUSES = frozenset({"approved", "failed", "rejected"})
 _PURGED_STALE_PENDING_ACTION_REASON = "purged_stale_pending_action"
 _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
     {
@@ -311,6 +312,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
             "tool_success": bool(getattr(tool_output, "success", False)),
             "timestamp_utc": decision_timestamp,
+            "action_identity": pending_action_state_view(pending).identity.to_payload(),
         }
         if page_title_metadata:
             metadata["page_title_metadata"] = page_title_metadata
@@ -350,6 +352,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
             return "approval_envelope_missing"
         if not str(getattr(approval_envelope, "action_digest", "")).strip():
             return "action_digest_missing"
+        identity = pending_action_state_view(pending).identity
+        envelope_action_id = str(getattr(approval_envelope, "pending_action_id", "")).strip()
+        envelope_approval_id = str(getattr(approval_envelope, "approval_id", "")).strip()
+        if envelope_approval_id != identity.confirmation_id:
+            return "action_identity_mismatch"
+        legacy_alias_is_valid = bool(envelope_action_id and envelope_approval_id) and (
+            envelope_action_id == envelope_approval_id == identity.confirmation_id
+        )
+        if envelope_action_id != identity.action_id and not legacy_alias_is_valid:
+            return "action_identity_mismatch"
         return ""
 
     def _stale_pending_action_reason(self, pending: Any) -> str:
@@ -410,7 +422,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
         *,
         decision_timestamp: str,
     ) -> dict[str, Any]:
+        identity = pending_action_state_view(pending).identity
         fields = {
+            "action_id": identity.action_id,
+            "origin_turn_id": identity.origin_turn_id,
+            "execution_attempt_id": identity.execution_attempt_id,
+            "result_id": identity.result_id,
+            "followup_id": identity.followup_id,
             "approval_session_id": str(getattr(pending, "session_id", "")),
             "approval_task_envelope_id": str(
                 getattr(pending, "approval_task_envelope_id", "")
@@ -422,6 +440,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         fields.update(approval_audit_fields(getattr(pending, "confirmation_evidence", None)))
         return fields
 
+    @staticmethod
+    def _pending_action_response_identity_fields(pending: Any) -> dict[str, Any]:
+        state_view = pending_action_state_view(pending)
+        return {
+            "action_id": state_view.identity.action_id,
+            "identity": state_view.identity.to_payload(),
+            "lifecycle_state": state_view.lifecycle_state,
+        }
+
     def _sync_task_confirmation_status(self, pending: Any) -> None:
         task_id = str(getattr(pending, "task_id", "")).strip()
         if not task_id:
@@ -432,11 +459,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         resolve_confirmation = getattr(resolver, "resolve_confirmation", None)
         if not callable(resolve_confirmation):
             return
+        state_view = pending_action_state_view(pending)
         resolve_confirmation(
             task_id,
             confirmation_id=str(getattr(pending, "confirmation_id", "")),
             status=str(getattr(pending, "status", "")),
             status_reason=str(getattr(pending, "status_reason", "")),
+            lifecycle_state=state_view.lifecycle_state,
+            action_id=state_view.identity.action_id,
+            result_id=state_view.identity.result_id,
         )
 
     def _record_task_confirmation_outcome(self, pending: Any, *, success: bool) -> None:
@@ -1134,7 +1165,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 continue
             if session_filter and str(item.session_id) != session_filter:
                 continue
-            if status_filter and item.status.lower() != status_filter:
+            state_view = pending_action_state_view(item)
+            expected_lifecycle = "executed" if status_filter == "approved" else status_filter
+            if (
+                status_filter
+                and status_filter != "all"
+                and state_view.lifecycle_state != expected_lifecycle
+            ):
                 continue
             selected_backend_available = self._selected_backend_available_for_pending(item)
             payload = self._pending_to_dict(
@@ -1193,11 +1230,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "all",
             "pending",
             "approved",
+            "executed",
             "failed",
             "rejected",
+            "expired",
+            "cancelled",
+            "superseded",
+            "outcome_unknown",
         }:
             raise ValueError(
-                "status must be one of terminal, pending, approved, failed, rejected, all"
+                "status must be one of terminal, pending, approved, executed, failed, "
+                "rejected, expired, cancelled, superseded, outcome_unknown, all"
             )
         if status_filter in {"pending", "all"} and (
             older_than_days is None or older_than_days <= 0
@@ -1298,10 +1341,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if session_filter and str(item.session_id) != session_filter:
             return False
         item_status = str(item.status).strip().lower()
+        lifecycle_state = pending_action_state_view(item).lifecycle_state
         if status_filter == "terminal":
-            if item_status not in _TERMINAL_PENDING_ACTION_STATUSES:
+            if lifecycle_state in {"pending", "executing"}:
                 return False
-        elif status_filter != "all" and item_status != status_filter:
+        elif status_filter != "all" and status_filter not in {
+            item_status,
+            lifecycle_state,
+        }:
             return False
         return not (cutoff is not None and item.created_at > cutoff)
 
@@ -1328,6 +1375,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
             wait_seconds_raw = result.pop(_CONFIRMATION_INTERNAL_SHORT_WAIT_KEY, None)
             if wait_seconds_raw is None:
+                pending = self._pending_actions.get(confirmation_id)
+                if pending is not None:
+                    result.update(self._pending_action_response_identity_fields(pending))
                 return result
             waited_for_short_cooldown = True
             wait_seconds = max(0.0, float(wait_seconds_raw))
@@ -1484,6 +1534,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
                 "reason": "invalid_decision_nonce",
+            }
+        stale_reason = self._pending_approval_stale_reason(pending)
+        if stale_reason:
+            self._mark_stale_pending_action(pending, reason=stale_reason)
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": stale_reason,
+                "status": pending.status,
+                "status_reason": pending.status_reason,
             }
         if pending.execute_after is not None:
             remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
@@ -1954,6 +2014,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_at = datetime.fromisoformat(decision_timestamp)
+        if not str(getattr(pending, "execution_attempt_id", "")).strip():
+            pending.execution_attempt_id = f"attempt-{uuid.uuid4().hex}"
+        if not str(getattr(pending, "result_id", "")).strip():
+            pending.result_id = f"result-{uuid.uuid4().hex}"
+        action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         execution_result = await self._execute_approved_action(
             sid=pending.session_id,
@@ -1965,6 +2030,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             execution_action=pending_preflight_action,
             merged_policy=pending.merged_policy,
             user_confirmed=True,
+            action_id=action_identity.action_id,
+            origin_turn_id=action_identity.origin_turn_id,
+            execution_attempt_id=action_identity.execution_attempt_id,
+            result_id=action_identity.result_id,
+            followup_id=action_identity.followup_id,
             approval_confirmation_id=str(pending.confirmation_id),
             approval_decision_nonce=str(pending.decision_nonce),
             approval_task_envelope_id=str(
@@ -1983,6 +2053,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         serialized_tool_outputs = (
             [_serialize_confirmed_tool_output(tool_output)] if tool_output is not None else []
         )
+        if serialized_tool_outputs:
+            serialized_tool_outputs[0]["action_identity"] = action_identity.to_payload()
         if serialized_tool_outputs and not serialized_tool_outputs[0].get("arguments"):
             safe_arguments = _safe_confirmed_tool_output_arguments(
                 tool_name=pending_tool_name,
@@ -2022,6 +2094,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "workspace_id": str(pending.workspace_id),
                     "promoted_evidence": True,
                     "promoted_ref_id": target_ref_id,
+                    "action_identity": action_identity.to_payload(),
                 }
                 _apply_delivery_target_metadata(metadata, getattr(pending, "delivery_target", None))
                 self._transcript_store.append(
@@ -2133,10 +2206,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
         lock = self._action_confirmation_lock(confirmation_id)
         try:
             async with lock:
-                return await self._do_action_reject_locked(
+                result = await self._do_action_reject_locked(
                     params,
                     confirmation_id=confirmation_id,
                 )
+                pending = self._pending_actions.get(confirmation_id)
+                if pending is not None:
+                    result.update(self._pending_action_response_identity_fields(pending))
+                return result
         finally:
             self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
 

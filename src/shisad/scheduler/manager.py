@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from shisad.core.action_state import action_lifecycle_state
 from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.scheduler.rendering import parse_interval_seconds, task_schedule_rendering
 from shisad.scheduler.schema import (
@@ -265,8 +266,22 @@ class SchedulerManager:
         pending: list[dict[str, Any]] = []
         for row in self._pending_confirmations.get(task_id, []):
             status = str(row.get("status", "pending") or "pending").strip().lower()
-            if status == "pending":
-                pending.append(dict(row))
+            expires_at: datetime | None = None
+            raw_expires_at = str(row.get("expires_at", "") or "").strip()
+            if raw_expires_at:
+                try:
+                    expires_at = datetime.fromisoformat(raw_expires_at)
+                except ValueError:
+                    expires_at = None
+            lifecycle_state = action_lifecycle_state(
+                status=status,
+                status_reason=str(row.get("status_reason", "") or ""),
+                expires_at=expires_at,
+            )
+            if lifecycle_state == "pending":
+                payload = dict(row)
+                payload["lifecycle_state"] = lifecycle_state
+                pending.append(payload)
         return pending
 
     def resolve_confirmation(
@@ -276,6 +291,9 @@ class SchedulerManager:
         confirmation_id: str,
         status: str,
         status_reason: str = "",
+        lifecycle_state: str = "",
+        action_id: str = "",
+        result_id: str = "",
     ) -> bool:
         rows = self._pending_confirmations.get(task_id, [])
         normalized_confirmation = confirmation_id.strip()
@@ -287,6 +305,18 @@ class SchedulerManager:
                 continue
             row["status"] = normalized_status
             row["status_reason"] = status_reason.strip()
+            if lifecycle_state.strip():
+                row["lifecycle_state"] = lifecycle_state.strip()
+            if action_id.strip():
+                row["action_id"] = action_id.strip()
+            if result_id.strip():
+                row["result_id"] = result_id.strip()
+            identity = row.get("identity")
+            if isinstance(identity, dict):
+                if action_id.strip():
+                    identity["action_id"] = action_id.strip()
+                if result_id.strip():
+                    identity["result_id"] = result_id.strip()
             row["resolved_at"] = datetime.now(UTC).isoformat()
             self._prune_confirmation_rows(task_id)
             self._persist_pending_confirmations()
