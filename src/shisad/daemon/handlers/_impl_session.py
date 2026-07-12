@@ -1869,6 +1869,23 @@ def _pending_matches_delivery_target(
     return _delivery_targets_match(delivery_target, pending_target)
 
 
+def _pending_matches_continuation_scope(
+    pending: Any,
+    *,
+    origin_turn_id: str,
+    delivery_target: DeliveryTarget | None,
+) -> bool:
+    if (
+        not origin_turn_id.strip()
+        or str(getattr(pending, "origin_turn_id", "")).strip() != origin_turn_id.strip()
+    ):
+        return False
+    pending_target = _pending_delivery_target(pending)
+    if delivery_target is None:
+        return pending_target is None
+    return pending_target is not None and _delivery_targets_match(delivery_target, pending_target)
+
+
 def _targetless_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
     return [pending for pending in pending_rows if _pending_delivery_target(pending) is None]
 
@@ -9937,7 +9954,7 @@ class SessionImplMixin(HandlerMixinBase):
         system_generated_pending_confirmation_response = False
         response_action_confirmation_ids: list[str] = []
         confirmed_tool_outputs: list[dict[str, Any]] = []
-        continuation_bindings: list[tuple[str, str]] = []
+        continuation_bindings: list[tuple[str, str, str]] = []
 
         def _extend_confirmed_tool_outputs(result: Mapping[str, Any]) -> None:
             raw_outputs = result.get("tool_outputs")
@@ -9955,7 +9972,12 @@ class SessionImplMixin(HandlerMixinBase):
                 if isinstance(identity, Mapping)
                 else ""
             )
-            binding = (continuation_goal, followup_id)
+            origin_turn_id = (
+                str(identity.get("origin_turn_id", "")).strip()
+                if isinstance(identity, Mapping)
+                else ""
+            )
+            binding = (continuation_goal, followup_id, origin_turn_id)
             if all(binding) and binding not in continuation_bindings:
                 continuation_bindings.append(binding)
 
@@ -10303,7 +10325,19 @@ class SessionImplMixin(HandlerMixinBase):
             user_id=user_id,
             workspace_id=workspace_id,
         )
-        visible_remaining_for_continuation = _visible_pending_rows(remaining_for_continuation)
+        continuation_binding = (
+            continuation_bindings[0] if len(continuation_bindings) == 1 else ("", "", "")
+        )
+        continuation_delivery_target = delivery_target or stored_delivery_target
+        visible_remaining_for_continuation = [
+            pending
+            for pending in _visible_pending_rows(remaining_for_continuation)
+            if _pending_matches_continuation_scope(
+                pending,
+                origin_turn_id=continuation_binding[2],
+                delivery_target=continuation_delivery_target,
+            )
+        ]
         if (
             executed_actions > 0
             and blocked_actions == 0
@@ -10321,8 +10355,8 @@ class SessionImplMixin(HandlerMixinBase):
                 is_internal_ingress=is_internal_ingress,
                 delivery_target=delivery_target,
                 stored_delivery_target=stored_delivery_target,
-                continuation_user_goal=continuation_bindings[0][0],
-                continuation_followup_id=continuation_bindings[0][1],
+                continuation_user_goal=continuation_binding[0],
+                continuation_followup_id=continuation_binding[1],
                 confirmed_tool_outputs=confirmed_tool_outputs,
                 checkpoint_ids=checkpoint_ids,
             )

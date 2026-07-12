@@ -31,6 +31,7 @@ from shisad.daemon.handlers._impl_session import (
     _classify_chat_confirmation_intent,
     _daemon_pending_confirmation_response_text,
     _parse_chat_totp_submission,
+    _pending_matches_continuation_scope,
     _resolve_chat_confirmation_indexes,
     _visible_pending_rows_for_validated_turn,
 )
@@ -79,6 +80,39 @@ def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthroug
         action="none",
         target="none",
         index=None,
+    )
+
+
+def test_f1_pending_continuation_scope_requires_origin_and_exact_delivery_target() -> None:
+    target = DeliveryTarget(channel="discord", recipient="chan-1")
+    other_target = DeliveryTarget(channel="discord", recipient="chan-2")
+    scoped = SimpleNamespace(origin_turn_id="turn-1", delivery_target=target)
+    targetless = SimpleNamespace(origin_turn_id="turn-1", delivery_target=None)
+
+    assert _pending_matches_continuation_scope(
+        scoped,
+        origin_turn_id="turn-1",
+        delivery_target=target,
+    )
+    assert not _pending_matches_continuation_scope(
+        scoped,
+        origin_turn_id="turn-other",
+        delivery_target=target,
+    )
+    assert not _pending_matches_continuation_scope(
+        scoped,
+        origin_turn_id="turn-1",
+        delivery_target=other_target,
+    )
+    assert not _pending_matches_continuation_scope(
+        scoped,
+        origin_turn_id="turn-1",
+        delivery_target=None,
+    )
+    assert _pending_matches_continuation_scope(
+        targetless,
+        origin_turn_id="turn-1",
+        delivery_target=None,
     )
 
 
@@ -1847,6 +1881,137 @@ async def test_channel_chat_confirmation_bound_software_confirm_uses_typed_fallb
             "principal_id": "alice",
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unrelated_origin_turn_id", "unrelated_recipient"),
+    [
+        ("turn-other", "chan-1"),
+        ("turn-current", "chan-2"),
+    ],
+    ids=["other-turn", "other-delivery-target"],
+)
+async def test_f1_chat_confirm_continues_with_unrelated_pending_action(
+    tmp_path,
+    unrelated_origin_turn_id: str,
+    unrelated_recipient: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    target = DeliveryTarget(channel="discord", recipient="chan-1")
+    confirmed = PendingAction(
+        confirmation_id="c-current",
+        decision_nonce="nonce-current",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "/tmp", "recursive": False},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC) - timedelta(seconds=1),
+        delivery_target=target,
+        action_id="action-current",
+        origin_turn_id="turn-current",
+        execution_attempt_id="attempt-current",
+        result_id="result-current",
+        followup_id="followup-current",
+        continuation_user_goal="List the files in /tmp",
+        continuation_mode="planner",
+    )
+    confirmed.allowed_channel_principals = ["alice"]
+    unrelated = PendingAction(
+        confirmation_id="c-unrelated",
+        decision_nonce="nonce-unrelated",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "unrelated"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient=unrelated_recipient),
+        action_id="action-unrelated",
+        origin_turn_id=unrelated_origin_turn_id,
+        execution_attempt_id="attempt-unrelated",
+        result_id="result-unrelated",
+        followup_id="followup-unrelated",
+    )
+    unrelated.allowed_channel_principals = ["alice"]
+    harness._pending_actions = {
+        confirmed.confirmation_id: confirmed,
+        unrelated.confirmation_id: unrelated,
+    }
+    identity = {
+        "action_id": confirmed.action_id,
+        "origin_turn_id": confirmed.origin_turn_id,
+        "session_id": str(confirmed.session_id),
+        "user_id": str(confirmed.user_id),
+        "workspace_id": str(confirmed.workspace_id),
+        "task_id": "",
+        "delivery_target": target.model_dump(mode="json", exclude_none=True),
+        "confirmation_id": confirmed.confirmation_id,
+        "execution_attempt_id": confirmed.execution_attempt_id,
+        "result_id": confirmed.result_id,
+        "followup_id": confirmed.followup_id,
+    }
+    tool_output = {
+        "tool_name": "fs.list",
+        "success": True,
+        "payload": {"ok": True, "path": "/tmp", "entries": [], "count": 0},
+        "taint_labels": [],
+        "action_identity": identity,
+    }
+
+    async def _confirm_with_continuation(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "identity": identity,
+            "continuation_mode": "planner",
+            "continuation_user_goal": confirmed.continuation_user_goal,
+            "tool_outputs": [tool_output],
+        }
+
+    continuation_calls: list[dict[str, object]] = []
+
+    async def _continue(**kwargs: object) -> dict[str, object]:
+        continuation_calls.append(dict(kwargs))
+        return {"response": "continued", "continued": True}
+
+    harness.do_action_confirm = _confirm_with_continuation  # type: ignore[method-assign]
+    harness._continue_after_confirmed_pending_action = _continue  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=target,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result == {"response": "continued", "continued": True}
+    assert len(continuation_calls) == 1
+    assert continuation_calls[0]["continuation_followup_id"] == "followup-current"
+    assert unrelated.status == "pending"
+    remaining = SessionImplMixin._pending_confirmations_for_binding(
+        harness,
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    assert [pending.confirmation_id for pending in remaining] == ["c-unrelated"]
 
 
 @pytest.mark.asyncio
