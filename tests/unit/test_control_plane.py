@@ -7,6 +7,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -379,6 +380,98 @@ async def test_gh54_sequence_voter_blocks_sibling_memory_read_rapid_fire() -> No
                 "raw_user_text": "what notes do we have?",
                 "action_arguments": {"limit": 10},
             },
+        )
+    )
+
+    assert vote.decision == VoteKind.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_gh94_sequence_voter_allows_structural_current_turn_file_read_after_burst() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh94-current-turn-file-read")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="fs.read",
+        action_kind=ActionKind.FS_READ,
+        resource_id="READMEE.md",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(
+                allowed=False,
+                reason_code="trace:tdg_confirmation_required",
+                risk_tier=RiskTier.MEDIUM,
+            ),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "action_arguments": {
+                    "path": "READMEE.md",
+                    "filesystem_intent": "current_turn_local_read",
+                },
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.ALLOW
+    assert "sequence:allow_structural_current_turn_filesystem_read" in vote.reason_codes
+
+
+@pytest.mark.parametrize(
+    "metadata_payload",
+    [
+        {
+            "trusted_input": True,
+            "operator_owned_cli_input": True,
+            "action_arguments": {"path": "READMEE.md"},
+        },
+        {
+            "trusted_input": False,
+            "operator_owned_cli_input": False,
+            "action_arguments": {
+                "path": "READMEE.md",
+                "filesystem_intent": "current_turn_local_read",
+            },
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh94_sequence_voter_keeps_unbound_file_read_burst_blocked(
+    metadata_payload: dict[str, Any],
+) -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh94-unbound-file-read")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="fs.read",
+        action_kind=ActionKind.FS_READ,
+        resource_id="READMEE.md",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(
+                allowed=False,
+                reason_code="trace:tdg_confirmation_required",
+                risk_tier=RiskTier.MEDIUM,
+            ),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload=metadata_payload,
         )
     )
 

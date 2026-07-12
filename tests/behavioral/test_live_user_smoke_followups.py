@@ -247,6 +247,79 @@ async def test_lus_similar_file_recovery_reads_after_find_only_followup(
 
 
 @pytest.mark.asyncio
+async def test_gh94_planner_structured_similarly_named_file_recovery_reads_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner_structured_recovery(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        planner_input = messages[-1].content if messages else ""
+        if "similarly named file in the current workspace" in planner_input.lower():
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[
+                        _tool_call(
+                            "fs.list",
+                            {"path": ".", "recursive": True, "limit": 25},
+                            call_id="t-gh94-structured-list",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return await _stub_complete(self, messages, tools)
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _planner_structured_recovery,
+            raising=True,
+        )
+        (harness.workspace_root / "README.md").write_text(
+            "# Recovery README\n\ngh94 structural recovery content\n",
+            encoding="utf-8",
+        )
+        sid = await _create_session(harness.client)
+        first = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Please read READMEE.md and summarize it.",
+            },
+        )
+        assert _extract_tool_outputs(first)["fs.read"][0].get("error") == "path_not_found"
+
+        recovered = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "Can you find a similarly named file in the current workspace "
+                    "and read that instead?"
+                ),
+            },
+        )
+
+    assert recovered.get("lockdown_level") == "normal"
+    assert int(recovered.get("blocked_actions", 0)) == 0
+    assert int(recovered.get("confirmation_required_actions", 0)) == 0
+    assert recovered.get("pending_confirmation_ids") == []
+    assert int(recovered.get("executed_actions", 0)) == 2
+    outputs = _extract_tool_outputs(recovered)
+    assert outputs["fs.list"][-1].get("ok") is True
+    assert outputs["fs.read"][-1].get("ok") is True
+    assert "gh94 structural recovery content" in str(outputs["fs.read"][-1].get("content", ""))
+
+
+@pytest.mark.asyncio
 async def test_lus_similar_file_recovery_survives_initial_planner_validation_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

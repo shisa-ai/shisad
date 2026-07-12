@@ -2793,6 +2793,61 @@ async def test_contract_cli_memory_write_identity_context_is_explicitly_trusted(
 
 
 @pytest.mark.asyncio
+async def test_gh93_user_approved_cross_session_memory_stays_out_of_untrusted_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        approved = await ingest_memory_via_ingress(
+            harness.client,
+            source_type="user",
+            source_id="gh93-approved-note",
+            collection="user_curated",
+            user_confirmed=True,
+            content="brass_compass_name: The user's brass compass is named Cobalt Finch.",
+        )
+        derived = await ingest_memory_via_ingress(
+            harness.client,
+            source_type="tool",
+            source_id="gh93-derived-summary",
+            collection="tool_outputs",
+            content="summary_duplicate: A prior summary mentions the Cobalt Finch compass.",
+        )
+        _set_retrieval_owner(
+            harness.config,
+            str(approved["chunk_id"]),
+            str(derived["chunk_id"]),
+        )
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "What is the name of my brass compass?"},
+        )
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    internal_side, separator, evidence_side = planner_input.partition(
+        "=== DATA EVIDENCE (UNTRUSTED) ==="
+    )
+    assert separator
+    assert "brass_compass_name:" in internal_side
+    assert "brass_compass_name:" not in evidence_side
+    assert "summary_duplicate:" in evidence_side
+
+
+@pytest.mark.asyncio
 async def test_contract_memory_retrieve_prioritizes_user_curated_and_marks_untrusted(
     contract_harness: ContractHarness,
 ) -> None:

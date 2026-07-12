@@ -41,6 +41,7 @@ from shisad.security.intent_matching import (
 TRACE_VOTER_NAME = "ExecutionTraceVerifier"
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
 _READ_ONLY_FILESYSTEM_ACTION_KINDS = frozenset({ActionKind.FS_READ, ActionKind.FS_LIST})
+_READ_ONLY_FILESYSTEM_TOOL_NAMES = frozenset({"fs.read", "fs.list"})
 
 
 class VoteKind(StrEnum):
@@ -119,6 +120,19 @@ class SequenceVoter:
                 reason_codes=[
                     *reasons,
                     "sequence:allow_structural_current_turn_reminder",
+                ],
+            )
+        if self._allow_structural_current_turn_filesystem_read_after_rapid_fire(
+            data=data,
+            findings=findings,
+        ):
+            return VoterDecision(
+                voter="BehavioralSequenceAnalyzer",
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.MEDIUM,
+                reason_codes=[
+                    *reasons,
+                    "sequence:allow_structural_current_turn_filesystem_read",
                 ],
             )
         if self._allow_trusted_readonly_memory_after_rapid_fire(data=data, findings=findings):
@@ -208,6 +222,32 @@ class SequenceVoter:
                 )
             )
         return False
+
+    @staticmethod
+    def _allow_structural_current_turn_filesystem_read_after_rapid_fire(
+        *,
+        data: ConsensusInput,
+        findings: list[Any],
+    ) -> bool:
+        if any(item.pattern_name != "rapid_fire" for item in findings):
+            return False
+        if data.action.action_kind not in _READ_ONLY_FILESYSTEM_ACTION_KINDS:
+            return False
+        if str(data.action.tool_name).strip() not in _READ_ONLY_FILESYSTEM_TOOL_NAMES:
+            return False
+        if not _strict_metadata_bool(data.metadata_payload.get("trusted_input"), default=False):
+            return False
+        if not _strict_metadata_bool(
+            data.metadata_payload.get("operator_owned_cli_input"),
+            default=False,
+        ):
+            return False
+        intent = str(data.metadata_payload.get("filesystem_intent", "")).strip()
+        if not intent:
+            action_arguments = data.metadata_payload.get("action_arguments")
+            if isinstance(action_arguments, dict):
+                intent = str(action_arguments.get("filesystem_intent", "")).strip()
+        return intent == _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT
 
     @staticmethod
     def _allow_structural_current_turn_reminder_after_rapid_fire(
