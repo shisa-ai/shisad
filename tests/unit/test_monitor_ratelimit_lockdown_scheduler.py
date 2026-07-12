@@ -725,6 +725,8 @@ def test_c2_lockdown_notice_names_session_id_and_both_recovery_paths() -> None:
     # Operator-facing recovery affordance is named twice: in-chat + CLI.
     assert "ask the agent to resume" in notice.lower()
     assert f"shisad lockdown resume {sid}" in notice
+    assert '--reason "operator note"' in notice
+    assert "<note>" not in notice
     # Session id copy-pasteable without parsing diagnostic text.
     assert f"Session id: {sid}" in notice
 

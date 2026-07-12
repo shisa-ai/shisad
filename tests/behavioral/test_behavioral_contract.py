@@ -2842,6 +2842,7 @@ async def test_gh93_user_approved_cross_session_memory_stays_out_of_untrusted_ev
         "=== DATA EVIDENCE (UNTRUSTED) ==="
     )
     assert separator
+    assert "memory:retrieval:same-scope-user-confirmed" in internal_side
     assert "brass_compass_name:" in internal_side
     assert "brass_compass_name:" not in evidence_side
     assert "summary_duplicate:" in evidence_side

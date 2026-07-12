@@ -138,7 +138,7 @@ class LockdownManager:
         # trusted operator can ask the agent to resume the lockdown once the
         # cause is understood) and the out-of-band CLI path with the session
         # id so single-surface operators always have a copy-pasteable command.
-        recovery_cli = f"shisad lockdown resume {session_id} --reason <note>"
+        recovery_cli = f'shisad lockdown resume {session_id} --reason "operator note"'
         return (
             f"Session is in {state.level.value} due to {state.trigger}: {state.reason}. "
             f"To recover: ask the agent what to do; if ready, ask the agent "

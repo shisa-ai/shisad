@@ -270,6 +270,31 @@ async def test_c2_lockdown_resume_trusted_chat_success_records_audit(
     assert approved_identity == executed_identity
 
 
+async def test_f1_live_lockdown_resume_accepts_advertised_now_command(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "Please resume the lockdown now."},
+    )
+
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("executed_actions", 0)) == 1
+    assert _first_lockdown_resume_payload(reply)["ok"] is True
+
+
 async def test_c2_lockdown_resume_hidden_from_non_trusted_channel(
     clean_harness: ContractHarness,
     monkeypatch: pytest.MonkeyPatch,

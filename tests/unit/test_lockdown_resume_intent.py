@@ -31,6 +31,7 @@ from shisad.security.lockdown import LockdownLevel
         "resume the lockdown because I completed the web search",
         "resume the lockdown because I completed the web search for the incident",
         "resume the lockdown because I finished the call with the customer",
+        "Please resume the lockdown now.",
     ],
 )
 def test_c2_lockdown_resume_intent_accepts_single_reason_clause(text: str) -> None:
