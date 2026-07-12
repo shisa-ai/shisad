@@ -248,6 +248,11 @@ async def test_c2_lockdown_resume_trusted_chat_success_records_audit(
     assert proposed_index < approved_index < executed_index
     assert tool_events[approved_index].get("actor") == "human_confirmation"
     assert tool_events[executed_index].get("actor") == "planner_lockdown_resume"
+    for event in (tool_events[approved_index], tool_events[executed_index]):
+        data = event.get("data", {})
+        assert data.get("user_id") == "alice"
+        assert data.get("workspace_id") == "ws1"
+        assert data.get("delivery_target") is None
 
 
 async def test_c2_lockdown_resume_hidden_from_non_trusted_channel(

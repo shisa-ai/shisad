@@ -123,6 +123,7 @@ async def test_gh91_completed_read_is_result_not_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+
         async def _gh91_complete(
             self: LocalPlannerProvider,
             messages: list[Message],
@@ -480,6 +481,15 @@ async def test_command_chat_action_resolve_accepts_polite_id_target(
             {"session_id": sid, "content": f"confirm {pending_id} please"},
         )
         remaining_ids = await _pending_confirmation_ids(harness, sid)
+        audit = await harness.client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 50},
+        )
+        action_resolve_events = [
+            dict(event)
+            for event in audit.get("events", [])
+            if str(event.get("data", {}).get("tool_name", "")) == "action.resolve"
+        ]
 
     assert planner_inputs
     assert "Use target=<exact id> when the user names a pending id." in planner_inputs[-1]
@@ -489,6 +499,11 @@ async def test_command_chat_action_resolve_accepts_polite_id_target(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert pending_id not in remaining_ids
     assert reply.get("pending_confirmation_ids") == []
+    assert action_resolve_events
+    action_resolve_data = action_resolve_events[-1].get("data", {})
+    assert action_resolve_data.get("user_id") == "alice"
+    assert action_resolve_data.get("workspace_id") == "ws1"
+    assert action_resolve_data.get("delivery_target") is None
 
 
 @pytest.mark.asyncio

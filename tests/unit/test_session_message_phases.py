@@ -130,6 +130,50 @@ def _validation_result(
     )
 
 
+class _LockdownResumeAuditHarness(SessionImplMixin):
+    def __init__(self) -> None:
+        self.events: list[object] = []
+        self._event_bus = SimpleNamespace(publish=self._record_event)
+        self._lockdown_manager = SimpleNamespace(
+            state_for=lambda _sid: SimpleNamespace(level=SimpleNamespace(value="caution")),
+            resume=lambda _sid, reason: SimpleNamespace(level=SimpleNamespace(value="normal")),
+        )
+
+    async def _record_event(self, event: object) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_f1_lockdown_resume_approval_audits_current_or_stored_scope() -> None:
+    harness = _LockdownResumeAuditHarness()
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "please resume the lockdown because I cleared the issue",
+        }
+    )
+    stored_target = DeliveryTarget(
+        channel="discord",
+        recipient="room-1",
+        workspace_hint="guild-1",
+        thread_id="thread-1",
+    )
+    validated.delivery_target = None
+    validated.session.metadata["delivery_target"] = stored_target.model_dump(mode="json")
+
+    result = await SessionImplMixin._execute_planner_lockdown_resume(
+        harness,  # type: ignore[arg-type]
+        validated=validated,
+        arguments={"reason": "operator cleared the issue"},
+    )
+
+    assert result.success is True
+    approved = next(event for event in harness.events if event.__class__.__name__ == "ToolApproved")
+    assert approved.user_id == "user-g1"
+    assert approved.workspace_id == "workspace-g1"
+    assert approved.delivery_target == stored_target.model_dump(mode="json")
+
+
 def test_gh82_mcp_tool_delegation_is_not_unknown_action_kind() -> None:
     advisory = should_delegate_to_task(
         proposals=[

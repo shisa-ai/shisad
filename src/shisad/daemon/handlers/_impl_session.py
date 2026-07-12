@@ -1920,6 +1920,21 @@ def _stored_delivery_target_from_session(session: Any) -> DeliveryTarget | None:
     return None
 
 
+def _validated_tool_event_scope_fields(validated: Any) -> dict[str, Any]:
+    delivery_target = getattr(validated, "delivery_target", None)
+    if delivery_target is None:
+        delivery_target = _stored_delivery_target_from_session(getattr(validated, "session", None))
+    return {
+        "user_id": str(getattr(validated, "user_id", "")),
+        "workspace_id": str(getattr(validated, "workspace_id", "")),
+        "delivery_target": (
+            delivery_target.model_dump(mode="json", exclude_none=True)
+            if isinstance(delivery_target, DeliveryTarget)
+            else None
+        ),
+    }
+
+
 def _active_attention_defaults_for_validated(
     validated: Any,
 ) -> ActiveAttentionDefaults | None:
@@ -11890,6 +11905,7 @@ class SessionImplMixin(HandlerMixinBase):
                 actor="human_confirmation",
                 tool_name=ToolName("lockdown.resume"),
                 reason="planner_lockdown_resume",
+                **_validated_tool_event_scope_fields(validated),
             )
         )
 
@@ -12198,6 +12214,7 @@ class SessionImplMixin(HandlerMixinBase):
                         actor="daemon_recovery",
                         tool_name=read_tool_name,
                         reason=final_reason or read_pep_decision.reason,
+                        **_validated_tool_event_scope_fields(validated),
                     )
                 )
                 if self._trace_recorder is not None:
@@ -12288,6 +12305,7 @@ class SessionImplMixin(HandlerMixinBase):
                         actor="policy_loop",
                         tool_name=proposal.tool_name,
                         reason=final_reason,
+                        **_validated_tool_event_scope_fields(validated),
                     )
                 )
                 if self._trace_recorder is not None:
@@ -12408,6 +12426,7 @@ class SessionImplMixin(HandlerMixinBase):
                             actor="planner_action_resolve",
                             tool_name=proposal.tool_name,
                             reason=final_reason,
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                     if self._trace_recorder is not None:
@@ -12438,6 +12457,7 @@ class SessionImplMixin(HandlerMixinBase):
                             actor="policy_loop",
                             tool_name=proposal.tool_name,
                             reason=final_reason,
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                     if self._trace_recorder is not None:
@@ -12477,6 +12497,7 @@ class SessionImplMixin(HandlerMixinBase):
                             actor="planner_action_resolve",
                             tool_name=proposal.tool_name,
                             success=resolve_result.success,
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                 if resolve_result.rejected > 0:
@@ -12487,6 +12508,7 @@ class SessionImplMixin(HandlerMixinBase):
                             tool_name=proposal.tool_name,
                             reason=";".join(resolve_result.rejection_reasons)
                             or "action_resolve_failed",
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                 if self._trace_recorder is not None:
@@ -12560,6 +12582,7 @@ class SessionImplMixin(HandlerMixinBase):
                             actor="policy_loop",
                             tool_name=proposal.tool_name,
                             reason=final_reason,
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                     if self._trace_recorder is not None:
@@ -12596,6 +12619,7 @@ class SessionImplMixin(HandlerMixinBase):
                             actor="planner_lockdown_resume",
                             tool_name=proposal.tool_name,
                             success=resume_result.success,
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                 if resume_result.rejected > 0:
@@ -12606,6 +12630,7 @@ class SessionImplMixin(HandlerMixinBase):
                             tool_name=proposal.tool_name,
                             reason=";".join(resume_result.rejection_reasons)
                             or "lockdown_resume_failed",
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                 if self._trace_recorder is not None:
@@ -12847,6 +12872,7 @@ class SessionImplMixin(HandlerMixinBase):
                         actor="clean_room",
                         tool_name=proposal.tool_name,
                         reason=proposal_reason,
+                        **_validated_tool_event_scope_fields(validated),
                     )
                 )
                 if self._trace_recorder is not None:
@@ -12885,6 +12911,7 @@ class SessionImplMixin(HandlerMixinBase):
                         actor="policy_loop",
                         tool_name=proposal.tool_name,
                         reason=final_reason or pep_decision.reason,
+                        **_validated_tool_event_scope_fields(validated),
                     )
                 )
                 if monitor_decision.kind == MonitorDecisionType.REJECT:
@@ -12970,6 +12997,7 @@ class SessionImplMixin(HandlerMixinBase):
                                 actor="policy_loop",
                                 tool_name=proposal.tool_name,
                                 reason=f"policy_merge:{exc}",
+                                **_validated_tool_event_scope_fields(validated),
                             )
                         )
                         if self._trace_recorder is not None:
@@ -13063,6 +13091,7 @@ class SessionImplMixin(HandlerMixinBase):
                             actor="policy_loop",
                             tool_name=proposal.tool_name,
                             reason=str(exc.reason),
+                            **_validated_tool_event_scope_fields(validated),
                         )
                     )
                     if self._trace_recorder is not None:

@@ -1820,6 +1820,80 @@ async def test_f1_tui_expired_stepup_confirmation_reaches_locked_daemon_prefligh
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selected_method", "required_label"),
+    [("totp", "totp-code"), ("recovery_code", "recovery-code")],
+)
+async def test_f1_tui_live_stepup_without_proof_still_prompts_locally(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_method: str,
+    required_label: str,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-live-stepup",
+                            "decision_nonce": "nonce-live-stepup",
+                            "lifecycle_state": "pending",
+                            "selected_backend_method": selected_method,
+                            "allowed_channel_principals": ["alice"],
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": True}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+
+    await tui_module._decision(
+        Path("/tmp/control.sock"),
+        "action.confirm",
+        "conf-live-stepup",
+    )
+
+    assert created[0].calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-live-stepup",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        )
+    ]
+    assert any(f"{required_label} required" in line for line in printed)
+
+
+@pytest.mark.asyncio
 async def test_tui_decision_fails_when_targeted_nonce_lookup_misses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
