@@ -28,6 +28,7 @@ class ActionHistoryRecord(BaseModel, frozen=True):
     execution_status: str = ""
     reason_code: str = ""
     source: str = ""
+    idempotency_key: str = ""
 
 
 class SessionActionHistoryStore:
@@ -36,16 +37,29 @@ class SessionActionHistoryStore:
     def __init__(self, storage_path: Path | None = None) -> None:
         self._storage_path = storage_path
         self._records: dict[str, list[ActionHistoryRecord]] = {}
+        self._idempotent_records: dict[str, ActionHistoryRecord] = {}
         self._load()
 
-    def append(self, record: ActionHistoryRecord) -> None:
+    def append(self, record: ActionHistoryRecord) -> bool:
+        idempotency_key = record.idempotency_key.strip()
+        if idempotency_key:
+            existing = self._idempotent_records.get(idempotency_key)
+            if existing is not None:
+                if existing != record:
+                    raise ValueError("control_plane_history_idempotency_conflict")
+                return False
         session_id = record.session_id
         self._records.setdefault(session_id, []).append(record)
         if self._storage_path is None:
-            return
+            if idempotency_key:
+                self._idempotent_records[idempotency_key] = record
+            return True
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self._storage_path.open("a", encoding="utf-8") as handle:
             handle.write(record.model_dump_json() + "\n")
+        if idempotency_key:
+            self._idempotent_records[idempotency_key] = record
+        return True
 
     def append_action(
         self,
@@ -56,7 +70,8 @@ class SessionActionHistoryStore:
         observation_kind: str = "action",
         reason_code: str = "",
         source: str = "",
-    ) -> ActionHistoryRecord:
+        idempotency_key: str = "",
+    ) -> bool:
         record = ActionHistoryRecord(
             timestamp=action.timestamp,
             session_id=action.origin.session_id,
@@ -69,9 +84,9 @@ class SessionActionHistoryStore:
             execution_status=execution_status,
             reason_code=reason_code,
             source=source,
+            idempotency_key=idempotency_key.strip(),
         )
-        self.append(record)
-        return record
+        return self.append(record)
 
     def append_denied_action(
         self,
@@ -180,6 +195,12 @@ class SessionActionHistoryStore:
                         line_number,
                     )
                     continue
+                idempotency_key = record.idempotency_key.strip()
+                if idempotency_key:
+                    existing = self._idempotent_records.get(idempotency_key)
+                    if existing is not None and existing != record:
+                        raise ValueError("control_plane_history_idempotency_conflict")
+                    self._idempotent_records[idempotency_key] = record
                 self._records.setdefault(record.session_id, []).append(record)
 
     def dump_json(self) -> str:

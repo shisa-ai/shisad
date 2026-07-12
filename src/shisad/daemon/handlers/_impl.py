@@ -107,6 +107,7 @@ from shisad.core.tools.schema import (
 )
 from shisad.core.types import (
     Capability,
+    EventId,
     SessionId,
     SessionMode,
     TaintLabel,
@@ -1613,6 +1614,7 @@ class PendingAction:
     recovery_result: dict[str, Any] = field(default_factory=dict)
     recovery_accounting_pending: bool = False
     recovery_effect_invoked: bool = False
+    recovery_scheduler_accounted: bool = False
     stable_idempotency_key: str = ""
     provider_operation_id: str = ""
     execution_attempt_id: str = ""
@@ -3068,6 +3070,7 @@ class HandlerImplementation(
             "recovery_result": dict(pending.recovery_result),
             "recovery_accounting_pending": pending.recovery_accounting_pending,
             "recovery_effect_invoked": pending.recovery_effect_invoked,
+            "recovery_scheduler_accounted": pending.recovery_scheduler_accounted,
             "stable_idempotency_key": pending.stable_idempotency_key,
             "provider_operation_id": pending.provider_operation_id,
             "execution_attempt_id": state_view.identity.execution_attempt_id,
@@ -3170,6 +3173,7 @@ class HandlerImplementation(
         if public:
             payload.pop("recovery_accounting_pending", None)
             payload.pop("recovery_effect_invoked", None)
+            payload.pop("recovery_scheduler_accounted", None)
             payload.pop("stable_idempotency_key", None)
             payload["stable_idempotency_key_present"] = bool(
                 pending.stable_idempotency_key
@@ -3992,10 +3996,14 @@ class HandlerImplementation(
                 recovery_effect_invoked, recovery_effect_invoked_valid = _loaded_state_bool(
                     item.get("recovery_effect_invoked", False)
                 )
+                recovery_scheduler_accounted, recovery_scheduler_accounted_valid = (
+                    _loaded_state_bool(item.get("recovery_scheduler_accounted", False))
+                )
                 recovery_authority_invalid = recovery_authority_invalid or not all(
                     (
                         recovery_accounting_pending_valid,
                         recovery_effect_invoked_valid,
+                        recovery_scheduler_accounted_valid,
                         recovery_result_valid,
                     )
                 )
@@ -4205,6 +4213,7 @@ class HandlerImplementation(
                     recovery_result=recovery_result,
                     recovery_accounting_pending=recovery_accounting_pending,
                     recovery_effect_invoked=recovery_effect_invoked,
+                    recovery_scheduler_accounted=recovery_scheduler_accounted,
                     stable_idempotency_key=str(
                         item.get("stable_idempotency_key", "")
                     ).strip(),
@@ -4520,6 +4529,112 @@ class HandlerImplementation(
         adapter = self._services.idempotent_recovery_adapters.get(str(pending.tool_name))
         return adapter if callable(adapter) else None
 
+    @staticmethod
+    def _recovery_accounting_key(pending: PendingAction, sink: str) -> str:
+        identity = pending_action_state_view(pending).identity
+        payload = {
+            "sink": sink,
+            "confirmation_id": identity.confirmation_id,
+            "action_id": identity.action_id,
+            "execution_attempt_id": identity.execution_attempt_id,
+            "result_id": identity.result_id,
+            "retry_generation": pending.retry_generation,
+            "effect_invoked": pending.recovery_effect_invoked,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return f"recovery:{digest}"
+
+    @staticmethod
+    def _recovery_event_timestamp(pending: PendingAction) -> datetime:
+        if pending.recovery_started_at is not None:
+            return pending.recovery_started_at
+        if pending.confirmation_evidence is not None:
+            return pending.confirmation_evidence.verified_at
+        return pending.created_at
+
+    def _record_recovery_scheduler_state(self, pending: PendingAction) -> bool:
+        task_id = pending.task_id.strip()
+        if not task_id:
+            changed = not pending.recovery_scheduler_accounted
+            pending.recovery_scheduler_accounted = True
+            return changed
+
+        scheduler = self._scheduler
+        confirmation_id = pending.confirmation_id.strip()
+        success = pending.status == "approved"
+        outcome_reader = getattr(scheduler, "confirmation_outcome", None)
+        recorded_outcome = (
+            outcome_reader(task_id, confirmation_id=confirmation_id)
+            if callable(outcome_reader)
+            else None
+        )
+        if recorded_outcome is not None and recorded_outcome != success:
+            raise RuntimeError("recovery_scheduler_outcome_conflict")
+        changed = not pending.recovery_scheduler_accounted
+        if recorded_outcome is None:
+            self._sync_task_confirmation_status(pending)
+            recorder = getattr(scheduler, "record_confirmation_outcome", None)
+            if not callable(recorder) or not bool(
+                recorder(
+                    task_id,
+                    confirmation_id=confirmation_id,
+                    success=success,
+                )
+            ):
+                task = scheduler.get_task(task_id)
+                if (
+                    task is not None
+                    and bool(getattr(task, "enabled", False))
+                    and not scheduler.disable_task(task_id)
+                ):
+                    raise RuntimeError("recovery_scheduler_containment_failed")
+                logger.warning(
+                    "Recovery scheduler shadow missing for confirmation %s; task disabled",
+                    confirmation_id,
+                )
+                pending.recovery_scheduler_accounted = True
+                return True
+            changed = True
+
+        task = scheduler.get_task(task_id)
+        should_disable = pending.status == "outcome_unknown"
+        if task is not None and success:
+            should_disable = should_disable or (
+                int(getattr(task, "max_runs", 0)) > 0
+                and int(getattr(task, "success_count", 0))
+                >= int(getattr(task, "max_runs", 0))
+            )
+        if (
+            task is not None
+            and should_disable
+            and bool(getattr(task, "enabled", False))
+            and not scheduler.disable_task(task_id)
+        ):
+            raise RuntimeError("recovery_scheduler_containment_failed")
+        pending.recovery_scheduler_accounted = True
+        return changed
+
+    def _recovery_task_cancel_reason(self, pending: PendingAction) -> str:
+        task_id = pending.task_id.strip()
+        if not task_id:
+            return ""
+        if pending.status == "outcome_unknown":
+            return "outcome_unknown"
+        if pending.status != "approved":
+            return ""
+        task = self._scheduler.get_task(task_id)
+        if task is None:
+            return ""
+        if (
+            int(getattr(task, "max_runs", 0)) > 0
+            and int(getattr(task, "success_count", 0))
+            >= int(getattr(task, "max_runs", 0))
+        ):
+            return "max_runs_reached"
+        return ""
+
     def _schedule_recovery_accounting(self, pending: PendingAction) -> None:
         if not pending.recovery_accounting_pending:
             return
@@ -4577,13 +4692,14 @@ class HandlerImplementation(
         )
         if pending.preflight_action is not None:
             return pending.preflight_action.model_copy(update={"origin": origin})
-        return build_action(
+        action = build_action(
             tool_name=str(pending.tool_name),
             arguments=dict(pending.arguments),
             origin=origin,
             risk_tier=RiskTier.LOW,
             workspace_roots=list(self._config.assistant_fs_roots),
         )
+        return action.model_copy(update={"timestamp": self._recovery_event_timestamp(pending)})
 
     async def _account_recovered_attempt(self, confirmation_id: str) -> None:
         pending = self._pending_actions.get(confirmation_id)
@@ -4593,11 +4709,16 @@ class HandlerImplementation(
         outcome_unknown = pending.status == "outcome_unknown"
         error = "" if success else pending.status_reason or "recovery_failed"
         event_fields = self._recovery_approval_event_fields(pending)
+        event_timestamp = self._recovery_event_timestamp(pending)
 
         if pending.recovery_effect_invoked:
             if not success:
                 await self._event_bus.publish(
                     ToolRejected(
+                        event_id=EventId(
+                            self._recovery_accounting_key(pending, "audit:ToolRejected")
+                        ),
+                        timestamp=event_timestamp,
                         session_id=pending.session_id,
                         actor="recovery",
                         tool_name=pending.tool_name,
@@ -4607,6 +4728,10 @@ class HandlerImplementation(
                 )
             await self._event_bus.publish(
                 ToolExecuted(
+                    event_id=EventId(
+                        self._recovery_accounting_key(pending, "audit:ToolExecuted")
+                    ),
+                    timestamp=event_timestamp,
                     session_id=pending.session_id,
                     actor="recovery",
                     tool_name=pending.tool_name,
@@ -4624,10 +4749,18 @@ class HandlerImplementation(
                 "record_execution",
                 action=self._recovery_control_plane_action(pending, session=session),
                 success=success,
+                idempotency_key=self._recovery_accounting_key(
+                    pending,
+                    "control_plane:execution",
+                ),
             )
         else:
             await self._event_bus.publish(
                 ToolRejected(
+                    event_id=EventId(
+                        self._recovery_accounting_key(pending, "audit:ToolRejected")
+                    ),
+                    timestamp=event_timestamp,
                     session_id=pending.session_id,
                     actor="recovery",
                     tool_name=pending.tool_name,
@@ -4636,13 +4769,12 @@ class HandlerImplementation(
                 )
             )
 
-        await self._record_task_run_outcome(
-            pending.task_id,
-            success=success,
-            confirmation_id=pending.confirmation_id,
-        )
-        if outcome_unknown and pending.task_id:
-            await self.do_task_disable({"task_id": pending.task_id})
+        cancel_reason = self._recovery_task_cancel_reason(pending)
+        if cancel_reason:
+            await self._cancel_pending_actions_for_task(
+                pending.task_id,
+                reason=cancel_reason,
+            )
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
             decision="approve",
@@ -4739,6 +4871,18 @@ class HandlerImplementation(
             pending.recovery_accounting_pending = True
             self._persist_pending_actions()
             self._sync_task_confirmation_status(pending)
+        scheduler_state_changed = False
+        for pending in self._pending_actions.values():
+            if (
+                pending.recovery_accounting_pending
+                or pending.status == "outcome_unknown"
+            ):
+                scheduler_state_changed = (
+                    self._record_recovery_scheduler_state(pending)
+                    or scheduler_state_changed
+                )
+        if scheduler_state_changed:
+            self._persist_pending_actions()
         for pending in self._pending_actions.values():
             self._schedule_recovery_accounting(pending)
 

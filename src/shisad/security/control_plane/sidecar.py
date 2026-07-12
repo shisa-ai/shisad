@@ -97,7 +97,13 @@ class ControlPlaneGateway(Protocol):
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation: ...
 
-    async def record_execution(self, *, action: ControlPlaneAction, success: bool) -> None: ...
+    async def record_execution(
+        self,
+        *,
+        action: ControlPlaneAction,
+        success: bool,
+        idempotency_key: str = "",
+    ) -> None: ...
 
     async def observe_denied_action(
         self,
@@ -183,6 +189,7 @@ class _EvaluateActionResult(BaseModel):
 class _RecordExecutionParams(BaseModel):
     action: ControlPlaneAction
     success: bool
+    idempotency_key: str = ""
 
 
 class _ApproveStage2Params(BaseModel):
@@ -337,7 +344,11 @@ class _ControlPlaneSidecarHandlers:
         ctx: RequestContext,
     ) -> _AckResult:
         _ = ctx
-        self._engine.record_execution(action=params.action, success=params.success)
+        self._engine.record_execution(
+            action=params.action,
+            success=params.success,
+            idempotency_key=params.idempotency_key,
+        )
         return _AckResult()
 
     async def handle_observe_denied_action(
@@ -488,10 +499,20 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         )
         return result.evaluation
 
-    async def record_execution(self, *, action: ControlPlaneAction, success: bool) -> None:
+    async def record_execution(
+        self,
+        *,
+        action: ControlPlaneAction,
+        success: bool,
+        idempotency_key: str = "",
+    ) -> None:
         await self._call(
             "control_plane.record_execution",
-            _RecordExecutionParams(action=action, success=success).model_dump(mode="json"),
+            _RecordExecutionParams(
+                action=action,
+                success=success,
+                idempotency_key=idempotency_key,
+            ).model_dump(mode="json"),
             _AckResult,
         )
 

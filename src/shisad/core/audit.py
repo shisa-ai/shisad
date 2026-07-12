@@ -68,6 +68,7 @@ class AuditLog:
         self._log_path = log_path
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
+        self._event_hashes: dict[str, str] = {}
 
         # Resume chain from existing log if present
         if self._log_path.exists():
@@ -86,6 +87,12 @@ class AuditLog:
         data = event.model_dump(mode="json")
         data_json = json.dumps(data, sort_keys=True)
         data_hash = hashlib.sha256(data_json.encode()).hexdigest()
+        event_id = str(event.event_id)
+        existing_hash = self._event_hashes.get(event_id)
+        if existing_hash is not None:
+            if existing_hash != data_hash:
+                raise ValueError("audit_event_id_payload_conflict")
+            return
         action, target, decision, reasoning = self._derive_entry_metadata(event, data)
 
         entry = AuditEntry(
@@ -118,6 +125,7 @@ class AuditLog:
 
         self._previous_hash = entry_hash
         self._entry_count += 1
+        self._event_hashes[event_id] = data_hash
 
     def verify_chain(self) -> tuple[bool, int, str]:
         """Verify the integrity of the entire audit log chain.
@@ -226,6 +234,15 @@ class AuditLog:
                 line = line.strip()
                 if not line:
                     continue
+                try:
+                    entry = AuditEntry.model_validate_json(line)
+                except ValidationError:
+                    entry = None
+                if entry is not None:
+                    existing_hash = self._event_hashes.get(entry.event_id)
+                    if existing_hash is not None and existing_hash != entry.data_hash:
+                        raise ValueError("audit_event_id_payload_conflict")
+                    self._event_hashes[entry.event_id] = entry.data_hash
                 previous_hash = hashlib.sha256(line.encode()).hexdigest()
                 count += 1
 

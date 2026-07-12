@@ -390,12 +390,21 @@ class ControlPlaneEngine:
             reason_codes=reason_codes,
         )
 
-    def record_execution(self, *, action: ControlPlaneAction, success: bool) -> None:
-        self._history_store.append_action(
+    def record_execution(
+        self,
+        *,
+        action: ControlPlaneAction,
+        success: bool,
+        idempotency_key: str = "",
+    ) -> None:
+        recorded = self._history_store.append_action(
             action,
             decision_status=ControlDecision.ALLOW.value,
             execution_status="success" if success else "failed",
+            idempotency_key=idempotency_key,
         )
+        if not recorded:
+            return
         if success:
             self._trace_verifier.record_dependency_path(
                 session_id=action.origin.session_id,

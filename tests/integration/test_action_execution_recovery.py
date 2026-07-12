@@ -74,6 +74,63 @@ async def _wait_for_recovery_accounting(impl: object) -> None:
         await asyncio.gather(*tasks)
 
 
+async def _seed_unresolved_scheduled_time_attempt(
+    config: DaemonConfig,
+) -> tuple[str, str]:
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name="recovery-accounting-fault",
+            goal="Recover one structural clock read",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="recovery-accounting-fault",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=1,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reason="recovery-accounting-fault",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-recovery-accounting-fault",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
+        )
+        publication = 0
+
+        def _fail_terminal_write(stage: AtomicWriteStage) -> None:
+            nonlocal publication
+            if stage == AtomicWriteStage.TEMP_OPEN:
+                publication += 1
+            if publication == 2 and stage == AtomicWriteStage.FILE_FSYNC:
+                raise OSError("crash after clock effect before terminal publication")
+
+        impl._pending_state_fault_injector = _fail_terminal_write
+        with pytest.raises(AtomicWriteError):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+        return pending.confirmation_id, task.id
+    finally:
+        await services.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_time_now_structural_read_unresolved_attempt_retries_automatically(
     tmp_path: Path,
@@ -214,6 +271,119 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
     finally:
         await second_restart.shutdown()
 
+
+@pytest.mark.parametrize(
+    "accounting_failure",
+    ["audit", "control_plane", "marker_persist"],
+)
+@pytest.mark.asyncio
+async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accounting_failure: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    confirmation_id, task_id = await _seed_unresolved_scheduled_time_attempt(config)
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        impl = handlers._impl
+        contained_task = restarted.scheduler.get_task(task_id)
+        assert contained_task is not None
+        assert contained_task.success_count == 1
+        assert contained_task.failure_count == 0
+        assert contained_task.enabled is False
+
+        if accounting_failure == "audit":
+
+            async def _fail_audit(_event: object) -> None:
+                raise OSError("recovery audit unavailable")
+
+            monkeypatch.setattr(impl._event_bus, "publish", _fail_audit)
+            expected_error: type[BaseException] = OSError
+        elif accounting_failure == "control_plane":
+
+            async def _fail_control_plane(**_kwargs: object) -> None:
+                raise OSError("recovery control plane unavailable")
+
+            monkeypatch.setattr(
+                impl._control_plane,
+                "record_execution",
+                _fail_control_plane,
+            )
+            expected_error = OSError
+        else:
+
+            def _fail_marker_clear(stage: AtomicWriteStage) -> None:
+                if stage == AtomicWriteStage.FILE_FSYNC:
+                    raise OSError("crash before recovery accounting marker clear")
+
+            impl._pending_state_fault_injector = _fail_marker_clear
+            expected_error = AtomicWriteError
+
+        accounting_tasks = list(impl._recovery_accounting_tasks)
+        assert len(accounting_tasks) == 1
+        with pytest.raises(expected_error):
+            await asyncio.gather(*accounting_tasks)
+
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
+        assert durable["recovery_accounting_pending"] is True
+        first_recovery_audit = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
+        ]
+        first_recovery_control = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("origin", {}).get("actor") == "recovery"
+            and row.get("tool_name") == "time.now"
+        ]
+        expected_first_audit = 0 if accounting_failure == "audit" else 1
+        expected_first_control = 1 if accounting_failure == "marker_persist" else 0
+        assert len(first_recovery_audit) == expected_first_audit
+        assert len(first_recovery_control) == expected_first_control
+    finally:
+        await restarted.shutdown()
+
+    replayed = await DaemonServices.build(config)
+    try:
+        replayed_handlers = DaemonControlHandlers(services=replayed)
+        await _wait_for_recovery_accounting(replayed_handlers._impl)
+        replayed_task = replayed.scheduler.get_task(task_id)
+        assert replayed_task is not None
+        assert replayed_task.success_count == 1
+        assert replayed_task.failure_count == 0
+        assert replayed_task.enabled is False
+        recovery_audit = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
+        ]
+        recovery_control = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("origin", {}).get("actor") == "recovery"
+            and row.get("tool_name") == "time.now"
+        ]
+        assert len(recovery_audit) == 1
+        assert len({row["event_id"] for row in recovery_audit}) == 1
+        assert len(recovery_control) == 1
+        assert len({row["idempotency_key"] for row in recovery_control}) == 1
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
+        assert durable["recovery_accounting_pending"] is False
+    finally:
+        await replayed.shutdown()
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -400,6 +570,18 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         impl = raw_impl
         session = services.session_manager.get(session_id)
         assert session is not None
+        scheduled_task = None
+        if tamper == "top_level_status":
+            scheduled_task = services.scheduler.create_task(
+                name="corrupt-status-recovery",
+                goal="Contain a corrupt scheduled attempt",
+                schedule=Schedule.from_event("message.received"),
+                capability_snapshot=set(),
+                policy_snapshot_ref="corrupt-status-recovery",
+                created_by=session.user_id,
+                workspace_id=session.workspace_id,
+                max_runs=3,
+            )
         pending = impl._queue_pending_action(
             session_id=session_id,
             user_id=session.user_id,
@@ -410,7 +592,13 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
             capabilities=set(),
             confirmation_requirement=legacy_software_confirmation_requirement(),
             origin_turn_id=f"turn-time-{tamper}",
+            task_id=scheduled_task.id if scheduled_task is not None else "",
         )
+        if scheduled_task is not None:
+            services.scheduler.queue_confirmation(
+                scheduled_task.id,
+                impl._pending_to_dict(pending, public=True),
+            )
         publication = 0
 
         def _fail_terminal_write(stage: AtomicWriteStage) -> None:
@@ -509,6 +697,12 @@ tools:
         assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
         assert recovered.decision_nonce == ""
         assert clock_calls == 1
+        if scheduled_task is not None:
+            contained_task = restarted.scheduler.get_task(scheduled_task.id)
+            assert contained_task is not None
+            assert contained_task.success_count == 0
+            assert contained_task.failure_count == 1
+            assert contained_task.enabled is False
     finally:
         await restarted.shutdown()
 

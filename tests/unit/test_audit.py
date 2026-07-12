@@ -17,7 +17,7 @@ from shisad.core.events import (
     ToolApproved,
     ToolRejected,
 )
-from shisad.core.types import PEPDecisionKind, SessionId, ToolName, UserId
+from shisad.core.types import EventId, PEPDecisionKind, SessionId, ToolName, UserId
 
 
 @pytest.fixture
@@ -38,6 +38,41 @@ async def _write_entries(log: AuditLog, count: int = 3) -> None:
             actor="test",
         )
         await log.persist(event)
+
+
+@pytest.mark.asyncio
+async def test_recovery_event_id_is_idempotent_across_audit_restart(
+    audit_path: Path,
+) -> None:
+    event_id = EventId("recovery-accounting-event")
+    event_timestamp = datetime(2026, 7, 12, 18, 30, tzinfo=UTC)
+    first = AuditLog(audit_path)
+    await first.persist(
+        ToolRejected(
+            event_id=event_id,
+            timestamp=event_timestamp,
+            session_id=SessionId("s-recovery"),
+            actor="recovery",
+            tool_name=ToolName("time.now"),
+            reason="uncertain_effect_requires_fresh_approval",
+        )
+    )
+
+    restarted = AuditLog(audit_path)
+    await restarted.persist(
+        ToolRejected(
+            event_id=event_id,
+            timestamp=event_timestamp,
+            session_id=SessionId("s-recovery"),
+            actor="recovery",
+            tool_name=ToolName("time.now"),
+            reason="uncertain_effect_requires_fresh_approval",
+        )
+    )
+
+    assert restarted.entry_count == 1
+    assert len(audit_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert restarted.verify_chain() == (True, 1, "")
 
 
 class TestAuditHashChainInsertion:

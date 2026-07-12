@@ -2831,3 +2831,32 @@ def test_m5_rt11_sequence_analyzer_dedupes_preflight_and_execution_rows() -> Non
     )
     findings = analyzer.analyze(history=history, candidate_action=candidate, now=now)
     assert all(item.pattern_name != "mass_enum" for item in findings)
+
+
+def test_recovery_execution_idempotency_key_survives_history_restart(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "history.jsonl"
+    action = ControlPlaneAction(
+        origin=_origin("s-recovery-idempotency"),
+        tool_name="time.now",
+        action_kind=ActionKind.RUNTIME_READ,
+    )
+    first = SessionActionHistoryStore(history_path)
+    first.append_action(
+        action,
+        decision_status="allow",
+        execution_status="success",
+        idempotency_key="recovery:confirmation-1:attempt-1",
+    )
+
+    restarted = SessionActionHistoryStore(history_path)
+    restarted.append_action(
+        action,
+        decision_status="allow",
+        execution_status="success",
+        idempotency_key="recovery:confirmation-1:attempt-1",
+    )
+
+    assert len(restarted.all_for_session("s-recovery-idempotency")) == 1
+    assert len(history_path.read_text(encoding="utf-8").splitlines()) == 1
