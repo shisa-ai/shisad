@@ -28,6 +28,7 @@ from shisad.channels.base import DeliveryTarget
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
+    action_lifecycle_state,
     derive_action_followup_id,
     derive_legacy_action_id,
     mint_action_operation_identity,
@@ -3522,6 +3523,7 @@ class HandlerImplementation(
         migrated_legacy_strip_intent = False
         migrated_legacy_channel_principal = False
         migrated_legacy_action_identity = False
+        migrated_legacy_decision_nonce = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -3622,9 +3624,23 @@ class HandlerImplementation(
                     migrated_legacy_action_identity = True
                 if not loaded_followup_id:
                     migrated_legacy_action_identity = True
+                loaded_status = str(item.get("status", "pending")).strip() or "pending"
+                loaded_status_reason = str(item.get("status_reason", "")).strip()
+                loaded_decision_nonce = str(item.get("decision_nonce", "")).strip()
+                if (
+                    not loaded_decision_nonce
+                    and action_lifecycle_state(
+                        status=loaded_status,
+                        status_reason=loaded_status_reason,
+                        expires_at=expires_at,
+                    )
+                    == "pending"
+                ):
+                    loaded_decision_nonce = uuid.uuid4().hex
+                    migrated_legacy_decision_nonce = True
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
-                    decision_nonce=str(item.get("decision_nonce", "")) or uuid.uuid4().hex,
+                    decision_nonce=loaded_decision_nonce,
                     action_id=loaded_action_id,
                     origin_turn_id=(
                         str(item.get("origin_turn_id", "")).strip()
@@ -3708,8 +3724,8 @@ class HandlerImplementation(
                     ),
                     continuation_user_goal=str(item.get("continuation_user_goal", "")).strip(),
                     continuation_mode=str(item.get("continuation_mode", "")).strip(),
-                    status=str(item.get("status", "pending")),
-                    status_reason=str(item.get("status_reason", "")),
+                    status=loaded_status,
+                    status_reason=loaded_status_reason,
                 )
             except (TypeError, ValueError, ValidationError):
                 continue
@@ -3773,6 +3789,7 @@ class HandlerImplementation(
             or migrated_legacy_strip_intent
             or migrated_legacy_channel_principal
             or migrated_legacy_action_identity
+            or migrated_legacy_decision_nonce
         ):
             self._persist_pending_actions()
 

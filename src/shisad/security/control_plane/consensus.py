@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from shisad.core.action_state import (
+    CURRENT_TURN_REMINDER_AUTHORITY_PROOF_KEY,
     CURRENT_TURN_REMINDER_CREATE_INTENT,
     reminder_create_arguments_are_current_turn_anchored,
 )
@@ -237,10 +238,10 @@ class SequenceVoter:
             != CURRENT_TURN_REMINDER_CREATE_INTENT
         ):
             return False
-        current_turn = str(data.metadata_payload.get("raw_user_text", "")).strip()
-        return bool(current_turn) and reminder_create_arguments_are_current_turn_anchored(
-            action_arguments,
-            current_turn=current_turn,
+        return _current_turn_reminder_arguments_are_anchored(
+            data,
+            action_arguments=action_arguments,
+            current_turn=str(data.metadata_payload.get("raw_user_text", "")).strip(),
         )
 
 
@@ -384,6 +385,23 @@ def _strict_metadata_bool(value: Any, *, default: bool) -> bool:
     return default
 
 
+def _current_turn_reminder_arguments_are_anchored(
+    data: ConsensusInput,
+    *,
+    action_arguments: dict[str, Any],
+    current_turn: str,
+) -> bool:
+    if CURRENT_TURN_REMINDER_AUTHORITY_PROOF_KEY in data.metadata_payload:
+        return _strict_metadata_bool(
+            data.metadata_payload.get(CURRENT_TURN_REMINDER_AUTHORITY_PROOF_KEY),
+            default=False,
+        )
+    return bool(current_turn) and reminder_create_arguments_are_current_turn_anchored(
+        action_arguments,
+        current_turn=current_turn,
+    )
+
+
 class ActionMonitorVoter:
     """Taint-aware action monitor voter using structural current-turn anchoring."""
 
@@ -506,8 +524,9 @@ class ActionMonitorVoter:
             and str(action_arguments.get("reminder_intent", "")).strip()
             == CURRENT_TURN_REMINDER_CREATE_INTENT
         ):
-            return reminder_create_arguments_are_current_turn_anchored(
-                action_arguments,
+            return _current_turn_reminder_arguments_are_anchored(
+                data,
+                action_arguments=action_arguments,
                 current_turn=user_text,
             )
         values = cls._iter_anchor_argument_values(

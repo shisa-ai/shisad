@@ -903,6 +903,48 @@ def test_f1_pending_action_identity_survives_restart(tmp_path: Path) -> None:
     assert after["lifecycle_state"] == "pending"
 
 
+@pytest.mark.parametrize("status_reason", ["task_disabled", "max_runs_reached"])
+def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
+    tmp_path: Path,
+    status_reason: str,
+) -> None:
+    pending = _pending_action(nonce="")
+    pending.status = "cancelled"
+    pending.status_reason = status_reason
+    pending.task_id = "task-1"
+    payload = HandlerImplementation._pending_to_dict(pending)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "cancelled"
+    assert loaded.status_reason == status_reason
+    assert loaded.decision_nonce == ""
+
+
+def test_f1_legacy_live_pending_nonce_backfill_is_persisted(tmp_path: Path) -> None:
+    pending = _pending_action(nonce="")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "pending"
+    assert loaded.decision_nonce
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["decision_nonce"] == loaded.decision_nonce
+
+
 def test_f1_legacy_confirmation_alias_migrates_to_distinct_action_identity(
     tmp_path: Path,
 ) -> None:

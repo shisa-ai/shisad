@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+CURRENT_TURN_REMINDER_AUTHORITY_PROOF_KEY = "current_turn_reminder_arguments_anchored"
 
 ActionLifecycleState = Literal[
     "pending",

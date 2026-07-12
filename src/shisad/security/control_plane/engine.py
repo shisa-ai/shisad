@@ -8,6 +8,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shisad.core.action_state import (
+    CURRENT_TURN_REMINDER_AUTHORITY_PROOF_KEY,
+    CURRENT_TURN_REMINDER_CREATE_INTENT,
+    reminder_create_arguments_are_current_turn_anchored,
+)
 from shisad.core.types import Capability
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.control_plane.consensus import (
@@ -295,6 +300,16 @@ class ControlPlaneEngine:
             risk_tier=risk_tier,
             workspace_roots=self._workspace_roots,
         )
+        current_turn_reminder_arguments_anchored = bool(
+            action.action_kind == ActionKind.MEMORY_WRITE
+            and str(action.tool_name).strip() == "reminder.create"
+            and str(action_arguments.get("reminder_intent", "")).strip()
+            == CURRENT_TURN_REMINDER_CREATE_INTENT
+            and reminder_create_arguments_are_current_turn_anchored(
+                action_arguments,
+                current_turn=str(raw_user_text),
+            )
+        )
 
         trace_result = self._trace_verifier.verify_action(
             session_id=origin.session_id,
@@ -330,6 +345,9 @@ class ControlPlaneEngine:
                     "action_arguments": metadata_arguments,
                     "action_argument_omitted_fields": omitted_argument_fields,
                     "action_argument_omitted_field_proofs": omitted_argument_field_proofs,
+                    CURRENT_TURN_REMINDER_AUTHORITY_PROOF_KEY: (
+                        current_turn_reminder_arguments_anchored
+                    ),
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),
                     "network_hosts": list(action.network_hosts),

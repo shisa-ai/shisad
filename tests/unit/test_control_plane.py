@@ -1745,6 +1745,120 @@ async def test_gh33_control_plane_uses_raw_action_and_redacted_monitor_payload(
 
 
 @pytest.mark.asyncio
+async def test_f1_engine_preserves_long_current_turn_reminder_authority(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / "cp-f1-long-current-turn-reminder",
+    )
+    origin = _origin("s-f1-long-current-turn-reminder")
+    message = f"review {'x' * 300}"
+    current_turn = f"set a reminder to {message} in 2 minutes"
+    arguments = {
+        "message": message,
+        "when": "in 2 minutes",
+        "reminder_intent": "current_turn_reminder_create",
+    }
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=current_turn,
+        origin=origin,
+        ttl_seconds=1800,
+        max_actions=10,
+        capabilities={Capability.MEMORY_WRITE},
+    )
+    _append_recent_memory_read_burst(
+        engine._history_store,
+        origin=origin,
+        now=datetime.now(UTC) - timedelta(milliseconds=450),
+    )
+
+    evaluation = await engine.evaluate_action(
+        tool_name="reminder.create",
+        arguments=arguments,
+        monitor_arguments=arguments,
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        operator_owned_cli_input=True,
+        raw_user_text=current_turn,
+    )
+
+    assert evaluation.trace_result.allowed is True
+    sequence_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "BehavioralSequenceAnalyzer"
+    )
+    action_monitor_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
+    )
+    assert sequence_vote.decision == VoteKind.ALLOW
+    assert "sequence:allow_structural_current_turn_reminder" in sequence_vote.reason_codes
+    assert action_monitor_vote.decision == VoteKind.ALLOW
+    assert "action_monitor:current_turn_anchored" in action_monitor_vote.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_f1_engine_reminder_authority_proof_binds_actual_arguments(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / "cp-f1-reminder-proof-action-binding",
+    )
+    origin = _origin("s-f1-reminder-proof-action-binding")
+    benign_message = f"review {'x' * 300}"
+    current_turn = f"set a reminder to {benign_message} in 2 minutes"
+    monitor_arguments = {
+        "message": benign_message,
+        "when": "in 2 minutes",
+        "reminder_intent": "current_turn_reminder_create",
+    }
+    action_arguments = {
+        "message": "archive credentials",
+        "when": "in 2 minutes",
+        "reminder_intent": "current_turn_reminder_create",
+    }
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=current_turn,
+        origin=origin,
+        ttl_seconds=1800,
+        max_actions=10,
+        capabilities={Capability.MEMORY_WRITE},
+    )
+    _append_recent_memory_read_burst(
+        engine._history_store,
+        origin=origin,
+        now=datetime.now(UTC) - timedelta(milliseconds=450),
+    )
+
+    evaluation = await engine.evaluate_action(
+        tool_name="reminder.create",
+        arguments=action_arguments,
+        monitor_arguments=monitor_arguments,
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        operator_owned_cli_input=True,
+        raw_user_text=current_turn,
+    )
+
+    sequence_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "BehavioralSequenceAnalyzer"
+    )
+    action_monitor_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
+    )
+    assert sequence_vote.decision == VoteKind.BLOCK
+    assert "sequence:allow_structural_current_turn_reminder" not in sequence_vote.reason_codes
+    assert action_monitor_vote.decision == VoteKind.FLAG
+    assert "action_monitor:current_turn_anchored" not in action_monitor_vote.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m5_t20_action_monitor_voter_rejects_raw_text_payloads() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
