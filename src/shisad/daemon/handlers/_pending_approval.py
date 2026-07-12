@@ -146,12 +146,16 @@ def pending_action_state_view(
     )
 
 
-def pending_action_event_identity_fields(pending: Any) -> dict[str, str]:
+def pending_action_event_identity_fields(pending: Any) -> dict[str, Any]:
     """Return canonical pending-action identity fields for core audit events."""
     identity = pending_action_state_view(pending).identity
     return {
         "action_id": identity.action_id,
         "origin_turn_id": identity.origin_turn_id,
+        "user_id": identity.user_id,
+        "workspace_id": identity.workspace_id,
+        "task_id": identity.task_id,
+        "delivery_target": dict(identity.delivery_target) if identity.delivery_target else None,
         "execution_attempt_id": identity.execution_attempt_id,
         "result_id": identity.result_id,
         "followup_id": identity.followup_id,

@@ -456,6 +456,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             status_reason=str(getattr(pending, "status_reason", "")),
             lifecycle_state=state_view.lifecycle_state,
             action_id=state_view.identity.action_id,
+            execution_attempt_id=state_view.identity.execution_attempt_id,
             result_id=state_view.identity.result_id,
         )
 
@@ -2047,6 +2048,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
             execution_attempt_id=action_identity.execution_attempt_id,
             result_id=action_identity.result_id,
             followup_id=action_identity.followup_id,
+            workspace_id=pending.workspace_id,
+            task_id=action_identity.task_id,
+            delivery_target=pending.delivery_target,
             approval_confirmation_id=str(pending.confirmation_id),
             approval_decision_nonce=str(pending.decision_nonce),
             approval_task_envelope_id=str(

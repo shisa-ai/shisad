@@ -293,6 +293,7 @@ class SchedulerManager:
         status_reason: str = "",
         lifecycle_state: str = "",
         action_id: str = "",
+        execution_attempt_id: str = "",
         result_id: str = "",
     ) -> bool:
         rows = self._pending_confirmations.get(task_id, [])
@@ -309,12 +310,16 @@ class SchedulerManager:
                 row["lifecycle_state"] = lifecycle_state.strip()
             if action_id.strip():
                 row["action_id"] = action_id.strip()
+            if execution_attempt_id.strip():
+                row["execution_attempt_id"] = execution_attempt_id.strip()
             if result_id.strip():
                 row["result_id"] = result_id.strip()
             identity = row.get("identity")
             if isinstance(identity, dict):
                 if action_id.strip():
                     identity["action_id"] = action_id.strip()
+                if execution_attempt_id.strip():
+                    identity["execution_attempt_id"] = execution_attempt_id.strip()
                 if result_id.strip():
                     identity["result_id"] = result_id.strip()
             row["resolved_at"] = datetime.now(UTC).isoformat()

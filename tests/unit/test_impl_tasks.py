@@ -217,6 +217,7 @@ async def test_t2_do_task_status_snapshot_binds_to_active_session_scope_and_reda
         {
             "confirmation_id": "confirm-visible",
             "action_id": "",
+            "execution_attempt_id": "",
             "identity": {},
             "task_id": "task-visible",
             "tool_name": "message.send",

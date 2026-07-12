@@ -38,7 +38,13 @@ from shisad.core.approval import (
     hash_recovery_code,
     intent_envelope_hash,
 )
-from shisad.core.events import TwoFactorEnrolled, TwoFactorRevoked
+from shisad.core.events import (
+    ToolApproved,
+    ToolExecuted,
+    ToolRejected,
+    TwoFactorEnrolled,
+    TwoFactorRevoked,
+)
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
@@ -216,6 +222,7 @@ class _SchedulerRecorder:
         status_reason: str = "",
         lifecycle_state: str = "",
         action_id: str = "",
+        execution_attempt_id: str = "",
         result_id: str = "",
     ) -> bool:
         self.resolved_confirmations.append(
@@ -226,6 +233,7 @@ class _SchedulerRecorder:
                 "status_reason": status_reason,
                 "lifecycle_state": lifecycle_state,
                 "action_id": action_id,
+                "execution_attempt_id": execution_attempt_id,
                 "result_id": result_id,
             }
         )
@@ -381,6 +389,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         execution_attempt_id: str = "",
         result_id: str = "",
         followup_id: str = "",
+        workspace_id: WorkspaceId | None = None,
+        task_id: str = "",
+        delivery_target: DeliveryTarget | None = None,
         approval_confirmation_id: str = "",
         approval_decision_nonce: str = "",
         approval_task_envelope_id: str = "",
@@ -408,6 +419,13 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 "execution_attempt_id": execution_attempt_id,
                 "result_id": result_id,
                 "followup_id": followup_id,
+                "workspace_id": str(workspace_id or ""),
+                "task_id": task_id,
+                "delivery_target": (
+                    delivery_target.model_dump(mode="json", exclude_none=True)
+                    if delivery_target is not None
+                    else None
+                ),
                 "approval_confirmation_id": approval_confirmation_id,
                 "approval_decision_nonce": approval_decision_nonce,
                 "approval_task_envelope_id": approval_task_envelope_id,
@@ -2705,6 +2723,81 @@ async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonc
     missing = await harness.do_action_confirm({"confirmation_id": "c-1"})
     assert missing["confirmed"] is False
     assert missing["reason"] == "missing_decision_nonce"
+
+
+@pytest.mark.asyncio
+async def test_f1_confirmation_resolution_carries_complete_audit_and_task_identity(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    harness._scheduler = scheduler
+    pending = _pending_action(nonce="expected")
+    pending.task_id = "task-1"
+    pending.delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": pending.confirmation_id,
+            "decision_nonce": "expected",
+            "principal_id": "alice",
+        }
+    )
+
+    assert result["confirmed"] is True
+    execution_call = harness.execution_kwargs[-1]
+    assert execution_call["workspace_id"] == "w-1"
+    assert execution_call["task_id"] == "task-1"
+    assert execution_call["delivery_target"] == {
+        "channel": "discord",
+        "recipient": "chan-1",
+        "thread_id": "",
+        "workspace_hint": "",
+    }
+    resolution = scheduler.resolved_confirmations[-1]
+    assert resolution["execution_attempt_id"] == result["identity"]["execution_attempt_id"]
+    assert resolution["result_id"] == result["identity"]["result_id"]
+
+    rejected_pending = _pending_action(nonce="reject-expected")
+    rejected_pending.confirmation_id = "c-reject"
+    rejected_pending.task_id = "task-1"
+    rejected_pending.delivery_target = DeliveryTarget(
+        channel="discord",
+        recipient="chan-1",
+    )
+    rejected_pending.allowed_channel_principals = ["alice"]
+    harness._pending_actions[rejected_pending.confirmation_id] = rejected_pending
+    await harness.do_action_reject(
+        {
+            "confirmation_id": rejected_pending.confirmation_id,
+            "decision_nonce": "reject-expected",
+            "principal_id": "alice",
+        }
+    )
+    rejected = next(
+        event
+        for event in harness.published_events
+        if isinstance(event, ToolRejected) and event.actor == "human_confirmation"
+    )
+    assert rejected.user_id == "alice"
+    assert rejected.workspace_id == "w-1"
+    assert rejected.task_id == "task-1"
+    assert rejected.delivery_target == {
+        "channel": "discord",
+        "recipient": "chan-1",
+        "thread_id": "",
+        "workspace_hint": "",
+    }
+
+
+@pytest.mark.parametrize("event_type", [ToolApproved, ToolRejected, ToolExecuted])
+def test_f1_tool_audit_event_schemas_include_complete_action_scope(
+    event_type: type[object],
+) -> None:
+    for field_name in ("user_id", "workspace_id", "task_id", "delivery_target"):
+        assert field_name in event_type.model_fields  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

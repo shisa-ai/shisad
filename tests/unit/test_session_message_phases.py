@@ -2340,6 +2340,10 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert queued_event.approval_session_id == "sess-g1"
     assert queued_event.approval_task_envelope_id == ""
     assert queued_event.approval_confirmation_id == "c-1"
+    assert queued_event.user_id == "user-g1"
+    assert queued_event.workspace_id == "workspace-g1"
+    assert queued_event.task_id == ""
+    assert queued_event.delivery_target is None
     assert queued_event.execution_attempt_id == ""
     assert queued_event.result_id == ""
     assert queued_event.approval_decision_nonce == ""

@@ -1657,6 +1657,97 @@ async def test_tui_decision_reject_fetches_decision_nonce(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["action.confirm", "action.reject"])
+async def test_f1_tui_decision_retries_unfiltered_nonce_lookup_after_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, called_method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((called_method, payload))
+            if called_method == "action.pending":
+                if payload.get("status") == "pending":
+                    return {"actions": [], "count": 0}
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-expired",
+                            "decision_nonce": "nonce-expired",
+                            "lifecycle_state": "expired",
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {
+                "ok": False,
+                "reason": "approval_expired",
+                "method": called_method,
+                "payload": payload,
+            }
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    await tui_module._decision(Path("/tmp/control.sock"), method, "conf-expired")
+
+    assert created[0].calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-expired",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-expired",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            method,
+            {
+                "confirmation_id": "conf-expired",
+                "decision_nonce": "nonce-expired",
+            },
+        ),
+    ]
+    assert not any("decision_nonce not found" in line for line in printed)
+    assert any("approval_expired" in line for line in printed)
+
+
+@pytest.mark.asyncio
 async def test_tui_decision_fails_when_targeted_nonce_lookup_misses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1704,6 +1795,14 @@ async def test_tui_decision_fails_when_targeted_nonce_lookup_misses(
             {
                 "confirmation_id": "conf-1",
                 "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-1",
                 "limit": 1,
                 "include_ui": False,
             },

@@ -2433,6 +2433,13 @@ def action_reject(confirmation_id: str, nonce: str, reason: str) -> None:
     if not decision_nonce:
         decision_nonce = (pending_row.decision_nonce or "").strip() if pending_row else ""
     if not decision_nonce:
+        pending_row = _pending_action_row(
+            config=config,
+            confirmation_id=confirmation_id,
+            include_ui=False,
+        )
+        decision_nonce = (pending_row.decision_nonce or "").strip() if pending_row else ""
+    if not decision_nonce:
         raise click.ClickException(
             "Decision nonce not found for confirmation_id; run 'shisad action list' and retry "
             "with --nonce."

@@ -3863,6 +3863,9 @@ class HandlerImplementation(
         execution_attempt_id: str = "",
         result_id: str = "",
         followup_id: str = "",
+        workspace_id: WorkspaceId | None = None,
+        task_id: str = "",
+        delivery_target: DeliveryTarget | None = None,
         approval_confirmation_id: str = "",
         approval_decision_nonce: str = "",
         approval_task_envelope_id: str = "",
@@ -3906,6 +3909,18 @@ class HandlerImplementation(
         approval_event_fields = {
             "action_id": action_id,
             "origin_turn_id": origin_turn_id,
+            "user_id": str(user_id),
+            "workspace_id": (
+                str(workspace_id)
+                if workspace_id is not None
+                else str(getattr(session, "workspace_id", ""))
+            ),
+            "task_id": str(task_id).strip(),
+            "delivery_target": (
+                delivery_target.model_dump(mode="json", exclude_none=True)
+                if delivery_target is not None
+                else None
+            ),
             "execution_attempt_id": execution_attempt_id,
             "result_id": result_id,
             "followup_id": followup_id,

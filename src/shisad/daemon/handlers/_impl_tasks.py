@@ -274,6 +274,7 @@ class TasksImplMixin(HandlerMixinBase):
             {
                 "confirmation_id": pending.confirmation_id,
                 "action_id": action_state.identity.action_id,
+                "execution_attempt_id": action_state.identity.execution_attempt_id,
                 "identity": action_state.identity.to_payload(),
                 "lifecycle_state": action_state.lifecycle_state,
                 "session_id": str(session.id),
@@ -305,6 +306,7 @@ class TasksImplMixin(HandlerMixinBase):
         return {
             "confirmation_id": optional_string(row.get("confirmation_id", "")),
             "action_id": optional_string(row.get("action_id", "")),
+            "execution_attempt_id": optional_string(row.get("execution_attempt_id", "")),
             "identity": dict(row.get("identity", {}))
             if isinstance(row.get("identity"), Mapping)
             else {},

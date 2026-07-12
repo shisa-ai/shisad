@@ -883,6 +883,12 @@ def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmati
         created.id,
         {
             "confirmation_id": "confirm-1",
+            "action_id": "act-1",
+            "identity": {
+                "action_id": "act-1",
+                "execution_attempt_id": "",
+                "result_id": "",
+            },
             "task_id": created.id,
             "status": "pending",
         },
@@ -892,6 +898,9 @@ def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmati
         confirmation_id="confirm-1",
         status="approved",
         status_reason="manual_confirm",
+        action_id="act-1",
+        execution_attempt_id="attempt-1",
+        result_id="result-1",
     )
 
     restarted = SchedulerManager(storage_dir=storage)
@@ -899,6 +908,11 @@ def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmati
     assert loaded is not None
     assert loaded.execution_session_id == "sess-background-1"
     assert restarted.pending_confirmations(created.id) == []
+    resolved_row = restarted._pending_confirmations[created.id][0]
+    assert resolved_row["execution_attempt_id"] == "attempt-1"
+    assert resolved_row["result_id"] == "result-1"
+    assert resolved_row["identity"]["execution_attempt_id"] == "attempt-1"
+    assert resolved_row["identity"]["result_id"] == "result-1"
 
     rows = restarted.task_status_snapshot(
         limit=8,

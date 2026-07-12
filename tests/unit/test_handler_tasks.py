@@ -227,6 +227,15 @@ async def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None
     assert queued_event.approval_session_id == "scheduler-session-1"
     assert queued_event.approval_task_envelope_id == ""
     assert queued_event.approval_confirmation_id == "confirm-task-1"
+    assert queued_event.user_id == "alice"
+    assert queued_event.workspace_id == "ws1"
+    assert queued_event.task_id == "task-1"
+    assert queued_event.delivery_target == {
+        "channel": "discord",
+        "recipient": "chan-1",
+        "thread_id": "thread-1",
+        "workspace_hint": "guild-1",
+    }
     assert queued_event.execution_attempt_id == ""
     assert queued_event.result_id == ""
     assert queued_event.approval_decision_nonce == ""

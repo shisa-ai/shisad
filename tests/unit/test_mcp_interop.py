@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.config import DaemonConfig, McpHttpServerConfig, McpStdioServerConfig
 from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
 from shisad.core.session import Session, SessionManager
@@ -1944,6 +1945,55 @@ async def test_mcp_h1_execute_approved_action_tool_output_carries_mcp_taint_on_s
 
 
 @pytest.mark.asyncio
+async def test_f1_approved_execution_audits_complete_action_scope() -> None:
+    harness = _McpHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        }
+    )
+    delivery_target = DeliveryTarget(channel="discord", recipient="chan-1")
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap"},
+        capabilities=set(),
+        approval_actor="human_confirmation",
+        action_id="act-1",
+        origin_turn_id="turn-1",
+        execution_attempt_id="attempt-1",
+        result_id="result-1",
+        followup_id="followup-1",
+        workspace_id=WorkspaceId("ws-1"),
+        task_id="task-1",
+        delivery_target=delivery_target,
+        approval_confirmation_id="confirm-1",
+    )
+
+    assert result.success is True
+    scoped_events = [
+        event
+        for event in harness._event_bus.events
+        if isinstance(event, (ToolApproved, ToolExecuted))
+    ]
+    assert {type(event) for event in scoped_events} == {ToolApproved, ToolExecuted}
+    for event in scoped_events:
+        assert event.user_id == "alice"
+        assert event.workspace_id == "ws-1"
+        assert event.task_id == "task-1"
+        assert event.delivery_target == {
+            "channel": "discord",
+            "recipient": "chan-1",
+            "thread_id": "",
+            "workspace_hint": "",
+        }
+
+
+@pytest.mark.asyncio
 async def test_mcp_h2_control_plane_block_rejects_tool_execute_without_upstream_call() -> None:
     """MCP-H2: when the control plane returns `ControlDecision.BLOCK`,
     `do_tool_execute` must publish `ToolRejected` and return
@@ -2037,6 +2087,10 @@ async def test_mcp_h2_control_plane_require_confirmation_queues_tool_execute() -
     assert queued_event.approval_session_id == str(harness.session_id)
     assert queued_event.approval_task_envelope_id == ""
     assert queued_event.approval_confirmation_id == "confirm-1"
+    assert queued_event.user_id == "alice"
+    assert queued_event.workspace_id == "ws-1"
+    assert queued_event.task_id == ""
+    assert queued_event.delivery_target is None
     assert queued_event.execution_attempt_id == ""
     assert queued_event.result_id == ""
     assert queued_event.approval_decision_nonce == ""

@@ -173,6 +173,10 @@ class ToolApproved(BaseEvent):
     decision: PEPDecisionKind = PEPDecisionKind.ALLOW
     action_id: str = ""
     origin_turn_id: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    task_id: str = ""
+    delivery_target: dict[str, str] | None = None
     execution_attempt_id: str = ""
     result_id: str = ""
     followup_id: str = ""
@@ -203,6 +207,10 @@ class ToolRejected(BaseEvent):
     reason: str = ""
     action_id: str = ""
     origin_turn_id: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    task_id: str = ""
+    delivery_target: dict[str, str] | None = None
     execution_attempt_id: str = ""
     result_id: str = ""
     followup_id: str = ""
@@ -234,6 +242,10 @@ class ToolExecuted(BaseEvent):
     details: dict[str, Any] = Field(default_factory=dict)
     action_id: str = ""
     origin_turn_id: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    task_id: str = ""
+    delivery_target: dict[str, str] | None = None
     execution_attempt_id: str = ""
     result_id: str = ""
     followup_id: str = ""

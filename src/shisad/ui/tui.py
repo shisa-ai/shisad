@@ -1021,46 +1021,54 @@ async def _decision(
         await client.connect()
         payload: dict[str, Any] = {"confirmation_id": confirmation_id}
         if method in {"action.confirm", "action.reject"}:
-            pending_payload = await client.call(
-                "action.pending",
+            decision_nonce = ""
+            channel_principal_id = ""
+            selected_backend_method = ""
+            pending_queries = (
                 {
                     "confirmation_id": confirmation_id,
                     "status": "pending",
                     "limit": 1,
                     "include_ui": False,
                 },
+                {
+                    "confirmation_id": confirmation_id,
+                    "limit": 1,
+                    "include_ui": False,
+                },
             )
-            decision_nonce = ""
-            channel_principal_id = ""
-            selected_backend_method = ""
-            if isinstance(pending_payload, Mapping):
+            for pending_query in pending_queries:
+                pending_payload = await client.call("action.pending", pending_query)
+                if not isinstance(pending_payload, Mapping):
+                    continue
                 actions = pending_payload.get("actions", [])
-                if isinstance(actions, list):
-                    for raw in actions:
-                        if not isinstance(raw, Mapping):
-                            continue
-                        if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
-                            continue
-                        decision_nonce = str(raw.get("decision_nonce", "")).strip()
-                        selected_backend_method = str(
-                            raw.get("selected_backend_method", "")
-                        ).strip()
-                        allowed_channel_principals_raw = raw.get(
-                            "allowed_channel_principals",
-                            [],
-                        )
-                        allowed_channel_principals = (
-                            [
-                                str(value).strip()
-                                for value in allowed_channel_principals_raw
-                                if str(value).strip()
-                            ]
-                            if isinstance(allowed_channel_principals_raw, list)
-                            else []
-                        )
-                        if len(allowed_channel_principals) == 1:
-                            channel_principal_id = allowed_channel_principals[0]
-                        break
+                if not isinstance(actions, list):
+                    continue
+                for raw in actions:
+                    if not isinstance(raw, Mapping):
+                        continue
+                    if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
+                        continue
+                    decision_nonce = str(raw.get("decision_nonce", "")).strip()
+                    selected_backend_method = str(raw.get("selected_backend_method", "")).strip()
+                    allowed_channel_principals_raw = raw.get(
+                        "allowed_channel_principals",
+                        [],
+                    )
+                    allowed_channel_principals = (
+                        [
+                            str(value).strip()
+                            for value in allowed_channel_principals_raw
+                            if str(value).strip()
+                        ]
+                        if isinstance(allowed_channel_principals_raw, list)
+                        else []
+                    )
+                    if len(allowed_channel_principals) == 1:
+                        channel_principal_id = allowed_channel_principals[0]
+                    break
+                if decision_nonce:
+                    break
             if not decision_nonce:
                 print("decision_nonce not found for confirmation_id")
                 return
