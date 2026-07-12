@@ -30,6 +30,7 @@ from shisad.core.action_state import (
     ReminderStatusView,
     derive_action_followup_id,
     derive_legacy_action_id,
+    mint_action_operation_identity,
     parse_reminder_relative_duration,
     reminder_status_view_for_task,
     select_reminder_status_view,
@@ -3893,6 +3894,13 @@ class HandlerImplementation(
                 getattr(getattr(self, "_config", None), "assistant_fs_roots", [Path.cwd()])
             ),
         )
+        operation_identity = mint_action_operation_identity(
+            action_id=action_id,
+            origin_turn_id=origin_turn_id,
+            execution_attempt_id=execution_attempt_id,
+            result_id=result_id,
+            followup_id=followup_id,
+        )
 
         self._rate_limiter.consume(
             session_id=str(sid),
@@ -3907,8 +3915,7 @@ class HandlerImplementation(
             checkpoint_id = checkpoint.checkpoint_id
 
         approval_event_fields = {
-            "action_id": action_id,
-            "origin_turn_id": origin_turn_id,
+            **operation_identity.to_event_fields(),
             "user_id": str(user_id),
             "workspace_id": (
                 str(workspace_id)
@@ -3921,9 +3928,6 @@ class HandlerImplementation(
                 if delivery_target is not None
                 else None
             ),
-            "execution_attempt_id": execution_attempt_id,
-            "result_id": result_id,
-            "followup_id": followup_id,
             "approval_session_id": str(sid),
             "approval_task_envelope_id": (
                 approval_task_envelope_id

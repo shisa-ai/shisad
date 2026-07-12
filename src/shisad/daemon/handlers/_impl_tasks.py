@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping
 from typing import Any, cast
 
 from shisad.channels.base import DeliveryTarget
+from shisad.core.action_state import mint_action_operation_identity
 from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
 from shisad.core.events import (
     AnomalyReported,
@@ -98,6 +100,28 @@ def _join_reason_codes(*codes: str) -> str:
 
 
 class TasksImplMixin(HandlerMixinBase):
+    def _task_lifecycle_lock(self, task_id: str) -> asyncio.Lock:
+        locks = getattr(self, "_task_lifecycle_locks", None)
+        if not isinstance(locks, dict):
+            locks = {}
+            self._task_lifecycle_locks = locks
+        lock = locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[task_id] = lock
+        return lock
+
+    def _discard_task_lifecycle_lock_if_idle(
+        self,
+        task_id: str,
+        lock: asyncio.Lock,
+    ) -> None:
+        if lock.locked() or bool(getattr(lock, "_waiters", None)):
+            return
+        locks = getattr(self, "_task_lifecycle_locks", None)
+        if isinstance(locks, dict) and locks.get(task_id) is lock:
+            locks.pop(task_id, None)
+
     async def _publish_task_anomaly(
         self,
         *,
@@ -332,12 +356,16 @@ class TasksImplMixin(HandlerMixinBase):
         reason: str,
     ) -> dict[str, Any]:
         delivery_target = self._task_delivery_target(task)
+        operation_identity = mint_action_operation_identity(
+            origin_turn_id=f"task:{getattr(task, 'id', '')}",
+        )
         await self._event_bus.publish(
             ToolRejected(
                 session_id=sid,
                 actor="policy_loop",
                 tool_name=_BACKGROUND_MESSAGE_SEND,
                 reason=reason,
+                **operation_identity.to_event_fields(),
                 user_id=str(getattr(task, "created_by", "")),
                 workspace_id=str(getattr(task, "workspace_id", "")),
                 task_id=str(getattr(task, "id", "")),
@@ -358,9 +386,30 @@ class TasksImplMixin(HandlerMixinBase):
         event_type: str,
         due_run: bool,
     ) -> dict[str, Any]:
+        task_id = str(getattr(run, "task_id", "")).strip()
+        if not task_id:
+            return {"accepted": False, "queued_confirmation": False, "executed": False}
+        lock = self._task_lifecycle_lock(task_id)
+        try:
+            async with lock:
+                return await self._execute_task_run_locked(
+                    run,
+                    event_type=event_type,
+                    due_run=due_run,
+                )
+        finally:
+            self._discard_task_lifecycle_lock_if_idle(task_id, lock)
+
+    async def _execute_task_run_locked(
+        self,
+        run: Any,
+        *,
+        event_type: str,
+        due_run: bool,
+    ) -> dict[str, Any]:
         _ = due_run
         task = self._scheduler.get_task(str(getattr(run, "task_id", "")))
-        if task is None:
+        if task is None or not bool(getattr(task, "enabled", False)):
             return {"accepted": False, "queued_confirmation": False, "executed": False}
         task_envelope = getattr(task, "task_envelope", None)
 
@@ -686,8 +735,20 @@ class TasksImplMixin(HandlerMixinBase):
         return {"tasks": [task.model_dump(mode="json") for task in tasks], "count": len(tasks)}
 
     async def do_task_disable(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        task_id = str(params.get("task_id", ""))
-        disabled = self._scheduler.disable_task(task_id)
+        task_id = str(params.get("task_id", "")).strip()
+        if not task_id:
+            return {"disabled": False, "task_id": task_id}
+        lock = self._task_lifecycle_lock(task_id)
+        try:
+            async with lock:
+                disabled = self._scheduler.disable_task(task_id)
+                if disabled:
+                    await self._cancel_pending_actions_for_task(
+                        task_id,
+                        reason="task_disabled",
+                    )
+        finally:
+            self._discard_task_lifecycle_lock_if_idle(task_id, lock)
         return {"disabled": disabled, "task_id": task_id}
 
     async def do_task_trigger_event(self, params: Mapping[str, Any]) -> dict[str, Any]:

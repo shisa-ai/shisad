@@ -504,6 +504,16 @@ async def test_command_chat_action_resolve_accepts_polite_id_target(
     assert action_resolve_data.get("user_id") == "alice"
     assert action_resolve_data.get("workspace_id") == "ws1"
     assert action_resolve_data.get("delivery_target") is None
+    assert all(
+        action_resolve_data.get(key, "")
+        for key in (
+            "action_id",
+            "origin_turn_id",
+            "execution_attempt_id",
+            "result_id",
+            "followup_id",
+        )
+    )
 
 
 @pytest.mark.asyncio

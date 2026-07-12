@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,35 @@ class _TaskImplHarness(TasksImplMixin):
     def __init__(self, storage_dir: Path) -> None:
         self._scheduler = SchedulerManager(storage_dir=storage_dir)
         self._event_bus = _EventCollector()
+
+
+class _TaskLifecycleSerializationHarness(TasksImplMixin):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.sequence: list[str] = []
+        self._scheduler = SimpleNamespace(disable_task=self._disable_task)
+
+    def _disable_task(self, task_id: str) -> bool:
+        self.sequence.append(f"disable:{task_id}")
+        return True
+
+    async def _execute_task_run_locked(
+        self,
+        run: object,
+        *,
+        event_type: str,
+        due_run: bool,
+    ) -> dict[str, object]:
+        self.sequence.append(f"execute:{getattr(run, 'task_id', '')}:{event_type}:{due_run}")
+        self.started.set()
+        await self.release.wait()
+        self.sequence.append("execute:done")
+        return {"accepted": True, "queued_confirmation": True, "executed": False}
+
+    async def _cancel_pending_actions_for_task(self, task_id: str, *, reason: str) -> list[str]:
+        self.sequence.append(f"cancel:{task_id}:{reason}")
+        return ["confirm-1"]
 
 
 class _ScopedSnapshotScheduler:
@@ -223,6 +253,39 @@ async def test_f1_reject_task_run_audits_complete_scheduled_scope(tmp_path: Path
         "workspace_hint": "guild-1",
         "thread_id": "thread-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_f1_task_disable_serializes_after_inflight_task_run() -> None:
+    harness = _TaskLifecycleSerializationHarness()
+    run_task = asyncio.create_task(
+        TasksImplMixin._execute_task_run(
+            harness,  # type: ignore[arg-type]
+            SimpleNamespace(task_id="task-1"),
+            event_type="message.received",
+            due_run=False,
+        )
+    )
+    await harness.started.wait()
+    disable_task = asyncio.create_task(
+        TasksImplMixin.do_task_disable(
+            harness,  # type: ignore[arg-type]
+            {"task_id": "task-1"},
+        )
+    )
+    await asyncio.sleep(0)
+    assert disable_task.done() is False
+
+    harness.release.set()
+
+    assert await run_task == {"accepted": True, "queued_confirmation": True, "executed": False}
+    assert await disable_task == {"disabled": True, "task_id": "task-1"}
+    assert harness.sequence == [
+        "execute:task-1:message.received:False",
+        "execute:done",
+        "disable:task-1",
+        "cancel:task-1:task_disabled",
+    ]
 
 
 @pytest.mark.asyncio

@@ -3031,6 +3031,45 @@ async def test_a0_closed_confirmation_invalid_nonce_does_not_increment_lockout(t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("decision_method", "decision_field"),
+    [("confirm", "confirmed"), ("reject", "rejected")],
+)
+async def test_f1_decision_race_observes_disabled_task_before_execution(
+    tmp_path: Path,
+    decision_method: str,
+    decision_field: str,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.task_id = "task-1"
+    harness._pending_actions["c-1"] = pending
+    harness._scheduler = SimpleNamespace(
+        get_task=lambda _task_id: SimpleNamespace(enabled=False),
+        resolve_confirmation=lambda *_args, **_kwargs: True,
+    )
+
+    decision = (
+        harness.do_action_confirm if decision_method == "confirm" else harness.do_action_reject
+    )
+    result = await decision({"confirmation_id": "c-1", "decision_nonce": "expected"})
+
+    assert result[decision_field] is False
+    assert result["reason"] == "task_disabled"
+    assert result["status"] == "cancelled"
+    assert result["status_reason"] == "task_disabled"
+    assert pending.status == "cancelled"
+    assert pending.decision_nonce == ""
+    assert harness.execution_kwargs == []
+    cancelled = [
+        event
+        for event in harness.published_events
+        if isinstance(event, ToolRejected) and event.reason == "task_disabled"
+    ]
+    assert len(cancelled) == 1
+
+
+@pytest.mark.asyncio
 async def test_a1_two_factor_register_confirm_emits_audit_event(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
 

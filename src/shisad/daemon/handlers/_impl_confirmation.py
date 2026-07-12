@@ -395,6 +395,64 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if persist:
             self._persist_pending_actions()
 
+    async def _cancel_pending_actions_for_task(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+    ) -> list[str]:
+        normalized_task_id = task_id.strip()
+        if not normalized_task_id:
+            return []
+        candidate_ids = sorted(
+            str(getattr(pending, "confirmation_id", "")).strip()
+            for pending in self._pending_actions.values()
+            if str(getattr(pending, "task_id", "")).strip() == normalized_task_id
+            and pending_action_state_view(pending).is_live_pending
+            and str(getattr(pending, "confirmation_id", "")).strip()
+        )
+        locks: list[tuple[str, asyncio.Lock]] = []
+        cancelled: list[Any] = []
+        try:
+            for confirmation_id in candidate_ids:
+                lock = self._action_confirmation_lock(confirmation_id)
+                await lock.acquire()
+                locks.append((confirmation_id, lock))
+            for confirmation_id in candidate_ids:
+                pending = self._pending_actions.get(confirmation_id)
+                if pending is None:
+                    continue
+                if str(getattr(pending, "task_id", "")).strip() != normalized_task_id:
+                    continue
+                if not pending_action_state_view(pending).is_live_pending:
+                    continue
+                pending.status = "cancelled"
+                pending.status_reason = reason
+                pending.decision_nonce = ""
+                self._sync_task_confirmation_status(pending)
+                cancelled.append(pending)
+            if cancelled:
+                self._persist_pending_actions()
+            for pending in cancelled:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="scheduler",
+                        tool_name=pending.tool_name,
+                        reason=reason,
+                        **self._pending_approval_event_fields(
+                            pending,
+                            decision_timestamp=datetime.now(UTC).isoformat(),
+                        ),
+                    )
+                )
+        finally:
+            for confirmation_id, lock in reversed(locks):
+                if lock.locked():
+                    lock.release()
+                self._discard_action_confirmation_lock_if_idle(confirmation_id, lock)
+        return [str(pending.confirmation_id) for pending in cancelled]
+
     @staticmethod
     def _requested_confirmation_method(*, params: Mapping[str, Any], pending: Any) -> str:
         requested = str(
@@ -1445,16 +1503,63 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": "not_found",
             }
         if pending.status != "pending":
+            state_view = pending_action_state_view(pending)
             return {
                 decision_field: False,
                 "confirmation_id": confirmation_id,
                 "reason": f"already_{pending.status}",
+                "status": pending.status,
+                "status_reason": str(getattr(pending, "status_reason", "")),
+                "lifecycle_state": state_view.lifecycle_state,
             }
         return self._expired_action_decision_response(
             pending,
             confirmation_id=confirmation_id,
             decision_field=decision_field,
         )
+
+    async def _disabled_task_action_response(
+        self,
+        pending: Any,
+        *,
+        confirmation_id: str,
+        decision_field: Literal["confirmed", "rejected"],
+    ) -> dict[str, Any] | None:
+        task_id = str(getattr(pending, "task_id", "")).strip()
+        if not task_id:
+            return None
+        scheduler = getattr(self, "_scheduler", None)
+        get_task = getattr(scheduler, "get_task", None)
+        if not callable(get_task):
+            return None
+        task = get_task(task_id)
+        if task is None or bool(getattr(task, "enabled", False)):
+            return None
+        pending.status = "cancelled"
+        pending.status_reason = "task_disabled"
+        pending.decision_nonce = ""
+        self._sync_task_confirmation_status(pending)
+        self._persist_pending_actions()
+        await self._event_bus.publish(
+            ToolRejected(
+                session_id=pending.session_id,
+                actor="scheduler",
+                tool_name=pending.tool_name,
+                reason="task_disabled",
+                **self._pending_approval_event_fields(
+                    pending,
+                    decision_timestamp=datetime.now(UTC).isoformat(),
+                ),
+            )
+        )
+        return {
+            decision_field: False,
+            "confirmation_id": confirmation_id,
+            "reason": "task_disabled",
+            "status": pending.status,
+            "status_reason": pending.status_reason,
+            "lifecycle_state": "cancelled",
+        }
 
     def _confirmation_method_lockout_response(
         self,
@@ -1520,6 +1625,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if lifecycle_response is not None:
             return lifecycle_response
         assert pending is not None
+        disabled_task_response = await self._disabled_task_action_response(
+            pending,
+            confirmation_id=confirmation_id,
+            decision_field="confirmed",
+        )
+        if disabled_task_response is not None:
+            return disabled_task_response
         confirmation_method = (
             str(getattr(pending, "selected_backend_method", "") or "software").strip() or "software"
         )
@@ -2249,6 +2361,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if lifecycle_response is not None:
             return lifecycle_response
         assert pending is not None
+        disabled_task_response = await self._disabled_task_action_response(
+            pending,
+            confirmation_id=confirmation_id,
+            decision_field="rejected",
+        )
+        if disabled_task_response is not None:
+            return disabled_task_response
         raw_nonce = params.get("decision_nonce", "")
         provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
         if not provided_nonce:

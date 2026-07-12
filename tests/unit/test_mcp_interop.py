@@ -1277,6 +1277,23 @@ async def test_i1_execute_approved_action_uses_upstream_mcp_tool_name() -> None:
     assert any(
         isinstance(event, ToolExecuted) and event.success for event in harness._event_bus.events
     )
+    correlated = [
+        event
+        for event in harness._event_bus.events
+        if isinstance(event, (ToolApproved, ToolExecuted))
+    ]
+    operation_ids = {
+        (
+            event.action_id,
+            event.origin_turn_id,
+            event.execution_attempt_id,
+            event.result_id,
+            event.followup_id,
+        )
+        for event in correlated
+    }
+    assert len(operation_ids) == 1
+    assert all(next(iter(operation_ids)))
 
 
 @pytest.mark.asyncio
@@ -2030,9 +2047,21 @@ async def test_mcp_h2_control_plane_block_rejects_tool_execute_without_upstream_
     # Upstream must not be invoked when the control plane blocks.
     assert harness._mcp_manager.calls == []
     # Block path emits ToolRejected with the control-plane reason code(s).
-    assert any(
-        isinstance(event, ToolRejected) and event.reason == "trace:policy_denied"
+    rejected = next(
+        event
         for event in harness._event_bus.events
+        if isinstance(event, ToolRejected) and event.reason == "trace:policy_denied"
+    )
+    assert rejected.user_id == "alice"
+    assert rejected.workspace_id == "ws-1"
+    assert all(
+        (
+            rejected.action_id,
+            rejected.origin_turn_id,
+            rejected.execution_attempt_id,
+            rejected.result_id,
+            rejected.followup_id,
+        )
     )
 
 

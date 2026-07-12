@@ -253,6 +253,21 @@ async def test_c2_lockdown_resume_trusted_chat_success_records_audit(
         assert data.get("user_id") == "alice"
         assert data.get("workspace_id") == "ws1"
         assert data.get("delivery_target") is None
+    operation_keys = (
+        "action_id",
+        "origin_turn_id",
+        "execution_attempt_id",
+        "result_id",
+        "followup_id",
+    )
+    approved_identity = tuple(
+        tool_events[approved_index].get("data", {}).get(key, "") for key in operation_keys
+    )
+    executed_identity = tuple(
+        tool_events[executed_index].get("data", {}).get(key, "") for key in operation_keys
+    )
+    assert all(approved_identity)
+    assert approved_identity == executed_identity
 
 
 async def test_c2_lockdown_resume_hidden_from_non_trusted_channel(

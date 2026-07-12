@@ -297,6 +297,88 @@ async def test_g3_triggered_task_queues_shared_pending_action_for_tainted_messag
 
 
 @pytest.mark.asyncio
+async def test_f1_task_disable_cancels_queued_action_and_invalidates_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "cancel-pending-reminder",
+                "goal": "Reminder: investigate the reported issue",
+                "schedule": {
+                    "kind": "event",
+                    "expression": "message.received",
+                    "event_type": "message.received",
+                },
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+        triggered = await client.call(
+            "task.trigger_event",
+            {"event_type": "message.received", "payload": "forward this raw user message"},
+        )
+        assert triggered["queued_confirmations"] == 1
+
+        pending = await _wait_for_task_pending_confirmation(client, task_id=str(created["id"]))
+        confirmation_id = str(pending["pending"][0]["confirmation_id"])
+        action_pending = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id, "status": "pending", "limit": 1},
+        )
+        decision_nonce = _decision_nonce_for_confirmation(
+            pending_actions=[dict(item) for item in action_pending["actions"]],
+            confirmation_id=confirmation_id,
+        )
+        assert decision_nonce
+
+        disabled = await client.call("task.disable", {"task_id": created["id"]})
+        assert disabled == {"disabled": True, "task_id": created["id"]}
+
+        task_pending = await client.call(
+            "task.pending_confirmations",
+            {"task_id": created["id"]},
+        )
+        assert task_pending["count"] == 0
+        terminal = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id, "limit": 1},
+        )
+        terminal_row = terminal["actions"][0]
+        assert terminal_row["status"] == "cancelled"
+        assert terminal_row["lifecycle_state"] == "cancelled"
+        assert terminal_row["status_reason"] == "task_disabled"
+        assert terminal_row["decision_nonce"] == ""
+
+        stale_confirm = await client.call(
+            "action.confirm",
+            {"confirmation_id": confirmation_id, "decision_nonce": decision_nonce},
+        )
+        assert stale_confirm["confirmed"] is False
+        assert stale_confirm["reason"] == "already_cancelled"
+        assert stale_confirm["status"] == "cancelled"
+        assert stale_confirm["status_reason"] == "task_disabled"
+
+        cancelled = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            predicate=lambda event: (
+                str(event.get("data", {}).get("approval_confirmation_id", "")) == confirmation_id
+                and _event_reason(event) == "task_disabled"
+            ),
+        )
+        assert cancelled["data"]["task_id"] == created["id"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_a0_scheduler_confirmation_preserves_pep_confirmation_requirement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -697,6 +779,16 @@ async def test_g3_due_run_with_capability_mismatch_stays_non_confirmable(
             "thread_id": "",
             "workspace_hint": "",
         }
+        assert all(
+            rejected_data.get(key, "")
+            for key in (
+                "action_id",
+                "origin_turn_id",
+                "execution_attempt_id",
+                "result_id",
+                "followup_id",
+            )
+        )
     finally:
         await _shutdown_daemon(daemon_task, client)
 
@@ -808,6 +900,17 @@ async def test_g3_due_run_honors_caution_and_full_lockdown(
                 "thread_id": "",
                 "workspace_hint": "",
             }
+        operation_keys = (
+            "action_id",
+            "origin_turn_id",
+            "execution_attempt_id",
+            "result_id",
+            "followup_id",
+        )
+        approved_identity = tuple(approved.get("data", {}).get(key, "") for key in operation_keys)
+        executed_identity = tuple(executed.get("data", {}).get(key, "") for key in operation_keys)
+        assert all(approved_identity)
+        assert approved_identity == executed_identity
 
         await client.call(
             "lockdown.set",

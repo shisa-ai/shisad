@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -166,6 +167,46 @@ def derive_action_result_id(action_id: str) -> str:
 def derive_action_followup_id(action_id: str) -> str:
     digest = hashlib.sha256(f"action-followup\x00{action_id}".encode()).hexdigest()
     return f"followup-{digest[:32]}"
+
+
+@dataclass(frozen=True, slots=True)
+class ActionOperationIdentity:
+    """Nonempty operation IDs shared by one action's audit events."""
+
+    action_id: str
+    origin_turn_id: str
+    execution_attempt_id: str
+    result_id: str
+    followup_id: str
+
+    def to_event_fields(self) -> dict[str, str]:
+        return {
+            "action_id": self.action_id,
+            "origin_turn_id": self.origin_turn_id,
+            "execution_attempt_id": self.execution_attempt_id,
+            "result_id": self.result_id,
+            "followup_id": self.followup_id,
+        }
+
+
+def mint_action_operation_identity(
+    *,
+    action_id: str = "",
+    origin_turn_id: str = "",
+    execution_attempt_id: str = "",
+    result_id: str = "",
+    followup_id: str = "",
+) -> ActionOperationIdentity:
+    """Fill missing operation IDs once so sibling audit events correlate."""
+
+    normalized_action_id = action_id.strip() or f"act-{uuid.uuid4().hex}"
+    return ActionOperationIdentity(
+        action_id=normalized_action_id,
+        origin_turn_id=origin_turn_id.strip() or f"turn-{uuid.uuid4().hex}",
+        execution_attempt_id=(execution_attempt_id.strip() or f"attempt-{uuid.uuid4().hex}"),
+        result_id=result_id.strip() or derive_action_result_id(normalized_action_id),
+        followup_id=followup_id.strip() or derive_action_followup_id(normalized_action_id),
+    )
 
 
 def action_lifecycle_state(
@@ -419,16 +460,17 @@ def reminder_lifecycle_state(
     failure_count: int,
 ) -> ReminderLifecycleState:
     """Project scheduler counters into one mutually exclusive reminder state."""
-    if pending_confirmation_count > 0:
-        return "pending"
     if max_runs > 0 and trigger_count >= max_runs:
         if success_count >= max_runs:
             return "executed"
         if success_count + failure_count >= trigger_count and failure_count > 0:
             return "failed"
-        return "executing"
     if not enabled:
         return "cancelled"
+    if pending_confirmation_count > 0:
+        return "pending"
+    if max_runs > 0 and trigger_count >= max_runs:
+        return "executing"
     if trigger_count > success_count + failure_count:
         return "executing"
     return "pending"

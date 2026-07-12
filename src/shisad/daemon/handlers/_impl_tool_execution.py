@@ -7,6 +7,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, cast
 
+from shisad.core.action_state import mint_action_operation_identity
 from shisad.core.approval import (
     ApprovalRoutingError,
     ConfirmationRequirement,
@@ -139,6 +140,15 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         if not tool_name_value:
             raise ValueError("tool_name is required")
         tool_name = self._registry.resolve_name(tool_name_value) or ToolName(tool_name_value)
+        operation_identity = mint_action_operation_identity(
+            origin_turn_id=str(params.get("_origin_turn_id", "")),
+        )
+        direct_event_fields = {
+            **operation_identity.to_event_fields(),
+            "user_id": str(session.user_id),
+            "workspace_id": str(session.workspace_id),
+            "delivery_target": None,
+        }
         tool_def = self._registry.get_tool(tool_name)
         if tool_def is None:
             suppressed_browser_reason = _browser_runtime_unavailable_rejection_reason(
@@ -152,6 +162,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         actor="control_api",
                         tool_name=tool_name,
                         reason=suppressed_browser_reason,
+                        **direct_event_fields,
                     )
                 )
                 raise ValueError(f"browser runtime unavailable: {suppressed_browser_reason}")
@@ -168,6 +179,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                                 actor="control_api",
                                 tool_name=tool_name,
                                 reason=f"mcp_startup_error:{server_name}",
+                                **direct_event_fields,
                             )
                         )
                         raise ValueError(
@@ -180,6 +192,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason="unknown_tool",
+                    **direct_event_fields,
                 )
             )
             raise ValueError(f"unknown tool: {tool_name}")
@@ -195,6 +208,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason=f"invalid_tool_arguments:{exc}",
+                    **direct_event_fields,
                 )
             )
             raise
@@ -224,6 +238,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason=f"invalid_tool_arguments:{validation_error}",
+                    **direct_event_fields,
                 )
             )
             raise ValueError(validation_error)
@@ -262,6 +277,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         actor="skill_sandbox",
                         tool_name=tool_name,
                         reason=reason,
+                        **direct_event_fields,
                     )
                 )
                 return SandboxResult(
@@ -301,6 +317,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason=f"policy_floor_violation:{exc}",
+                    **direct_event_fields,
                 )
             )
             raise ValueError(f"policy floor violation: {exc}") from exc
@@ -317,6 +334,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         actor="control_api",
                         tool_name=tool_name,
                         reason="http.request_allowlist_required",
+                        **direct_event_fields,
                     )
                 )
                 raise ValueError(
@@ -330,6 +348,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         actor="control_api",
                         tool_name=tool_name,
                         reason="http.request_wildcard_disallowed",
+                        **direct_event_fields,
                     )
                 )
                 raise ValueError(
@@ -349,6 +368,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason="egress_wildcard_disallowed_without_break_glass",
+                    **direct_event_fields,
                 )
             )
             raise ValueError(
@@ -444,6 +464,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason=reason,
+                    **direct_event_fields,
                 )
             )
             return SandboxResult(
@@ -513,6 +534,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         actor="control_api",
                         tool_name=tool_name,
                         reason=str(exc.reason),
+                        **direct_event_fields,
                     )
                 )
                 return SandboxResult(
@@ -560,6 +582,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="control_api",
                     tool_name=tool_name,
                     reason=reason,
+                    **direct_event_fields,
                 )
             )
             return SandboxResult(
@@ -579,6 +602,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             merged_policy=merged_policy,
             user_confirmed=True,
             strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+            **operation_identity.to_event_fields(),
         )
         return cast(
             dict[str, Any],
@@ -615,6 +639,16 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         sid = SessionId(str(params.get("session_id", "")))
         if not sid:
             raise ValueError("session_id is required")
+        session = self._session_manager.get(sid)
+        operation_identity = mint_action_operation_identity(
+            origin_turn_id=str(params.get("_origin_turn_id", "")),
+        )
+        browser_event_fields = {
+            **operation_identity.to_event_fields(),
+            "user_id": str(getattr(session, "user_id", "")),
+            "workspace_id": str(getattr(session, "workspace_id", "")),
+            "delivery_target": None,
+        }
         labels: set[TaintLabel] = set()
         for raw in params.get("taint_labels", []):
             try:
@@ -629,6 +663,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     actor="browser_sandbox",
                     tool_name=ToolName("browser.paste"),
                     reason=result.reason or "browser_paste_blocked",
+                    **browser_event_fields,
                 )
             )
         return cast(dict[str, Any], result.model_dump(mode="json"))

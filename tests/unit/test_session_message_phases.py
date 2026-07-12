@@ -21,6 +21,7 @@ from shisad.core.action_state import (
     ReminderLifecycleState,
     ReminderStatusView,
     action_lifecycle_state,
+    mint_action_operation_identity,
     reminder_lifecycle_state,
     select_reminder_status_view,
 )
@@ -284,6 +285,44 @@ def test_gh70_reminder_lifecycle_distinguishes_terminal_outcomes_from_cancellati
         )
         == "cancelled"
     )
+    assert (
+        reminder_lifecycle_state(
+            enabled=False,
+            success_count=0,
+            failure_count=0,
+            trigger_count=1,
+            max_runs=1,
+            pending_confirmation_count=1,
+        )
+        == "cancelled"
+    )
+
+
+def test_f1_action_operation_identity_mints_unique_correlated_ids() -> None:
+    first = mint_action_operation_identity()
+    second = mint_action_operation_identity()
+
+    assert all(first.to_event_fields().values())
+    assert all(second.to_event_fields().values())
+    assert first.action_id != second.action_id
+    assert first.execution_attempt_id != second.execution_attempt_id
+    assert first.result_id != second.result_id
+    assert first.followup_id != second.followup_id
+
+    preserved = mint_action_operation_identity(
+        action_id="act-explicit",
+        origin_turn_id="turn-explicit",
+        execution_attempt_id="attempt-explicit",
+        result_id="result-explicit",
+        followup_id="followup-explicit",
+    )
+    assert preserved.to_event_fields() == {
+        "action_id": "act-explicit",
+        "origin_turn_id": "turn-explicit",
+        "execution_attempt_id": "attempt-explicit",
+        "result_id": "result-explicit",
+        "followup_id": "followup-explicit",
+    }
 
 
 @pytest.mark.parametrize(
