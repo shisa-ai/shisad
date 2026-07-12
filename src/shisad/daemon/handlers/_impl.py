@@ -28,7 +28,6 @@ from shisad.channels.base import DeliveryTarget
 from shisad.core.action_state import (
     CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
-    action_lifecycle_state,
     derive_action_followup_id,
     derive_legacy_action_id,
     mint_action_operation_identity,
@@ -3627,17 +3626,6 @@ class HandlerImplementation(
                 loaded_status = str(item.get("status", "pending")).strip() or "pending"
                 loaded_status_reason = str(item.get("status_reason", "")).strip()
                 loaded_decision_nonce = str(item.get("decision_nonce", "")).strip()
-                if (
-                    not loaded_decision_nonce
-                    and action_lifecycle_state(
-                        status=loaded_status,
-                        status_reason=loaded_status_reason,
-                        expires_at=expires_at,
-                    )
-                    == "pending"
-                ):
-                    loaded_decision_nonce = uuid.uuid4().hex
-                    migrated_legacy_decision_nonce = True
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=loaded_decision_nonce,
@@ -3784,6 +3772,9 @@ class HandlerImplementation(
                     persist=False,
                 )
                 pruned_stale = True
+            if not pending.decision_nonce and pending_action_state_view(pending).is_live_pending:
+                pending.decision_nonce = uuid.uuid4().hex
+                migrated_legacy_decision_nonce = True
         if (
             pruned_stale
             or migrated_legacy_strip_intent

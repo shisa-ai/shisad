@@ -1840,6 +1840,28 @@ def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_pat
     assert persisted[0]["status_reason"] == "approval_envelope_missing"
 
 
+def test_f1_load_stale_terminalization_does_not_mint_decision_nonce(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("approval_envelope", None)
+    payload["approval_envelope_hash"] = ""
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_envelope_missing"
+    assert loaded.decision_nonce == ""
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["decision_nonce"] == ""
+
+
 def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
     pending_payload = HandlerImplementation._pending_to_dict(pending)
