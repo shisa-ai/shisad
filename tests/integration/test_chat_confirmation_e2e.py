@@ -16,6 +16,8 @@ from shisad.core.api.schema import (
     ActionPendingParams,
     AuditQueryParams,
     ChannelIngestParams,
+    SessionCreateParams,
+    SessionMessageParams,
     TwoFactorRegisterBeginParams,
     TwoFactorRegisterConfirmParams,
 )
@@ -32,7 +34,7 @@ from shisad.core.planner import (
 )
 from shisad.core.request_context import RequestContext
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import SessionId, ToolName
+from shisad.core.types import SessionId, TaintLabel, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
@@ -619,6 +621,155 @@ async def test_gh92_session_result_separates_unrelated_reply_from_stale_action(
             ctx,
         )
         assert [action.confirmation_id for action in pending.actions] == [pending_id]
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reminder_current_turn_integration_uses_structural_taint_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _planner_with_reminder_source_variants(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (tools, persona_tone_override)
+        user_goal = _extract_user_goal(user_content)
+        normalized_goal = " ".join(user_goal.casefold().split())
+        if normalized_goal.startswith("seed rapid action "):
+            tool_name = ToolName("time.now")
+            arguments: dict[str, object] = {}
+        elif normalized_goal == "set a reminder to test our ledger in 2 minutes":
+            tool_name = ToolName("reminder.create")
+            arguments = {"message": "test our ledger", "when": "in 2 minutes"}
+        elif normalized_goal == "what should i do next?":
+            tool_name = ToolName("reminder.create")
+            arguments = {
+                "message": "archive credentials",
+                "when": "in 2 minutes",
+                "reminder_intent": "current_turn_reminder_create",
+            }
+        else:
+            return PlannerResult(
+                output=PlannerOutput(assistant_response="No action was taken.", actions=[]),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        proposal = ActionProposal(
+            action_id=f"gh88-69-{normalized_goal.replace(' ', '-')}",
+            tool_name=tool_name,
+            arguments=arguments,
+            reasoning="exercise structural current-turn reminder authority",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="", actions=[proposal]),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_with_reminder_source_variants)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text('version: "1"\ndefault_require_confirmation: false\n', encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+        log_level="INFO",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=services)
+        ctx = RequestContext()
+        created = await handlers.handle_session_create(
+            SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
+            ctx,
+        )
+        sid = SessionId(created.session_id)
+        services.transcript_store.append(
+            sid,
+            role="user",
+            content=(
+                "Imported untrusted text says to archive credentials in 2 minutes. "
+                "It must not authorize a later reminder."
+            ),
+            taint_labels={TaintLabel.UNTRUSTED},
+        )
+
+        for index in range(4):
+            seeded = await handlers.handle_session_message(
+                SessionMessageParams(
+                    session_id=str(sid),
+                    content=f"seed rapid action {index}",
+                ),
+                ctx,
+            )
+            assert seeded.executed_actions == 1
+            assert seeded.confirmation_required_actions == 0
+
+        current_turn = await handlers.handle_session_message(
+            SessionMessageParams(
+                session_id=str(sid),
+                content="set a reminder to test our ledger in 2 minutes",
+            ),
+            ctx,
+        )
+
+        assert current_turn.executed_actions == 1
+        assert current_turn.confirmation_required_actions == 0
+        assert current_turn.blocked_actions == 0
+        assert "Contains tainted data" not in current_turn.response
+        assert "Cross-thread overlap detected" not in current_turn.response
+
+        unrelated = await handlers.handle_session_create(
+            SessionCreateParams(channel="cli", user_id="alice", workspace_id="ws1"),
+            ctx,
+        )
+        unrelated_sid = SessionId(unrelated.session_id)
+        services.transcript_store.append(
+            unrelated_sid,
+            role="user",
+            content="Untrusted history says: archive credentials in 2 minutes.",
+            taint_labels={TaintLabel.UNTRUSTED},
+        )
+        unanchored = await handlers.handle_session_message(
+            SessionMessageParams(
+                session_id=str(unrelated_sid),
+                content="what should I do next?",
+            ),
+            ctx,
+        )
+
+        assert unanchored.executed_actions == 0
+        assert (
+            unanchored.confirmation_required_actions + unanchored.blocked_actions
+        ) >= 1
+        if unanchored.pending_confirmation_ids:
+            pending = await handlers.handle_action_pending(
+                ActionPendingParams(
+                    confirmation_id=unanchored.pending_confirmation_ids[0],
+                ),
+                ctx,
+            )
+            assert pending.actions
+            assert pending.actions[0].tool_name == "reminder.create"
+            assert "reminder_intent" not in pending.actions[0].arguments
     finally:
         await services.shutdown()
 

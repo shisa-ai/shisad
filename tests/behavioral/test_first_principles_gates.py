@@ -7,10 +7,15 @@ from typing import Any
 
 import pytest
 
+from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.providers.local_planner import LocalPlannerProvider
 from tests.behavioral.test_behavioral_contract import (
     ContractHarness,
     _confirm_pending_action,
     _create_session,
+    _extract_user_goal,
+    _stub_complete,
+    _tool_call,
     _wait_for_audit_event,
 )
 from tests.helpers.behavioral import extract_tool_outputs
@@ -292,3 +297,74 @@ async def test_first_principles_cross_session_harness(
     )
     _assert_normal_reply(recalled)
     assert "blue" in str(recalled.get("response", "")).lower()
+
+
+async def test_current_turn_reminder_create_uses_structural_authority(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reminder_arguments = {
+        "set a reminder in 2 min to do laundry": {
+            "message": "do laundry",
+            "when": "in 2 min",
+        },
+        "set a reminder to test our ledger in 2 minutes": {
+            "message": "test our ledger",
+            "when": "in 2 minutes",
+        },
+    }
+
+    async def _current_turn_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        planner_input = messages[-1].content if messages else ""
+        goal = _extract_user_goal(planner_input)
+        normalized_goal = " ".join(goal.casefold().split())
+        if normalized_goal.startswith("seed rapid action "):
+            tool_calls = [_tool_call("time.now", {}, call_id=f"seed-{normalized_goal[-1]}")]
+        elif normalized_goal in reminder_arguments:
+            tool_calls = [
+                _tool_call(
+                    "reminder.create",
+                    reminder_arguments[normalized_goal],
+                    call_id=f"reminder-{len(normalized_goal)}",
+                )
+            ]
+        else:
+            return await _stub_complete(self, messages, tools)
+        return ProviderResponse(
+            message=Message(role="assistant", content="", tool_calls=tool_calls),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    monkeypatch.setattr(LocalPlannerProvider, "complete", _current_turn_complete, raising=True)
+    sid = await _create_session(clean_harness.client)
+    for index in range(4):
+        seeded = await clean_harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"seed rapid action {index}"},
+        )
+        _assert_normal_reply(seeded, executed_actions=1)
+
+    for content, expected_message in (
+        ("set a reminder in 2 min to do laundry", "do laundry"),
+        ("set a reminder to test our ledger in 2 minutes", "test our ledger"),
+    ):
+        created = await clean_harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": content},
+        )
+
+        _assert_normal_reply(created, executed_actions=1)
+        payload = _first_tool_payload(created, "reminder.create")
+        assert payload.get("ok") is True
+        assert str((payload.get("task") or {}).get("goal", "")) == (
+            f"Reminder: {expected_message}"
+        )
+        response_text = str(created.get("response", ""))
+        assert "Contains tainted data" not in response_text
+        assert "Cross-thread overlap detected" not in response_text

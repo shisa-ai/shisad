@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
+
 ReminderLifecycleState = Literal[
     "pending",
     "executing",
@@ -14,6 +16,176 @@ ReminderLifecycleState = Literal[
     "failed",
     "cancelled",
 ]
+
+ReminderDurationUnit = Literal["seconds", "minutes", "hours"]
+
+_REMINDER_DURATION_UNIT_ALIASES: dict[str, ReminderDurationUnit] = {
+    "s": "seconds",
+    "sec": "seconds",
+    "secs": "seconds",
+    "second": "seconds",
+    "seconds": "seconds",
+    "m": "minutes",
+    "min": "minutes",
+    "mins": "minutes",
+    "minute": "minutes",
+    "minutes": "minutes",
+    "h": "hours",
+    "hr": "hours",
+    "hrs": "hours",
+    "hour": "hours",
+    "hours": "hours",
+}
+
+
+def current_turn_value_is_structurally_anchored(
+    value: Any,
+    *,
+    normalized_current_turn: str,
+) -> bool:
+    """Require a whole-token value occurrence in daemon-owned current-turn text."""
+    if not isinstance(value, str):
+        return False
+    normalized = " ".join(value.split()).casefold()
+    if not normalized:
+        return False
+    current_turn = str(normalized_current_turn or "").casefold()
+    start = 0
+    while True:
+        index = current_turn.find(normalized, start)
+        if index < 0:
+            return False
+        before_index = index - 1
+        after_index = index + len(normalized)
+        before_ok = before_index < 0 or not _current_turn_anchor_token_char(
+            current_turn[before_index]
+        )
+        after_ok = after_index >= len(current_turn) or _current_turn_anchor_after_boundary_ok(
+            current_turn,
+            after_index,
+        )
+        if before_ok and after_ok:
+            return True
+        start = index + 1
+
+
+def _current_turn_anchor_token_char(char: str) -> bool:
+    return char.isalnum() or char in {"_", "-", ".", "@", "/", ":", "~"}
+
+
+def _current_turn_anchor_after_boundary_ok(text: str, index: int) -> bool:
+    char = text[index]
+    if not _current_turn_anchor_token_char(char):
+        return True
+    if char not in {".", ":"}:
+        return False
+    next_index = index + 1
+    return next_index >= len(text) or not _current_turn_anchor_token_char(text[next_index])
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderRelativeDuration:
+    value: int
+    unit: ReminderDurationUnit
+
+    @property
+    def seconds(self) -> int:
+        multiplier = {"seconds": 1, "minutes": 60, "hours": 3600}[self.unit]
+        return self.value * multiplier
+
+
+def parse_reminder_relative_duration(value: str) -> ReminderRelativeDuration | None:
+    """Parse the finite machine-facing `reminder.create.when` duration grammar."""
+    parts = str(value or "").casefold().split()
+    if len(parts) != 3 or parts[0] != "in" or not parts[1].isdigit():
+        return None
+    unit = _REMINDER_DURATION_UNIT_ALIASES.get(parts[2])
+    if unit is None:
+        return None
+    return ReminderRelativeDuration(value=max(1, int(parts[1])), unit=unit)
+
+
+def _current_turn_tokens(value: str) -> tuple[str, ...]:
+    normalized = "".join(
+        character if character.isalnum() else " " for character in str(value).casefold()
+    )
+    return tuple(normalized.split())
+
+
+def _token_sequence_present(
+    haystack: tuple[str, ...],
+    needle: tuple[str, ...],
+) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    return any(
+        haystack[index : index + len(needle)] == needle
+        for index in range(len(haystack) - len(needle) + 1)
+    )
+
+
+def _reminder_when_is_current_turn_anchored(*, when: str, current_turn: str) -> bool:
+    normalized_turn = " ".join(str(current_turn or "").split()).casefold()
+    if current_turn_value_is_structurally_anchored(
+        when,
+        normalized_current_turn=normalized_turn,
+    ):
+        return True
+
+    duration = parse_reminder_relative_duration(when)
+    current_tokens = _current_turn_tokens(current_turn)
+    if duration is not None:
+        for index in range(len(current_tokens) - 1):
+            if current_tokens[index] != str(duration.value):
+                continue
+            if _REMINDER_DURATION_UNIT_ALIASES.get(current_tokens[index + 1]) == duration.unit:
+                return True
+        return False
+
+    when_tokens = _current_turn_tokens(when)
+    if when_tokens and when_tokens[0] == "at":
+        return _token_sequence_present(current_tokens, when_tokens[1:])
+    return False
+
+
+def reminder_create_arguments_are_current_turn_anchored(
+    arguments: Mapping[str, Any],
+    *,
+    current_turn: str,
+) -> bool:
+    """Bind reminder content and finite schedule fields to the current user turn."""
+    allowed_fields = {"message", "when", "name", "reminder_intent"}
+    if not set(arguments).issubset(allowed_fields):
+        return False
+    message = arguments.get("message")
+    when = arguments.get("when")
+    if not isinstance(message, str) or not message.strip():
+        return False
+    if not isinstance(when, str) or not when.strip():
+        return False
+    normalized_turn = " ".join(str(current_turn or "").split()).casefold()
+    if not normalized_turn or not current_turn_value_is_structurally_anchored(
+        message,
+        normalized_current_turn=normalized_turn,
+    ):
+        return False
+    name = arguments.get("name")
+    if name is not None and (
+        not isinstance(name, str)
+        or not name.strip()
+        or not current_turn_value_is_structurally_anchored(
+            name,
+            normalized_current_turn=normalized_turn,
+        )
+    ):
+        return False
+    marker = arguments.get("reminder_intent")
+    if marker is not None and marker != CURRENT_TURN_REMINDER_CREATE_INTENT:
+        return False
+    return _reminder_when_is_current_turn_anchored(
+        when=when,
+        current_turn=current_turn,
+    )
 
 
 @dataclass(frozen=True, slots=True)

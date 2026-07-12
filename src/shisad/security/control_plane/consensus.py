@@ -10,6 +10,10 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from shisad.core.action_state import (
+    CURRENT_TURN_REMINDER_CREATE_INTENT,
+    reminder_create_arguments_are_current_turn_anchored,
+)
 from shisad.security.control_plane.history import SessionActionHistoryStore
 from shisad.security.control_plane.network import (
     NetworkIntelligenceMonitor,
@@ -103,6 +107,19 @@ class SequenceVoter:
                 reason_codes=["sequence:ok"],
             )
         reasons = [item.reason_code for item in findings]
+        if self._allow_structural_current_turn_reminder_after_rapid_fire(
+            data=data,
+            findings=findings,
+        ):
+            return VoterDecision(
+                voter="BehavioralSequenceAnalyzer",
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.MEDIUM,
+                reason_codes=[
+                    *reasons,
+                    "sequence:allow_structural_current_turn_reminder",
+                ],
+            )
         if self._allow_trusted_readonly_memory_after_rapid_fire(data=data, findings=findings):
             return VoterDecision(
                 voter="BehavioralSequenceAnalyzer",
@@ -190,6 +207,41 @@ class SequenceVoter:
                 )
             )
         return False
+
+    @staticmethod
+    def _allow_structural_current_turn_reminder_after_rapid_fire(
+        *,
+        data: ConsensusInput,
+        findings: list[Any],
+    ) -> bool:
+        if any(item.pattern_name != "rapid_fire" for item in findings):
+            return False
+        if not data.trace_result.allowed:
+            return False
+        if data.action.action_kind != ActionKind.MEMORY_WRITE:
+            return False
+        if str(data.action.tool_name).strip() != "reminder.create":
+            return False
+        if not _strict_metadata_bool(data.metadata_payload.get("trusted_input"), default=False):
+            return False
+        if not _strict_metadata_bool(
+            data.metadata_payload.get("operator_owned_cli_input"),
+            default=False,
+        ):
+            return False
+        action_arguments = data.metadata_payload.get("action_arguments")
+        if not isinstance(action_arguments, dict):
+            return False
+        if (
+            str(action_arguments.get("reminder_intent", "")).strip()
+            != CURRENT_TURN_REMINDER_CREATE_INTENT
+        ):
+            return False
+        current_turn = str(data.metadata_payload.get("raw_user_text", "")).strip()
+        return bool(current_turn) and reminder_create_arguments_are_current_turn_anchored(
+            action_arguments,
+            current_turn=current_turn,
+        )
 
 
 class ResourceVoter:
@@ -449,6 +501,15 @@ class ActionMonitorVoter:
         action_arguments = data.metadata_payload.get("action_arguments", {})
         if not isinstance(action_arguments, dict):
             return False
+        if (
+            str(data.action.tool_name).strip() == "reminder.create"
+            and str(action_arguments.get("reminder_intent", "")).strip()
+            == CURRENT_TURN_REMINDER_CREATE_INTENT
+        ):
+            return reminder_create_arguments_are_current_turn_anchored(
+                action_arguments,
+                current_turn=user_text,
+            )
         values = cls._iter_anchor_argument_values(
             action_arguments,
             ignored_fields=cls._anchor_ignored_fields_for_tool(str(data.action.tool_name)),

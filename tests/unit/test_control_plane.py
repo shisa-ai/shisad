@@ -385,6 +385,108 @@ async def test_gh54_sequence_voter_blocks_sibling_memory_read_rapid_fire() -> No
     assert vote.decision == VoteKind.BLOCK
 
 
+@pytest.mark.asyncio
+async def test_gh88_69_sequence_voter_allows_structural_current_turn_reminder() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh88-69-current-turn-reminder")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="reminder.create",
+        action_kind=ActionKind.MEMORY_WRITE,
+        resource_id="reminder:new",
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "set a reminder in 2 min to do laundry",
+                "action_arguments": {
+                    "message": "do laundry",
+                    "when": "in 2 minutes",
+                    "reminder_intent": "current_turn_reminder_create",
+                },
+            },
+        )
+    )
+
+    assert vote.decision == VoteKind.ALLOW
+    assert "sequence:allow_structural_current_turn_reminder" in vote.reason_codes
+
+
+@pytest.mark.parametrize(
+    ("metadata_overrides", "trace_allowed"),
+    [
+        ({"action_arguments": {"message": "do laundry", "when": "in 2 minutes"}}, True),
+        (
+            {
+                "action_arguments": {
+                    "message": "archive credentials",
+                    "when": "in 2 minutes",
+                    "reminder_intent": "current_turn_reminder_create",
+                }
+            },
+            True,
+        ),
+        ({"trusted_input": False}, True),
+        ({"operator_owned_cli_input": False}, True),
+        ({}, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gh88_69_sequence_voter_rejects_unbound_or_untrusted_reminder_authority(
+    metadata_overrides: dict[str, object],
+    trace_allowed: bool,
+) -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-gh88-69-untrusted-reminder")
+    now = datetime.now(UTC)
+    _append_recent_memory_read_burst(history, origin=origin, now=now)
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(milliseconds=450),
+        origin=origin,
+        tool_name="reminder.create",
+        action_kind=ActionKind.MEMORY_WRITE,
+        resource_id="reminder:new",
+    )
+    metadata_payload: dict[str, object] = {
+        "trusted_input": True,
+        "operator_owned_cli_input": True,
+        "raw_user_text": "set a reminder in 2 min to do laundry",
+        "action_arguments": {
+            "message": "do laundry",
+            "when": "in 2 minutes",
+            "reminder_intent": "current_turn_reminder_create",
+        },
+    }
+    metadata_payload.update(metadata_overrides)
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(
+                allowed=trace_allowed,
+                reason_code="trace:allowed" if trace_allowed else "trace:tdg_confirmation_required",
+            ),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload=metadata_payload,
+        )
+    )
+
+    assert vote.decision == VoteKind.BLOCK
+
+
 def test_m5_t2_sequence_detects_rapid_fire_pattern() -> None:
     history = SessionActionHistoryStore()
     analyzer = BehavioralSequenceAnalyzer()

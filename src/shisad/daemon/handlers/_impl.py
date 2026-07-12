@@ -26,7 +26,9 @@ from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
 from shisad.channels.base import DeliveryTarget
 from shisad.core.action_state import (
+    CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
+    parse_reminder_relative_duration,
     reminder_status_view_for_task,
     select_reminder_status_view,
 )
@@ -192,7 +194,6 @@ _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _GH12_READ_ONLY_SHELL_COMMANDS = frozenset({"fd", "find", "grep", "ls", "rg"})
 _SENSITIVE_PENDING_TEXT_REDACTION = "[sensitive text redacted]"
-_CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
 _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
     "reminder.create": frozenset({"reminder_intent"}),
@@ -760,10 +761,6 @@ def _structured_git_log(
     )
 
 
-_REMINDER_IN_RE = re.compile(
-    r"^in (?P<value>\d+) (?P<unit>seconds?|minutes?|hours?)$",
-    flags=re.IGNORECASE,
-)
 _REMINDER_AT_RE = re.compile(
     r"^at (?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?$",
     flags=re.IGNORECASE,
@@ -890,16 +887,9 @@ def _parse_reminder_delay_seconds(when: str, *, now: datetime) -> int:
     normalized = when.strip()
     if not normalized:
         raise ValueError("reminder_when_required")
-    relative = _REMINDER_IN_RE.match(normalized)
+    relative = parse_reminder_relative_duration(normalized)
     if relative is not None:
-        value = max(1, int(relative.group("value")))
-        unit = relative.group("unit").lower()
-        multiplier = 1
-        if unit.startswith("minute"):
-            multiplier = 60
-        elif unit.startswith("hour"):
-            multiplier = 3600
-        return max(1, value * multiplier)
+        return max(1, relative.seconds)
 
     at_match = _REMINDER_AT_RE.match(normalized)
     if at_match is not None:
@@ -3196,7 +3186,7 @@ class HandlerImplementation(
             trusted_current_turn_reminder_create
             and canonical_tool_name(str(tool_name), warn_on_alias=False) == "reminder.create"
             and str(arguments.get("reminder_intent", "")).strip()
-            == _CURRENT_TURN_REMINDER_CREATE_INTENT
+            == CURRENT_TURN_REMINDER_CREATE_INTENT
         )
         confirmation_arguments = _redact_sensitive_pending_arguments(
             tool_name,

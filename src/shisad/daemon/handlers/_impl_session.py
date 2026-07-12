@@ -24,7 +24,9 @@ from shisad.channels.base import DeliveryTarget
 from shisad.coding.models import CodingAgentConfig
 from shisad.core import daemon_notices as _daemon_notices
 from shisad.core.action_state import (
+    CURRENT_TURN_REMINDER_CREATE_INTENT,
     ReminderStatusView,
+    reminder_create_arguments_are_current_turn_anchored,
     reminder_status_view_for_task,
     select_reminder_status_view,
 )
@@ -198,7 +200,6 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
     )
 )
 _CURRENT_TURN_LOCAL_READ_FILESYSTEM_INTENT = "current_turn_local_read"
-_CURRENT_TURN_REMINDER_CREATE_INTENT = "current_turn_reminder_create"
 _SIMILAR_FILE_RECOVERY_INTENT_SOURCE = "user_text:explicit_similar_file_recovery_intent"
 _SIMILAR_FILE_READ_INTENT_SOURCE = "user_text:explicit_similar_file_read_intent"
 _LOCAL_FILESYSTEM_READ_TOOL_NAMES: frozenset[str] = frozenset({"fs.list", "fs.read"})
@@ -2331,9 +2332,21 @@ def _has_current_turn_reminder_create_intent(
     canonical_name = canonical_tool_name(str(tool_name), warn_on_alias=False)
     if canonical_name != "reminder.create":
         return False
-    if not _has_clean_trusted_turn_privileges(validated):
+    if not _is_clean_direct_trusted_cli_turn(validated):
         return False
-    return proposal is not None and "user_text:explicit_reminder_intent" in proposal.data_sources
+    if (
+        proposal is not None
+        and "user_text:explicit_reminder_intent" in proposal.data_sources
+        and str(arguments.get("reminder_intent", "")).strip()
+        == CURRENT_TURN_REMINDER_CREATE_INTENT
+    ):
+        return True
+    structural_arguments = dict(arguments)
+    structural_arguments.pop("reminder_intent", None)
+    return reminder_create_arguments_are_current_turn_anchored(
+        structural_arguments,
+        current_turn=validated.firewall_result.sanitized_text,
+    )
 
 
 def _filesystem_read_continuation_goal(
@@ -3584,7 +3597,7 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 arguments={
                     "message": message,
                     "when": when,
-                    "reminder_intent": _CURRENT_TURN_REMINDER_CREATE_INTENT,
+                    "reminder_intent": CURRENT_TURN_REMINDER_CREATE_INTENT,
                 },
                 reasoning="Execute the user's explicit reminder-creation request.",
                 data_sources=[
@@ -3608,7 +3621,7 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 arguments={
                     "message": message,
                     "when": when,
-                    "reminder_intent": _CURRENT_TURN_REMINDER_CREATE_INTENT,
+                    "reminder_intent": CURRENT_TURN_REMINDER_CREATE_INTENT,
                 },
                 reasoning="Execute the user's explicit reminder-creation request.",
                 data_sources=[
@@ -12182,6 +12195,19 @@ class SessionImplMixin(HandlerMixinBase):
                 tool_name=canonical_proposal_tool,
                 arguments=proposal.arguments,
             )
+            current_turn_reminder_create_intent = _has_current_turn_reminder_create_intent(
+                tool_name=proposal.tool_name,
+                arguments=proposal_arguments,
+                proposal=proposal,
+                validated=validated,
+            )
+            if proposal_tool_name == "reminder.create":
+                proposal_arguments = dict(proposal_arguments)
+                proposal_arguments.pop("reminder_intent", None)
+                if current_turn_reminder_create_intent:
+                    proposal_arguments["reminder_intent"] = (
+                        CURRENT_TURN_REMINDER_CREATE_INTENT
+                    )
             navigation_url_selection: BrowserNavigationURLSelection | None = None
             if proposal_tool_name == "browser.navigate":
                 navigation_url_selection = _select_task_specific_navigation_url(
@@ -12858,12 +12884,6 @@ class SessionImplMixin(HandlerMixinBase):
                         proposal=proposal,
                         validated=validated,
                     )
-                )
-                current_turn_reminder_create_intent = _has_current_turn_reminder_create_intent(
-                    tool_name=proposal.tool_name,
-                    arguments=proposal_arguments,
-                    proposal=proposal,
-                    validated=validated,
                 )
                 pending_taint_labels = (
                     []

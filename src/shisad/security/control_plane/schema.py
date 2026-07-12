@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shisad.core.action_state import current_turn_value_is_structurally_anchored
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability
 from shisad.core.url_parsing import safe_url_hostname
@@ -599,43 +600,10 @@ def metadata_value_is_current_turn_anchored(
     *,
     normalized_current_turn: str,
 ) -> bool:
-    if not isinstance(value, str):
-        return False
-    normalized = " ".join(value.split()).casefold()
-    if not normalized:
-        return False
-    current_turn = str(normalized_current_turn or "").casefold()
-    start = 0
-    while True:
-        index = current_turn.find(normalized, start)
-        if index < 0:
-            return False
-        before_index = index - 1
-        after_index = index + len(normalized)
-        before_ok = before_index < 0 or not _current_turn_anchor_token_char(
-            current_turn[before_index]
-        )
-        after_ok = after_index >= len(current_turn) or _current_turn_anchor_after_boundary_ok(
-            current_turn,
-            after_index,
-        )
-        if before_ok and after_ok:
-            return True
-        start = index + 1
-
-
-def _current_turn_anchor_token_char(char: str) -> bool:
-    return char.isalnum() or char in {"_", "-", ".", "@", "/", ":", "~"}
-
-
-def _current_turn_anchor_after_boundary_ok(text: str, index: int) -> bool:
-    char = text[index]
-    if not _current_turn_anchor_token_char(char):
-        return True
-    if char not in {".", ":"}:
-        return False
-    next_index = index + 1
-    return next_index >= len(text) or not _current_turn_anchor_token_char(text[next_index])
+    return current_turn_value_is_structurally_anchored(
+        value,
+        normalized_current_turn=normalized_current_turn,
+    )
 
 
 def _collect_metadata_payload_omissions(

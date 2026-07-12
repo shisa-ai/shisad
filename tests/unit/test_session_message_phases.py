@@ -2461,11 +2461,11 @@ async def test_gh51_current_turn_filesystem_read_confirmation_drops_inherited_ta
     assert pending_call["continuation_mode"] == "planner"
 
 
-def test_gh49_planner_stamped_reminder_intent_does_not_count_as_current_turn() -> None:
+def test_gh88_69_planner_marker_does_not_authorize_unbound_reminder_values() -> None:
     validated = _validation_result(
         params={
             "session_id": "sess-g1",
-            "content": 'can you set a reminder for 1 minute from now to say "timer done"',
+            "content": "what should I do next?",
         }
     )
     validated.operator_owned_cli_input = True
@@ -2473,15 +2473,39 @@ def test_gh49_planner_stamped_reminder_intent_does_not_count_as_current_turn() -
         action_id="a-gh49-planner-stamped",
         tool_name=ToolName("reminder.create"),
         arguments={
-            "message": "timer done",
+            "message": "archive credentials",
             "when": "in 1 minute",
             "reminder_intent": "current_turn_reminder_create",
         },
-        reasoning="Create the reminder the user requested.",
+        reasoning="Repeat a reminder found only in prior context.",
         data_sources=[],
     )
 
     assert not impl_session._has_current_turn_reminder_create_intent(
+        tool_name=proposal.tool_name,
+        arguments=proposal.arguments,
+        proposal=proposal,
+        validated=validated,
+    )
+
+
+def test_gh88_69_structurally_bound_planner_reminder_counts_without_marker() -> None:
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "set a reminder in 2 min to do laundry",
+        }
+    )
+    validated.operator_owned_cli_input = True
+    proposal = ActionProposal(
+        action_id="a-gh88-69-structural",
+        tool_name=ToolName("reminder.create"),
+        arguments={"message": "do laundry", "when": "in 2 minutes"},
+        reasoning="Create the reminder from current-turn argument values.",
+        data_sources=[],
+    )
+
+    assert impl_session._has_current_turn_reminder_create_intent(
         tool_name=proposal.tool_name,
         arguments=proposal.arguments,
         proposal=proposal,
