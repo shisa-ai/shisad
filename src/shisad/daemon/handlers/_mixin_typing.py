@@ -40,6 +40,7 @@ if TYPE_CHECKING:
             *,
             success: bool,
             cancel_pending: bool = True,
+            confirmation_id: str = "",
         ) -> bool: ...
 
         def __getattr__(self, name: str) -> Any: ...
@@ -88,15 +89,30 @@ else:
             *,
             success: bool,
             cancel_pending: bool = True,
+            confirmation_id: str = "",
         ) -> bool:
             """Record the run and report whether its success auto-disabled the task."""
 
             normalized_task_id = task_id.strip()
             scheduler = getattr(self, "_scheduler", None)
-            recorder = getattr(scheduler, "record_run_outcome", None)
-            if not normalized_task_id or not callable(recorder):
+            if not normalized_task_id:
                 return False
-            recorded = bool(recorder(normalized_task_id, success=success))
+            normalized_confirmation_id = confirmation_id.strip()
+            recorded = False
+            confirmation_recorder = getattr(scheduler, "record_confirmation_outcome", None)
+            if normalized_confirmation_id and callable(confirmation_recorder):
+                recorded = bool(
+                    confirmation_recorder(
+                        normalized_task_id,
+                        confirmation_id=normalized_confirmation_id,
+                        success=success,
+                    )
+                )
+            if not recorded:
+                recorder = getattr(scheduler, "record_run_outcome", None)
+                if not callable(recorder):
+                    return False
+                recorded = bool(recorder(normalized_task_id, success=success))
             if not recorded or not success:
                 return False
 

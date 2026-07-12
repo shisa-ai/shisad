@@ -256,6 +256,8 @@ class SchedulerManager:
         payload["status"] = str(payload.get("status", "pending") or "pending")
         payload["run_outcome_recorded"] = False
         payload.pop("run_outcome_success", None)
+        payload.pop("processing_started_at", None)
+        payload.pop("resolved_at", None)
         payload["queued_at"] = (
             str(payload.get("queued_at", "")).strip() or datetime.now(UTC).isoformat()
         )
@@ -378,11 +380,20 @@ class SchedulerManager:
                     identity["execution_attempt_id"] = execution_attempt_id.strip()
                 if result_id.strip():
                     identity["result_id"] = result_id.strip()
-            row["resolved_at"] = datetime.now(UTC).isoformat()
+            transition_at = datetime.now(UTC).isoformat()
+            if normalized_status == "executing":
+                row["processing_started_at"] = (
+                    str(row.get("processing_started_at", "")).strip() or transition_at
+                )
+                row.pop("resolved_at", None)
+                audit_event = "task.confirmation_processing"
+            else:
+                row["resolved_at"] = transition_at
+                audit_event = "task.confirmation_resolved"
             self._prune_confirmation_rows(task_id)
             self._persist_pending_confirmations()
             self._audit(
-                "task.confirmation_resolved",
+                audit_event,
                 {
                     "task_id": task_id,
                     "confirmation_id": normalized_confirmation,
@@ -581,12 +592,12 @@ class SchedulerManager:
         rows = list(self._pending_confirmations.get(task_id, []))
         if not rows:
             return
-        pending: list[dict[str, Any]] = []
+        active: list[dict[str, Any]] = []
         resolved: list[dict[str, Any]] = []
         for row in rows:
             status = str(row.get("status", "pending") or "pending").strip().lower()
-            if status == "pending":
-                pending.append(row)
+            if status in {"pending", "executing"}:
+                active.append(row)
             else:
                 resolved.append(row)
         resolved.sort(
@@ -598,7 +609,7 @@ class SchedulerManager:
         )
         if len(resolved) > _MAX_RESOLVED_CONFIRMATIONS_PER_TASK:
             resolved = resolved[-_MAX_RESOLVED_CONFIRMATIONS_PER_TASK:]
-        self._pending_confirmations[task_id] = [*pending, *resolved]
+        self._pending_confirmations[task_id] = [*active, *resolved]
 
     def _validate_schedule(self, schedule: Schedule) -> None:
         if schedule.kind == ScheduleKind.EVENT:

@@ -3245,7 +3245,7 @@ async def test_f1_max_runs_success_cancels_sibling_pending_confirmations(
 
 
 @pytest.mark.asyncio
-async def test_f1_max_runs_confirmation_does_not_deadlock_with_pending_purge(
+async def test_f1_max_runs_confirmation_allows_pending_sibling_purge_while_executing(
     tmp_path: Path,
 ) -> None:
     class _SlowExecutionHarness(_ConfirmationImplHarness):
@@ -3291,23 +3291,15 @@ async def test_f1_max_runs_confirmation_does_not_deadlock_with_pending_purge(
     purge_task = asyncio.create_task(
         harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
     )
+    purged = await asyncio.wait_for(purge_task, timeout=1.0)
 
-    sibling_lock = harness._action_confirmation_lock("c-1")
-
-    async def _wait_for_purge_to_hold_sibling_lock() -> None:
-        while not sibling_lock.locked():
-            await asyncio.sleep(0)
-
-    await asyncio.wait_for(_wait_for_purge_to_hold_sibling_lock(), timeout=1.0)
+    assert purged["confirmation_ids"] == ["c-1"]
+    assert current.status == "executing"
+    assert "c-2" in harness._pending_actions
     harness.release_execution.set()
-
-    confirmed, purged = await asyncio.wait_for(
-        asyncio.gather(confirm_task, purge_task),
-        timeout=1.0,
-    )
+    confirmed = await asyncio.wait_for(confirm_task, timeout=1.0)
 
     assert confirmed["confirmed"] is True
-    assert purged["confirmation_ids"] == ["c-1"]
     assert scheduler.get_task(task.id).enabled is False  # type: ignore[union-attr]
     assert current.status == "approved"
     assert "c-1" not in harness._pending_actions
@@ -3472,6 +3464,81 @@ async def test_f1_scheduler_expiry_and_late_decision_record_one_failed_outcome(
     assert task.failure_count == 1
     resolved = scheduler._pending_confirmations[task.id][0]
     assert resolved["run_outcome_recorded"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execute_success", [True, False])
+async def test_f1_inflight_confirmation_status_read_records_one_terminal_outcome(
+    tmp_path: Path,
+    execute_success: bool,
+) -> None:
+    class _SlowExecutionHarness(_ConfirmationImplHarness):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root, execute_success=execute_success)
+            self.execution_started = asyncio.Event()
+            self.release_execution = asyncio.Event()
+
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            self.execution_started.set()
+            await self.release_execution.wait()
+            return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+    harness = _SlowExecutionHarness(tmp_path)
+    scheduler = SchedulerManager(storage_dir=tmp_path / "scheduler-inflight")
+    task = scheduler.create_task(
+        name="reminder:inflight-check",
+        goal="Reminder: finish the in-flight check",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        max_runs=1,
+    )
+    task.trigger_count = 1
+    pending = _pending_action(nonce="expected")
+    pending.task_id = task.id
+    pending.expires_at = datetime.now(UTC) + timedelta(minutes=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._scheduler = scheduler
+    scheduler.queue_confirmation(
+        task.id,
+        {
+            "confirmation_id": pending.confirmation_id,
+            "task_id": task.id,
+            "status": "pending",
+            "lifecycle_state": "pending",
+            "expires_at": pending.expires_at.isoformat(),
+        },
+    )
+
+    confirmation = asyncio.create_task(
+        harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+    )
+    await harness.execution_started.wait()
+    expired_at = datetime.now(UTC) - timedelta(seconds=1)
+    pending.expires_at = expired_at
+    shadow = scheduler._pending_confirmations[task.id][0]
+    shadow["expires_at"] = expired_at.isoformat()
+
+    assert scheduler.pending_confirmations(task.id) == []
+    assert pending.status == "executing"
+    assert shadow["status"] == "executing"
+    assert str(shadow["processing_started_at"])
+    assert "resolved_at" not in shadow
+    assert task.success_count == 0
+    assert task.failure_count == 0
+
+    harness.release_execution.set()
+    result = await confirmation
+
+    assert result["confirmed"] is execute_success
+    assert task.success_count == int(execute_success)
+    assert task.failure_count == int(not execute_success)
+    assert shadow["run_outcome_recorded"] is True
+    assert str(shadow["resolved_at"])
 
 
 @pytest.mark.asyncio
@@ -3775,7 +3842,7 @@ async def test_gh42_action_confirmation_lock_cleanup_keeps_woken_waiter(
 
 
 @pytest.mark.asyncio
-async def test_gh42_action_purge_waits_for_inflight_confirmation(tmp_path) -> None:
+async def test_gh42_pending_purge_excludes_inflight_confirmation(tmp_path) -> None:
     class _SlowExecutionHarness(_ConfirmationImplHarness):
         def __init__(self, tmp_path: Path) -> None:
             super().__init__(tmp_path)
@@ -3801,15 +3868,15 @@ async def test_gh42_action_purge_waits_for_inflight_confirmation(tmp_path) -> No
     purge_task = asyncio.create_task(
         harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
     )
-    await asyncio.sleep(0)
-    purge_completed_before_confirmation = purge_task.done()
+    purged = await asyncio.wait_for(purge_task, timeout=1.0)
 
-    harness.release_execution.set()
-    confirmed, purged = await asyncio.gather(confirm_task, purge_task)
-
-    assert purge_completed_before_confirmation is False
-    assert confirmed["confirmed"] is True
     assert purged["purged"] == 0
+    assert pending.status == "executing"
+    assert "c-1" in harness._pending_actions
+    harness.release_execution.set()
+    confirmed = await confirm_task
+
+    assert confirmed["confirmed"] is True
     assert "c-1" in harness._pending_actions
     assert harness._pending_actions["c-1"].status == "approved"
     assert harness._pending_by_session[pending.session_id] == ["c-1"]

@@ -997,6 +997,21 @@ def test_g3_scheduler_prunes_resolved_confirmation_backlog(tmp_path: Path) -> No
         policy_snapshot_ref="p1",
         created_by=UserId("alice"),
     )
+    scheduler.queue_confirmation(
+        created.id,
+        {
+            "confirmation_id": "confirm-executing",
+            "task_id": created.id,
+            "status": "pending",
+        },
+    )
+    scheduler.resolve_confirmation(
+        created.id,
+        confirmation_id="confirm-executing",
+        status="executing",
+        status_reason="confirmation_execution_started",
+        lifecycle_state="executing",
+    )
     for index in range(40):
         confirmation_id = f"confirm-{index}"
         scheduler.queue_confirmation(
@@ -1016,10 +1031,11 @@ def test_g3_scheduler_prunes_resolved_confirmation_backlog(tmp_path: Path) -> No
 
     restarted = SchedulerManager(storage_dir=storage)
     assert restarted.pending_confirmations(created.id) == []
-    assert len(restarted._pending_confirmations[created.id]) == 32
+    assert len(restarted._pending_confirmations[created.id]) == 33
     remaining_ids = [
         str(row.get("confirmation_id", "")) for row in restarted._pending_confirmations[created.id]
     ]
+    assert "confirm-executing" in remaining_ids
     assert "confirm-0" not in remaining_ids
     assert "confirm-39" in remaining_ids
 

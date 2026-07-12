@@ -2178,6 +2178,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         "reason": pending.status_reason,
                     }
 
+        lifecycle_response = self._pending_action_decision_lifecycle_response(
+            pending,
+            confirmation_id=confirmation_id,
+            decision_field="confirmed",
+        )
+        if lifecycle_response is not None:
+            return lifecycle_response
+
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_at = datetime.fromisoformat(decision_timestamp)
         if not str(getattr(pending, "execution_attempt_id", "")).strip():
@@ -2186,6 +2194,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
             pending.result_id = f"result-{uuid.uuid4().hex}"
         action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
+        pending.status = "executing"
+        pending.status_reason = "confirmation_execution_started"
+        self._sync_task_confirmation_status(pending)
+        self._persist_pending_actions()
         execution_result = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
@@ -2337,6 +2349,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             str(getattr(pending, "task_id", "")),
             success=success,
             cancel_pending=False,
+            confirmation_id=str(getattr(pending, "confirmation_id", "")),
         )
         self._persist_pending_actions()
         self._confirmation_analytics.record(
