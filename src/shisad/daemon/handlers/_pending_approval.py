@@ -146,6 +146,21 @@ def pending_action_state_view(
     )
 
 
+def pending_action_event_identity_fields(pending: Any) -> dict[str, str]:
+    """Return canonical pending-action identity fields for core audit events."""
+    identity = pending_action_state_view(pending).identity
+    return {
+        "action_id": identity.action_id,
+        "origin_turn_id": identity.origin_turn_id,
+        "execution_attempt_id": identity.execution_attempt_id,
+        "result_id": identity.result_id,
+        "followup_id": identity.followup_id,
+        "approval_session_id": identity.session_id,
+        "approval_task_envelope_id": str(getattr(pending, "approval_task_envelope_id", "")).strip(),
+        "approval_confirmation_id": identity.confirmation_id,
+    }
+
+
 def pep_arguments_for_policy_evaluation(
     tool_name: ToolName | str,
     arguments: Mapping[str, Any],

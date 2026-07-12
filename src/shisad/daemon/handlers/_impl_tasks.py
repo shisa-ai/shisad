@@ -36,7 +36,10 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
-from shisad.daemon.handlers._pending_approval import pending_action_state_view
+from shisad.daemon.handlers._pending_approval import (
+    pending_action_event_identity_fields,
+    pending_action_state_view,
+)
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.scheduler.schema import Schedule
@@ -227,7 +230,7 @@ class TasksImplMixin(HandlerMixinBase):
             return RiskTier.MEDIUM
         return RiskTier.LOW
 
-    def _queue_task_confirmation(
+    async def _queue_task_confirmation(
         self,
         *,
         task: Any,
@@ -284,6 +287,16 @@ class TasksImplMixin(HandlerMixinBase):
                 "status": "pending",
                 "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
             },
+        )
+        await self._event_bus.publish(
+            ToolRejected(
+                session_id=session.id,
+                actor="scheduler",
+                tool_name=_BACKGROUND_MESSAGE_SEND,
+                decision=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                reason=f"{reason} ({pending.confirmation_id})",
+                **pending_action_event_identity_fields(pending),
+            )
         )
         return str(pending.confirmation_id)
 
@@ -562,7 +575,7 @@ class TasksImplMixin(HandlerMixinBase):
                 else None
             )
             try:
-                self._queue_task_confirmation(
+                await self._queue_task_confirmation(
                     task=task,
                     run=run,
                     event_type=event_type,

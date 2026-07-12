@@ -24,6 +24,7 @@ from shisad.core.action_state import (
     reminder_lifecycle_state,
     select_reminder_status_view,
 )
+from shisad.core.events import ToolRejected
 from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.plan_steps import PlanStepStore
 from shisad.core.planner import (
@@ -1184,6 +1185,7 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         self.captured_delivery_target: DeliveryTarget | None = None
         self.control_plane_calls: list[dict[str, object]] = []
         self.pending_action_calls: list[dict[str, object]] = []
+        self.published_events: list[object] = []
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._session_manager = SimpleNamespace(
             get=lambda sid: SimpleNamespace(id=sid),
@@ -1229,8 +1231,8 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
             )
         )
 
-    async def _noop_publish(self, _event: object) -> None:
-        return None
+    async def _noop_publish(self, event: object) -> None:
+        self.published_events.append(event)
 
     async def _evaluate_action(self, **_kwargs: object) -> object:
         self.control_plane_calls.append(dict(_kwargs))
@@ -1282,7 +1284,27 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         self.captured_delivery_target = (
             delivery_target if isinstance(delivery_target, DeliveryTarget) else None
         )
-        return SimpleNamespace(confirmation_id="c-1", reason="requires_confirmation")
+        return SimpleNamespace(
+            confirmation_id="c-1",
+            action_id="act-planner-1",
+            origin_turn_id=str(kwargs.get("origin_turn_id", "")),
+            session_id=kwargs.get("session_id", SessionId("sess-g1")),
+            user_id=kwargs.get("user_id", UserId("user-g1")),
+            workspace_id=kwargs.get("workspace_id", WorkspaceId("workspace-g1")),
+            task_id=str(kwargs.get("task_id", "")),
+            delivery_target=kwargs.get("delivery_target"),
+            execution_attempt_id="",
+            result_id="",
+            followup_id="followup-planner-1",
+            approval_task_envelope_id="",
+            decision_nonce="nonce-1",
+            confirmation_evidence=None,
+            status="pending",
+            status_reason="",
+            created_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            reason="requires_confirmation",
+        )
 
     async def _prepare_browser_tool_arguments(
         self,
@@ -2306,6 +2328,16 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+    queued_event = next(
+        event
+        for event in harness.published_events
+        if isinstance(event, ToolRejected)
+        and event.decision == PEPDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert queued_event.action_id == "act-planner-1"
+    assert queued_event.origin_turn_id
+    assert queued_event.followup_id == "followup-planner-1"
+    assert queued_event.approval_confirmation_id == "c-1"
 
 
 @pytest.mark.asyncio

@@ -2520,6 +2520,99 @@ async def test_lt5_action_purge_can_clear_aged_pending_rows(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_f1_action_purge_filters_canonical_lifecycle_exclusively(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    now = datetime.now(UTC)
+
+    live_pending = _pending_action(nonce="pending")
+    live_pending.confirmation_id = "c-pending"
+    live_pending.created_at = now - timedelta(days=10)
+    live_pending.expires_at = now + timedelta(days=1)
+
+    raw_expired = _pending_action(nonce="raw-expired")
+    raw_expired.confirmation_id = "c-raw-expired"
+    raw_expired.created_at = now - timedelta(days=10)
+    raw_expired.expires_at = now - timedelta(days=1)
+
+    failed_expired = _pending_action(nonce="failed-expired")
+    failed_expired.confirmation_id = "c-failed-expired"
+    failed_expired.status = "failed"
+    failed_expired.status_reason = "approval_expired"
+
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "execution_failed"
+
+    approved = _pending_action(nonce="approved")
+    approved.confirmation_id = "c-approved"
+    approved.status = "approved"
+
+    executed = _pending_action(nonce="executed")
+    executed.confirmation_id = "c-executed"
+    executed.status = "executed"
+
+    harness._pending_actions = {
+        item.confirmation_id: item
+        for item in (
+            live_pending,
+            raw_expired,
+            failed_expired,
+            failed,
+            approved,
+            executed,
+        )
+    }
+
+    pending_result = await harness.do_action_purge(
+        {"status": "pending", "older_than_days": 7, "dry_run": True, "limit": 20}
+    )
+    failed_result = await harness.do_action_purge(
+        {"status": "failed", "dry_run": True, "limit": 20}
+    )
+    expired_result = await harness.do_action_purge(
+        {"status": "expired", "dry_run": True, "limit": 20}
+    )
+    approved_result = await harness.do_action_purge(
+        {"status": "approved", "dry_run": True, "limit": 20}
+    )
+
+    assert pending_result["confirmation_ids"] == ["c-pending"]
+    assert failed_result["confirmation_ids"] == ["c-failed"]
+    assert set(expired_result["confirmation_ids"]) == {
+        "c-raw-expired",
+        "c-failed-expired",
+    }
+    assert set(approved_result["confirmation_ids"]) == {"c-approved", "c-executed"}
+
+
+@pytest.mark.asyncio
+async def test_f1_terminal_purge_preserves_expired_task_projection(tmp_path: Path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    harness._scheduler = scheduler
+    expired = _pending_action(nonce="expired")
+    expired.confirmation_id = "c-expired"
+    expired.task_id = "task-expired"
+    expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[expired.confirmation_id] = expired
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 10})
+
+    assert result["confirmation_ids"] == ["c-expired"]
+    assert len(scheduler.resolved_confirmations) == 1
+    resolution = scheduler.resolved_confirmations[0]
+    assert resolution["task_id"] == "task-expired"
+    assert resolution["confirmation_id"] == "c-expired"
+    assert resolution["status"] == "failed"
+    assert resolution["status_reason"] == "approval_expired"
+    assert resolution["lifecycle_state"] == "expired"
+    assert resolution["action_id"] == expired.action_id
+    assert str(resolution["result_id"]).startswith("result-")
+    assert scheduler.run_outcomes == [{"task_id": "task-expired", "success": False}]
+
+
+@pytest.mark.asyncio
 async def test_lt5_action_purge_limit_zero_purges_no_rows(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     failed = _pending_action(nonce="failed")
@@ -2950,6 +3043,30 @@ async def test_f1_expired_reject_returns_approval_expired(tmp_path: Path) -> Non
     result = await harness.do_action_reject(
         {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
     )
+
+    assert result["rejected"] is False
+    assert result["reason"] == "approval_expired"
+    assert result["status"] == "failed"
+    assert result["status_reason"] == "approval_expired"
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_expired"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision_nonce", [None, "wrong"])
+async def test_f1_expired_reject_projects_expiry_before_nonce_validation(
+    tmp_path: Path,
+    decision_nonce: str | None,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    harness._pending_actions[pending.confirmation_id] = pending
+    params: dict[str, object] = {"confirmation_id": pending.confirmation_id}
+    if decision_nonce is not None:
+        params["decision_nonce"] = decision_nonce
+
+    result = await harness.do_action_reject(params)
 
     assert result["rejected"] is False
     assert result["reason"] == "approval_expired"

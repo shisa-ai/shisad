@@ -16,7 +16,8 @@ from shisad.core.api.schema import (
     TaskStatusSnapshotParams,
     TaskTriggerEventParams,
 )
-from shisad.core.types import Capability, SessionId
+from shisad.core.events import ToolRejected
+from shisad.core.types import Capability, PEPDecisionKind, SessionId, UserId, WorkspaceId
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers.tasks import TaskHandlers
@@ -110,14 +111,38 @@ class _QueueTaskConfirmationHarness(TasksImplMixin):
     def __init__(self) -> None:
         self.pending_kwargs: list[dict[str, object]] = []
         self.scheduler_confirmations: list[tuple[str, dict[str, object]]] = []
+        self.published_events: list[object] = []
         self._scheduler = SimpleNamespace(queue_confirmation=self._queue_confirmation)
+        self._event_bus = SimpleNamespace(publish=self._publish_event)
+
+    async def _publish_event(self, event: object) -> None:
+        self.published_events.append(event)
 
     def _queue_confirmation(self, task_id: str, action: dict[str, object]) -> None:
         self.scheduler_confirmations.append((task_id, action))
 
     def _queue_pending_action(self, **kwargs: object) -> object:
         self.pending_kwargs.append(kwargs)
-        return SimpleNamespace(confirmation_id="confirm-task-1")
+        return SimpleNamespace(
+            confirmation_id="confirm-task-1",
+            action_id="act-task-1",
+            origin_turn_id=str(kwargs.get("origin_turn_id", "")),
+            session_id=kwargs.get("session_id", SessionId("scheduler-session-1")),
+            user_id=kwargs.get("user_id", UserId("alice")),
+            workspace_id=kwargs.get("workspace_id", WorkspaceId("ws1")),
+            task_id=str(kwargs.get("task_id", "")),
+            delivery_target=kwargs.get("delivery_target"),
+            execution_attempt_id="",
+            result_id="",
+            followup_id="followup-task-1",
+            approval_task_envelope_id="",
+            decision_nonce="nonce-task-1",
+            confirmation_evidence=None,
+            status="pending",
+            status_reason="",
+            created_at="",
+            expires_at=None,
+        )
 
 
 @pytest.mark.asyncio
@@ -149,7 +174,8 @@ async def test_task_create_forwards_params_and_ingress_marker() -> None:
     assert payload["_internal_ingress_marker"] is marker
 
 
-def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None:
+@pytest.mark.asyncio
+async def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None:
     harness = _QueueTaskConfirmationHarness()
     task = SimpleNamespace(
         id="task-1",
@@ -169,7 +195,7 @@ def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None:
     )
     session = SimpleNamespace(id=SessionId("scheduler-session-1"))
 
-    confirmation_id = harness._queue_task_confirmation(
+    confirmation_id = await harness._queue_task_confirmation(
         task=task,
         run=run,
         event_type="message.received",
@@ -189,6 +215,16 @@ def test_a1_queue_task_confirmation_carries_task_delivery_target() -> None:
     assert delivery_target.workspace_hint == "guild-1"
     assert delivery_target.thread_id == "thread-1"
     assert harness.scheduler_confirmations[0][0] == "task-1"
+    queued_event = next(
+        event
+        for event in harness.published_events
+        if isinstance(event, ToolRejected)
+        and event.decision == PEPDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert queued_event.action_id == "act-task-1"
+    assert queued_event.origin_turn_id.startswith("task-run:")
+    assert queued_event.followup_id == "followup-task-1"
+    assert queued_event.approval_confirmation_id == "confirm-task-1"
 
 
 @pytest.mark.asyncio

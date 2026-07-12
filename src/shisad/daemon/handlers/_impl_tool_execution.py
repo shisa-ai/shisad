@@ -15,7 +15,7 @@ from shisad.core.approval import (
 )
 from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
-from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
+from shisad.core.types import Capability, PEPDecisionKind, SessionId, TaintLabel, ToolName
 from shisad.core.url_parsing import safe_url_hostname
 from shisad.daemon.handlers._impl_session import _browser_runtime_unavailable_rejection_reason
 from shisad.daemon.handlers._mixin_typing import (
@@ -24,6 +24,7 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
+from shisad.daemon.handlers._pending_approval import pending_action_event_identity_fields
 from shisad.executors.sandbox import DegradedModePolicy, SandboxResult
 from shisad.governance.merge import PolicyMergeError, normalize_patch
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
@@ -524,7 +525,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     session_id=sid,
                     actor="control_api",
                     tool_name=tool_name,
+                    decision=PEPDecisionKind.REQUIRE_CONFIRMATION,
                     reason=f"{pending.reason} ({pending.confirmation_id})",
+                    **pending_action_event_identity_fields(pending),
                 )
             )
             confirmation_payload = SandboxResult(

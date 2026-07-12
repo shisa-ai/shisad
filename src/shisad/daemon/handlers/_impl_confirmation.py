@@ -52,6 +52,7 @@ from shisad.daemon.handlers._mixin_typing import (
 )
 from shisad.daemon.handlers._pending_approval import (
     build_policy_context_for_pending_action,
+    pending_action_event_identity_fields,
     pending_action_is_live_pending,
     pending_action_state_view,
     pep_arguments_for_policy_evaluation,
@@ -422,21 +423,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
         *,
         decision_timestamp: str,
     ) -> dict[str, Any]:
-        identity = pending_action_state_view(pending).identity
-        fields = {
-            "action_id": identity.action_id,
-            "origin_turn_id": identity.origin_turn_id,
-            "execution_attempt_id": identity.execution_attempt_id,
-            "result_id": identity.result_id,
-            "followup_id": identity.followup_id,
-            "approval_session_id": str(getattr(pending, "session_id", "")),
-            "approval_task_envelope_id": str(
-                getattr(pending, "approval_task_envelope_id", "")
-            ).strip(),
-            "approval_confirmation_id": str(getattr(pending, "confirmation_id", "")),
-            "approval_decision_nonce": str(getattr(pending, "decision_nonce", "")),
-            "approval_timestamp": decision_timestamp,
-        }
+        fields: dict[str, Any] = pending_action_event_identity_fields(pending)
+        fields["approval_decision_nonce"] = str(getattr(pending, "decision_nonce", ""))
+        fields["approval_timestamp"] = decision_timestamp
         fields.update(approval_audit_fields(getattr(pending, "confirmation_evidence", None)))
         return fields
 
@@ -1295,9 +1284,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     for item in purge_items:
                         item_status = str(getattr(item, "status", "")).strip().lower()
                         if item_status == "pending":
+                            lifecycle_state = pending_action_state_view(item).lifecycle_state
                             self._mark_stale_pending_action(
                                 item,
-                                reason=_PURGED_STALE_PENDING_ACTION_REASON,
+                                reason=(
+                                    "approval_expired"
+                                    if lifecycle_state == "expired"
+                                    else _PURGED_STALE_PENDING_ACTION_REASON
+                                ),
                                 persist=False,
                             )
                         else:
@@ -1340,16 +1334,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> bool:
         if session_filter and str(item.session_id) != session_filter:
             return False
-        item_status = str(item.status).strip().lower()
         lifecycle_state = pending_action_state_view(item).lifecycle_state
         if status_filter == "terminal":
             if lifecycle_state in {"pending", "executing"}:
                 return False
-        elif status_filter != "all" and status_filter not in {
-            item_status,
-            lifecycle_state,
-        }:
-            return False
+        elif status_filter != "all":
+            canonical_filter = "executed" if status_filter == "approved" else status_filter
+            if lifecycle_state != canonical_filter:
+                return False
         return not (cutoff is not None and item.created_at > cutoff)
 
     async def do_action_confirm(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1438,6 +1430,31 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "status_reason": pending.status_reason,
         }
 
+    def _pending_action_decision_lifecycle_response(
+        self,
+        pending: Any | None,
+        *,
+        confirmation_id: str,
+        decision_field: Literal["confirmed", "rejected"],
+    ) -> dict[str, Any] | None:
+        if pending is None:
+            return {
+                decision_field: False,
+                "confirmation_id": confirmation_id,
+                "reason": "not_found",
+            }
+        if pending.status != "pending":
+            return {
+                decision_field: False,
+                "confirmation_id": confirmation_id,
+                "reason": f"already_{pending.status}",
+            }
+        return self._expired_action_decision_response(
+            pending,
+            confirmation_id=confirmation_id,
+            decision_field=decision_field,
+        )
+
     def _confirmation_method_lockout_response(
         self,
         pending: Any,
@@ -1494,21 +1511,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
         allow_short_cooldown_wait: bool,
     ) -> dict[str, Any]:
         pending = self._pending_actions.get(confirmation_id)
-        if pending is None:
-            return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
-        if pending.status != "pending":
-            return {
-                "confirmed": False,
-                "confirmation_id": confirmation_id,
-                "reason": f"already_{pending.status}",
-            }
-        expired = self._expired_action_decision_response(
+        lifecycle_response = self._pending_action_decision_lifecycle_response(
             pending,
             confirmation_id=confirmation_id,
             decision_field="confirmed",
         )
-        if expired is not None:
-            return expired
+        if lifecycle_response is not None:
+            return lifecycle_response
+        assert pending is not None
         confirmation_method = (
             str(getattr(pending, "selected_backend_method", "") or "software").strip() or "software"
         )
@@ -2227,8 +2237,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> dict[str, Any]:
         reason = str(params.get("reason", "manual_reject")).strip() or "manual_reject"
         pending = self._pending_actions.get(confirmation_id)
-        if pending is None:
-            return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        lifecycle_response = self._pending_action_decision_lifecycle_response(
+            pending,
+            confirmation_id=confirmation_id,
+            decision_field="rejected",
+        )
+        if lifecycle_response is not None:
+            return lifecycle_response
+        assert pending is not None
         raw_nonce = params.get("decision_nonce", "")
         provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
         if not provided_nonce:
@@ -2243,19 +2259,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "invalid_decision_nonce",
             }
-        if pending.status != "pending":
-            return {
-                "rejected": False,
-                "confirmation_id": confirmation_id,
-                "reason": f"already_{pending.status}",
-            }
-        expired = self._expired_action_decision_response(
-            pending,
-            confirmation_id=confirmation_id,
-            decision_field="rejected",
-        )
-        if expired is not None:
-            return expired
         channel_principal_reason = _channel_principal_rejection_reason(pending, params)
         if channel_principal_reason:
             return {

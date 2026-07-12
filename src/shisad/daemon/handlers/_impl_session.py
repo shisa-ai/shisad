@@ -98,6 +98,7 @@ from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import (
     Capability,
     CredentialRef,
+    PEPDecisionKind,
     SessionId,
     SessionMode,
     SessionRole,
@@ -117,6 +118,7 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     capability_elevation_for_missing_capabilities,
+    pending_action_event_identity_fields,
     pending_action_is_live_pending,
     pending_action_state_view,
     pep_arguments_for_policy_evaluation,
@@ -13078,10 +13080,12 @@ class SessionImplMixin(HandlerMixinBase):
                         session_id=sid,
                         actor="policy_loop",
                         tool_name=proposal.tool_name,
+                        decision=PEPDecisionKind.REQUIRE_CONFIRMATION,
                         reason=(
                             f"{pending.reason or 'requires_confirmation'} "
                             f"({pending.confirmation_id})"
                         ),
+                        **pending_action_event_identity_fields(pending),
                     )
                 )
                 if self._trace_recorder is not None:

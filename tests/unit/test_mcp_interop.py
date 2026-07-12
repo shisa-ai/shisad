@@ -18,7 +18,14 @@ from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter, openai_function_name
-from shisad.core.types import SessionId, TaintLabel, ToolName, UserId, WorkspaceId
+from shisad.core.types import (
+    PEPDecisionKind,
+    SessionId,
+    TaintLabel,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._impl import HandlerImplementation
 from shisad.daemon.handlers._impl_session import _build_planner_tool_context
 from shisad.interop.mcp_client import McpClientManager
@@ -308,7 +315,23 @@ class _McpHarness:
         return SimpleNamespace(
             reason=str(kwargs.get("reason", "")),
             confirmation_id="confirm-1",
+            action_id="act-direct-1",
+            origin_turn_id=str(kwargs.get("origin_turn_id", "")),
+            session_id=kwargs.get("session_id", self.session_id),
+            user_id=kwargs.get("user_id", UserId("alice")),
+            workspace_id=kwargs.get("workspace_id", WorkspaceId("ws-1")),
+            task_id=str(kwargs.get("task_id", "")),
+            delivery_target=kwargs.get("delivery_target"),
+            execution_attempt_id="",
+            result_id="",
+            followup_id="followup-direct-1",
+            approval_task_envelope_id="",
             decision_nonce="nonce-1",
+            confirmation_evidence=None,
+            status="pending",
+            status_reason="",
+            created_at="",
+            expires_at=None,
             safe_preview="preview",
             warnings=[],
             execute_after=None,
@@ -2002,6 +2025,16 @@ async def test_mcp_h2_control_plane_require_confirmation_queues_tool_execute() -
     # The queued pending action carries the control-plane reason code.
     queued_reason = harness.queued_pending_actions[0].get("reason", "")
     assert "trace:operator_gate" in queued_reason
+    queued_event = next(
+        event
+        for event in harness._event_bus.events
+        if isinstance(event, ToolRejected)
+        and event.decision == PEPDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert queued_event.action_id == "act-direct-1"
+    assert queued_event.origin_turn_id.startswith("control-api:")
+    assert queued_event.followup_id == "followup-direct-1"
+    assert queued_event.approval_confirmation_id == "confirm-1"
 
 
 @pytest.mark.asyncio
