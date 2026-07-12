@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.core.events import ToolRejected
 from shisad.core.types import SessionId, SessionMode, SessionRole, SessionState, UserId, WorkspaceId
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.scheduler.manager import SchedulerManager
@@ -182,6 +183,45 @@ async def test_m1_do_task_create_normalizes_none_delivery_target_values(tmp_path
     assert payload["delivery_target"] == {
         "channel": "discord",
         "recipient": "ops-room",
+    }
+
+
+@pytest.mark.asyncio
+async def test_f1_reject_task_run_audits_complete_scheduled_scope(tmp_path: Path) -> None:
+    harness = _TaskImplHarness(tmp_path / "scheduler")
+    task = harness._scheduler.create_task(
+        name="reminder:standup",
+        goal="Reminder: standup",
+        schedule=Schedule(kind="interval", expression="5m"),
+        capability_snapshot=set(),
+        policy_snapshot_ref="planner:reminder.create",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        delivery_target={
+            "channel": "discord",
+            "recipient": "ops-room",
+            "workspace_hint": "guild-1",
+            "thread_id": "thread-1",
+        },
+    )
+
+    result = await TasksImplMixin._reject_task_run(
+        harness,  # type: ignore[arg-type]
+        sid=SessionId("scheduler-session-1"),
+        task=task,
+        reason="session_in_lockdown",
+    )
+
+    assert result == {"accepted": False, "queued_confirmation": False, "executed": False}
+    rejected = next(event for event in harness._event_bus.events if isinstance(event, ToolRejected))
+    assert rejected.user_id == "alice"
+    assert rejected.workspace_id == "ws1"
+    assert rejected.task_id == task.id
+    assert rejected.delivery_target == {
+        "channel": "discord",
+        "recipient": "ops-room",
+        "workspace_hint": "guild-1",
+        "thread_id": "thread-1",
     }
 
 

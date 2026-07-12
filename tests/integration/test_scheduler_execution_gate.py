@@ -687,6 +687,16 @@ async def test_g3_due_run_with_capability_mismatch_stays_non_confirmable(
             predicate=lambda event: "Missing capabilities: message.send" in _event_reason(event),
         )
         assert "Missing capabilities: message.send" in _event_reason(rejected)
+        rejected_data = rejected.get("data", {})
+        assert rejected_data.get("user_id") == "alice"
+        assert rejected_data.get("workspace_id") == "ws1"
+        assert rejected_data.get("task_id") == created["id"]
+        assert rejected_data.get("delivery_target") == {
+            "channel": "discord",
+            "recipient": "ops-room",
+            "thread_id": "",
+            "workspace_hint": "",
+        }
     finally:
         await _shutdown_daemon(daemon_task, client)
 

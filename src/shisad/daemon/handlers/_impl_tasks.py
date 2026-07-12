@@ -331,12 +331,21 @@ class TasksImplMixin(HandlerMixinBase):
         task: Any,
         reason: str,
     ) -> dict[str, Any]:
+        delivery_target = self._task_delivery_target(task)
         await self._event_bus.publish(
             ToolRejected(
                 session_id=sid,
                 actor="policy_loop",
                 tool_name=_BACKGROUND_MESSAGE_SEND,
                 reason=reason,
+                user_id=str(getattr(task, "created_by", "")),
+                workspace_id=str(getattr(task, "workspace_id", "")),
+                task_id=str(getattr(task, "id", "")),
+                delivery_target=(
+                    delivery_target.model_dump(mode="json", exclude_none=True)
+                    if delivery_target is not None
+                    else None
+                ),
             )
         )
         self._scheduler.record_run_outcome(str(getattr(task, "id", "")), success=False)
