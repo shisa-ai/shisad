@@ -2343,6 +2343,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             getattr(execution_result, "provider_operation_id", "")
         ).strip()
         success = execution_result.success
+        outcome_unknown = bool(getattr(execution_result, "outcome_unknown", False))
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)
         pending_tool_name = canonical_tool_name(str(pending.tool_name), warn_on_alias=False)
@@ -2444,7 +2445,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         ),
                     )
                 )
-        pending.status = "approved" if success else "failed"
+        if success:
+            pending.status = "approved"
+        elif outcome_unknown:
+            pending.status = "outcome_unknown"
+        else:
+            pending.status = "failed"
         execution_failure_reason = (
             ""
             if success
@@ -2454,22 +2460,32 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
         )
         pending.status_reason = (
-            promote_followup_reason
+            "idempotent_adapter_outcome_unknown"
+            if outcome_unknown
+            else promote_followup_reason
             or execution_failure_reason
             or str(params.get("reason", "")).strip()
             or pending.status
         )
+        if outcome_unknown:
+            pending.decision_nonce = ""
         self._persist_pending_actions()
         self._sync_task_confirmation_status(pending)
+        pending_task_id = str(getattr(pending, "task_id", "")).strip()
         task_auto_disabled = await self._record_task_run_outcome(
-            str(getattr(pending, "task_id", "")),
+            pending_task_id,
             success=success,
             cancel_pending=False,
             confirmation_id=str(getattr(pending, "confirmation_id", "")),
         )
+        task_uncertainty_disabled = False
+        if outcome_unknown and pending_task_id:
+            disable_task = getattr(self._scheduler, "disable_task", None)
+            if callable(disable_task):
+                task_uncertainty_disabled = bool(disable_task(pending_task_id))
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
-            decision="approve" if success else "reject",
+            decision="approve" if success or outcome_unknown else "reject",
             created_at=pending.created_at,
         )
         await self._maybe_emit_confirmation_hygiene_alert(
@@ -2499,6 +2515,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         }
         if task_auto_disabled:
             response[_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY] = "max_runs_reached"
+        elif task_uncertainty_disabled:
+            response[_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY] = "outcome_unknown"
         return response
 
     async def do_action_reject(self, params: Mapping[str, Any]) -> dict[str, Any]:

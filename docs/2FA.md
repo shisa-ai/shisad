@@ -88,10 +88,15 @@ If the daemon restarts after an approved effect may have started but before its
 result is durable, the action is not returned to the approval queue. Exact
 trusted retry metadata permits one bounded automatic recovery only for the
 in-process `time.now` route or an adapter-backed operation using the same
-persisted idempotency key. Other operations become `outcome_unknown`, with the
-old decision nonce cleared. This state does not mean the effect failed: inspect
-the action/attempt/result/provider identifiers shown by `shisad action list
---status outcome_unknown`, check provider or local evidence, and then
+persisted idempotency key, and only when the durable attempt has no delivery
+target. Every target-bearing attempt becomes `outcome_unknown`, even if its
+stored target appears unchanged, because v0.8.1 does not automatically deliver
+or continue from a recovered result. Other operations also become
+`outcome_unknown`, with the old decision nonce cleared. A scheduled task that
+reaches this state is disabled to prevent automatic repetition. This state does
+not mean the effect failed: inspect the action/attempt/result/provider
+identifiers shown by `shisad action list --status outcome_unknown`, check
+provider or local evidence, and then
 re-request the action if you choose to retry. The re-request creates a new
 pending action and requires fresh approval; the old confirmation ID or nonce
 cannot be reused. v0.8.1 does not provide universal provider reconciliation or

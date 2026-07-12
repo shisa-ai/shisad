@@ -90,11 +90,15 @@ attempt ID, result ID, and `executing` state. On restart, only the exact
 in-process `time.now` route or a trusted adapter carrying the same persisted
 provider idempotency key may receive one bounded automatic recovery call. The
 daemon revalidates the live tool schema, action and retry descriptors, session
-and principal, delivery scope, current policy, approval evidence, and expiry
-before that call. Every missing, corrupt, drifted, exhausted, or unclassified
-case becomes `outcome_unknown`; arbitrary web requests, message delivery,
-dynamic skills, MCP tools, and other external effects are not replayed merely
-because they look read-like or use HTTP GET.
+and principal, current policy, approval evidence, and expiry before that call.
+Automatic recovery in v0.8.1 additionally requires that the durable attempt has
+no delivery target. Any target-bearing attempt becomes `outcome_unknown`, even
+when the stored target appears unchanged, because this release does not claim a
+recovered-result delivery or continuation contract. Every other missing,
+corrupt, drifted, exhausted, or unclassified case also becomes
+`outcome_unknown`; arbitrary web requests, message delivery, dynamic skills,
+MCP tools, and other external effects are not replayed merely because they look
+read-like or use HTTP GET.
 
 `outcome_unknown` means the external effect may or may not have happened. The
 old decision nonce is invalidated, while `shisad action list --status
@@ -104,7 +108,10 @@ first; retrying means re-requesting the action and satisfying a new approval.
 Provider reconciliation is not generally available in v0.8.1, and shisad does
 not claim universal exactly-once behavior for arbitrary external services.
 Stable provider idempotency keys remain in private durable state and are not
-returned by the public pending-action API.
+returned by the public pending-action API. If an uncertain attempt belongs to a
+scheduled task, that task is disabled so it cannot automatically repeat the
+possibly completed effect; an operator must reconcile the result before
+creating or enabling further work.
 
 Concurrent confirmation clicks for one action are serialized by an in-memory
 per-confirmation lock while that daemon process is running. That lock is a

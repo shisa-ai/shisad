@@ -136,6 +136,7 @@ from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
     build_policy_context_for_pending_action,
+    pending_action_event_identity_fields,
     pending_action_state_view,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
@@ -211,6 +212,18 @@ _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _GH12_READ_ONLY_SHELL_COMMANDS = frozenset({"fd", "find", "grep", "ls", "rg"})
 _AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS = 0.05
 _SENSITIVE_PENDING_TEXT_REDACTION = "[sensitive text redacted]"
+_PENDING_ACTION_STORED_STATUSES = frozenset(
+    {
+        "pending",
+        "executing",
+        "approved",
+        "failed",
+        "rejected",
+        "cancelled",
+        "superseded",
+        "outcome_unknown",
+    }
+)
 _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
     "reminder.create": frozenset({"reminder_intent"}),
@@ -237,6 +250,57 @@ def _pending_payload_group(item: Mapping[str, Any]) -> tuple[str, str] | None:
     if not session_id:
         return None
     return (session_id, task_id)
+
+
+def _loaded_state_mapping(value: Any) -> tuple[dict[str, Any], bool]:
+    if isinstance(value, Mapping):
+        return dict(value), True
+    return {}, False
+
+
+def _loaded_state_optional_mapping(
+    value: Any,
+) -> tuple[dict[str, Any] | None, bool]:
+    if value is None:
+        return None, True
+    if isinstance(value, Mapping):
+        return dict(value), True
+    return None, False
+
+
+def _loaded_state_string_list(value: Any) -> tuple[list[str], bool]:
+    if not isinstance(value, list):
+        return [], False
+    valid = all(isinstance(item, str) for item in value)
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()], valid
+
+
+def _loaded_state_capabilities(value: Any) -> tuple[set[Capability], bool]:
+    if not isinstance(value, list):
+        return set(), False
+    capabilities: set[Capability] = set()
+    valid = True
+    for item in value:
+        if not isinstance(item, str):
+            valid = False
+            continue
+        try:
+            capabilities.add(Capability(item))
+        except ValueError:
+            valid = False
+    return capabilities, valid
+
+
+def _loaded_state_text(value: Any) -> tuple[str, bool]:
+    if isinstance(value, str):
+        return value.strip(), True
+    return "", False
+
+
+def _loaded_state_bool(value: Any) -> tuple[bool, bool]:
+    if isinstance(value, bool):
+        return value, True
+    return False, False
 
 
 def _sensitive_pending_text_values(
@@ -1547,6 +1611,8 @@ class PendingAction:
     retry_generation: int = 0
     recovery_started_at: datetime | None = None
     recovery_result: dict[str, Any] = field(default_factory=dict)
+    recovery_accounting_pending: bool = False
+    recovery_effect_invoked: bool = False
     stable_idempotency_key: str = ""
     provider_operation_id: str = ""
     execution_attempt_id: str = ""
@@ -1612,6 +1678,7 @@ class ApprovedToolExecutionResult:
     sandbox_result: SandboxResult | None = None
     error: str = ""
     provider_operation_id: str = ""
+    outcome_unknown: bool = False
 
 
 class HandlerImplementation(
@@ -1694,6 +1761,7 @@ class HandlerImplementation(
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
+        self._recovery_accounting_tasks: set[asyncio.Task[None]] = set()
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._plan_violation_counts: dict[SessionId, int] = {}
         self._channel_proactive_last_sent_at: dict[str, datetime] = {}
@@ -2998,6 +3066,8 @@ class HandlerImplementation(
                 pending.recovery_started_at.isoformat() if pending.recovery_started_at else ""
             ),
             "recovery_result": dict(pending.recovery_result),
+            "recovery_accounting_pending": pending.recovery_accounting_pending,
+            "recovery_effect_invoked": pending.recovery_effect_invoked,
             "stable_idempotency_key": pending.stable_idempotency_key,
             "provider_operation_id": pending.provider_operation_id,
             "execution_attempt_id": state_view.identity.execution_attempt_id,
@@ -3098,6 +3168,8 @@ class HandlerImplementation(
                     mode="json"
                 )
         if public:
+            payload.pop("recovery_accounting_pending", None)
+            payload.pop("recovery_effect_invoked", None)
             payload.pop("stable_idempotency_key", None)
             payload["stable_idempotency_key_present"] = bool(
                 pending.stable_idempotency_key
@@ -3593,6 +3665,82 @@ class HandlerImplementation(
             fault_injector=getattr(self, "_pending_state_fault_injector", None),
         )
 
+    @staticmethod
+    def _fallback_corrupt_pending_action(item: Mapping[str, Any]) -> PendingAction | None:
+        confirmation_id, confirmation_id_valid = _loaded_state_text(
+            item.get("confirmation_id", "")
+        )
+        if not confirmation_id or not confirmation_id_valid:
+            return None
+        identity = item.get("identity")
+        identity_fields = dict(identity) if isinstance(identity, Mapping) else {}
+
+        def _identity_text(key: str) -> str:
+            direct, _ = _loaded_state_text(item.get(key, ""))
+            nested, _ = _loaded_state_text(identity_fields.get(key, ""))
+            return direct or nested
+
+        created_at_raw, _ = _loaded_state_text(item.get("created_at", ""))
+        try:
+            created_at = datetime.fromisoformat(created_at_raw)
+        except ValueError:
+            created_at = datetime.fromtimestamp(0, UTC)
+        status, _ = _loaded_state_text(item.get("status", ""))
+        execution_attempt_id = _identity_text("execution_attempt_id")
+        uncertain_attempt = bool(execution_attempt_id) or status == "executing"
+        arguments = dict(item["arguments"]) if isinstance(item.get("arguments"), Mapping) else {}
+        session_id, _ = _loaded_state_text(item.get("session_id", ""))
+        user_id, _ = _loaded_state_text(item.get("user_id", ""))
+        workspace_id, _ = _loaded_state_text(item.get("workspace_id", ""))
+        task_id, _ = _loaded_state_text(item.get("task_id", ""))
+        tool_name, _ = _loaded_state_text(item.get("tool_name", ""))
+        reason, _ = _loaded_state_text(item.get("reason", ""))
+        action_digest, _ = _loaded_state_text(item.get("action_digest", ""))
+        approval_evidence_hash, _ = _loaded_state_text(
+            item.get("approval_evidence_hash", "")
+        )
+        stable_idempotency_key, _ = _loaded_state_text(
+            item.get("stable_idempotency_key", "")
+        )
+        provider_operation_id, _ = _loaded_state_text(
+            item.get("provider_operation_id", "")
+        )
+        recovery_result = (
+            dict(item["recovery_result"])
+            if isinstance(item.get("recovery_result"), Mapping)
+            else {}
+        )
+        return PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce="",
+            action_id=_identity_text("action_id"),
+            origin_turn_id=_identity_text("origin_turn_id"),
+            action_digest=action_digest,
+            approval_evidence_hash=approval_evidence_hash,
+            retry_descriptor=None,
+            recovery_result=recovery_result,
+            stable_idempotency_key=stable_idempotency_key,
+            provider_operation_id=provider_operation_id,
+            execution_attempt_id=execution_attempt_id,
+            result_id=_identity_text("result_id"),
+            followup_id=_identity_text("followup_id"),
+            session_id=SessionId(session_id),
+            user_id=UserId(user_id),
+            workspace_id=WorkspaceId(workspace_id),
+            task_id=task_id,
+            tool_name=ToolName(tool_name or "unknown"),
+            arguments=arguments,
+            reason=reason,
+            capabilities=set(),
+            created_at=created_at,
+            status="outcome_unknown" if uncertain_attempt else "failed",
+            status_reason=(
+                "uncertain_effect_requires_fresh_approval"
+                if uncertain_attempt
+                else "pending_state_metadata_invalid"
+            ),
+        )
+
     def _load_pending_actions(self) -> None:
         if not self._pending_actions_file.exists():
             return
@@ -3643,42 +3791,75 @@ class HandlerImplementation(
                 continue
             legacy_mixed_sensitive_payload = False
             try:
-                confirmation_id = str(item.get("confirmation_id", "")).strip()
+                confirmation_id, confirmation_id_valid = _loaded_state_text(
+                    item.get("confirmation_id", "")
+                )
                 if not confirmation_id:
                     continue
-                recovery_authority_invalid = False
-                created_at = datetime.fromisoformat(str(item.get("created_at", "")).strip())
-                session_id = SessionId(str(item.get("session_id", "")))
-                delivery_target_payload = item.get("delivery_target")
+                recovery_authority_invalid = not confirmation_id_valid
+                created_at_raw, created_at_valid = _loaded_state_text(
+                    item.get("created_at", "")
+                )
+                try:
+                    created_at = datetime.fromisoformat(created_at_raw)
+                except ValueError:
+                    created_at = datetime.fromtimestamp(0, UTC)
+                    created_at_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not created_at_valid
+                )
+                session_id_raw, session_id_valid = _loaded_state_text(
+                    item.get("session_id", "")
+                )
+                session_id = SessionId(session_id_raw)
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not session_id_valid
+                )
+                delivery_target_payload, delivery_target_valid = (
+                    _loaded_state_optional_mapping(item.get("delivery_target"))
+                )
                 try:
                     delivery_target = (
                         DeliveryTarget.model_validate(delivery_target_payload)
-                        if isinstance(delivery_target_payload, Mapping)
+                        if delivery_target_payload is not None
                         else None
                     )
                 except ValidationError:
                     delivery_target = None
-                    recovery_authority_invalid = True
-                preflight_action_payload = item.get("preflight_action")
+                    delivery_target_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not delivery_target_valid
+                )
+                preflight_action_payload, preflight_action_valid = (
+                    _loaded_state_optional_mapping(item.get("preflight_action"))
+                )
                 try:
                     preflight_action = (
                         ControlPlaneAction.model_validate(preflight_action_payload)
-                        if isinstance(preflight_action_payload, dict)
+                        if preflight_action_payload is not None
                         else None
                     )
                 except ValidationError:
                     preflight_action = None
-                    recovery_authority_invalid = True
-                merged_policy_payload = item.get("merged_policy")
+                    preflight_action_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not preflight_action_valid
+                )
+                merged_policy_payload, merged_policy_valid = _loaded_state_optional_mapping(
+                    item.get("merged_policy")
+                )
                 try:
                     merged_policy = (
                         ToolExecutionPolicy.model_validate(merged_policy_payload)
-                        if isinstance(merged_policy_payload, dict)
+                        if merged_policy_payload is not None
                         else None
                     )
                 except ValidationError:
                     merged_policy = None
-                    recovery_authority_invalid = True
+                    merged_policy_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not merged_policy_valid
+                )
                 execute_after_raw = str(item.get("execute_after", "")).strip()
                 try:
                     execute_after = (
@@ -3696,65 +3877,94 @@ class HandlerImplementation(
                     expires_at = None
                     recovery_authority_invalid = True
                 legacy_null_expiry = not expires_at_raw
-                pep_context_payload = item.get("pep_context")
+                pep_context_payload, pep_context_valid = _loaded_state_optional_mapping(
+                    item.get("pep_context")
+                )
                 try:
                     pep_context = (
                         pending_pep_context_from_payload(pep_context_payload)
-                        if isinstance(pep_context_payload, Mapping)
+                        if pep_context_payload is not None
                         else None
                     )
                 except (TypeError, ValueError, ValidationError):
                     pep_context = None
-                    recovery_authority_invalid = True
-                pep_elevation_payload = item.get("pep_elevation")
+                    pep_context_valid = False
+                recovery_authority_invalid = recovery_authority_invalid or not pep_context_valid
+                pep_elevation_payload, pep_elevation_valid = _loaded_state_optional_mapping(
+                    item.get("pep_elevation")
+                )
                 try:
                     pep_elevation = (
                         pending_pep_elevation_from_payload(pep_elevation_payload)
-                        if isinstance(pep_elevation_payload, Mapping)
+                        if pep_elevation_payload is not None
                         else None
                     )
                 except (TypeError, ValueError, ValidationError):
                     pep_elevation = None
-                    recovery_authority_invalid = True
-                approval_envelope_payload = item.get("approval_envelope")
+                    pep_elevation_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not pep_elevation_valid
+                )
+                approval_envelope_payload, approval_envelope_valid = (
+                    _loaded_state_optional_mapping(item.get("approval_envelope"))
+                )
                 try:
                     approval_envelope = (
                         ApprovalEnvelope.model_validate(approval_envelope_payload)
-                        if isinstance(approval_envelope_payload, Mapping)
+                        if approval_envelope_payload is not None
                         else None
                     )
                 except ValidationError:
                     approval_envelope = None
-                    recovery_authority_invalid = True
-                intent_envelope_payload = item.get("intent_envelope")
+                    approval_envelope_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not approval_envelope_valid
+                )
+                intent_envelope_payload, intent_envelope_valid = _loaded_state_optional_mapping(
+                    item.get("intent_envelope")
+                )
                 try:
                     intent_envelope = (
                         IntentEnvelope.model_validate(intent_envelope_payload)
-                        if isinstance(intent_envelope_payload, Mapping)
+                        if intent_envelope_payload is not None
                         else None
                     )
                 except ValidationError:
                     intent_envelope = None
-                    recovery_authority_invalid = True
-                confirmation_evidence_payload = item.get("confirmation_evidence")
+                    intent_envelope_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not intent_envelope_valid
+                )
+                confirmation_evidence_payload, confirmation_evidence_valid = (
+                    _loaded_state_optional_mapping(item.get("confirmation_evidence"))
+                )
                 try:
                     confirmation_evidence = (
                         ConfirmationEvidence.model_validate(confirmation_evidence_payload)
-                        if isinstance(confirmation_evidence_payload, Mapping)
+                        if confirmation_evidence_payload is not None
                         else None
                     )
                 except ValidationError:
                     confirmation_evidence = None
-                    recovery_authority_invalid = True
-                retry_descriptor_payload = item.get("retry_descriptor")
+                    confirmation_evidence_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not confirmation_evidence_valid
+                )
+                retry_descriptor_payload, retry_descriptor_valid = (
+                    _loaded_state_optional_mapping(item.get("retry_descriptor"))
+                )
                 try:
                     retry_descriptor = (
                         ToolRetryDescriptor.model_validate(retry_descriptor_payload)
-                        if isinstance(retry_descriptor_payload, Mapping)
+                        if retry_descriptor_payload is not None
                         else None
                     )
                 except ValidationError:
                     retry_descriptor = None
+                    retry_descriptor_valid = False
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not retry_descriptor_valid
+                )
                 if recovery_authority_invalid:
                     retry_descriptor = None
                 try:
@@ -3772,13 +3982,29 @@ class HandlerImplementation(
                 except ValueError:
                     recovery_started_at = None
                     retry_descriptor = None
-                recovery_result_payload = item.get("recovery_result")
-                recovery_result = (
-                    dict(recovery_result_payload)
-                    if isinstance(recovery_result_payload, Mapping)
-                    else {}
+                recovery_result_payload = item.get("recovery_result", {})
+                recovery_result, recovery_result_valid = _loaded_state_mapping(
+                    recovery_result_payload
                 )
-                raw_arguments = dict(item.get("arguments", {}))
+                recovery_accounting_pending, recovery_accounting_pending_valid = (
+                    _loaded_state_bool(item.get("recovery_accounting_pending", False))
+                )
+                recovery_effect_invoked, recovery_effect_invoked_valid = _loaded_state_bool(
+                    item.get("recovery_effect_invoked", False)
+                )
+                recovery_authority_invalid = recovery_authority_invalid or not all(
+                    (
+                        recovery_accounting_pending_valid,
+                        recovery_effect_invoked_valid,
+                        recovery_result_valid,
+                    )
+                )
+                raw_arguments, arguments_valid = _loaded_state_mapping(
+                    item.get("arguments", {})
+                )
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not arguments_valid
+                )
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
                 group = _pending_payload_group(item)
                 payload_session_id = _pending_payload_session(item)
@@ -3800,23 +4026,84 @@ class HandlerImplementation(
                 )
                 public_arguments = dict(raw_arguments) if sensitive_public_payload else None
                 identity_payload = item.get("identity")
-                identity_fields = identity_payload if isinstance(identity_payload, Mapping) else {}
-                loaded_action_id = (
-                    str(item.get("action_id", "")).strip()
-                    or str(identity_fields.get("action_id", "")).strip()
+                identity_fields: dict[str, Any]
+                if identity_payload is None:
+                    identity_fields, identity_valid = {}, True
+                else:
+                    identity_fields, identity_valid = _loaded_state_mapping(identity_payload)
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not identity_valid
                 )
-                loaded_followup_id = (
-                    str(item.get("followup_id", "")).strip()
-                    or str(identity_fields.get("followup_id", "")).strip()
+                loaded_action_id, action_id_valid = _loaded_state_text(
+                    item.get("action_id", "")
+                )
+                identity_action_id, identity_action_id_valid = _loaded_state_text(
+                    identity_fields.get("action_id", "")
+                )
+                loaded_action_id = loaded_action_id or identity_action_id
+                loaded_followup_id, followup_id_valid = _loaded_state_text(
+                    item.get("followup_id", "")
+                )
+                identity_followup_id, identity_followup_id_valid = _loaded_state_text(
+                    identity_fields.get("followup_id", "")
+                )
+                loaded_followup_id = loaded_followup_id or identity_followup_id
+                recovery_authority_invalid = recovery_authority_invalid or not all(
+                    (
+                        action_id_valid,
+                        identity_action_id_valid,
+                        followup_id_valid,
+                        identity_followup_id_valid,
+                    )
                 )
                 if not loaded_action_id or loaded_action_id == confirmation_id:
                     loaded_action_id = ""
                     migrated_legacy_action_identity = True
                 if not loaded_followup_id:
                     migrated_legacy_action_identity = True
-                loaded_status = str(item.get("status", "pending")).strip() or "pending"
-                loaded_status_reason = str(item.get("status_reason", "")).strip()
-                loaded_decision_nonce = str(item.get("decision_nonce", "")).strip()
+                loaded_execution_attempt_id, execution_attempt_id_valid = _loaded_state_text(
+                    item.get("execution_attempt_id", "")
+                )
+                identity_execution_attempt_id, identity_execution_attempt_id_valid = (
+                    _loaded_state_text(identity_fields.get("execution_attempt_id", ""))
+                )
+                loaded_execution_attempt_id = (
+                    loaded_execution_attempt_id or identity_execution_attempt_id
+                )
+                loaded_result_id, result_id_valid = _loaded_state_text(
+                    item.get("result_id", "")
+                )
+                identity_result_id, identity_result_id_valid = _loaded_state_text(
+                    identity_fields.get("result_id", "")
+                )
+                loaded_result_id = loaded_result_id or identity_result_id
+                recovery_authority_invalid = recovery_authority_invalid or not all(
+                    (
+                        execution_attempt_id_valid,
+                        identity_execution_attempt_id_valid,
+                        result_id_valid,
+                        identity_result_id_valid,
+                    )
+                )
+                loaded_status, status_valid = _loaded_state_text(
+                    item.get("status", "pending")
+                )
+                if loaded_status not in _PENDING_ACTION_STORED_STATUSES:
+                    status_valid = False
+                if not status_valid:
+                    loaded_status = (
+                        "outcome_unknown" if loaded_execution_attempt_id else "failed"
+                    )
+                recovery_authority_invalid = recovery_authority_invalid or not status_valid
+                loaded_status_reason, status_reason_valid = _loaded_state_text(
+                    item.get("status_reason", "")
+                )
+                loaded_decision_nonce, decision_nonce_valid = _loaded_state_text(
+                    item.get("decision_nonce", "")
+                )
+                recovery_authority_invalid = recovery_authority_invalid or not all(
+                    (status_reason_valid, decision_nonce_valid)
+                )
                 if legacy_null_expiry and loaded_status == "pending":
                     expires_at = datetime.now(UTC) - timedelta(microseconds=1)
                 loaded_action_digest = str(item.get("action_digest", "")).strip()
@@ -3835,32 +4122,95 @@ class HandlerImplementation(
                     migrated_attempt_metadata = (
                         migrated_attempt_metadata or bool(loaded_approval_evidence_hash)
                     )
+                capabilities, capabilities_valid = _loaded_state_capabilities(
+                    item.get("capabilities", [])
+                )
+                warnings, warnings_valid = _loaded_state_string_list(
+                    item.get("warnings", [])
+                )
+                required_methods, required_methods_valid = _loaded_state_string_list(
+                    item.get("required_methods", [])
+                )
+                allowed_principals, allowed_principals_valid = _loaded_state_string_list(
+                    item.get("allowed_principals", [])
+                )
+                allowed_channel_principals, allowed_channel_principals_valid = (
+                    _loaded_state_string_list(item.get("allowed_channel_principals", []))
+                )
+                allowed_credentials, allowed_credentials_valid = _loaded_state_string_list(
+                    item.get("allowed_credentials", [])
+                )
+                leak_check, leak_check_valid = _loaded_state_mapping(
+                    item.get("leak_check", {})
+                )
+                try:
+                    required_level = ConfirmationLevel(
+                        item.get("required_level", ConfirmationLevel.SOFTWARE.value)
+                    )
+                    required_level_valid = True
+                except (TypeError, ValueError):
+                    required_level = ConfirmationLevel.SOFTWARE
+                    required_level_valid = False
+                try:
+                    required_capabilities = ConfirmationCapabilities.model_validate(
+                        item.get("required_capabilities", {})
+                    )
+                    required_capabilities_valid = True
+                except ValidationError:
+                    required_capabilities = ConfirmationCapabilities()
+                    required_capabilities_valid = False
+                try:
+                    fallback = ConfirmationFallbackPolicy.model_validate(
+                        item.get("fallback", {})
+                    )
+                    fallback_valid = True
+                except ValidationError:
+                    fallback = ConfirmationFallbackPolicy()
+                    fallback_valid = False
+                origin_turn_id, origin_turn_id_valid = _loaded_state_text(
+                    item.get("origin_turn_id", "")
+                )
+                identity_origin_turn_id, identity_origin_turn_id_valid = _loaded_state_text(
+                    identity_fields.get("origin_turn_id", "")
+                )
+                origin_turn_id = origin_turn_id or identity_origin_turn_id
+                recovery_authority_invalid = recovery_authority_invalid or not all(
+                    (
+                        capabilities_valid,
+                        warnings_valid,
+                        required_methods_valid,
+                        allowed_principals_valid,
+                        allowed_channel_principals_valid,
+                        allowed_credentials_valid,
+                        leak_check_valid,
+                        required_level_valid,
+                        required_capabilities_valid,
+                        fallback_valid,
+                        origin_turn_id_valid,
+                        identity_origin_turn_id_valid,
+                    )
+                )
+                if recovery_authority_invalid:
+                    retry_descriptor = None
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=loaded_decision_nonce,
                     action_id=loaded_action_id,
-                    origin_turn_id=(
-                        str(item.get("origin_turn_id", "")).strip()
-                        or str(identity_fields.get("origin_turn_id", "")).strip()
-                    ),
+                    origin_turn_id=origin_turn_id,
                     action_digest=loaded_action_digest,
                     approval_evidence_hash=loaded_approval_evidence_hash,
                     retry_descriptor=retry_descriptor,
                     retry_generation=retry_generation,
                     recovery_started_at=recovery_started_at,
                     recovery_result=recovery_result,
+                    recovery_accounting_pending=recovery_accounting_pending,
+                    recovery_effect_invoked=recovery_effect_invoked,
                     stable_idempotency_key=str(
                         item.get("stable_idempotency_key", "")
                     ).strip(),
                     provider_operation_id=str(item.get("provider_operation_id", "")).strip(),
-                    execution_attempt_id=(
-                        str(item.get("execution_attempt_id", "")).strip()
-                        or str(identity_fields.get("execution_attempt_id", "")).strip()
-                    ),
-                    result_id=(
-                        str(item.get("result_id", "")).strip()
-                        or str(identity_fields.get("result_id", "")).strip()
-                    ),
+                    execution_attempt_id=loaded_execution_attempt_id,
+                    result_id=loaded_result_id,
                     followup_id=loaded_followup_id,
                     session_id=session_id,
                     user_id=UserId(str(item.get("user_id", ""))),
@@ -3869,9 +4219,7 @@ class HandlerImplementation(
                     tool_name=ToolName(str(item.get("tool_name", ""))),
                     arguments=raw_arguments,
                     reason=str(item.get("reason", "")),
-                    capabilities={
-                        Capability(str(cap)) for cap in item.get("capabilities", []) if str(cap)
-                    },
+                    capabilities=capabilities,
                     created_at=created_at,
                     public_arguments=public_arguments,
                     sensitive_public_payload=sensitive_public_payload,
@@ -3879,45 +4227,25 @@ class HandlerImplementation(
                     preflight_action=preflight_action,
                     execute_after=execute_after,
                     safe_preview=str(item.get("safe_preview", "")),
-                    warnings=[str(value) for value in item.get("warnings", [])],
-                    leak_check=dict(item.get("leak_check", {})),
+                    warnings=warnings,
+                    leak_check=leak_check,
                     merged_policy=merged_policy,
                     approval_task_envelope_id=str(
                         item.get("approval_task_envelope_id", "")
                     ).strip(),
                     pep_context=pep_context,
                     pep_elevation=pep_elevation,
-                    required_level=ConfirmationLevel(
-                        str(item.get("required_level", ConfirmationLevel.SOFTWARE.value))
-                    ),
-                    required_methods=[
-                        str(value).strip()
-                        for value in item.get("required_methods", [])
-                        if str(value).strip()
-                    ],
-                    allowed_principals=[
-                        str(value).strip()
-                        for value in item.get("allowed_principals", [])
-                        if str(value).strip()
-                    ],
-                    allowed_channel_principals=[
-                        str(value).strip()
-                        for value in item.get("allowed_channel_principals", [])
-                        if str(value).strip()
-                    ],
-                    allowed_credentials=[
-                        str(value).strip()
-                        for value in item.get("allowed_credentials", [])
-                        if str(value).strip()
-                    ],
-                    required_capabilities=ConfirmationCapabilities.model_validate(
-                        item.get("required_capabilities", {})
-                    ),
+                    required_level=required_level,
+                    required_methods=required_methods,
+                    allowed_principals=allowed_principals,
+                    allowed_channel_principals=allowed_channel_principals,
+                    allowed_credentials=allowed_credentials,
+                    required_capabilities=required_capabilities,
                     approval_envelope=approval_envelope,
                     approval_envelope_hash=str(item.get("approval_envelope_hash", "")).strip(),
                     intent_envelope=intent_envelope,
                     confirmation_evidence=confirmation_evidence,
-                    fallback=ConfirmationFallbackPolicy.model_validate(item.get("fallback", {})),
+                    fallback=fallback,
                     expires_at=expires_at,
                     selected_backend_id=(
                         str(item.get("selected_backend_id", "")).strip() or "software.default"
@@ -3935,12 +4263,21 @@ class HandlerImplementation(
                     status_reason=loaded_status_reason,
                 )
             except (TypeError, ValueError, ValidationError):
-                continue
-            if recovery_authority_invalid and pending.status == "pending":
-                pending.status = "failed"
-                pending.status_reason = "pending_state_metadata_invalid"
-                pending.decision_nonce = ""
+                fallback_pending = self._fallback_corrupt_pending_action(item)
+                if fallback_pending is None:
+                    continue
+                pending = fallback_pending
+                recovery_authority_invalid = True
+            if recovery_authority_invalid:
                 pruned_stale = True
+                pending.recovery_accounting_pending = False
+                if pending.status == "outcome_unknown":
+                    pending.status_reason = "uncertain_effect_requires_fresh_approval"
+                    pending.decision_nonce = ""
+                elif pending.status == "pending":
+                    pending.status = "failed"
+                    pending.status_reason = "pending_state_metadata_invalid"
+                    pending.decision_nonce = ""
             if (
                 pending.status == "pending"
                 and pending_action_state_view(pending).lifecycle_state == "expired"
@@ -4183,6 +4520,142 @@ class HandlerImplementation(
         adapter = self._services.idempotent_recovery_adapters.get(str(pending.tool_name))
         return adapter if callable(adapter) else None
 
+    def _schedule_recovery_accounting(self, pending: PendingAction) -> None:
+        if not pending.recovery_accounting_pending:
+            return
+        task = asyncio.create_task(
+            self._account_recovered_attempt(pending.confirmation_id),
+            name=f"shisad-recovery-accounting-{pending.confirmation_id}",
+        )
+        self._recovery_accounting_tasks.add(task)
+
+        def _accounting_done(completed: asyncio.Task[None]) -> None:
+            self._recovery_accounting_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.error(
+                    "Recovery accounting failed for confirmation %s",
+                    pending.confirmation_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(_accounting_done)
+
+    def _recovery_approval_event_fields(self, pending: PendingAction) -> dict[str, Any]:
+        evidence = pending.confirmation_evidence
+        approval_timestamp = (
+            evidence.verified_at.isoformat()
+            if evidence is not None
+            else (
+                pending.recovery_started_at.isoformat()
+                if pending.recovery_started_at is not None
+                else datetime.now(UTC).isoformat()
+            )
+        )
+        return {
+            **pending_action_event_identity_fields(pending),
+            "approval_decision_nonce": (
+                evidence.decision_nonce if evidence is not None else ""
+            ),
+            "approval_timestamp": approval_timestamp,
+            **approval_audit_fields(evidence),
+        }
+
+    def _recovery_control_plane_action(
+        self,
+        pending: PendingAction,
+        *,
+        session: Session,
+    ) -> ControlPlaneAction:
+        origin = self._origin_for(
+            session=session,
+            actor="recovery",
+            skill_name=str(pending.arguments.get("skill_name") or "").strip(),
+            task_id=pending.task_id,
+        )
+        if pending.preflight_action is not None:
+            return pending.preflight_action.model_copy(update={"origin": origin})
+        return build_action(
+            tool_name=str(pending.tool_name),
+            arguments=dict(pending.arguments),
+            origin=origin,
+            risk_tier=RiskTier.LOW,
+            workspace_roots=list(self._config.assistant_fs_roots),
+        )
+
+    async def _account_recovered_attempt(self, confirmation_id: str) -> None:
+        pending = self._pending_actions.get(confirmation_id)
+        if pending is None or not pending.recovery_accounting_pending:
+            return
+        success = pending.status == "approved"
+        outcome_unknown = pending.status == "outcome_unknown"
+        error = "" if success else pending.status_reason or "recovery_failed"
+        event_fields = self._recovery_approval_event_fields(pending)
+
+        if pending.recovery_effect_invoked:
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="recovery",
+                        tool_name=pending.tool_name,
+                        reason=error,
+                        **event_fields,
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=pending.session_id,
+                    actor="recovery",
+                    tool_name=pending.tool_name,
+                    success=success,
+                    error=error,
+                    details={"outcome_unknown": outcome_unknown},
+                    **event_fields,
+                )
+            )
+            session = self._session_manager.get(pending.session_id)
+            if session is None:
+                raise RuntimeError("recovery_accounting_session_missing")
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=self._recovery_control_plane_action(pending, session=session),
+                success=success,
+            )
+        else:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=pending.session_id,
+                    actor="recovery",
+                    tool_name=pending.tool_name,
+                    reason=error,
+                    **event_fields,
+                )
+            )
+
+        await self._record_task_run_outcome(
+            pending.task_id,
+            success=success,
+            confirmation_id=pending.confirmation_id,
+        )
+        if outcome_unknown and pending.task_id:
+            await self.do_task_disable({"task_id": pending.task_id})
+        self._confirmation_analytics.record(
+            user_id=str(pending.user_id),
+            decision="approve",
+            created_at=pending.created_at,
+        )
+
+        pending.recovery_accounting_pending = False
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError:
+            pending.recovery_accounting_pending = True
+            raise
+
     def _recover_loaded_pending_attempts(self) -> None:
         recovery_not_before = _monotonic() + _AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS
         recovery_backoff_applied = False
@@ -4198,6 +4671,8 @@ class HandlerImplementation(
                 pending.status = "outcome_unknown"
                 pending.status_reason = "uncertain_effect_requires_fresh_approval"
                 pending.decision_nonce = ""
+                pending.recovery_effect_invoked = False
+                pending.recovery_accounting_pending = True
                 self._persist_pending_actions()
                 self._sync_task_confirmation_status(pending)
                 continue
@@ -4215,6 +4690,7 @@ class HandlerImplementation(
                 if remaining_backoff > 0:
                     _sleep(remaining_backoff)
                 recovery_backoff_applied = True
+            adapter_outcome_unknown = False
             if structural_read_recovery:
                 result = current_time_payload(
                     timezone=str(pending.arguments.get("timezone", "")).strip()
@@ -4231,8 +4707,17 @@ class HandlerImplementation(
                         )
                     )
                     json.dumps(result, ensure_ascii=True, sort_keys=True)
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    result = {"ok": False, "error": "idempotent_adapter_failed"}
+                except Exception:
+                    logger.warning(
+                        "Stable-key recovery adapter outcome is uncertain for %s",
+                        pending.tool_name,
+                        exc_info=True,
+                    )
+                    result = {
+                        "ok": False,
+                        "error": "idempotent_adapter_outcome_unknown",
+                    }
+                    adapter_outcome_unknown = True
                 recovered_reason = "recovered_stable_idempotency_key"
                 failure_reason = "stable_idempotency_key_retry_failed"
             pending.recovery_result = dict(result)
@@ -4243,12 +4728,19 @@ class HandlerImplementation(
             if result.get("ok") is True:
                 pending.status = "approved"
                 pending.status_reason = recovered_reason
+            elif not structural_read_recovery and adapter_outcome_unknown:
+                pending.status = "outcome_unknown"
+                pending.status_reason = "idempotent_adapter_outcome_unknown"
             else:
                 pending.status = "failed"
                 error = str(result.get("error", failure_reason)).strip()
                 pending.status_reason = f"{failure_reason}:{error}"
+            pending.recovery_effect_invoked = True
+            pending.recovery_accounting_pending = True
             self._persist_pending_actions()
             self._sync_task_confirmation_status(pending)
+        for pending in self._pending_actions.values():
+            self._schedule_recovery_accounting(pending)
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
         if channel == "matrix" and self._matrix_channel is not None:
@@ -4497,6 +4989,7 @@ class HandlerImplementation(
             adapter = self._services.idempotent_recovery_adapters.get(str(tool_name))
             provider_payload: dict[str, Any]
             provider_operation_id = ""
+            provider_outcome_unknown = False
             if not stable_idempotency_key:
                 provider_payload = {
                     "ok": False,
@@ -4511,11 +5004,17 @@ class HandlerImplementation(
                 try:
                     provider_payload = dict(adapter(dict(arguments), stable_idempotency_key))
                     json.dumps(provider_payload, ensure_ascii=True, sort_keys=True)
-                except (OSError, RuntimeError, TypeError, ValueError):
+                except Exception:
+                    logger.warning(
+                        "Stable-key adapter outcome is uncertain for %s",
+                        tool_name,
+                        exc_info=True,
+                    )
                     provider_payload = {
                         "ok": False,
-                        "error": "idempotent_adapter_failed",
+                        "error": "idempotent_adapter_outcome_unknown",
                     }
+                    provider_outcome_unknown = True
             success = provider_payload.get("ok") is True
             provider_operation_id = str(
                 provider_payload.get("provider_operation_id", "")
@@ -4552,6 +5051,7 @@ class HandlerImplementation(
                 checkpoint_id=checkpoint_id,
                 error=error,
                 provider_operation_id=provider_operation_id,
+                outcome_unknown=provider_outcome_unknown,
                 tool_output=HandlerImplementation._with_tool_output_ingress(
                     self,
                     session=session,

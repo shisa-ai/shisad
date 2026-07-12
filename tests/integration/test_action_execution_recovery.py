@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from shisad.core.tools.schema import (
 from shisad.core.types import Capability, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.services import DaemonServices
+from shisad.scheduler.schema import Schedule
 
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -52,6 +54,26 @@ async def _session_and_impl(
     return SessionId(created.session_id), handlers._impl
 
 
+def _audit_rows(config: DaemonConfig) -> list[dict[str, object]]:
+    path = config.data_dir / "audit.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _control_plane_history_rows(config: DaemonConfig) -> list[dict[str, object]]:
+    path = config.data_dir / "control_plane" / "history.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+async def _wait_for_recovery_accounting(impl: object) -> None:
+    tasks = list(getattr(impl, "_recovery_accounting_tasks", ()))
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
 @pytest.mark.asyncio
 async def test_time_now_structural_read_unresolved_attempt_retries_automatically(
     tmp_path: Path,
@@ -82,6 +104,16 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         impl = raw_impl
         session = services.session_manager.get(session_id)
         assert session is not None
+        task = services.scheduler.create_task(
+            name="recovery-clock",
+            goal="Recover one structural clock read",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="recovery-test",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=1,
+        )
         pending = impl._queue_pending_action(
             session_id=session_id,
             user_id=session.user_id,
@@ -92,6 +124,11 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
             capabilities=set(),
             confirmation_requirement=legacy_software_confirmation_requirement(),
             origin_turn_id="turn-time-recovery",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
         )
         publication = 0
 
@@ -132,6 +169,37 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         assert len(clock_calls) == 2
         assert len(recovery_backoffs) == 1
         assert 0 < recovery_backoffs[0] <= 0.1
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        recovered_task = restarted.scheduler.get_task(task.id)
+        assert recovered_task is not None
+        assert recovered_task.success_count == 1
+        assert recovered_task.failure_count == 0
+        assert recovered_task.enabled is False
+        confirmation_rows = restarted.scheduler._pending_confirmations[task.id]
+        recovered_row = next(
+            row
+            for row in confirmation_rows
+            if row["confirmation_id"] == pending.confirmation_id
+        )
+        assert recovered_row["run_outcome_recorded"] is True
+        assert recovered_row["run_outcome_success"] is True
+        recovery_events = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == pending.confirmation_id
+        ]
+        assert len(recovery_events) == 1
+        recovery_execution_records = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == "time.now"
+            and row.get("execution_status") == "success"
+            and row.get("origin", {}).get("actor") == "recovery"
+        ]
+        assert len(recovery_execution_records) == 1
     finally:
         await restarted.shutdown()
 
@@ -284,10 +352,26 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "corrupt_recovery_started_at",
         "corrupt_approval_envelope",
         "corrupt_confirmation_evidence",
+        "top_level_created_at",
+        "top_level_arguments",
+        "top_level_capabilities",
+        "top_level_required_level",
+        "top_level_required_capabilities",
+        "top_level_fallback",
+        "top_level_leak_check",
+        "top_level_identity",
+        "top_level_required_methods",
+        "top_level_status",
+        "top_level_delivery_target",
+        "top_level_preflight_action",
+        "top_level_merged_policy",
+        "top_level_pep_context",
+        "top_level_pep_elevation",
+        "top_level_retry_descriptor",
         "action_digest_mismatch",
         "retry_generation_exhausted",
         "principal_mismatch",
-        "delivery_target_mismatch",
+        "delivery_target_present",
         "policy_reject",
     ],
 )
@@ -359,13 +443,45 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         durable_rows[0]["approval_envelope"]["required_level"] = "not-a-level"
     elif tamper == "corrupt_confirmation_evidence":
         durable_rows[0]["confirmation_evidence"]["level"] = "not-a-level"
+    elif tamper == "top_level_created_at":
+        durable_rows[0]["created_at"] = "not-a-timestamp"
+    elif tamper == "top_level_arguments":
+        durable_rows[0]["arguments"] = "not-a-mapping"
+    elif tamper == "top_level_capabilities":
+        durable_rows[0]["capabilities"] = ["not-a-capability"]
+    elif tamper == "top_level_required_level":
+        durable_rows[0]["required_level"] = "not-a-level"
+    elif tamper == "top_level_required_capabilities":
+        durable_rows[0]["required_capabilities"] = "not-a-mapping"
+    elif tamper == "top_level_fallback":
+        durable_rows[0]["fallback"] = "not-a-mapping"
+    elif tamper == "top_level_leak_check":
+        durable_rows[0]["leak_check"] = "not-a-mapping"
+    elif tamper == "top_level_identity":
+        durable_rows[0]["identity"] = "not-a-mapping"
+    elif tamper == "top_level_required_methods":
+        durable_rows[0]["required_methods"] = "software"
+    elif tamper == "top_level_status":
+        durable_rows[0]["status"] = ["executing"]
+    elif tamper == "top_level_delivery_target":
+        durable_rows[0]["delivery_target"] = "discord:channel-1"
+    elif tamper == "top_level_preflight_action":
+        durable_rows[0]["preflight_action"] = "not-a-mapping"
+    elif tamper == "top_level_merged_policy":
+        durable_rows[0]["merged_policy"] = "not-a-mapping"
+    elif tamper == "top_level_pep_context":
+        durable_rows[0]["pep_context"] = "not-a-mapping"
+    elif tamper == "top_level_pep_elevation":
+        durable_rows[0]["pep_elevation"] = "not-a-mapping"
+    elif tamper == "top_level_retry_descriptor":
+        durable_rows[0]["retry_descriptor"] = "not-a-mapping"
     elif tamper == "action_digest_mismatch":
         durable_rows[0]["action_digest"] = "sha256:" + ("f" * 64)
     elif tamper == "retry_generation_exhausted":
         durable_rows[0]["retry_generation"] = 1
     elif tamper == "principal_mismatch":
         durable_rows[0]["user_id"] = "mallory"
-    elif tamper == "delivery_target_mismatch":
+    elif tamper == "delivery_target_present":
         durable_rows[0]["delivery_target"] = {
             "channel": "discord",
             "recipient": "channel-1",
@@ -397,12 +513,15 @@ tools:
         await restarted.shutdown()
 
 
-@pytest.mark.parametrize("change_persisted_key", [False, True], ids=["exact-key", "changed-key"])
+@pytest.mark.parametrize(
+    "recovery_case",
+    ["exact-key", "changed-key", "adapter-error"],
+)
 @pytest.mark.asyncio
 async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    change_persisted_key: bool,
+    recovery_case: str,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -421,7 +540,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         stable_idempotency_key: str,
     ) -> dict[str, object]:
         calls.append(stable_idempotency_key)
-        return logical_effects.setdefault(
+        result = logical_effects.setdefault(
             stable_idempotency_key,
             {
                 "ok": True,
@@ -429,6 +548,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
                 "value": str(arguments.get("value", "")),
             },
         )
+        if recovery_case == "adapter-error" and len(calls) > 1:
+            raise RuntimeError("provider accepted keyed operation before transport failure")
+        return result
 
     services = await DaemonServices.build(config)
     try:
@@ -438,6 +560,16 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         impl = raw_impl
         session = services.session_manager.get(session_id)
         assert session is not None
+        task = services.scheduler.create_task(
+            name=f"keyed-recovery-{recovery_case}",
+            goal="Recover one keyed fixture effect",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="keyed-recovery-test",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=1,
+        )
         pending = impl._queue_pending_action(
             session_id=session_id,
             user_id=session.user_id,
@@ -448,6 +580,11 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             capabilities=set(),
             confirmation_requirement=legacy_software_confirmation_requirement(),
             origin_turn_id="turn-keyed-recovery",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
         )
         publication = 0
 
@@ -479,7 +616,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     finally:
         await services.shutdown()
 
-    if change_persisted_key:
+    if recovery_case == "changed-key":
         pending_path = config.data_dir / "pending_actions.json"
         durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         durable_rows[0]["stable_idempotency_key"] = stable_key + "-changed"
@@ -491,13 +628,21 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         restarted.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
         restarted_handlers = DaemonControlHandlers(services=restarted)
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
-        if change_persisted_key:
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        if recovery_case == "changed-key":
             assert recovered.status == "outcome_unknown"
             assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
             assert recovered.retry_generation == 0
             assert recovered.provider_operation_id == ""
             assert recovered.recovery_result == {}
             assert calls == [stable_key]
+        elif recovery_case == "adapter-error":
+            assert recovered.status == "outcome_unknown"
+            assert recovered.status_reason == "idempotent_adapter_outcome_unknown"
+            assert recovered.retry_generation == 1
+            assert recovered.provider_operation_id == ""
+            assert recovered.recovery_result["ok"] is False
+            assert calls == [stable_key, stable_key]
         else:
             assert recovered.status == "approved"
             assert recovered.status_reason == "recovered_stable_idempotency_key"
@@ -506,5 +651,135 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert recovered.recovery_result["ok"] is True
             assert calls == [stable_key, stable_key]
         assert len(logical_effects) == 1
+        recovered_task = restarted.scheduler.get_task(task.id)
+        assert recovered_task is not None
+        assert recovered_task.success_count == (1 if recovery_case == "exact-key" else 0)
+        assert recovered_task.failure_count == (0 if recovery_case == "exact-key" else 1)
+        assert recovered_task.enabled is False
+        recovery_events = [
+            row
+            for row in _audit_rows(config)
+            if row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == pending.confirmation_id
+        ]
+        executed_events = [
+            row for row in recovery_events if row.get("event_type") == "ToolExecuted"
+        ]
+        rejected_events = [
+            row for row in recovery_events if row.get("event_type") == "ToolRejected"
+        ]
+        recovery_execution_records = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == str(tool_name)
+            and row.get("origin", {}).get("actor") == "recovery"
+        ]
+        if recovery_case == "exact-key":
+            assert len(executed_events) == 1
+            assert rejected_events == []
+            assert [row.get("execution_status") for row in recovery_execution_records] == [
+                "success"
+            ]
+        elif recovery_case == "adapter-error":
+            assert len(executed_events) == 1
+            assert len(rejected_events) == 1
+            assert [row.get("execution_status") for row in recovery_execution_records] == [
+                "failed"
+            ]
+        else:
+            assert executed_events == []
+            assert len(rejected_events) == 1
+            assert recovery_execution_records == []
     finally:
         await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    tool_name = ToolName("test.keyed-ambiguous")
+    tool_definition = ToolDefinition(
+        name=tool_name,
+        description="Create one fixture effect before a transport exception.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    calls: list[str] = []
+    logical_effects: set[str] = set()
+
+    def _ambiguous_adapter(
+        _arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        calls.append(stable_idempotency_key)
+        logical_effects.add(stable_idempotency_key)
+        raise RuntimeError("provider accepted keyed operation before transport failure")
+
+    services = await DaemonServices.build(config)
+    try:
+        services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name="initial-keyed-ambiguity",
+            goal="Do not repeat an uncertain keyed fixture effect",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="keyed-ambiguity-test",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=3,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=tool_name,
+            arguments={"value": "create-once"},
+            reason="keyed-ambiguous-test-confirmation",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-keyed-ambiguous",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
+        )
+
+        result = await impl.do_action_confirm(
+            {
+                "confirmation_id": pending.confirmation_id,
+                "decision_nonce": pending.decision_nonce,
+            }
+        )
+
+        assert result["confirmed"] is False
+        assert pending.status == "outcome_unknown"
+        assert pending.status_reason == "idempotent_adapter_outcome_unknown"
+        assert pending.decision_nonce == ""
+        assert len(calls) == 1
+        assert logical_effects == {calls[0]}
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
+        assert durable["status"] == "outcome_unknown"
+        public = impl._pending_to_dict(pending, public=True)
+        assert public["manual_retry"]["requires_fresh_approval"] is True
+        assert public["stable_idempotency_key_present"] is True
+        assert calls[0] not in json.dumps(public, sort_keys=True)
+        uncertain_task = services.scheduler.get_task(task.id)
+        assert uncertain_task is not None
+        assert uncertain_task.success_count == 0
+        assert uncertain_task.failure_count == 1
+        assert uncertain_task.enabled is False
+    finally:
+        await services.shutdown()
