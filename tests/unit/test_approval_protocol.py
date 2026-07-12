@@ -175,6 +175,7 @@ def test_approval_envelope_hash_ignores_action_summary() -> None:
         '"action_digest":"sha256:abc123",'
         '"allowed_credentials":[],'
         '"allowed_principals":["workspace_owner"],'
+        '"approval_contract_hash":"",'
         '"approval_id":"approval-1",'
         '"daemon_id":"daemon-1",'
         '"expires_at":"2026-04-05T18:40:00Z",'
@@ -183,7 +184,7 @@ def test_approval_envelope_hash_ignores_action_summary() -> None:
         '"pending_action_id":"pending-1",'
         '"policy_reason":"deploy.production requires explicit approval",'
         '"required_level":"software",'
-        '"schema_version":"shisad.approval.v1",'
+        '"schema_version":"shisad.approval.v2",'
         '"session_id":"session-1",'
         '"workspace_id":"workspace-1"'
         "}"

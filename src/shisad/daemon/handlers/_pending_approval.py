@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from shisad.core.action_state import (
     derive_action_result_id,
     derive_legacy_action_id,
 )
+from shisad.core.approval import canonical_sha256, intent_envelope_hash
 from shisad.core.session import Session
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import (
@@ -59,6 +61,143 @@ class PendingPepElevationRequest:
     kind: str = "capability_grant"
     reason_code: str = ""
     capability_grants: set[Capability] = field(default_factory=set)
+
+
+def _approval_contract_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _approval_contract_value(model_dump(mode="json"))
+    if is_dataclass(value) and not isinstance(value, type):
+        return _approval_contract_value(asdict(value))
+    if isinstance(value, Mapping):
+        return {
+            str(key): _approval_contract_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (set, frozenset)):
+        return sorted(
+            (_approval_contract_value(item) for item in value),
+            key=str,
+        )
+    if isinstance(value, (list, tuple)):
+        return [_approval_contract_value(item) for item in value]
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, dict):
+        return _approval_contract_value(attributes)
+    return value
+
+
+def pending_approval_contract_payload(pending: Any) -> dict[str, Any]:
+    """Return the immutable queue-time authorization contract for a pending action."""
+
+    delivery_target = getattr(pending, "delivery_target", None)
+    intent_envelope = getattr(pending, "intent_envelope", None)
+    return {
+        "schema_version": "shisad.pending_approval_contract.v1",
+        "identity": {
+            "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
+            "action_id": str(getattr(pending, "action_id", "")).strip(),
+            "origin_turn_id": str(getattr(pending, "origin_turn_id", "")).strip(),
+            "session_id": str(getattr(pending, "session_id", "")).strip(),
+            "user_id": str(getattr(pending, "user_id", "")).strip(),
+            "workspace_id": str(getattr(pending, "workspace_id", "")).strip(),
+            "task_id": str(getattr(pending, "task_id", "")).strip(),
+            "followup_id": str(getattr(pending, "followup_id", "")).strip(),
+            "delivery_target": _approval_contract_value(delivery_target),
+        },
+        "action": {
+            "tool_name": str(getattr(pending, "tool_name", "")).strip(),
+            "arguments": _approval_contract_value(
+                getattr(pending, "arguments", {})
+            ),
+            "action_digest": str(getattr(pending, "action_digest", "")).strip(),
+            "stable_idempotency_key": str(
+                getattr(pending, "stable_idempotency_key", "")
+            ).strip(),
+            "retry_descriptor": _approval_contract_value(
+                getattr(pending, "retry_descriptor", None)
+            ),
+            "capabilities": sorted(
+                str(getattr(capability, "value", capability))
+                for capability in getattr(pending, "capabilities", set())
+            ),
+        },
+        "approval": {
+            "reason": str(getattr(pending, "reason", "")),
+            "created_at": getattr(pending, "created_at", None),
+            "expires_at": getattr(pending, "expires_at", None),
+            "required_level": str(
+                getattr(getattr(pending, "required_level", ""), "value", "")
+            ),
+            "required_methods": list(getattr(pending, "required_methods", ())),
+            "allowed_principals": list(getattr(pending, "allowed_principals", ())),
+            "allowed_channel_principals": list(
+                getattr(pending, "allowed_channel_principals", ())
+            ),
+            "allowed_credentials": list(getattr(pending, "allowed_credentials", ())),
+            "required_capabilities": _approval_contract_value(
+                getattr(pending, "required_capabilities", None)
+            ),
+            "fallback": _approval_contract_value(getattr(pending, "fallback", None)),
+            "selected_backend_id": str(
+                getattr(pending, "selected_backend_id", "")
+            ).strip(),
+            "selected_backend_method": str(
+                getattr(pending, "selected_backend_method", "")
+            ).strip(),
+            "fallback_used": bool(getattr(pending, "fallback_used", False)),
+            "approval_task_envelope_id": str(
+                getattr(pending, "approval_task_envelope_id", "")
+            ).strip(),
+            "intent_envelope_hash": (
+                intent_envelope_hash(intent_envelope)
+                if intent_envelope is not None
+                else ""
+            ),
+        },
+        "policy": {
+            "preflight_action": _approval_contract_value(
+                getattr(pending, "preflight_action", None)
+            ),
+            "merged_policy": _approval_contract_value(
+                getattr(pending, "merged_policy", None)
+            ),
+            "pep_context": _approval_contract_value(
+                getattr(pending, "pep_context", None)
+            ),
+            "pep_elevation": _approval_contract_value(
+                getattr(pending, "pep_elevation", None)
+            ),
+        },
+        "presentation": {
+            "public_arguments": _approval_contract_value(
+                getattr(pending, "public_arguments", None)
+            ),
+            "sensitive_public_payload": bool(
+                getattr(pending, "sensitive_public_payload", False)
+            ),
+            "safe_preview": str(getattr(pending, "safe_preview", "")),
+            "warnings": list(getattr(pending, "warnings", ())),
+            "leak_check": _approval_contract_value(
+                getattr(pending, "leak_check", {})
+            ),
+        },
+        "continuation": {
+            "strip_direct_tool_execute_envelope_keys": bool(
+                getattr(pending, "strip_direct_tool_execute_envelope_keys", False)
+            ),
+            "continuation_user_goal": str(
+                getattr(pending, "continuation_user_goal", "")
+            ),
+            "continuation_mode": str(getattr(pending, "continuation_mode", "")),
+        },
+    }
+
+
+def pending_approval_contract_hash(pending: Any) -> str:
+    return canonical_sha256(pending_approval_contract_payload(pending))
 
 
 def pending_action_is_live_pending(pending: Any, *, now: datetime | None = None) -> bool:

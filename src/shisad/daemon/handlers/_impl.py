@@ -139,6 +139,7 @@ from shisad.daemon.handlers._pending_approval import (
     build_policy_context_for_pending_action,
     pending_action_event_identity_fields,
     pending_action_state_view,
+    pending_approval_contract_hash,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
     pending_pep_elevation_from_payload,
@@ -3642,6 +3643,13 @@ class HandlerImplementation(
             status="executing" if start_executing else "pending",
             status_reason=("scheduler_execution_started" if start_executing else ""),
         )
+        approval_envelope = approval_envelope.model_copy(
+            update={
+                "approval_contract_hash": pending_approval_contract_hash(pending),
+            }
+        )
+        pending.approval_envelope = approval_envelope
+        pending.approval_envelope_hash = approval_envelope_hash(approval_envelope)
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
         try:
@@ -3961,6 +3969,7 @@ class HandlerImplementation(
         migrated_legacy_decision_nonce = False
         migrated_expired_approval = False
         migrated_attempt_metadata = False
+        loaded_terminal_side_effects: list[PendingAction] = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -4491,6 +4500,7 @@ class HandlerImplementation(
                     reason="approval_expired",
                     persist=False,
                 )
+                loaded_terminal_side_effects.append(pending)
                 migrated_expired_approval = True
             if (
                 not pending.strip_direct_tool_execute_envelope_keys
@@ -4546,6 +4556,7 @@ class HandlerImplementation(
                     reason=stale_reason,
                     persist=False,
                 )
+                loaded_terminal_side_effects.append(pending)
                 pruned_stale = True
             if not pending.decision_nonce and pending_action_state_view(pending).is_live_pending:
                 pending.decision_nonce = uuid.uuid4().hex
@@ -4560,6 +4571,9 @@ class HandlerImplementation(
             or migrated_attempt_metadata
         ):
             self._persist_pending_actions()
+        for pending in loaded_terminal_side_effects:
+            self._sync_task_confirmation_status(pending)
+            self._record_task_confirmation_failure(pending)
         self._recover_loaded_pending_attempts()
 
     def _recovery_descriptor_is_current(
@@ -4568,6 +4582,11 @@ class HandlerImplementation(
         *,
         retry_class: ToolRetryClass,
     ) -> bool:
+        if self._pending_approval_contract_invalid_reason(
+            pending,
+            require_evidence=True,
+        ):
+            return False
         descriptor = pending.retry_descriptor
         if descriptor is None:
             return False

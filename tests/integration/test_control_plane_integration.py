@@ -1377,7 +1377,10 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
         )
         assert row["required_level"] == "software"
         assert row["selected_backend_id"] == "software.default"
-        assert row["approval_envelope"]["schema_version"] == "shisad.approval.v1"
+        assert row["approval_envelope"]["schema_version"] == "shisad.approval.v2"
+        assert str(row["approval_envelope"]["approval_contract_hash"]).startswith(
+            "sha256:"
+        )
         assert str(row["approval_envelope"]["action_digest"]).startswith("sha256:")
         assert str(row["approval_envelope_hash"]).startswith("sha256:")
 

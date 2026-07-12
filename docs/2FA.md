@@ -781,11 +781,12 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
 
 | Field | Type | Description |
 |---|---|---|
-| `schema_version` | `str` | `"shisad.approval.v1"` |
+| `schema_version` | `str` | `"shisad.approval.v2"` |
 | `approval_id` | `str` | Unique approval ID |
 | `pending_action_id` | `str` | The pending action this approval is for |
 | `required_level` | `ConfirmationLevel` | Required approval level |
 | `action_digest` | `str` | `sha256(canonical_json(action_digest_payload))` |
+| `approval_contract_hash` | `str` | Hash of the immutable pending identity, action, lifetime, proof constraints, backend selection, policy snapshots, and continuation context |
 | `intent_envelope_hash` | `str \| None` | Hash of the `IntentEnvelope` (set for L3+) |
 | `allowed_principals` | `list[str]` | Which principals can satisfy this approval |
 | `allowed_credentials` | `list[str]` | Which credentials can satisfy this approval |
@@ -795,6 +796,10 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
 **Hash computation:**
 
 - `approval_envelope_hash = sha256(canonical_json(envelope_without_action_summary))`
+- On confirmation and crash recovery, shisad recomputes
+  `approval_contract_hash` and the current tool-schema `action_digest`. Missing,
+  legacy, or inconsistent bindings are terminalized rather than authorized;
+  unresolved executing attempts become `outcome_unknown`.
 - `action_summary` is excluded so display text cannot change the
   cryptographic binding.
 

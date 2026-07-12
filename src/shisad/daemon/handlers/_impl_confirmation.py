@@ -27,11 +27,16 @@ from shisad.core.approval import (
     TOTPBackend,
     WebAuthnBackend,
     approval_audit_fields,
+    approval_envelope_hash,
+    compute_action_digest,
+    confirmation_backend_satisfies_constraints,
     confirmation_evidence_satisfies_requirement,
     generate_recovery_codes,
     generate_totp_secret,
     hash_recovery_code,
+    intent_envelope_hash,
     match_totp_window,
+    resolve_confirmation_destinations,
 )
 from shisad.core.atomic_state import AtomicWriteError, StatePersistenceDegradedError
 from shisad.core.events import (
@@ -56,6 +61,7 @@ from shisad.daemon.handlers._pending_approval import (
     pending_action_event_identity_fields,
     pending_action_is_live_pending,
     pending_action_state_view,
+    pending_approval_contract_hash,
     pep_arguments_for_policy_evaluation,
 )
 from shisad.security.control_plane.schema import RiskTier, build_action
@@ -70,6 +76,8 @@ _CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY = "_shisad_internal_task_cancel_re
 _STALE_PENDING_APPROVAL_REASONS = frozenset(
     {
         "approval_envelope_missing",
+        "approval_contract_missing",
+        "approval_contract_mismatch",
         "action_digest_missing",
         "action_identity_mismatch",
     }
@@ -91,6 +99,7 @@ _CONFIRMED_TRANSCRIPT_PAGE_TITLE_TOOL_NAMES = frozenset(
 class _PendingAttemptSnapshot:
     status: str
     status_reason: str
+    decision_nonce: str
     action_digest: str
     approval_evidence_hash: str
     execution_attempt_id: str
@@ -102,6 +111,7 @@ def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
     return _PendingAttemptSnapshot(
         status=str(getattr(pending, "status", "pending")),
         status_reason=str(getattr(pending, "status_reason", "")),
+        decision_nonce=str(getattr(pending, "decision_nonce", "")),
         action_digest=str(getattr(pending, "action_digest", "")),
         approval_evidence_hash=str(getattr(pending, "approval_evidence_hash", "")),
         execution_attempt_id=str(getattr(pending, "execution_attempt_id", "")),
@@ -116,6 +126,7 @@ def _restore_pending_attempt_snapshot(
 ) -> None:
     pending.status = snapshot.status
     pending.status_reason = snapshot.status_reason
+    pending.decision_nonce = snapshot.decision_nonce
     pending.action_digest = snapshot.action_digest
     pending.approval_evidence_hash = snapshot.approval_evidence_hash
     pending.execution_attempt_id = snapshot.execution_attempt_id
@@ -382,26 +393,181 @@ class ConfirmationImplMixin(HandlerMixinBase):
         method = str(getattr(pending, "selected_backend_method", "") or "software").strip()
         return method or "software"
 
-    @staticmethod
-    def _pending_approval_stale_reason(pending: Any) -> str:
-        if str(getattr(pending, "status", "")).strip().lower() != "pending":
-            return ""
+    def _pending_approval_contract_invalid_reason(
+        self,
+        pending: Any,
+        *,
+        require_evidence: bool = False,
+    ) -> str:
         approval_envelope = getattr(pending, "approval_envelope", None)
         if approval_envelope is None:
             return "approval_envelope_missing"
-        if not str(getattr(approval_envelope, "action_digest", "")).strip():
-            return "action_digest_missing"
+        if str(getattr(approval_envelope, "schema_version", "")) != (
+            "shisad.approval.v2"
+        ):
+            return "approval_contract_missing"
+        stored_contract_hash = str(
+            getattr(approval_envelope, "approval_contract_hash", "")
+        ).strip()
+        if not stored_contract_hash:
+            return "approval_contract_missing"
+        stored_envelope_hash = str(
+            getattr(pending, "approval_envelope_hash", "")
+        ).strip()
+        if (
+            not stored_envelope_hash
+            or approval_envelope_hash(approval_envelope) != stored_envelope_hash
+        ):
+            return "approval_contract_mismatch"
+
         identity = pending_action_state_view(pending).identity
-        envelope_action_id = str(getattr(approval_envelope, "pending_action_id", "")).strip()
-        envelope_approval_id = str(getattr(approval_envelope, "approval_id", "")).strip()
-        if envelope_approval_id != identity.confirmation_id:
+        created_at = getattr(pending, "created_at", None)
+        expires_at = getattr(pending, "expires_at", None)
+        envelope_expires_at = getattr(approval_envelope, "expires_at", None)
+        if not (
+            isinstance(created_at, datetime)
+            and isinstance(expires_at, datetime)
+            and isinstance(envelope_expires_at, datetime)
+        ):
+            return "approval_contract_mismatch"
+        if any(
+            value.tzinfo is None or value.utcoffset() is None
+            for value in (created_at, expires_at, envelope_expires_at)
+        ):
+            return "approval_contract_mismatch"
+        if expires_at != envelope_expires_at or expires_at <= created_at:
+            return "approval_contract_mismatch"
+        if (
+            str(getattr(approval_envelope, "approval_id", "")).strip()
+            != identity.confirmation_id
+            or str(getattr(approval_envelope, "pending_action_id", "")).strip()
+            != identity.action_id
+        ):
             return "action_identity_mismatch"
-        legacy_alias_is_valid = bool(envelope_action_id and envelope_approval_id) and (
-            envelope_action_id == envelope_approval_id == identity.confirmation_id
+        if (
+            str(getattr(approval_envelope, "session_id", "")).strip()
+            != identity.session_id
+            or str(getattr(approval_envelope, "workspace_id", "")).strip()
+            != identity.workspace_id
+            or str(getattr(approval_envelope, "daemon_id", "")).strip()
+            != str(getattr(self, "_daemon_id", "")).strip()
+            or getattr(approval_envelope, "required_level", None)
+            != getattr(pending, "required_level", None)
+            or list(getattr(approval_envelope, "allowed_principals", ()))
+            != list(getattr(pending, "allowed_principals", ()))
+            or list(getattr(approval_envelope, "allowed_credentials", ()))
+            != list(getattr(pending, "allowed_credentials", ()))
+            or str(getattr(approval_envelope, "policy_reason", ""))
+            != str(getattr(pending, "reason", ""))
+        ):
+            return "approval_contract_mismatch"
+
+        backend_registry = getattr(self, "_confirmation_backend_registry", None)
+        get_backend = getattr(backend_registry, "get_backend", None)
+        backend = (
+            get_backend(
+                str(getattr(pending, "selected_backend_id", "")).strip()
+                or "software.default"
+            )
+            if callable(get_backend)
+            else None
         )
-        if envelope_action_id != identity.action_id and not legacy_alias_is_valid:
-            return "action_identity_mismatch"
+        selected_backend_method = str(
+            getattr(pending, "selected_backend_method", "")
+        ).strip()
+        if (
+            backend is None
+            or str(getattr(backend, "method", "")).strip()
+            != selected_backend_method
+            or not confirmation_backend_satisfies_constraints(
+                backend,
+                user_id=identity.user_id,
+                required_capabilities=getattr(
+                    pending,
+                    "required_capabilities",
+                    ConfirmationRequirement().require_capabilities,
+                ),
+                allowed_principals=getattr(pending, "allowed_principals", ()),
+                allowed_credentials=getattr(pending, "allowed_credentials", ()),
+            )
+        ):
+            return "approval_contract_mismatch"
+
+        registry = getattr(self, "_registry", None)
+        get_tool = getattr(registry, "get_tool", None)
+        tool_definition = get_tool(pending.tool_name) if callable(get_tool) else None
+        if tool_definition is None:
+            return "approval_contract_mismatch"
+        normalized_arguments = pep_arguments_for_policy_evaluation(
+            pending.tool_name,
+            pending.arguments,
+        )
+        expected_action_digest = compute_action_digest(
+            tool_definition=tool_definition,
+            arguments=normalized_arguments,
+            destinations=resolve_confirmation_destinations(
+                tool_definition=tool_definition,
+                arguments=normalized_arguments,
+            ),
+            stable_idempotency_key=str(
+                getattr(pending, "stable_idempotency_key", "")
+            ).strip(),
+        )
+        if not str(getattr(pending, "action_digest", "")).strip() or not str(
+            getattr(approval_envelope, "action_digest", "")
+        ).strip():
+            return "action_digest_missing"
+        if (
+            str(getattr(pending, "action_digest", "")).strip()
+            != expected_action_digest
+            or str(getattr(approval_envelope, "action_digest", "")).strip()
+            != expected_action_digest
+        ):
+            return "approval_contract_mismatch"
+        try:
+            expected_contract_hash = pending_approval_contract_hash(pending)
+        except (TypeError, ValueError):
+            return "approval_contract_mismatch"
+        if not hmac.compare_digest(stored_contract_hash, expected_contract_hash):
+            return "approval_contract_mismatch"
+
+        intent_envelope = getattr(pending, "intent_envelope", None)
+        stored_intent_hash = str(
+            getattr(approval_envelope, "intent_envelope_hash", "") or ""
+        ).strip()
+        if intent_envelope is None:
+            if stored_intent_hash:
+                return "approval_contract_mismatch"
+        else:
+            try:
+                actual_intent_hash = intent_envelope_hash(intent_envelope)
+            except (TypeError, ValueError):
+                return "approval_contract_mismatch"
+            if actual_intent_hash != stored_intent_hash:
+                return "approval_contract_mismatch"
+
+        if require_evidence:
+            evidence = getattr(pending, "confirmation_evidence", None)
+            if (
+                evidence is None
+                or backend is None
+                or str(getattr(evidence, "approval_envelope_hash", "")).strip()
+                != stored_envelope_hash
+                or str(getattr(evidence, "action_digest", "")).strip()
+                != expected_action_digest
+                or not confirmation_evidence_satisfies_requirement(
+                    requirement=self._pending_confirmation_requirement(pending),
+                    evidence=evidence,
+                    backend=backend,
+                )
+            ):
+                return "approval_contract_mismatch"
         return ""
+
+    def _pending_approval_stale_reason(self, pending: Any) -> str:
+        if str(getattr(pending, "status", "")).strip().lower() != "pending":
+            return ""
+        return self._pending_approval_contract_invalid_reason(pending)
 
     def _stale_pending_action_reason(self, pending: Any) -> str:
         if str(getattr(pending, "status", "")).strip().lower() != "pending":
@@ -426,13 +592,126 @@ class ConfirmationImplMixin(HandlerMixinBase):
         reason: str,
         persist: bool = True,
     ) -> None:
+        if persist:
+            self._commit_pending_terminal_state(
+                pending,
+                status="failed",
+                reason=reason,
+            )
+            self._sync_task_confirmation_status(pending)
+            self._record_task_confirmation_failure(pending)
+            return
         pending.status = "failed"
         pending.status_reason = reason
         pending.decision_nonce = ""
+
+    def _commit_pending_terminal_states(
+        self,
+        transitions: list[tuple[Any, str, str]],
+        *,
+        rollback_snapshots: list[_PendingAttemptSnapshot] | None = None,
+    ) -> None:
+        if not transitions:
+            return
+        previous = rollback_snapshots or [
+            _capture_pending_attempt_snapshot(pending)
+            for pending, _status, _reason in transitions
+        ]
+        if len(previous) != len(transitions):
+            raise ValueError("terminal rollback snapshot count mismatch")
+        for pending, status, reason in transitions:
+            pending.status = status
+            pending.status_reason = reason
+            pending.decision_nonce = ""
+        terminal = [
+            _capture_pending_attempt_snapshot(pending)
+            for pending, _status, _reason in transitions
+        ]
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError as write_error:
+            for (pending, _status, _reason), snapshot in zip(
+                transitions,
+                previous,
+                strict=True,
+            ):
+                _restore_pending_attempt_snapshot(pending, snapshot)
+            if write_error.publication_may_have_committed:
+                try:
+                    self._persist_pending_actions()
+                except AtomicWriteError as rollback_error:
+                    for (pending, _status, _reason), snapshot in zip(
+                        transitions,
+                        terminal,
+                        strict=True,
+                    ):
+                        _restore_pending_attempt_snapshot(pending, snapshot)
+                    self._pending_state_degradation = {
+                        "transition": "terminal",
+                        "stage": rollback_error.stage.value,
+                        "reason": "pending_state_rollback_uncommitted",
+                    }
+                    raise rollback_error from write_error
+            raise
+
+    def _commit_pending_terminal_state(
+        self,
+        pending: Any,
+        *,
+        status: str,
+        reason: str,
+        rollback_snapshot: _PendingAttemptSnapshot | None = None,
+    ) -> None:
+        self._commit_pending_terminal_states(
+            [(pending, status, reason)],
+            rollback_snapshots=[rollback_snapshot] if rollback_snapshot is not None else None,
+        )
+
+    async def _commit_and_publish_pending_terminal(
+        self,
+        pending: Any,
+        *,
+        status: str,
+        status_reason: str,
+        event_reason: str | None = None,
+        actor: str = "human_confirmation",
+        record_analytics: bool = True,
+        emit_hygiene_alert: bool = True,
+        rollback_snapshot: _PendingAttemptSnapshot | None = None,
+    ) -> None:
+        decision_timestamp = datetime.now(UTC).isoformat()
+        event_fields = self._pending_approval_event_fields(
+            pending,
+            decision_timestamp=decision_timestamp,
+        )
+        self._commit_pending_terminal_state(
+            pending,
+            status=status,
+            reason=status_reason,
+            rollback_snapshot=rollback_snapshot,
+        )
         self._sync_task_confirmation_status(pending)
         self._record_task_confirmation_failure(pending)
-        if persist:
-            self._persist_pending_actions()
+        await self._event_bus.publish(
+            ToolRejected(
+                session_id=pending.session_id,
+                actor=actor,
+                tool_name=pending.tool_name,
+                reason=event_reason or status_reason,
+                **event_fields,
+            )
+        )
+        if record_analytics:
+            self._confirmation_analytics.record(
+                user_id=str(pending.user_id),
+                decision="reject",
+                created_at=pending.created_at,
+            )
+        if emit_hygiene_alert:
+            await self._maybe_emit_confirmation_hygiene_alert(
+                user_id=str(pending.user_id),
+                session_id=pending.session_id,
+            )
 
     async def _cancel_pending_actions_for_task(
         self,
@@ -465,14 +744,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     continue
                 if not pending_action_state_view(pending).is_live_pending:
                     continue
-                pending.status = "cancelled"
-                pending.status_reason = reason
-                pending.decision_nonce = ""
-                self._sync_task_confirmation_status(pending)
                 cancelled.append(pending)
             if cancelled:
-                self._persist_pending_actions()
+                self._commit_pending_terminal_states(
+                    [
+                        (pending, "cancelled", reason)
+                        for pending in cancelled
+                    ]
+                )
             for pending in cancelled:
+                self._sync_task_confirmation_status(pending)
                 await self._event_bus.publish(
                     ToolRejected(
                         session_id=pending.session_id,
@@ -1480,7 +1761,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     purge_items.append(item)
                 purge_ids = [item.confirmation_id for item in purge_items]
                 if purge_items:
+                    previous_actions = dict(self._pending_actions)
+                    pending_by_session = getattr(self, "_pending_by_session", {})
+                    previous_by_session = (
+                        {
+                            session_id: list(confirmation_ids)
+                            for session_id, confirmation_ids in pending_by_session.items()
+                        }
+                        if isinstance(pending_by_session, dict)
+                        else {}
+                    )
+                    previous_item_states = [
+                        _capture_pending_attempt_snapshot(item) for item in purge_items
+                    ]
                     purge_id_set = set(purge_ids)
+                    pending_terminal_items: list[Any] = []
                     for item in purge_items:
                         item_status = str(getattr(item, "status", "")).strip().lower()
                         if item_status == "pending":
@@ -1494,11 +1789,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                                 ),
                                 persist=False,
                             )
-                        else:
-                            self._sync_task_confirmation_status(item)
+                            pending_terminal_items.append(item)
                     for confirmation_id in purge_ids:
                         self._pending_actions.pop(confirmation_id, None)
-                    pending_by_session = getattr(self, "_pending_by_session", {})
                     if isinstance(pending_by_session, dict):
                         for session_id, confirmation_ids in list(pending_by_session.items()):
                             remaining = [
@@ -1510,7 +1803,58 @@ class ConfirmationImplMixin(HandlerMixinBase):
                                 pending_by_session[session_id] = remaining
                             else:
                                 pending_by_session.pop(session_id, None)
-                    self._persist_pending_actions()
+                    purged_actions = dict(self._pending_actions)
+                    purged_by_session = (
+                        {
+                            session_id: list(confirmation_ids)
+                            for session_id, confirmation_ids in pending_by_session.items()
+                        }
+                        if isinstance(pending_by_session, dict)
+                        else {}
+                    )
+                    purged_item_states = [
+                        _capture_pending_attempt_snapshot(item) for item in purge_items
+                    ]
+                    try:
+                        self._persist_pending_actions()
+                    except AtomicWriteError as write_error:
+                        self._pending_actions.clear()
+                        self._pending_actions.update(previous_actions)
+                        if isinstance(pending_by_session, dict):
+                            pending_by_session.clear()
+                            pending_by_session.update(previous_by_session)
+                        for item, snapshot in zip(
+                            purge_items,
+                            previous_item_states,
+                            strict=True,
+                        ):
+                            _restore_pending_attempt_snapshot(item, snapshot)
+                        if write_error.publication_may_have_committed:
+                            try:
+                                self._persist_pending_actions()
+                            except AtomicWriteError as rollback_error:
+                                for item, snapshot in zip(
+                                    purge_items,
+                                    purged_item_states,
+                                    strict=True,
+                                ):
+                                    _restore_pending_attempt_snapshot(item, snapshot)
+                                self._pending_actions.clear()
+                                self._pending_actions.update(purged_actions)
+                                if isinstance(pending_by_session, dict):
+                                    pending_by_session.clear()
+                                    pending_by_session.update(purged_by_session)
+                                self._pending_state_degradation = {
+                                    "transition": "purge",
+                                    "stage": rollback_error.stage.value,
+                                    "reason": "pending_state_rollback_uncommitted",
+                                }
+                                raise rollback_error from write_error
+                        raise
+                    for item in purge_items:
+                        self._sync_task_confirmation_status(item)
+                    for item in pending_terminal_items:
+                        self._record_task_confirmation_failure(item)
             finally:
                 for confirmation_id, lock in reversed(locks):
                     if lock.locked():
@@ -1711,22 +2055,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
         task = get_task(task_id)
         if task is None or bool(getattr(task, "enabled", False)):
             return None
-        pending.status = "cancelled"
-        pending.status_reason = "task_disabled"
-        pending.decision_nonce = ""
-        self._sync_task_confirmation_status(pending)
-        self._persist_pending_actions()
-        await self._event_bus.publish(
-            ToolRejected(
-                session_id=pending.session_id,
-                actor="scheduler",
-                tool_name=pending.tool_name,
-                reason="task_disabled",
-                **self._pending_approval_event_fields(
-                    pending,
-                    decision_timestamp=datetime.now(UTC).isoformat(),
-                ),
-            )
+        await self._commit_and_publish_pending_terminal(
+            pending,
+            status="cancelled",
+            status_reason="task_disabled",
+            actor="scheduler",
+            record_analytics=False,
+            emit_hygiene_alert=False,
         )
         return {
             decision_field: False,
@@ -1866,32 +2201,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             else:
                 pending.execute_after = None
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
-            pending.status = "rejected"
-            pending.status_reason = "session_in_lockdown"
-            decision_timestamp = datetime.now(UTC).isoformat()
-            await self._event_bus.publish(
-                ToolRejected(
-                    session_id=pending.session_id,
-                    actor="human_confirmation",
-                    tool_name=pending.tool_name,
-                    reason="session_in_lockdown",
-                    **self._pending_approval_event_fields(
-                        pending,
-                        decision_timestamp=decision_timestamp,
-                    ),
-                )
-            )
-            self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_failure(pending)
-            self._persist_pending_actions()
-            self._confirmation_analytics.record(
-                user_id=str(pending.user_id),
-                decision="reject",
-                created_at=pending.created_at,
-            )
-            await self._maybe_emit_confirmation_hygiene_alert(
-                user_id=str(pending.user_id),
-                session_id=pending.session_id,
+            await self._commit_and_publish_pending_terminal(
+                pending,
+                status="rejected",
+                status_reason="session_in_lockdown",
+                rollback_snapshot=pre_decision_attempt,
             )
             return {
                 "confirmed": False,
@@ -1901,32 +2215,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         session = self._session_manager.get(pending.session_id)
         if session is None:
-            pending.status = "failed"
-            pending.status_reason = "session_missing"
-            decision_timestamp = datetime.now(UTC).isoformat()
-            await self._event_bus.publish(
-                ToolRejected(
-                    session_id=pending.session_id,
-                    actor="human_confirmation",
-                    tool_name=pending.tool_name,
-                    reason="session_missing",
-                    **self._pending_approval_event_fields(
-                        pending,
-                        decision_timestamp=decision_timestamp,
-                    ),
-                )
-            )
-            self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_failure(pending)
-            self._persist_pending_actions()
-            self._confirmation_analytics.record(
-                user_id=str(pending.user_id),
-                decision="reject",
-                created_at=pending.created_at,
-            )
-            await self._maybe_emit_confirmation_hygiene_alert(
-                user_id=str(pending.user_id),
-                session_id=pending.session_id,
+            await self._commit_and_publish_pending_terminal(
+                pending,
+                status="failed",
+                status_reason="session_missing",
+                rollback_snapshot=pre_decision_attempt,
             )
             return {
                 "confirmed": False,
@@ -1947,24 +2240,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
             str(getattr(pending, "selected_backend_id", "")).strip() or "software.default"
         )
         if backend is None:
-            pending.status = "failed"
-            pending.status_reason = "confirmation_backend_unavailable"
-            decision_timestamp = datetime.now(UTC).isoformat()
-            await self._event_bus.publish(
-                ToolRejected(
-                    session_id=pending.session_id,
-                    actor="human_confirmation",
-                    tool_name=pending.tool_name,
-                    reason="confirmation_backend_unavailable",
-                    **self._pending_approval_event_fields(
-                        pending,
-                        decision_timestamp=decision_timestamp,
-                    ),
-                )
+            await self._commit_and_publish_pending_terminal(
+                pending,
+                status="failed",
+                status_reason="confirmation_backend_unavailable",
+                record_analytics=False,
+                emit_hygiene_alert=False,
+                rollback_snapshot=pre_decision_attempt,
             )
-            self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_failure(pending)
-            self._persist_pending_actions()
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
@@ -2046,6 +2329,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": "confirmation_requirement_unsatisfied",
             }
         pending.confirmation_evidence = validated_evidence
+        evidence_binding_reason = self._pending_approval_contract_invalid_reason(
+            pending,
+            require_evidence=True,
+        )
+        if evidence_binding_reason:
+            pending.confirmation_evidence = None
+            self._confirmation_failure_tracker.record_failure(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": evidence_binding_reason,
+            }
         self._confirmation_failure_tracker.record_success(
             user_id=str(pending.user_id),
             method=confirmation_method,
@@ -2055,32 +2353,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         stage2_reason = "stage2_upgrade_required" in pending.reason
         if stage2_reason:
             if not bool(self._policy_loader.policy.control_plane.trace.allow_amendment):
-                pending.status = "rejected"
-                pending.status_reason = "plan_amendment_disabled"
-                decision_timestamp = datetime.now(UTC).isoformat()
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=pending.session_id,
-                        actor="human_confirmation",
-                        tool_name=pending.tool_name,
-                        reason="plan_amendment_disabled",
-                        **self._pending_approval_event_fields(
-                            pending,
-                            decision_timestamp=decision_timestamp,
-                        ),
-                    )
-                )
-                self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_failure(pending)
-                self._persist_pending_actions()
-                self._confirmation_analytics.record(
-                    user_id=str(pending.user_id),
-                    decision="reject",
-                    created_at=pending.created_at,
-                )
-                await self._maybe_emit_confirmation_hygiene_alert(
-                    user_id=str(pending.user_id),
-                    session_id=pending.session_id,
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="rejected",
+                    status_reason="plan_amendment_disabled",
+                    rollback_snapshot=pre_decision_attempt,
                 )
                 return {
                     "confirmed": False,
@@ -2115,32 +2392,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             except ControlPlaneRpcError as exc:
                 reason = _confirmation_control_plane_reason(exc)
-                pending.status = "failed"
-                pending.status_reason = reason
-                decision_timestamp = datetime.now(UTC).isoformat()
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=pending.session_id,
-                        actor="human_confirmation",
-                        tool_name=pending.tool_name,
-                        reason=reason,
-                        **self._pending_approval_event_fields(
-                            pending,
-                            decision_timestamp=decision_timestamp,
-                        ),
-                    )
-                )
-                self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_failure(pending)
-                self._persist_pending_actions()
-                self._confirmation_analytics.record(
-                    user_id=str(pending.user_id),
-                    decision="reject",
-                    created_at=pending.created_at,
-                )
-                await self._maybe_emit_confirmation_hygiene_alert(
-                    user_id=str(pending.user_id),
-                    session_id=pending.session_id,
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="failed",
+                    status_reason=reason,
+                    rollback_snapshot=pre_decision_attempt,
                 )
                 return {
                     "confirmed": False,
@@ -2166,32 +2422,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             # execute an action that the original PEP evaluation rejected.
             pep_context = getattr(pending, "pep_context", None)
             if pep_context is None:
-                pending.status = "failed"
-                pending.status_reason = "pep_elevation_context_missing"
-                decision_timestamp = datetime.now(UTC).isoformat()
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=pending.session_id,
-                        actor="human_confirmation",
-                        tool_name=pending.tool_name,
-                        reason="pep_elevation_context_missing",
-                        **self._pending_approval_event_fields(
-                            pending,
-                            decision_timestamp=decision_timestamp,
-                        ),
-                    )
-                )
-                self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_failure(pending)
-                self._persist_pending_actions()
-                self._confirmation_analytics.record(
-                    user_id=str(pending.user_id),
-                    decision="reject",
-                    created_at=pending.created_at,
-                )
-                await self._maybe_emit_confirmation_hygiene_alert(
-                    user_id=str(pending.user_id),
-                    session_id=pending.session_id,
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="failed",
+                    status_reason="pep_elevation_context_missing",
+                    rollback_snapshot=pre_decision_attempt,
                 )
                 return {
                     "confirmed": False,
@@ -2215,34 +2450,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
             execution_capabilities = set(policy_context.capabilities)
             if pep_decision.kind.value == "reject":
-                pending.status = "rejected"
-                pending.status_reason = (
+                status_reason = (
                     pep_decision.reason_code.strip() or "pep_reject_after_confirmation"
                 )
-                decision_timestamp = datetime.now(UTC).isoformat()
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=pending.session_id,
-                        actor="human_confirmation",
-                        tool_name=pending.tool_name,
-                        reason=pep_decision.reason or pending.status_reason,
-                        **self._pending_approval_event_fields(
-                            pending,
-                            decision_timestamp=decision_timestamp,
-                        ),
-                    )
-                )
-                self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_failure(pending)
-                self._persist_pending_actions()
-                self._confirmation_analytics.record(
-                    user_id=str(pending.user_id),
-                    decision="reject",
-                    created_at=pending.created_at,
-                )
-                await self._maybe_emit_confirmation_hygiene_alert(
-                    user_id=str(pending.user_id),
-                    session_id=pending.session_id,
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="rejected",
+                    status_reason=status_reason,
+                    event_reason=pep_decision.reason or status_reason,
+                    rollback_snapshot=pre_decision_attempt,
                 )
                 return {
                     "confirmed": False,
@@ -2254,9 +2470,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 }
             if pep_decision.kind.value == "require_confirmation":
                 payload = pep_decision.confirmation_requirement
+                terminal_status = ""
+                terminal_reason = ""
                 if not isinstance(payload, Mapping):
-                    pending.status = "failed"
-                    pending.status_reason = "confirmation_requirement_missing_after_confirmation"
+                    terminal_status = "failed"
+                    terminal_reason = "confirmation_requirement_missing_after_confirmation"
                 else:
                     requirement = ConfirmationRequirement.model_validate(payload)
                     backend = self._confirmation_backend_registry.get_backend(
@@ -2272,38 +2490,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
                             backend=backend,
                         )
                     ):
-                        pending.status = "rejected"
-                        pending.status_reason = (
+                        terminal_status = "rejected"
+                        terminal_reason = (
                             "confirmation_requirement_unsatisfied_after_confirmation"
                         )
-                    else:
-                        pending.status = "pending"
-                        pending.status_reason = ""
-                if pending.status != "pending":
-                    decision_timestamp = datetime.now(UTC).isoformat()
-                    await self._event_bus.publish(
-                        ToolRejected(
-                            session_id=pending.session_id,
-                            actor="human_confirmation",
-                            tool_name=pending.tool_name,
-                            reason=pep_decision.reason or pending.status_reason,
-                            **self._pending_approval_event_fields(
-                                pending,
-                                decision_timestamp=decision_timestamp,
-                            ),
-                        )
-                    )
-                    self._sync_task_confirmation_status(pending)
-                    self._record_task_confirmation_failure(pending)
-                    self._persist_pending_actions()
-                    self._confirmation_analytics.record(
-                        user_id=str(pending.user_id),
-                        decision="reject",
-                        created_at=pending.created_at,
-                    )
-                    await self._maybe_emit_confirmation_hygiene_alert(
-                        user_id=str(pending.user_id),
-                        session_id=pending.session_id,
+                if terminal_status:
+                    await self._commit_and_publish_pending_terminal(
+                        pending,
+                        status=terminal_status,
+                        status_reason=terminal_reason,
+                        event_reason=pep_decision.reason or terminal_reason,
+                        rollback_snapshot=pre_decision_attempt,
                     )
                     return {
                         "confirmed": False,
@@ -2659,32 +2856,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": channel_principal_reason,
             }
-        pending.status = "rejected"
-        pending.status_reason = reason
-        decision_timestamp = datetime.now(UTC).isoformat()
-        await self._event_bus.publish(
-            ToolRejected(
-                session_id=pending.session_id,
-                actor="human_confirmation",
-                tool_name=pending.tool_name,
-                reason=reason,
-                **self._pending_approval_event_fields(
-                    pending,
-                    decision_timestamp=decision_timestamp,
-                ),
-            )
-        )
-        self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_failure(pending)
-        self._persist_pending_actions()
-        self._confirmation_analytics.record(
-            user_id=str(pending.user_id),
-            decision="reject",
-            created_at=pending.created_at,
-        )
-        await self._maybe_emit_confirmation_hygiene_alert(
-            user_id=str(pending.user_id),
-            session_id=pending.session_id,
+        await self._commit_and_publish_pending_terminal(
+            pending,
+            status="rejected",
+            status_reason=reason,
         )
         return {
             "rejected": True,

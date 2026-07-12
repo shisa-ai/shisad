@@ -1104,9 +1104,12 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         assert str(action["identity"]["origin_turn_id"]).startswith("control-api:")
         assert action["required_level"] == "software"
         assert action["selected_backend_id"] == "software.default"
-        assert action["approval_envelope"]["schema_version"] == "shisad.approval.v1"
+        assert action["approval_envelope"]["schema_version"] == "shisad.approval.v2"
         assert action["approval_envelope"]["pending_action_id"] == action_id
         assert str(action["approval_envelope"]["action_digest"]).startswith("sha256:")
+        assert str(action["approval_envelope"]["approval_contract_hash"]).startswith(
+            "sha256:"
+        )
         assert str(action["approval_envelope_hash"]).startswith("sha256:")
 
         confirmed = await client.call(

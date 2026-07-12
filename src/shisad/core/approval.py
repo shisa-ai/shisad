@@ -276,7 +276,7 @@ class RiskConfirmationLevelRule(BaseModel):
 class ApprovalEnvelope(BaseModel):
     """Canonical approval request bound to a pending action."""
 
-    schema_version: str = "shisad.approval.v1"
+    schema_version: str = "shisad.approval.v2"
     approval_id: str
     pending_action_id: str
     workspace_id: str
@@ -285,6 +285,7 @@ class ApprovalEnvelope(BaseModel):
     required_level: ConfirmationLevel
     policy_reason: str = ""
     action_digest: str
+    approval_contract_hash: str = ""
     allowed_principals: list[str] = Field(default_factory=list)
     allowed_credentials: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None

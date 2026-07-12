@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1165,6 +1165,10 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "top_level_pep_context",
         "top_level_pep_elevation",
         "top_level_retry_descriptor",
+        "coherent_origin_identity_drift",
+        "top_level_expiry_extension",
+        "valid_backend_method_drift",
+        "valid_fallback_drift",
         "action_digest_mismatch",
         "retry_generation_exhausted",
         "principal_mismatch",
@@ -1290,6 +1294,20 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         durable_rows[0]["pep_elevation"] = "not-a-mapping"
     elif tamper == "top_level_retry_descriptor":
         durable_rows[0]["retry_descriptor"] = "not-a-mapping"
+    elif tamper == "coherent_origin_identity_drift":
+        durable_rows[0]["origin_turn_id"] = "different-origin-turn"
+        durable_rows[0]["identity"]["origin_turn_id"] = "different-origin-turn"
+    elif tamper == "top_level_expiry_extension":
+        durable_rows[0]["expires_at"] = (
+            datetime.now(UTC) + timedelta(days=7)
+        ).isoformat()
+    elif tamper == "valid_backend_method_drift":
+        durable_rows[0]["selected_backend_method"] = "totp"
+    elif tamper == "valid_fallback_drift":
+        durable_rows[0]["fallback"] = {
+            "mode": "allow_levels",
+            "allow_levels": ["software"],
+        }
     elif tamper == "action_digest_mismatch":
         durable_rows[0]["action_digest"] = "sha256:" + ("f" * 64)
     elif tamper == "retry_generation_exhausted":

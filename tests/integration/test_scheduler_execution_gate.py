@@ -690,7 +690,7 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
     try:
         purged = await client.call(
             "action.purge",
-            {"status": "pending", "older_than_days": 7, "limit": 20},
+            {"status": "terminal", "limit": 20},
         )
         assert confirmation_id in purged["confirmation_ids"]
 
@@ -717,7 +717,7 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
             item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
         )
         assert str(matching.get("status", "")) == "failed"
-        assert str(matching.get("status_reason", "")) == "purged_stale_pending_action"
+        assert str(matching.get("status_reason", "")) == "approval_contract_mismatch"
 
         tasks_payload = json.loads(
             (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
