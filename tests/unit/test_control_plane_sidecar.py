@@ -141,6 +141,77 @@ async def test_f2_sidecar_handler_replays_interrupted_trace_accounting(
     assert execution_rows[0]["trace_plan_hash"] == original_plan_hash
 
 
+@pytest.mark.parametrize("failed_trace_write", [1, 2])
+@pytest.mark.asyncio
+async def test_f2_sidecar_handler_cancels_hashless_uncertain_active_plan(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_trace_write: int,
+) -> None:
+    data_dir = tmp_path / f"cp-f2-sidecar-hashless-{failed_trace_write}"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = Origin(
+        session_id=f"sess-f2-sidecar-hashless-{failed_trace_write}",
+        user_id="alice",
+        workspace_id="ws-f2",
+        actor="recovery",
+    )
+    original_plan_hash = engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=f"read {tmp_path / 'source.txt'}",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=5,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    verifier = engine._trace_verifier
+    real_persist = verifier._persist
+    trace_writes = 0
+
+    def _fail_one_trace_write() -> None:
+        nonlocal trace_writes
+        trace_writes += 1
+        if trace_writes == failed_trace_write:
+            raise OSError("simulated legacy sidecar trace interruption")
+        real_persist()
+
+    monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
+    idempotency_key = f"f2-sidecar-hashless-{failed_trace_write}"
+    params = _RecordExecutionParams(
+        action=action,
+        success=True,
+        idempotency_key=idempotency_key,
+    )
+    handlers = _ControlPlaneSidecarHandlers(engine=engine)
+    with pytest.raises(OSError, match="legacy sidecar trace interruption"):
+        await handlers.handle_record_execution(params, RequestContext())
+
+    history_path = data_dir / "control_plane" / "history.jsonl"
+    history_rows = [json.loads(line) for line in history_path.read_text().splitlines()]
+    assert history_rows[0].pop("trace_plan_hash") == original_plan_hash
+    history_path.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in history_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    restarted = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    restarted_handlers = _ControlPlaneSidecarHandlers(engine=restarted)
+    assert restarted.active_plan_hash(origin.session_id) == original_plan_hash
+
+    await restarted_handlers.handle_record_execution(params, RequestContext())
+
+    assert restarted.active_plan_hash(origin.session_id) == ""
+    cancelled = restarted._trace_verifier._plans[origin.session_id]
+    assert cancelled.cancelled is True
+    assert cancelled.cancelled_reason == "trace_accounting_plan_binding_unavailable"
+
+
 @pytest.mark.asyncio
 async def test_gh33_control_plane_sidecar_client_serializes_monitor_arguments(
     tmp_path,

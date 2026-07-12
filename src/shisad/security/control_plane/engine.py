@@ -412,6 +412,21 @@ class ControlPlaneEngine:
             idempotency_key=idempotency_key,
             trace_plan_hash=trace_plan_hash,
         )
+        if success and existing_record is not None and not trace_plan_hash:
+            if active_plan is not None and self._trace_verifier.cancel(
+                session_id=action.origin.session_id,
+                reason="trace_accounting_plan_binding_unavailable",
+            ):
+                self._audit_log.append(
+                    event_type="plan_cancelled",
+                    session_id=action.origin.session_id,
+                    actor=action.origin.actor,
+                    data={
+                        "reason": "trace_accounting_plan_binding_unavailable",
+                        "plan_hash": active_plan.plan_hash,
+                    },
+                )
+            return
         if (
             success
             and trace_plan_hash

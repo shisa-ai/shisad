@@ -452,7 +452,29 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
 @pytest.mark.parametrize("producer", ["direct", "confirmed"])
 @pytest.mark.parametrize(
     "corruption",
-    ["unrelated_metadata", "marker", "marker_and_identity"],
+    [
+        "unrelated_metadata",
+        "marker",
+        "marker_and_identity",
+        "identity_missing",
+        "identity_malformed",
+        "confirmation_missing",
+        "confirmation_both_missing",
+        "confirmation_malformed",
+        "confirmation_mismatch",
+        "task_missing",
+        "task_both_missing",
+        "task_malformed",
+        "task_mismatch",
+        "attempt_missing",
+        "attempt_both_missing",
+        "attempt_malformed",
+        "attempt_mismatch",
+        "result_missing",
+        "result_both_missing",
+        "result_malformed",
+        "result_mismatch",
+    ],
 )
 @pytest.mark.asyncio
 async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_metadata(
@@ -467,6 +489,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
     class _ProcessStopped(BaseException):
         pass
 
+    decoy_task_id = ""
     services = await DaemonServices.build(config)
     try:
         session_id, raw_impl = await _session_and_impl(services)
@@ -491,6 +514,18 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             ),
             max_runs=1,
         )
+        if corruption == "task_mismatch":
+            decoy = services.scheduler.create_task(
+                name=f"terminal-corruption-decoy-{producer}",
+                goal="Do not account the original effect here",
+                schedule=Schedule(kind="interval", expression="1s"),
+                capability_snapshot=set(task.capability_snapshot),
+                policy_snapshot_ref="terminal-corruption-decoy",
+                created_by=session.user_id,
+                workspace_id=session.workspace_id,
+                max_runs=1,
+            )
+            decoy_task_id = decoy.id
 
         def _stop_before_accounting(
             _task_id: str,
@@ -511,7 +546,8 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             runs = services.scheduler.trigger_due(
                 now=task.created_at + timedelta(seconds=2),
             )
-            assert len(runs) == 1
+            matching_runs = [run for run in runs if run.task_id == task.id]
+            assert len(matching_runs) == 1
 
             async def _successful_effect(**_kwargs: object) -> ApprovedToolExecutionResult:
                 return ApprovedToolExecutionResult(success=True)
@@ -519,7 +555,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             monkeypatch.setattr(impl, "_execute_approved_action", _successful_effect)
             with pytest.raises(_ProcessStopped):
                 await impl._execute_task_run(
-                    runs[0],
+                    matching_runs[0],
                     event_type="scheduler.due",
                     due_run=True,
                 )
@@ -577,10 +613,50 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["result_id"] = ["not", "text"]
         durable["identity"]["execution_attempt_id"] = ["not", "text"]
         durable["identity"]["result_id"] = ["not", "text"]
+    elif corruption == "identity_missing":
+        durable.pop("identity")
+    elif corruption == "identity_malformed":
+        durable["identity"] = ["not", "a", "mapping"]
     elif corruption == "unrelated_metadata" and producer == "direct":
         durable["preflight_action"] = "not-a-mapping"
     elif corruption == "unrelated_metadata":
         durable["confirmation_evidence"]["level"] = "not-a-confirmation-level"
+    elif corruption == "confirmation_missing":
+        durable["confirmation_id"] = ""
+    elif corruption == "confirmation_both_missing":
+        durable["confirmation_id"] = ""
+        durable["identity"]["confirmation_id"] = ""
+    elif corruption == "confirmation_malformed":
+        durable["confirmation_id"] = ["not", "text"]
+    elif corruption == "confirmation_mismatch":
+        durable["confirmation_id"] = "different-confirmation"
+    elif corruption == "task_missing":
+        durable["task_id"] = ""
+    elif corruption == "task_both_missing":
+        durable["task_id"] = ""
+        durable["identity"]["task_id"] = ""
+    elif corruption == "task_malformed":
+        durable["task_id"] = ["not", "text"]
+    elif corruption == "task_mismatch":
+        durable["task_id"] = decoy_task_id
+    elif corruption == "attempt_missing":
+        durable["execution_attempt_id"] = ""
+    elif corruption == "attempt_both_missing":
+        durable["execution_attempt_id"] = ""
+        durable["identity"]["execution_attempt_id"] = ""
+    elif corruption == "attempt_malformed":
+        durable["execution_attempt_id"] = ["not", "text"]
+    elif corruption == "attempt_mismatch":
+        durable["execution_attempt_id"] = "attempt-mismatch"
+    elif corruption == "result_missing":
+        durable["result_id"] = ""
+    elif corruption == "result_both_missing":
+        durable["result_id"] = ""
+        durable["identity"]["result_id"] = ""
+    elif corruption == "result_malformed":
+        durable["result_id"] = ["not", "text"]
+    elif corruption == "result_mismatch":
+        durable["result_id"] = "result-mismatch"
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
     restarted = await DaemonServices.build(config)
@@ -589,19 +665,31 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         await _wait_for_recovery_accounting(restarted_handlers._impl)
         reconciled_task = restarted.scheduler.get_task(task.id)
         assert reconciled_task is not None
-        if corruption == "marker_and_identity":
+        identity_uncertain = corruption not in {"unrelated_metadata", "marker"}
+        unrecoverable_confirmation = corruption == "confirmation_both_missing"
+        if unrecoverable_confirmation:
+            assert reconciled_task.success_count == 0
+            assert reconciled_task.failure_count == 0
+        elif identity_uncertain:
             assert reconciled_task.success_count == 0
             assert reconciled_task.failure_count == 1
         else:
             assert reconciled_task.success_count == 1
             assert reconciled_task.failure_count == 0
         assert reconciled_task.enabled is False
-        durable = next(
-            row
-            for row in json.loads(pending_path.read_text(encoding="utf-8"))
-            if row["confirmation_id"] == pending.confirmation_id
-        )
-        assert durable["scheduler_accounting_pending"] is False
+        if not unrecoverable_confirmation:
+            durable = next(
+                row
+                for row in json.loads(pending_path.read_text(encoding="utf-8"))
+                if row["confirmation_id"] == pending.confirmation_id
+            )
+            assert durable["scheduler_accounting_pending"] is False
+        if decoy_task_id:
+            decoy_task = restarted.scheduler.get_task(decoy_task_id)
+            assert decoy_task is not None
+            assert decoy_task.success_count == 0
+            assert decoy_task.failure_count == 0
+            assert decoy_task.enabled is True
     finally:
         await restarted.shutdown()
 

@@ -436,6 +436,19 @@ class SchedulerManager:
             return bool(row.get("run_outcome_success", False))
         return None
 
+    def task_ids_for_confirmation(self, confirmation_id: str) -> list[str]:
+        normalized_confirmation = confirmation_id.strip()
+        if not normalized_confirmation:
+            return []
+        return sorted(
+            task_id
+            for task_id, rows in self._pending_confirmations.items()
+            if any(
+                str(row.get("confirmation_id", "")).strip() == normalized_confirmation
+                for row in rows
+            )
+        )
+
     def record_run_outcome(self, task_id: str, *, success: bool) -> bool:
         task = self._tasks.get(task_id)
         if task is None:

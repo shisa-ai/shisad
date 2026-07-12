@@ -1058,6 +1058,76 @@ def test_f2_execution_accounting_replays_each_trace_substep_idempotently(
     assert execution_rows[0]["trace_plan_hash"] == original_plan_hash
 
 
+@pytest.mark.parametrize("failed_trace_write", [1, 2])
+def test_f2_hashless_execution_history_cancels_uncertain_active_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_trace_write: int,
+) -> None:
+    data_dir = tmp_path / f"cp-f2-hashless-trace-{failed_trace_write}"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = _origin(f"s-f2-hashless-trace-{failed_trace_write}")
+    original_plan_hash = engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=f"read {tmp_path / 'source.txt'}",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=5,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    verifier = engine._trace_verifier
+    real_persist = verifier._persist
+    trace_writes = 0
+
+    def _fail_one_trace_write() -> None:
+        nonlocal trace_writes
+        trace_writes += 1
+        if trace_writes == failed_trace_write:
+            raise OSError("simulated legacy trace persistence interruption")
+        real_persist()
+
+    monkeypatch.setattr(verifier, "_persist", _fail_one_trace_write)
+    idempotency_key = f"f2-hashless-trace-{failed_trace_write}"
+    with pytest.raises(OSError, match="legacy trace persistence interruption"):
+        engine.record_execution(
+            action=action,
+            success=True,
+            idempotency_key=idempotency_key,
+        )
+
+    history_path = data_dir / "control_plane" / "history.jsonl"
+    history_rows = [json.loads(line) for line in history_path.read_text().splitlines()]
+    assert history_rows[0].pop("trace_plan_hash") == original_plan_hash
+    history_path.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in history_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    restarted = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    assert restarted.active_plan_hash(origin.session_id) == original_plan_hash
+
+    restarted.record_execution(
+        action=action,
+        success=True,
+        idempotency_key=idempotency_key,
+    )
+
+    assert restarted.active_plan_hash(origin.session_id) == ""
+    cancelled = restarted._trace_verifier._plans[origin.session_id]
+    assert cancelled.cancelled is True
+    assert cancelled.cancelled_reason == "trace_accounting_plan_binding_unavailable"
+    persisted_history = [
+        json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(persisted_history) == 1
+
+
 class _StaticVoter:
     def __init__(self, vote: VoterDecision) -> None:
         self._vote = vote

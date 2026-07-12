@@ -2311,6 +2311,12 @@ def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_pat
     pending_payload = HandlerImplementation._pending_to_dict(pending)
     approved_payload = dict(pending_payload)
     approved_payload["confirmation_id"] = "c-2"
+    approved_identity = approved_payload.get("identity")
+    assert isinstance(approved_identity, dict)
+    approved_payload["identity"] = {
+        **approved_identity,
+        "confirmation_id": "c-2",
+    }
     approved_payload["decision_nonce"] = "nonce-2"
     approved_payload["status"] = "approved"
     approved_payload["status_reason"] = "approved"
@@ -2456,6 +2462,12 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
 
     raw_payload = HandlerImplementation._pending_to_dict(pending)
     raw_payload["confirmation_id"] = "c-raw"
+    raw_identity = raw_payload.get("identity")
+    assert isinstance(raw_identity, dict)
+    raw_payload["identity"] = {
+        **raw_identity,
+        "confirmation_id": "c-raw",
+    }
     raw_payload["decision_nonce"] = "raw-nonce"
     raw_payload["arguments"]["text"] = "raw-upgrade-token"
     raw_payload["safe_preview"] = "browser.type_text text=raw-upgrade-token"
@@ -2499,6 +2511,12 @@ def test_gh34_pending_sensitive_browser_text_alias_redacts_persisted_payload(
 
     raw_payload = dict(payload)
     raw_payload["confirmation_id"] = f"c-raw-{tool_name}"
+    raw_identity = raw_payload.get("identity")
+    assert isinstance(raw_identity, dict)
+    raw_payload["identity"] = {
+        **raw_identity,
+        "confirmation_id": f"c-raw-{tool_name}",
+    }
     raw_payload["decision_nonce"] = f"raw-nonce-{tool_name}"
     raw_payload["arguments"] = dict(payload["arguments"])
     raw_payload["arguments"]["text"] = "browser-alias-raw-secret"

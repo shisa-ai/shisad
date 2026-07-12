@@ -3755,6 +3755,167 @@ class HandlerImplementation(
             ),
         )
 
+    def _canonicalize_loaded_pending_identity(
+        self,
+        item: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        normalized = dict(item)
+        scheduler = getattr(self, "_scheduler", None)
+        raw_identity = item.get("identity")
+        binding_fields = (
+            "confirmation_id",
+            "action_id",
+            "origin_turn_id",
+            "session_id",
+            "user_id",
+            "workspace_id",
+            "task_id",
+            "execution_attempt_id",
+            "result_id",
+            "followup_id",
+        )
+
+        def _shadow_bindings(confirmation_ids: set[str]) -> set[tuple[str, str]]:
+            task_ids_for_confirmation = getattr(
+                scheduler, "task_ids_for_confirmation", None
+            )
+            if not callable(task_ids_for_confirmation):
+                return set()
+            return {
+                (confirmation_id, task_id)
+                for confirmation_id in confirmation_ids
+                for task_id in task_ids_for_confirmation(confirmation_id)
+            }
+
+        def _disable_tasks(task_ids: set[str]) -> None:
+            disable_task = getattr(scheduler, "disable_task", None)
+            if not callable(disable_task):
+                return
+            for task_id in task_ids:
+                disable_task(task_id)
+
+        if raw_identity is None:
+            legacy_invalid = any(
+                key in item and not isinstance(item.get(key), str)
+                for key in binding_fields
+            )
+            scheduler_accounting_pending, scheduler_marker_valid = _loaded_state_bool(
+                item.get("scheduler_accounting_pending", False)
+            )
+            if (
+                not legacy_invalid
+                and scheduler_marker_valid
+                and not scheduler_accounting_pending
+            ):
+                return normalized, False
+            confirmation_id, confirmation_id_valid = _loaded_state_text(
+                item.get("confirmation_id", "")
+            )
+            task_id, task_id_valid = _loaded_state_text(item.get("task_id", ""))
+            confirmation_candidates = (
+                {confirmation_id} if confirmation_id_valid and confirmation_id else set()
+            )
+            task_candidates = {task_id} if task_id_valid and task_id else set()
+            shadow_bindings = _shadow_bindings(confirmation_candidates)
+            if len(shadow_bindings) == 1:
+                canonical_confirmation_id, canonical_task_id = next(
+                    iter(shadow_bindings)
+                )
+                normalized["confirmation_id"] = canonical_confirmation_id
+                normalized["task_id"] = canonical_task_id
+            else:
+                _disable_tasks(
+                    task_candidates | {task_id for _, task_id in shadow_bindings}
+                )
+                normalized["task_id"] = ""
+            return normalized, True
+        if not isinstance(raw_identity, Mapping):
+            confirmation_id, confirmation_id_valid = _loaded_state_text(
+                item.get("confirmation_id", "")
+            )
+            task_id, task_id_valid = _loaded_state_text(item.get("task_id", ""))
+            confirmation_candidates = (
+                {confirmation_id} if confirmation_id_valid and confirmation_id else set()
+            )
+            task_candidates = {task_id} if task_id_valid and task_id else set()
+            shadow_bindings = _shadow_bindings(confirmation_candidates)
+            if len(shadow_bindings) == 1:
+                canonical_confirmation_id, canonical_task_id = next(
+                    iter(shadow_bindings)
+                )
+                normalized["confirmation_id"] = canonical_confirmation_id
+                normalized["task_id"] = canonical_task_id
+            else:
+                _disable_tasks(
+                    task_candidates | {task_id for _, task_id in shadow_bindings}
+                )
+                normalized["task_id"] = ""
+            return normalized, True
+
+        identity = dict(raw_identity)
+        binding_invalid = False
+        direct_values: dict[str, str] = {}
+        nested_values: dict[str, str] = {}
+        for key in binding_fields:
+            direct, direct_valid = _loaded_state_text(item.get(key))
+            nested, nested_valid = _loaded_state_text(identity.get(key))
+            direct_values[key] = direct
+            nested_values[key] = nested
+            if not direct_valid or not nested_valid or direct != nested:
+                binding_invalid = True
+            canonical = nested if nested_valid else direct
+            normalized[key] = canonical
+            identity[key] = canonical
+
+        confirmation_candidates = {
+            value
+            for value in (
+                direct_values["confirmation_id"],
+                nested_values["confirmation_id"],
+            )
+            if value
+        }
+        if not direct_values["confirmation_id"] or not nested_values["confirmation_id"]:
+            binding_invalid = True
+        task_candidates = {
+            value
+            for value in (direct_values["task_id"], nested_values["task_id"])
+            if value
+        }
+        shadow_bindings = _shadow_bindings(confirmation_candidates)
+        if shadow_bindings and (
+            not direct_values["task_id"] or not nested_values["task_id"]
+        ):
+            binding_invalid = True
+        stored_status, stored_status_valid = _loaded_state_text(
+            item.get("status", "pending")
+        )
+        if (
+            shadow_bindings
+            and stored_status_valid
+            and stored_status in {"approved", "failed", "outcome_unknown"}
+            and any(
+                not direct_values[key] or not nested_values[key]
+                for key in ("execution_attempt_id", "result_id")
+            )
+        ):
+            binding_invalid = True
+        if len(shadow_bindings) == 1:
+            canonical_confirmation_id, canonical_task_id = next(iter(shadow_bindings))
+            normalized["confirmation_id"] = canonical_confirmation_id
+            normalized["task_id"] = canonical_task_id
+            identity["confirmation_id"] = canonical_confirmation_id
+            identity["task_id"] = canonical_task_id
+        elif binding_invalid:
+            _disable_tasks(
+                task_candidates | {task_id for _, task_id in shadow_bindings}
+            )
+            normalized["task_id"] = ""
+            identity["task_id"] = ""
+
+        normalized["identity"] = identity
+        return normalized, binding_invalid
+
     def _load_pending_actions(self) -> None:
         if not self._pending_actions_file.exists():
             return
@@ -3803,6 +3964,7 @@ class HandlerImplementation(
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            item, identity_binding_invalid = self._canonicalize_loaded_pending_identity(item)
             legacy_mixed_sensitive_payload = False
             try:
                 confirmation_id, confirmation_id_valid = _loaded_state_text(
@@ -3810,7 +3972,9 @@ class HandlerImplementation(
                 )
                 if not confirmation_id:
                     continue
-                recovery_authority_invalid = not confirmation_id_valid
+                recovery_authority_invalid = (
+                    not confirmation_id_valid or identity_binding_invalid
+                )
                 created_at_raw, created_at_valid = _loaded_state_text(
                     item.get("created_at", "")
                 )
@@ -4311,7 +4475,7 @@ class HandlerImplementation(
                     and bool(pending.execution_attempt_id.strip())
                     and bool(pending.result_id.strip())
                 )
-                if scheduled_terminal_attempt:
+                if scheduled_terminal_attempt and not identity_binding_invalid:
                     pending.scheduler_accounting_pending = True
                 elif scheduled_terminal or pending.scheduler_accounting_pending:
                     pending.status = "outcome_unknown"
