@@ -22,6 +22,7 @@ from shisad.core.action_state import (
     ReminderStatusView,
     action_lifecycle_state,
     mint_action_operation_identity,
+    reminder_create_arguments_are_current_turn_anchored,
     reminder_lifecycle_state,
     select_reminder_status_view,
 )
@@ -2902,6 +2903,22 @@ def test_gh88_69_structurally_bound_planner_reminder_counts_without_marker() -> 
         arguments=proposal.arguments,
         proposal=proposal,
         validated=validated,
+    )
+
+
+@pytest.mark.parametrize(
+    "when",
+    [
+        "in ² minutes",
+        f"in {'9' * 5000} minutes",
+    ],
+)
+def test_f1_structural_reminder_authority_rejects_malformed_durations(
+    when: str,
+) -> None:
+    assert not reminder_create_arguments_are_current_turn_anchored(
+        {"message": "do laundry", "when": when},
+        current_turn="set a reminder in 2 min to do laundry",
     )
 
 

@@ -4398,6 +4398,94 @@ def test_f1_action_reject_retries_unfiltered_nonce_lookup_after_expiry(
     assert "approval_expired" in result.output
 
 
+@pytest.mark.parametrize("status_reason", ["task_disabled", "max_runs_reached"])
+def test_f1_action_reject_surfaces_cancelled_terminal_state_without_nonce(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status_reason: str,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "action.pending":
+            if params and params.get("status") == "pending":
+                payload: dict[str, object] = {"actions": [], "count": 0}
+            else:
+                payload = {
+                    "actions": [
+                        {
+                            "confirmation_id": "c-cancelled",
+                            "decision_nonce": "",
+                            "status": "cancelled",
+                            "status_reason": status_reason,
+                            "lifecycle_state": "cancelled",
+                            "tool_name": "web.search",
+                            "reason": "manual",
+                        }
+                    ],
+                    "count": 1,
+                }
+        else:
+            assert method == "action.reject"
+            payload = {
+                "rejected": False,
+                "confirmation_id": "c-cancelled",
+                "reason": "already_cancelled",
+                "status": "cancelled",
+                "status_reason": status_reason,
+                "lifecycle_state": "cancelled",
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(cli_main.cli, ["action", "reject", "c-cancelled"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": "c-cancelled",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.pending",
+            {
+                "confirmation_id": "c-cancelled",
+                "status": None,
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.reject",
+            {
+                "confirmation_id": "c-cancelled",
+                "decision_nonce": "",
+                "reason": "manual_reject",
+            },
+        ),
+    ]
+    assert "already_cancelled" in result.output
+    assert status_reason in result.output
+
+
 def test_action_confirm_renders_confirmed_tool_output_for_humans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

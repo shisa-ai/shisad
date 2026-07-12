@@ -3181,6 +3181,75 @@ async def test_f1_max_runs_success_cancels_sibling_pending_confirmations(
 
 
 @pytest.mark.asyncio
+async def test_f1_max_runs_confirmation_does_not_deadlock_with_pending_purge(
+    tmp_path: Path,
+) -> None:
+    class _SlowExecutionHarness(_ConfirmationImplHarness):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.execution_started = asyncio.Event()
+            self.release_execution = asyncio.Event()
+
+        async def _execute_approved_action(self, **kwargs: object) -> object:
+            self.execution_started.set()
+            await self.release_execution.wait()
+            return await super()._execute_approved_action(**kwargs)  # type: ignore[arg-type]
+
+    harness = _SlowExecutionHarness(tmp_path)
+    scheduler = SchedulerManager(storage_dir=tmp_path / "scheduler")
+    task = scheduler.create_task(
+        name="one-success-only",
+        goal="Deliver once",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.HTTP_REQUEST},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        max_runs=1,
+    )
+    harness._scheduler = scheduler
+
+    created_at = datetime.now(UTC) - timedelta(days=10)
+    sibling = _pending_action(nonce="nonce-1")
+    sibling.task_id = task.id
+    sibling.created_at = created_at
+    current = _pending_action(nonce="nonce-2")
+    current.confirmation_id = "c-2"
+    current.task_id = task.id
+    current.created_at = created_at
+    _bind_pending_action_identity(current)
+    harness._pending_actions = {"c-1": sibling, "c-2": current}
+
+    confirm_task = asyncio.create_task(
+        harness.do_action_confirm({"confirmation_id": "c-2", "decision_nonce": "nonce-2"})
+    )
+    await harness.execution_started.wait()
+    purge_task = asyncio.create_task(
+        harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
+    )
+
+    sibling_lock = harness._action_confirmation_lock("c-1")
+
+    async def _wait_for_purge_to_hold_sibling_lock() -> None:
+        while not sibling_lock.locked():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(_wait_for_purge_to_hold_sibling_lock(), timeout=1.0)
+    harness.release_execution.set()
+
+    confirmed, purged = await asyncio.wait_for(
+        asyncio.gather(confirm_task, purge_task),
+        timeout=1.0,
+    )
+
+    assert confirmed["confirmed"] is True
+    assert purged["confirmation_ids"] == ["c-1"]
+    assert scheduler.get_task(task.id).enabled is False  # type: ignore[union-attr]
+    assert current.status == "approved"
+    assert "c-1" not in harness._pending_actions
+
+
+@pytest.mark.asyncio
 async def test_a1_two_factor_register_confirm_emits_audit_event(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
 

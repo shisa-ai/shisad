@@ -1748,6 +1748,106 @@ async def test_f1_tui_decision_retries_unfiltered_nonce_lookup_after_expiry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["action.confirm", "action.reject"])
+@pytest.mark.parametrize("status_reason", ["task_disabled", "max_runs_reached"])
+async def test_f1_tui_decision_surfaces_cancelled_terminal_state_without_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    status_reason: str,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(
+            self,
+            called_method: str,
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            self.calls.append((called_method, payload))
+            if called_method == "action.pending":
+                if payload.get("status") == "pending":
+                    return {"actions": [], "count": 0}
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-cancelled",
+                            "decision_nonce": "",
+                            "status": "cancelled",
+                            "status_reason": status_reason,
+                            "lifecycle_state": "cancelled",
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {
+                "ok": False,
+                "reason": "already_cancelled",
+                "status": "cancelled",
+                "status_reason": status_reason,
+            }
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    await tui_module._decision(Path("/tmp/control.sock"), method, "conf-cancelled")
+
+    assert created[0].calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-cancelled",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-cancelled",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        (
+            method,
+            {
+                "confirmation_id": "conf-cancelled",
+                "decision_nonce": "",
+            },
+        ),
+    ]
+    assert not any("decision_nonce not found" in line for line in printed)
+    assert any("already_cancelled" in line for line in printed)
+    assert any(status_reason in line for line in printed)
+
+
+@pytest.mark.asyncio
 async def test_f1_tui_expired_stepup_confirmation_reaches_locked_daemon_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

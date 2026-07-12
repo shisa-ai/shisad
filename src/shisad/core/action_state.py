@@ -331,12 +331,16 @@ class ReminderRelativeDuration:
 def parse_reminder_relative_duration(value: str) -> ReminderRelativeDuration | None:
     """Parse the finite machine-facing `reminder.create.when` duration grammar."""
     parts = str(value or "").casefold().split()
-    if len(parts) != 3 or parts[0] != "in" or not parts[1].isdigit():
+    if len(parts) != 3 or parts[0] != "in" or not parts[1].isascii() or not parts[1].isdigit():
         return None
     unit = _REMINDER_DURATION_UNIT_ALIASES.get(parts[2])
     if unit is None:
         return None
-    return ReminderRelativeDuration(value=max(1, int(parts[1])), unit=unit)
+    try:
+        duration_value = int(parts[1])
+    except ValueError:
+        return None
+    return ReminderRelativeDuration(value=max(1, duration_value), unit=unit)
 
 
 def _current_turn_tokens(value: str) -> tuple[str, ...]:

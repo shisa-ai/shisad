@@ -65,6 +65,7 @@ logger = logging.getLogger(__name__)
 _CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS = 3.5
 _CONFIRMATION_COOLDOWN_WAKE_MARGIN_SECONDS = 0.05
 _CONFIRMATION_INTERNAL_SHORT_WAIT_KEY = "_shisad_internal_short_cooldown_wait_seconds"
+_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY = "_shisad_internal_task_cancel_reason"
 _STALE_PENDING_APPROVAL_REASONS = frozenset(
     {
         "approval_envelope_missing",
@@ -1431,6 +1432,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     confirmation_id=confirmation_id,
                     allow_short_cooldown_wait=not waited_for_short_cooldown,
                 )
+                deferred_cancel_reason = str(
+                    result.pop(_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY, "")
+                ).strip()
+                if deferred_cancel_reason and task_id:
+                    confirmation_lock.release()
+                    confirmation_lock_acquired = False
+                    await self._cancel_pending_actions_for_task(
+                        task_id,
+                        reason=deferred_cancel_reason,
+                    )
             finally:
                 if confirmation_lock_acquired:
                     confirmation_lock.release()
@@ -2310,9 +2321,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
             or pending.status
         )
         self._sync_task_confirmation_status(pending)
-        await self._record_task_run_outcome(
+        task_auto_disabled = await self._record_task_run_outcome(
             str(getattr(pending, "task_id", "")),
             success=success,
+            cancel_pending=False,
         )
         self._persist_pending_actions()
         self._confirmation_analytics.record(
@@ -2324,7 +2336,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             user_id=str(pending.user_id),
             session_id=pending.session_id,
         )
-        return {
+        response = {
             "confirmed": success,
             "confirmation_id": confirmation_id,
             "decision_nonce": pending.decision_nonce,
@@ -2345,6 +2357,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "continuation_user_goal": str(getattr(pending, "continuation_user_goal", "")).strip(),
             "continuation_mode": str(getattr(pending, "continuation_mode", "")).strip(),
         }
+        if task_auto_disabled:
+            response[_CONFIRMATION_INTERNAL_TASK_CANCEL_REASON_KEY] = "max_runs_reached"
+        return response
 
     async def do_action_reject(self, params: Mapping[str, Any]) -> dict[str, Any]:
         confirmation_id = str(params.get("confirmation_id", "")).strip()

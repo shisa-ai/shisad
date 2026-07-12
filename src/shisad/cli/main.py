@@ -2440,10 +2440,14 @@ def action_reject(confirmation_id: str, nonce: str, reason: str) -> None:
         )
         decision_nonce = (pending_row.decision_nonce or "").strip() if pending_row else ""
     if not decision_nonce:
-        raise click.ClickException(
-            "Decision nonce not found for confirmation_id; run 'shisad action list' and retry "
-            "with --nonce."
+        lifecycle_state = (
+            (pending_row.lifecycle_state or pending_row.status).lower() if pending_row else ""
         )
+        if lifecycle_state in {"", "pending"}:
+            raise click.ClickException(
+                "Decision nonce not found for confirmation_id; run 'shisad action list' and "
+                "retry with --nonce."
+            )
     payload: dict[str, object] = {
         "confirmation_id": confirmation_id,
         "decision_nonce": decision_nonce,

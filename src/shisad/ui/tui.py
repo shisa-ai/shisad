@@ -1025,6 +1025,7 @@ async def _decision(
             channel_principal_id = ""
             selected_backend_method = ""
             used_unfiltered_fallback = False
+            terminal_lifecycle_state = ""
             pending_queries = (
                 {
                     "confirmation_id": confirmation_id,
@@ -1051,6 +1052,9 @@ async def _decision(
                     if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
                         continue
                     decision_nonce = str(raw.get("decision_nonce", "")).strip()
+                    lifecycle_state = (
+                        str(raw.get("lifecycle_state") or raw.get("status") or "").strip().lower()
+                    )
                     selected_backend_method = str(raw.get("selected_backend_method", "")).strip()
                     allowed_channel_principals_raw = raw.get(
                         "allowed_channel_principals",
@@ -1067,18 +1071,20 @@ async def _decision(
                     )
                     if len(allowed_channel_principals) == 1:
                         channel_principal_id = allowed_channel_principals[0]
+                    if lifecycle_state and lifecycle_state != "pending":
+                        terminal_lifecycle_state = lifecycle_state
                     break
-                if decision_nonce:
+                if decision_nonce or terminal_lifecycle_state:
                     used_unfiltered_fallback = "status" not in pending_query
                     break
-            if not decision_nonce:
+            if not decision_nonce and not terminal_lifecycle_state:
                 print("decision_nonce not found for confirmation_id")
                 return
             payload["decision_nonce"] = decision_nonce
             if method in {"action.confirm", "action.reject"} and channel_principal_id:
                 payload["principal_id"] = channel_principal_id
             supplied_proof = proof_code.strip() or totp_code.strip()
-            if method == "action.confirm" and supplied_proof:
+            if method == "action.confirm" and supplied_proof and not terminal_lifecycle_state:
                 if selected_backend_method == "recovery_code":
                     payload["approval_method"] = "recovery_code"
                     payload["proof"] = {"recovery_code": supplied_proof}
@@ -1090,6 +1096,7 @@ async def _decision(
                     return
             elif (
                 method == "action.confirm"
+                and not terminal_lifecycle_state
                 and selected_backend_method
                 in {
                     "totp",
