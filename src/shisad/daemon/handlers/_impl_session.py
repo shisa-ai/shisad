@@ -1761,6 +1761,12 @@ def _pending_confirmation_is_expired(pending: Any) -> bool:
     return expires_at is not None and expires_at <= datetime.now(UTC)
 
 
+def _live_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
+    """Project raw decision-addressable rows to currently actionable rows."""
+
+    return [pending for pending in pending_rows if pending_action_is_live_pending(pending)]
+
+
 def _validated_action_followup_identity(
     raw_identity: Any,
     *,
@@ -1887,6 +1893,7 @@ def _result_pending_rows_for_delivery_target(
     delivery_target: DeliveryTarget | None,
     fallback_target: DeliveryTarget | None = None,
 ) -> list[Any]:
+    pending_rows = _live_pending_rows(pending_rows)
     effective_delivery_target = delivery_target or fallback_target
     if not is_internal_ingress or effective_delivery_target is None:
         return list(pending_rows)
@@ -9183,6 +9190,12 @@ class SessionImplMixin(HandlerMixinBase):
         user_id: UserId,
         workspace_id: WorkspaceId,
     ) -> list[Any]:
+        """Return storage-pending rows still addressable by the locked decision path.
+
+        Renderers, status projections, and response bindings must narrow this
+        compatibility view through ``_live_pending_rows`` before surfacing it.
+        """
+
         pending_actions = getattr(self, "_pending_actions", {})
         if not isinstance(pending_actions, dict):
             return []
@@ -9204,6 +9217,9 @@ class SessionImplMixin(HandlerMixinBase):
         tainted_session: bool,
         allow_chat_approval: bool = True,
     ) -> str:
+        pending_rows = _live_pending_rows(pending_rows)
+        if not pending_rows:
+            return "No pending confirmations."
         totp_rows = _totp_pending_rows(pending_rows)
         recovery_code_rows = _recovery_code_pending_rows(pending_rows)
         non_typed_proof_rows = _non_typed_proof_pending_rows(pending_rows)
@@ -9479,6 +9495,7 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if not pending_rows:
             return None
+        live_pending_rows = _live_pending_rows(pending_rows)
         pending_confirmation_ids = {
             str(getattr(pending, "confirmation_id", "")).strip().lower()
             for pending in pending_rows
@@ -9486,6 +9503,14 @@ class SessionImplMixin(HandlerMixinBase):
         }
 
         def _visible_pending_rows(rows: Sequence[Any]) -> list[Any]:
+            return _visible_pending_rows_for_delivery_target(
+                pending_rows=_live_pending_rows(rows),
+                is_internal_ingress=is_internal_ingress,
+                delivery_target=delivery_target,
+                fallback_target=stored_delivery_target,
+            )
+
+        def _visible_decision_rows(rows: Sequence[Any]) -> list[Any]:
             return _visible_pending_rows_for_delivery_target(
                 pending_rows=rows,
                 is_internal_ingress=is_internal_ingress,
@@ -9496,8 +9521,9 @@ class SessionImplMixin(HandlerMixinBase):
         tainted_session = (
             self._session_has_tainted_history(sid) or firewall_result.risk_score >= 0.7
         )
-        totp_rows = _totp_pending_rows(pending_rows)
+        totp_rows = _totp_pending_rows(live_pending_rows)
         visible_pending_rows = _visible_pending_rows(pending_rows)
+        visible_decision_rows = _visible_decision_rows(pending_rows)
         visible_pending_confirmation_ids = {
             str(getattr(pending, "confirmation_id", "")).strip().lower()
             for pending in visible_pending_rows
@@ -9545,15 +9571,16 @@ class SessionImplMixin(HandlerMixinBase):
                 target_id = intent_explicit_target_id.strip().lower()
                 selected_pending_rows = [
                     pending
-                    for pending in displayed_pending_rows
+                    for pending in visible_decision_rows
                     if str(getattr(pending, "confirmation_id", "")).strip().lower() == target_id
                 ]
             else:
+                ordinal_pending_rows = displayed_pending_rows or visible_decision_rows
                 selected_pending_rows = [
-                    displayed_pending_rows[index]
+                    ordinal_pending_rows[index]
                     for index in _resolve_chat_confirmation_indexes(
                         intent=intent,
-                        pending_count=len(displayed_pending_rows),
+                        pending_count=len(ordinal_pending_rows),
                         tainted_session=tainted_session,
                     )
                 ]
@@ -9668,7 +9695,9 @@ class SessionImplMixin(HandlerMixinBase):
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
-            pending_confirmation_ids = [pending.confirmation_id for pending in all_pending_rows]
+            pending_confirmation_ids = [
+                pending.confirmation_id for pending in _live_pending_rows(all_pending_rows)
+            ]
             visible_pending_confirmation_ids = [
                 str(getattr(pending, "confirmation_id", "")).strip()
                 for pending in _visible_pending_rows(all_pending_rows)
@@ -10071,18 +10100,20 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             if intent.target == "id":
                 target_id = intent_explicit_target_id.strip().lower()
+                selection_pending_rows = visible_decision_rows
                 visible_index_by_id = {
                     str(getattr(pending, "confirmation_id", "")).strip().lower(): index
-                    for index, pending in enumerate(displayed_pending_rows)
+                    for index, pending in enumerate(selection_pending_rows)
                     if str(getattr(pending, "confirmation_id", "")).strip()
                 }
                 indexes = (
                     [visible_index_by_id[target_id]] if target_id in visible_index_by_id else []
                 )
             else:
+                selection_pending_rows = displayed_pending_rows or visible_decision_rows
                 indexes = _resolve_chat_confirmation_indexes(
                     intent=intent,
-                    pending_count=len(displayed_pending_rows),
+                    pending_count=len(selection_pending_rows),
                     tainted_session=tainted_session,
                 )
             if not indexes:
@@ -10106,7 +10137,7 @@ class SessionImplMixin(HandlerMixinBase):
                 blocked_actions = 0
                 checkpoint_ids = []
             else:
-                selected_pending_rows = [displayed_pending_rows[index] for index in indexes]
+                selected_pending_rows = [selection_pending_rows[index] for index in indexes]
                 if (
                     is_internal_ingress
                     and delivery_target is not None
@@ -10129,7 +10160,7 @@ class SessionImplMixin(HandlerMixinBase):
                 outcome_lines: list[str] = []
                 skipped_totp_confirmation = False
                 for index in indexes:
-                    pending = displayed_pending_rows[index]
+                    pending = selection_pending_rows[index]
                     if (
                         intent.action == "confirm"
                         and _pending_uses_totp(pending)
@@ -10527,7 +10558,8 @@ class SessionImplMixin(HandlerMixinBase):
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
-            if _totp_pending_rows(pending_rows) or _targetless_pending_rows(pending_rows):
+            live_pending_rows = _live_pending_rows(pending_rows)
+            if _totp_pending_rows(live_pending_rows) or _targetless_pending_rows(live_pending_rows):
                 suppress_delivery_target_persist = True
 
         if early_response is None and session_mode == SessionMode.ADMIN_CLEANROOM:
@@ -11436,18 +11468,18 @@ class SessionImplMixin(HandlerMixinBase):
         ]
         if not snapshot_ids:
             return [], "no_pending_actions"
-        live_pending_rows = self._pending_confirmations_for_binding(
+        decision_pending_rows = self._pending_confirmations_for_binding(
             session_id=validated.sid,
             user_id=validated.user_id,
             workspace_id=validated.workspace_id,
         )
-        live_pending_rows = _visible_pending_rows_for_validated_turn(
-            pending_rows=live_pending_rows,
+        decision_pending_rows = _visible_pending_rows_for_validated_turn(
+            pending_rows=decision_pending_rows,
             validated=validated,
         )
         pending_by_id = {
             str(getattr(pending, "confirmation_id", "")).strip(): pending
-            for pending in live_pending_rows
+            for pending in decision_pending_rows
             if str(getattr(pending, "confirmation_id", "")).strip()
         }
         pending_rows = [
@@ -14207,9 +14239,10 @@ class SessionImplMixin(HandlerMixinBase):
             return None
         continuation_delivery_target = delivery_target or stored_delivery_target
         source_action_identity: dict[str, Any] = {}
+        bound_confirmed_outputs: list[dict[str, Any]] = []
         for item in confirmed_tool_outputs:
             raw_identity = item.get("action_identity") if isinstance(item, Mapping) else None
-            source_action_identity = _validated_action_followup_identity(
+            candidate_identity = _validated_action_followup_identity(
                 raw_identity,
                 expected_followup_id=continuation_followup_id,
                 session_id=sid,
@@ -14217,22 +14250,24 @@ class SessionImplMixin(HandlerMixinBase):
                 workspace_id=workspace_id,
                 delivery_target=continuation_delivery_target,
             )
-            if source_action_identity:
-                break
-        if not source_action_identity:
+            if not candidate_identity:
+                continue
+            if source_action_identity and candidate_identity != source_action_identity:
+                return None
+            source_action_identity = candidate_identity
+            bound_confirmed_outputs.append(dict(item))
+        if not source_action_identity or not bound_confirmed_outputs:
             return None
         session = self._session_manager.get(sid)
         planner = getattr(self, "_planner", None)
         if session is None or planner is None:
             return None
         confirmed_records = [
-            _tool_output_record_from_serialized_dict(item)
-            for item in confirmed_tool_outputs
-            if isinstance(item, Mapping)
+            _tool_output_record_from_serialized_dict(item) for item in bound_confirmed_outputs
         ]
         if not confirmed_records:
             return None
-        serialized_confirmed = [dict(item) for item in confirmed_tool_outputs]
+        serialized_confirmed = list(bound_confirmed_outputs)
         tool_output_summary = _summarize_tool_outputs_for_chat(
             _model_facing_serialized_tool_outputs(deepcopy(serialized_confirmed))
         )

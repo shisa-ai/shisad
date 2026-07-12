@@ -49,7 +49,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
-from shisad.daemon.handlers._impl import HandlerImplementation
+from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.handlers._impl_session import (
     _PENDING_SKILL_SUGGESTION_ID_KEY,
     _PENDING_STRONG_INVALIDATION_KEY,
@@ -409,6 +409,83 @@ def test_f1_action_followup_identity_rejects_cross_delivery_target() -> None:
         )
         == {}
     )
+
+
+@pytest.mark.asyncio
+async def test_f1_mixed_continuation_batch_forwards_only_bound_action_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bound_identity = {
+        "action_id": "act-bound",
+        "origin_turn_id": "turn-bound",
+        "session_id": "sess-g1",
+        "user_id": "user-g1",
+        "workspace_id": "workspace-g1",
+        "task_id": "",
+        "delivery_target": None,
+        "confirmation_id": "confirm-bound",
+        "execution_attempt_id": "attempt-bound",
+        "result_id": "result-bound",
+        "followup_id": "followup-bound",
+    }
+    unrelated_identity = {
+        **bound_identity,
+        "action_id": "act-unrelated",
+        "confirmation_id": "confirm-unrelated",
+        "execution_attempt_id": "attempt-unrelated",
+        "result_id": "result-unrelated",
+        "followup_id": "followup-unrelated",
+    }
+    outputs = [
+        {
+            "tool_name": "fs.list",
+            "content": '{"entries":["README.md"]}',
+            "success": True,
+            "action_identity": bound_identity,
+        },
+        {
+            "tool_name": "message.send",
+            "content": "unrelated secret result",
+            "success": True,
+            "action_identity": unrelated_identity,
+        },
+    ]
+    deserialized_tools: list[str] = []
+
+    def _record_deserialize(item: Mapping[str, Any]) -> SimpleNamespace:
+        deserialized_tools.append(str(item.get("tool_name", "")))
+        return SimpleNamespace(tool_name=str(item.get("tool_name", "")))
+
+    monkeypatch.setattr(
+        impl_session,
+        "_tool_output_record_from_serialized_dict",
+        _record_deserialize,
+    )
+    monkeypatch.setattr(impl_session, "_summarize_tool_outputs_for_chat", lambda _items: "")
+    harness = SimpleNamespace(
+        _session_manager=SimpleNamespace(get=lambda _sid: object()),
+        _planner=object(),
+    )
+
+    result = await SessionImplMixin._build_confirmed_pending_continuation_execution(
+        harness,  # type: ignore[arg-type]
+        sid=SessionId("sess-g1"),
+        channel="cli",
+        session_mode=SessionMode.DEFAULT,
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        trust_level="trusted",
+        is_internal_ingress=False,
+        delivery_target=None,
+        stored_delivery_target=None,
+        continuation_user_goal="List the repository files",
+        continuation_followup_id="followup-bound",
+        confirmed_tool_outputs=outputs,
+        checkpoint_ids=[],
+    )
+
+    assert result is None
+    assert deserialized_tools == ["fs.list"]
 
 
 def test_gh70_reminder_status_context_survives_scheduler_restart(tmp_path: Path) -> None:
@@ -3130,6 +3207,60 @@ async def test_validation_internal_ingress_user_row_uses_stored_delivery_target_
     assert validated.delivery_target is None
     assert harness.appended_metadata["delivery_target"] == target.model_dump(mode="json")
     assert harness.persisted_session_ids == []
+
+
+@pytest.mark.asyncio
+async def test_f1_expired_totp_row_does_not_suppress_delivery_target_rebinding() -> None:
+    old_target = DeliveryTarget(channel="discord", recipient="chan-old")
+    new_target = DeliveryTarget(channel="discord", recipient="chan-new")
+    session = Session(
+        id=SessionId("sess-g1"),
+        channel="discord",
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        state=SessionState.ACTIVE,
+        mode=SessionMode.DEFAULT,
+        metadata={
+            "trust_level": "trusted",
+            "delivery_target": old_target.model_dump(mode="json"),
+        },
+    )
+    harness = _ValidateWritePathHarness(session)
+    pending = PendingAction(
+        confirmation_id="c-expired",
+        decision_nonce="nonce-expired",
+        session_id=session.id,
+        user_id=session.user_id,
+        workspace_id=session.workspace_id,
+        tool_name=ToolName("web.search"),
+        arguments={"query": "expired"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC) - timedelta(minutes=2),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        delivery_target=old_target,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions = {pending.confirmation_id: pending}
+
+    await SessionImplMixin._validate_and_load_session(
+        harness,
+        {
+            "session_id": str(session.id),
+            "channel": "discord",
+            "content": "continue here",
+            "_internal_ingress_marker": harness._internal_ingress_marker,
+            "_delivery_target": new_target.model_dump(mode="json"),
+            "_firewall_result": FirewallResult(
+                sanitized_text="continue here",
+                original_hash="4" * 64,
+            ).model_dump(mode="json"),
+        },
+    )
+
+    assert session.metadata["delivery_target"] == new_target.model_dump(mode="json")
+    assert harness.persisted_session_ids == [str(session.id)]
 
 
 def test_m1_context_defaults_use_stored_delivery_target_for_internal_ingress() -> None:

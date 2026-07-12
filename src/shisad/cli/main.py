@@ -1957,7 +1957,21 @@ def _render_action_rows(
 @click.option(
     "--status",
     default="terminal",
-    type=click.Choice(["terminal", "pending", "approved", "failed", "rejected", "all"]),
+    type=click.Choice(
+        [
+            "terminal",
+            "pending",
+            "approved",
+            "executed",
+            "failed",
+            "rejected",
+            "expired",
+            "cancelled",
+            "superseded",
+            "outcome_unknown",
+            "all",
+        ]
+    ),
     help="Rows to purge. pending/all require --older-than-days.",
 )
 @click.option(

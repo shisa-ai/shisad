@@ -3760,6 +3760,50 @@ async def test_gh42_chat_confirm_delegates_expired_totp_to_locked_handler(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_f1_expired_only_chat_status_has_no_pending_action_or_controls(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-expired",
+        decision_nonce="nonce-expired",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC) - timedelta(minutes=2),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="what is pending?",
+        firewall_result=FirewallResult(
+            sanitized_text="what is pending?",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert result is not None
+    assert str(result["response"]).strip() == "No pending confirmations."
+    assert result["pending_confirmation_ids"] == []
+    assert result["response_action_confirmation_ids"] == []
+    assert result["confirmation_required_actions"] == 0
+
+
+@pytest.mark.asyncio
 async def test_u9_chat_totp_bare_code_is_ignored_without_active_totp_prompt(tmp_path) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(

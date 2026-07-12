@@ -5192,6 +5192,55 @@ def test_lt5_action_purge_routes_rpc(
     assert "confirmation_ids=c-old" in result.output
 
 
+@pytest.mark.parametrize(
+    "status",
+    ["executed", "expired", "cancelled", "superseded", "outcome_unknown"],
+)
+def test_f1_action_purge_accepts_canonical_lifecycle_statuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        payload = {"purged": 0, "confirmation_ids": [], "remaining": 1, "dry_run": True}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["action", "purge", "--status", status, "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.purge",
+            {
+                "session_id": None,
+                "status": status,
+                "older_than_days": None,
+                "limit": 1000,
+                "dry_run": True,
+            },
+        )
+    ]
+
+
 def test_lt5_action_purge_requires_age_for_pending_status() -> None:
     runner = CliRunner()
 
