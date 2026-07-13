@@ -907,7 +907,14 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
             and row.get("execution_status") == "success"
             and row.get("origin", {}).get("actor") == "recovery"
         ]
-        assert len(recovery_execution_records) == 1
+        assert recovery_execution_records == []
+        all_execution_records = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == "time.now"
+            and row.get("execution_status") == "success"
+        ]
+        assert len(all_execution_records) == 1
     finally:
         await restarted.shutdown()
 
@@ -997,9 +1004,16 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
             and row.get("tool_name") == "time.now"
         ]
         expected_first_audit = 0 if accounting_failure == "audit" else 1
-        expected_first_control = 1 if accounting_failure == "marker_persist" else 0
+        expected_first_control = 0
         assert len(first_recovery_audit) == expected_first_audit
         assert len(first_recovery_control) == expected_first_control
+        first_control = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == "time.now"
+            and row.get("execution_status") == "success"
+        ]
+        assert len(first_control) == 1
     finally:
         await restarted.shutdown()
 
@@ -1027,8 +1041,15 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
         ]
         assert len(recovery_audit) == 1
         assert len({row["event_id"] for row in recovery_audit}) == 1
-        assert len(recovery_control) == 1
-        assert len({row["idempotency_key"] for row in recovery_control}) == 1
+        assert recovery_control == []
+        total_control = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == "time.now"
+            and row.get("execution_status") == "success"
+        ]
+        assert len(total_control) == 1
+        assert len({row["idempotency_key"] for row in total_control}) == 1
         durable = json.loads(
             (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
         )[0]
@@ -1560,16 +1581,21 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             if row.get("tool_name") == str(tool_name)
             and row.get("origin", {}).get("actor") == "recovery"
         ]
+        all_execution_records = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == str(tool_name)
+        ]
+        assert len(all_execution_records) == 1
+        assert all_execution_records[0].get("execution_status") == "success"
         if recovery_case == "exact-key":
             assert len(executed_events) == 1
             assert rejected_events == []
-            assert [row.get("execution_status") for row in recovery_execution_records] == [
-                "success"
-            ]
+            assert recovery_execution_records == []
         elif recovery_case == "adapter-error":
             assert len(executed_events) == 1
             assert len(rejected_events) == 1
-            assert [row.get("execution_status") for row in recovery_execution_records] == ["failed"]
+            assert recovery_execution_records == []
         else:
             assert executed_events == []
             assert len(rejected_events) == 1

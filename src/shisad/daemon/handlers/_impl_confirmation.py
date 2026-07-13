@@ -107,6 +107,9 @@ class _PendingAttemptSnapshot:
     approval_evidence_hash: str
     execution_attempt_id: str
     result_id: str
+    stage2_correlation_id: str
+    stage2_previous_plan_hash: str
+    stage2_plan_hash: str
     confirmation_evidence: ConfirmationEvidence | None
 
 
@@ -119,6 +122,11 @@ def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
         approval_evidence_hash=str(getattr(pending, "approval_evidence_hash", "")),
         execution_attempt_id=str(getattr(pending, "execution_attempt_id", "")),
         result_id=str(getattr(pending, "result_id", "")),
+        stage2_correlation_id=str(getattr(pending, "stage2_correlation_id", "")),
+        stage2_previous_plan_hash=str(
+            getattr(pending, "stage2_previous_plan_hash", "")
+        ),
+        stage2_plan_hash=str(getattr(pending, "stage2_plan_hash", "")),
         confirmation_evidence=getattr(pending, "confirmation_evidence", None),
     )
 
@@ -134,6 +142,9 @@ def _restore_pending_attempt_snapshot(
     pending.approval_evidence_hash = snapshot.approval_evidence_hash
     pending.execution_attempt_id = snapshot.execution_attempt_id
     pending.result_id = snapshot.result_id
+    pending.stage2_correlation_id = snapshot.stage2_correlation_id
+    pending.stage2_previous_plan_hash = snapshot.stage2_previous_plan_hash
+    pending.stage2_plan_hash = snapshot.stage2_plan_hash
     pending.confirmation_evidence = snapshot.confirmation_evidence
 
 
@@ -181,6 +192,8 @@ def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
         return "plan_missing_or_inactive"
     if exc.reason_code == "rpc.permission_denied":
         return "control_plane_permission_denied"
+    if exc.reason_code in {"rpc.unavailable", "rpc.timeout"}:
+        return "control_plane_unavailable"
     return "control_plane_rejected"
 
 
@@ -772,6 +785,42 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 user_id=str(pending.user_id),
                 session_id=pending.session_id,
             )
+
+    async def _cancel_stage2_authority(
+        self,
+        pending: Any,
+        *,
+        reason: str,
+    ) -> bool:
+        correlation_id = str(
+            getattr(pending, "stage2_correlation_id", "")
+        ).strip()
+        if not correlation_id:
+            return False
+        try:
+            return bool(
+                await _call_control_plane(
+                    self,
+                    "cancel_stage2",
+                    session_id=str(pending.session_id),
+                    correlation_id=correlation_id,
+                    expected_plan_hash=str(
+                        getattr(pending, "stage2_plan_hash", "")
+                    ).strip(),
+                    reason=reason,
+                    actor="human_confirmation",
+                )
+            )
+        except Exception:
+            self._terminate_session(
+                pending.session_id,
+                reason="stage2_authority_reconciliation_failed",
+            )
+            logger.exception(
+                "Failed to reconcile stage-two authority for %s",
+                pending.confirmation_id,
+            )
+            return False
 
     async def _cancel_pending_actions_for_task(
         self,
@@ -2583,6 +2632,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             pending.execution_attempt_id = f"attempt-{uuid.uuid4().hex}"
         if not str(getattr(pending, "result_id", "")).strip():
             pending.result_id = f"result-{uuid.uuid4().hex}"
+        if stage2_action is not None:
+            pending.stage2_correlation_id = (
+                f"{pending.confirmation_id}:{pending.execution_attempt_id}"
+            )
+            pending.stage2_previous_plan_hash = stage2_previous_hash
+            pending.stage2_plan_hash = ""
         action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         pending.status = "executing"
@@ -2616,9 +2671,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "approve_stage2",
                     action=stage2_action,
                     approved_by="human_confirmation",
+                    correlation_id=pending.stage2_correlation_id,
+                    expected_previous_hash=pending.stage2_previous_plan_hash,
                 )
             except ControlPlaneRpcError as exc:
                 reason = _confirmation_control_plane_reason(exc)
+                if reason == "control_plane_unavailable":
+                    await self._cancel_stage2_authority(
+                        pending,
+                        reason="stage2_approval_response_uncertain",
+                    )
                 await self._commit_and_publish_pending_terminal(
                     pending,
                     status="failed",
@@ -2631,33 +2693,41 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "status": pending.status,
                     "status_reason": pending.status_reason,
                 }
-            await self._event_bus.publish(
-                PlanAmended(
-                    session_id=pending.session_id,
-                    actor="human_confirmation",
-                    plan_hash=plan_hash,
-                    amendment_of=stage2_previous_hash,
-                    stage="stage2_postevidence",
-                )
-            )
-            stage2_pending_attempt = _capture_pending_attempt_snapshot(pending)
-            pending.status_reason = "confirmation_execution_started"
-            stage2_ready_attempt = _capture_pending_attempt_snapshot(pending)
+            pending.stage2_plan_hash = plan_hash
             try:
-                self._persist_pending_actions()
-            except AtomicWriteError as write_error:
-                _restore_pending_attempt_snapshot(pending, stage2_pending_attempt)
-                if write_error.publication_may_have_committed:
-                    try:
-                        self._persist_pending_actions()
-                    except AtomicWriteError as rollback_error:
-                        _restore_pending_attempt_snapshot(pending, stage2_ready_attempt)
-                        self._pending_state_degradation = {
-                            "transition": "stage2_ready",
-                            "stage": rollback_error.stage.value,
-                            "reason": "pending_state_rollback_uncommitted",
-                        }
-                        raise rollback_error from write_error
+                await self._event_bus.publish(
+                    PlanAmended(
+                        session_id=pending.session_id,
+                        actor="human_confirmation",
+                        plan_hash=plan_hash,
+                        amendment_of=stage2_previous_hash,
+                        stage="stage2_postevidence",
+                    )
+                )
+                stage2_pending_attempt = _capture_pending_attempt_snapshot(pending)
+                pending.status_reason = "confirmation_execution_started"
+                stage2_ready_attempt = _capture_pending_attempt_snapshot(pending)
+                try:
+                    self._persist_pending_actions()
+                except AtomicWriteError as write_error:
+                    _restore_pending_attempt_snapshot(pending, stage2_pending_attempt)
+                    if write_error.publication_may_have_committed:
+                        try:
+                            self._persist_pending_actions()
+                        except AtomicWriteError as rollback_error:
+                            _restore_pending_attempt_snapshot(pending, stage2_ready_attempt)
+                            self._pending_state_degradation = {
+                                "transition": "stage2_ready",
+                                "stage": rollback_error.stage.value,
+                                "reason": "pending_state_rollback_uncommitted",
+                            }
+                            raise rollback_error from write_error
+                    raise
+            except Exception:
+                await self._cancel_stage2_authority(
+                    pending,
+                    reason="stage2_ready_transition_failed",
+                )
                 raise
             self._sync_task_confirmation_status(pending)
         execution_result = await self._execute_approved_action(

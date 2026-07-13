@@ -53,8 +53,14 @@ class _ExecutionRecorder:
     def __init__(self) -> None:
         self.results: list[bool] = []
 
-    def record_execution(self, *, action: object, success: bool) -> None:
-        _ = action
+    def record_execution(
+        self,
+        *,
+        action: object,
+        success: bool,
+        idempotency_key: str = "",
+    ) -> None:
+        _ = action, idempotency_key
         self.results.append(success)
 
 

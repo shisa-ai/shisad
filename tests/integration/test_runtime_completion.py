@@ -1718,8 +1718,18 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
                 raw_user_text=str(kwargs.get("raw_user_text", "")),
             )
 
-        async def record_execution(self, *, action: Any, success: bool) -> None:
-            self._engine.record_execution(action=action, success=success)
+        async def record_execution(
+            self,
+            *,
+            action: Any,
+            success: bool,
+            idempotency_key: str = "",
+        ) -> None:
+            self._engine.record_execution(
+                action=action,
+                success=success,
+                idempotency_key=idempotency_key,
+            )
 
         async def observe_denied_action(self, *, action: Any, source: str, reason_code: str) -> Any:
             return self._engine.observe_denied_action(
@@ -1728,11 +1738,40 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
                 reason_code=reason_code,
             )
 
-        async def approve_stage2(self, *, action: Any, approved_by: str) -> str:
-            return self._engine.approve_stage2(action=action, approved_by=approved_by)
+        async def approve_stage2(
+            self,
+            *,
+            action: Any,
+            approved_by: str,
+            correlation_id: str = "",
+            expected_previous_hash: str = "",
+        ) -> str:
+            return self._engine.approve_stage2(
+                action=action,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                expected_previous_hash=expected_previous_hash,
+            )
 
         async def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:
             return self._engine.cancel_plan(session_id=session_id, reason=reason, actor=actor)
+
+        async def cancel_stage2(
+            self,
+            *,
+            session_id: str,
+            correlation_id: str,
+            expected_plan_hash: str = "",
+            reason: str,
+            actor: str,
+        ) -> bool:
+            return self._engine.cancel_stage2(
+                session_id=session_id,
+                correlation_id=correlation_id,
+                expected_plan_hash=expected_plan_hash,
+                reason=reason,
+                actor=actor,
+            )
 
         async def active_plan_hash(self, session_id: str) -> str:
             return self._engine.active_plan_hash(session_id)

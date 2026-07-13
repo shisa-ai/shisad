@@ -118,7 +118,19 @@ class ControlPlaneGateway(Protocol):
         *,
         action: ControlPlaneAction,
         approved_by: str,
+        correlation_id: str = "",
+        expected_previous_hash: str = "",
     ) -> str: ...
+
+    async def cancel_stage2(
+        self,
+        *,
+        session_id: str,
+        correlation_id: str,
+        expected_plan_hash: str = "",
+        reason: str,
+        actor: str,
+    ) -> bool: ...
 
     async def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool: ...
 
@@ -195,6 +207,16 @@ class _RecordExecutionParams(BaseModel):
 class _ApproveStage2Params(BaseModel):
     action: ControlPlaneAction
     approved_by: str
+    correlation_id: str = ""
+    expected_previous_hash: str = ""
+
+
+class _CancelStage2Params(BaseModel):
+    session_id: str
+    correlation_id: str
+    expected_plan_hash: str = ""
+    reason: str
+    actor: str
 
 
 class _ObserveDeniedActionParams(BaseModel):
@@ -374,8 +396,26 @@ class _ControlPlaneSidecarHandlers:
         plan_hash = self._engine.approve_stage2(
             action=params.action,
             approved_by=params.approved_by,
+            correlation_id=params.correlation_id,
+            expected_previous_hash=params.expected_previous_hash,
         )
         return _PlanHashResult(plan_hash=plan_hash)
+
+    async def handle_cancel_stage2(
+        self,
+        params: _CancelStage2Params,
+        ctx: RequestContext,
+    ) -> _CancelPlanResult:
+        _ = ctx
+        return _CancelPlanResult(
+            cancelled=self._engine.cancel_stage2(
+                session_id=params.session_id,
+                correlation_id=params.correlation_id,
+                expected_plan_hash=params.expected_plan_hash,
+                reason=params.reason,
+                actor=params.actor,
+            )
+        )
 
     async def handle_cancel_plan(
         self,
@@ -539,13 +579,42 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         *,
         action: ControlPlaneAction,
         approved_by: str,
+        correlation_id: str = "",
+        expected_previous_hash: str = "",
     ) -> str:
         result = await self._call(
             "control_plane.approve_stage2",
-            _ApproveStage2Params(action=action, approved_by=approved_by).model_dump(mode="json"),
+            _ApproveStage2Params(
+                action=action,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                expected_previous_hash=expected_previous_hash,
+            ).model_dump(mode="json"),
             _PlanHashResult,
         )
         return result.plan_hash
+
+    async def cancel_stage2(
+        self,
+        *,
+        session_id: str,
+        correlation_id: str,
+        expected_plan_hash: str = "",
+        reason: str,
+        actor: str,
+    ) -> bool:
+        result = await self._call(
+            "control_plane.cancel_stage2",
+            _CancelStage2Params(
+                session_id=session_id,
+                correlation_id=correlation_id,
+                expected_plan_hash=expected_plan_hash,
+                reason=reason,
+                actor=actor,
+            ).model_dump(mode="json"),
+            _CancelPlanResult,
+        )
+        return bool(result.cancelled)
 
     async def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:
         result = await self._call(
@@ -802,6 +871,11 @@ async def _run_sidecar(
         "control_plane.approve_stage2",
         cast(Any, handlers.handle_approve_stage2),
         params_model=_ApproveStage2Params,
+    )
+    server.register_method(
+        "control_plane.cancel_stage2",
+        cast(Any, handlers.handle_cancel_stage2),
+        params_model=_CancelStage2Params,
     )
     server.register_method(
         "control_plane.cancel_plan",

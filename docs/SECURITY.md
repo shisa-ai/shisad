@@ -84,6 +84,10 @@ load and their old decision nonce is invalidated. The action must be requested
 again; a TOTP window or approval-web link lifetime is a separate challenge or
 capability deadline and cannot extend the pending action.
 
+Decision-nonce migration is restricted to the exact authenticated parent
+contract from before that field existed. A current-format contract with a blank
+nonce is invalid approval authority and is terminalized.
+
 Approved execution is also crash-aware. Before invoking a tool effect, the
 daemon durably records the action digest, approval-evidence hash, execution
 attempt ID, result ID, and `executing` state. On restart, only the exact
@@ -91,6 +95,8 @@ in-process `time.now` route or a trusted adapter carrying the same persisted
 provider idempotency key may receive one bounded automatic recovery call. The
 daemon revalidates the live tool schema, action and retry descriptors, session
 and principal, current policy, approval evidence, and expiry before that call.
+Normal execution and recovery reuse one attempt-scoped control-plane accounting
+identity, so history and trace counters record the logical attempt once.
 Automatic recovery in v0.8.1 additionally requires that the durable attempt has
 no delivery target. Any target-bearing attempt becomes `outcome_unknown`, even
 when the stored target appears unchanged, because this release does not claim a
@@ -112,6 +118,11 @@ returned by the public pending-action API. If an uncertain attempt belongs to a
 scheduled task, that task is disabled so it cannot automatically repeat the
 possibly completed effect; you must reconcile the result before
 creating or enabling further work.
+
+Stage-two amendments are correlated to one confirmation and execution attempt.
+Failures before the durable ready transition cancel only the exact correlated
+amendment, and unexecuted correlated authority is inactive after control-plane
+restart. Execution-accounted amendments retain their ordinary plan lifetime.
 
 Concurrent confirmation clicks for one action are serialized by an in-memory
 per-confirmation lock while that daemon process is running. That lock is a

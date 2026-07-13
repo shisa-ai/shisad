@@ -146,6 +146,7 @@ class CommittedPlan(BaseModel):
     expires_at: datetime
     stage: str = PlanStage.STAGE1_PRECONTENT
     amendment_of: str = ""
+    amendment_correlation_id: str = ""
     cancelled: bool = False
     cancelled_reason: str = ""
     executed_actions: int = 0
@@ -386,12 +387,28 @@ class ExecutionTraceVerifier:
         allow_actions: set[ActionKind],
         allow_resources: set[str],
         ttl_seconds: int | None = None,
+        correlation_id: str = "",
+        expected_previous_hash: str = "",
     ) -> CommittedPlan:
         if not approved_by.strip():
             raise ValueError("approved_by is required for plan amendment")
         current = self.active_plan(session_id)
         if current is None:
             raise ValueError("cannot amend missing or inactive plan")
+        normalized_correlation = correlation_id.strip()
+        normalized_previous_hash = expected_previous_hash.strip()
+        if (
+            normalized_correlation
+            and current.amendment_correlation_id == normalized_correlation
+        ):
+            if (
+                normalized_previous_hash
+                and current.amendment_of != normalized_previous_hash
+            ):
+                raise ValueError("stage2 correlation previous-plan mismatch")
+            return current
+        if normalized_previous_hash and current.plan_hash != normalized_previous_hash:
+            raise ValueError("stage2 previous plan changed")
         now = datetime.now(UTC)
         ttl = ttl_seconds or self._default_ttl_seconds
         amended = self._commit_plan(
@@ -406,6 +423,7 @@ class ExecutionTraceVerifier:
             expires_at=now + timedelta(seconds=ttl),
             stage=PlanStage.STAGE2_POSTEVIDENCE,
             amendment_of=current.plan_hash,
+            amendment_correlation_id=normalized_correlation,
         )
         amended.reachable_resources = set(current.reachable_resources)
         amended.recorded_dependency_keys = set(current.recorded_dependency_keys)
@@ -428,6 +446,7 @@ class ExecutionTraceVerifier:
         expires_at: datetime,
         stage: str,
         amendment_of: str,
+        amendment_correlation_id: str = "",
     ) -> CommittedPlan:
         payload: dict[str, Any] = {
             "session_id": session_id,
@@ -442,6 +461,8 @@ class ExecutionTraceVerifier:
             "stage": stage,
             "amendment_of": amendment_of,
         }
+        if amendment_correlation_id:
+            payload["amendment_correlation_id"] = amendment_correlation_id
         encoded = json.dumps(payload, sort_keys=True)
         plan_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         return CommittedPlan(
@@ -457,6 +478,7 @@ class ExecutionTraceVerifier:
             expires_at=expires_at,
             stage=stage,
             amendment_of=amendment_of,
+            amendment_correlation_id=amendment_correlation_id,
             executed_actions=0,
         )
 
@@ -646,10 +668,22 @@ class ExecutionTraceVerifier:
             return
         if not isinstance(payload, dict):
             return
+        cancel_unreconciled_stage2 = False
         for key, value in payload.items():
             if not isinstance(key, str):
                 continue
             try:
-                self._plans[key] = CommittedPlan.model_validate(value)
+                plan = CommittedPlan.model_validate(value)
             except ValidationError:
                 continue
+            if (
+                plan.amendment_correlation_id
+                and plan.executed_actions == 0
+                and not plan.cancelled
+            ):
+                plan.cancelled = True
+                plan.cancelled_reason = "unreconciled_stage2_restart"
+                cancel_unreconciled_stage2 = True
+            self._plans[key] = plan
+        if cancel_unreconciled_stage2:
+            self._persist()

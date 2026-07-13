@@ -138,12 +138,18 @@ class _ControlPlaneStub:
             ),
         )
 
-    def record_execution(self, *, action: object, success: bool) -> None:
+    def record_execution(
+        self,
+        *,
+        action: object,
+        success: bool,
+        idempotency_key: str = "",
+    ) -> None:
         # `_call_control_plane` (src/shisad/daemon/handlers/_mixin_typing.py)
         # awaits the return value only when it is awaitable, so keeping this
         # sync is safe and lets `results` be inspected synchronously by
         # direct `_execute_approved_action` tests.
-        _ = action
+        _ = action, idempotency_key
         self.results.append(success)
 
 

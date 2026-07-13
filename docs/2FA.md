@@ -102,6 +102,12 @@ pending action and requires fresh approval; the old confirmation ID or nonce
 cannot be reused. v0.8.1 does not provide universal provider reconciliation or
 exactly-once guarantees for arbitrary external services.
 
+Stage-two plan amendments carry the pending action's exact confirmation/attempt
+correlation. If amendment response delivery, audit publication, or the durable
+ready transition fails, shisad cancels only that correlated amendment. An
+unexecuted correlated amendment is also inactive after control-plane restart;
+an execution-accounted amendment retains the normal plan lifetime.
+
 ### What is a "factor"
 
 A factor is a registered credential that the daemon can verify. Examples:
@@ -807,7 +813,9 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
   unresolved executing attempts become `outcome_unknown`.
 - The immutable contract includes the decision nonce. Confirm/reject compare
   nonce text as UTF-8 bytes in constant time, so loaded nonce replacement is a
-  contract mismatch and malformed or non-ASCII input fails closed.
+  contract mismatch and malformed or non-ASCII input fails closed. The loader
+  mints a nonce only for the exact authenticated parent contract that predates
+  this field; a current-format contract containing a blank nonce is terminal.
 - The lifetime binding includes the optional `execute_after` cooldown, which
   must be timezone-aware and fall between creation and expiry. Loaded
   confirmation evidence is accepted only when its payload hash, duplicated

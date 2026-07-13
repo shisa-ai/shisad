@@ -1620,6 +1620,9 @@ class PendingAction:
     recovery_effect_invoked: bool = False
     recovery_scheduler_accounted: bool = False
     scheduler_accounting_pending: bool = False
+    stage2_correlation_id: str = ""
+    stage2_previous_plan_hash: str = ""
+    stage2_plan_hash: str = ""
     stable_idempotency_key: str = ""
     provider_operation_id: str = ""
     execution_attempt_id: str = ""
@@ -1682,6 +1685,18 @@ def _pending_action_has_started_execution_authority(pending: PendingAction) -> b
         or pending.recovery_effect_invoked
         or pending.recovery_scheduler_accounted
         or pending.scheduler_accounting_pending
+        or pending.stage2_correlation_id.strip()
+        or pending.stage2_previous_plan_hash.strip()
+        or pending.stage2_plan_hash.strip()
+    )
+
+
+def _control_plane_execution_idempotency_key(execution_attempt_id: str) -> str:
+    normalized_attempt_id = execution_attempt_id.strip()
+    return (
+        f"execution:{normalized_attempt_id}:control-plane"
+        if normalized_attempt_id
+        else ""
     )
 
 
@@ -3101,6 +3116,9 @@ class HandlerImplementation(
             "recovery_effect_invoked": pending.recovery_effect_invoked,
             "recovery_scheduler_accounted": pending.recovery_scheduler_accounted,
             "scheduler_accounting_pending": pending.scheduler_accounting_pending,
+            "stage2_correlation_id": pending.stage2_correlation_id,
+            "stage2_previous_plan_hash": pending.stage2_previous_plan_hash,
+            "stage2_plan_hash": pending.stage2_plan_hash,
             "stable_idempotency_key": pending.stable_idempotency_key,
             "provider_operation_id": pending.provider_operation_id,
             "execution_attempt_id": state_view.identity.execution_attempt_id,
@@ -3205,6 +3223,9 @@ class HandlerImplementation(
             payload.pop("recovery_effect_invoked", None)
             payload.pop("recovery_scheduler_accounted", None)
             payload.pop("scheduler_accounting_pending", None)
+            payload.pop("stage2_correlation_id", None)
+            payload.pop("stage2_previous_plan_hash", None)
+            payload.pop("stage2_plan_hash", None)
             payload.pop("stable_idempotency_key", None)
             payload["stable_idempotency_key_present"] = bool(
                 pending.stable_idempotency_key
@@ -3754,6 +3775,13 @@ class HandlerImplementation(
         provider_operation_id, _ = _loaded_state_text(
             item.get("provider_operation_id", "")
         )
+        stage2_correlation_id, _ = _loaded_state_text(
+            item.get("stage2_correlation_id", "")
+        )
+        stage2_previous_plan_hash, _ = _loaded_state_text(
+            item.get("stage2_previous_plan_hash", "")
+        )
+        stage2_plan_hash, _ = _loaded_state_text(item.get("stage2_plan_hash", ""))
         recovery_result = (
             dict(item["recovery_result"])
             if isinstance(item.get("recovery_result"), Mapping)
@@ -3770,6 +3798,9 @@ class HandlerImplementation(
             recovery_result=recovery_result,
             stable_idempotency_key=stable_idempotency_key,
             provider_operation_id=provider_operation_id,
+            stage2_correlation_id=stage2_correlation_id,
+            stage2_previous_plan_hash=stage2_previous_plan_hash,
+            stage2_plan_hash=stage2_plan_hash,
             execution_attempt_id=execution_attempt_id,
             result_id=_identity_text("result_id"),
             followup_id=_identity_text("followup_id"),
@@ -4315,6 +4346,22 @@ class HandlerImplementation(
                         identity_result_id_valid,
                     )
                 )
+                loaded_stage2_correlation_id, stage2_correlation_id_valid = (
+                    _loaded_state_text(item.get("stage2_correlation_id", ""))
+                )
+                loaded_stage2_previous_plan_hash, stage2_previous_plan_hash_valid = (
+                    _loaded_state_text(item.get("stage2_previous_plan_hash", ""))
+                )
+                loaded_stage2_plan_hash, stage2_plan_hash_valid = _loaded_state_text(
+                    item.get("stage2_plan_hash", "")
+                )
+                recovery_authority_invalid = recovery_authority_invalid or not all(
+                    (
+                        stage2_correlation_id_valid,
+                        stage2_previous_plan_hash_valid,
+                        stage2_plan_hash_valid,
+                    )
+                )
                 loaded_status, status_valid = _loaded_state_text(
                     item.get("status", "pending")
                 )
@@ -4437,6 +4484,9 @@ class HandlerImplementation(
                     recovery_effect_invoked=recovery_effect_invoked,
                     recovery_scheduler_accounted=recovery_scheduler_accounted,
                     scheduler_accounting_pending=scheduler_accounting_pending,
+                    stage2_correlation_id=loaded_stage2_correlation_id,
+                    stage2_previous_plan_hash=loaded_stage2_previous_plan_hash,
+                    stage2_plan_hash=loaded_stage2_plan_hash,
                     stable_idempotency_key=str(
                         item.get("stable_idempotency_key", "")
                     ).strip(),
@@ -4641,19 +4691,13 @@ class HandlerImplementation(
                 loaded_terminal_side_effects.append(pending)
                 pruned_stale = True
             if not pending.decision_nonce and pending_action_state_view(pending).is_live_pending:
-                pending.decision_nonce = uuid.uuid4().hex
-                assert pending.approval_envelope is not None
-                pending.approval_envelope = pending.approval_envelope.model_copy(
-                    update={
-                        "approval_contract_hash": pending_approval_contract_hash(
-                            pending
-                        ),
-                    }
+                self._mark_stale_pending_action(
+                    pending,
+                    reason="approval_contract_mismatch",
+                    persist=False,
                 )
-                pending.approval_envelope_hash = approval_envelope_hash(
-                    pending.approval_envelope
-                )
-                migrated_legacy_decision_nonce = True
+                loaded_terminal_side_effects.append(pending)
+                pruned_stale = True
         if (
             pruned_stale
             or migrated_legacy_strip_intent
@@ -4679,6 +4723,8 @@ class HandlerImplementation(
             str(getattr(pending, "status_reason", "")).strip()
             == "stage2_amendment_pending"
         ):
+            return False
+        if str(getattr(pending, "stage2_correlation_id", "")).strip():
             return False
         if self._pending_approval_contract_invalid_reason(
             pending,
@@ -5073,9 +5119,8 @@ class HandlerImplementation(
                 "record_execution",
                 action=self._recovery_control_plane_action(pending, session=session),
                 success=success,
-                idempotency_key=self._recovery_accounting_key(
-                    pending,
-                    "control_plane:execution",
+                idempotency_key=_control_plane_execution_idempotency_key(
+                    pending.execution_attempt_id,
                 ),
             )
         else:
@@ -5338,6 +5383,9 @@ class HandlerImplementation(
             result_id=result_id,
             followup_id=followup_id,
         )
+        control_plane_execution_key = _control_plane_execution_idempotency_key(
+            operation_identity.execution_attempt_id
+        )
 
         self._rate_limiter.consume(
             session_id=str(sid),
@@ -5414,6 +5462,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=False,
+                idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
                 success=False,
@@ -5516,6 +5565,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=success,
+                idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
                 success=success,
@@ -5572,6 +5622,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=True,
+                idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
                 success=True,
@@ -5611,6 +5662,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=True,
+                idempotency_key=control_plane_execution_key,
             )
             preview_rows = [
                 {
@@ -5699,6 +5751,7 @@ class HandlerImplementation(
                         "record_execution",
                         action=executed_action,
                         success=False,
+                        idempotency_key=control_plane_execution_key,
                     )
                     return ApprovedToolExecutionResult(
                         success=False,
@@ -5766,6 +5819,7 @@ class HandlerImplementation(
                     "record_execution",
                     action=executed_action,
                     success=True,
+                    idempotency_key=control_plane_execution_key,
                 )
                 return ApprovedToolExecutionResult(
                     success=True,
@@ -5828,6 +5882,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=success,
+                idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
                 success=success,
@@ -5853,6 +5908,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=success,
+                idempotency_key=control_plane_execution_key,
             )
 
         async def _execute_structured_payload_tool(
@@ -6000,6 +6056,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=False,
+                idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
                 success=False,
@@ -6052,6 +6109,7 @@ class HandlerImplementation(
             "record_execution",
             action=executed_action,
             success=success,
+            idempotency_key=control_plane_execution_key,
         )
         raw_output = "\n".join(
             segment for segment in [sandbox_result.stdout, sandbox_result.stderr] if segment

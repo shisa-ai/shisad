@@ -3018,3 +3018,108 @@ def test_recovery_execution_idempotency_key_survives_history_restart(
 
     assert len(restarted.all_for_session("s-recovery-idempotency")) == 1
     assert len(history_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+@pytest.mark.parametrize("execution_recorded", [False, True])
+def test_f2_correlated_stage2_replay_and_restart_containment(
+    tmp_path: Path,
+    execution_recorded: bool,
+) -> None:
+    data_dir = tmp_path / "correlated-stage2"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = _origin("s-correlated-stage2")
+    previous_hash = engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="read then send",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=3,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="message.send",
+        arguments={"recipient": "alice", "content": "done"},
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        workspace_roots=[tmp_path],
+    )
+
+    amended_hash = engine.approve_stage2(
+        action=action,
+        approved_by="human_confirmation",
+        correlation_id="confirmation-1:attempt-1",
+        expected_previous_hash=previous_hash,
+    )
+    replayed_hash = engine.approve_stage2(
+        action=action,
+        approved_by="human_confirmation",
+        correlation_id="confirmation-1:attempt-1",
+        expected_previous_hash=previous_hash,
+    )
+
+    assert replayed_hash == amended_hash
+    if execution_recorded:
+        engine.record_execution(
+            action=action,
+            success=True,
+            idempotency_key="execution:attempt-1:control-plane",
+        )
+    restarted = ControlPlaneEngine.build(
+        data_dir=data_dir,
+        workspace_roots=[tmp_path],
+    )
+    assert restarted.active_plan_hash(origin.session_id) == (
+        amended_hash if execution_recorded else ""
+    )
+
+
+def test_f2_execution_attempt_key_deduplicates_normal_and_recovery_accounting(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "attempt-accounting"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = _origin("s-attempt-accounting")
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="read one file",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=3,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        risk_tier=RiskTier.LOW,
+        workspace_roots=[tmp_path],
+    )
+    recovery_action = action.model_copy(
+        update={"origin": origin.model_copy(update={"actor": "recovery"})}
+    )
+    execution_key = "execution:attempt-1:control-plane"
+
+    engine.record_execution(
+        action=action,
+        success=True,
+        idempotency_key=execution_key,
+    )
+    engine.record_execution(
+        action=recovery_action,
+        success=True,
+        idempotency_key=execution_key,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (data_dir / "control_plane" / "history.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    execution_rows = [row for row in rows if row.get("execution_status")]
+    assert len(execution_rows) == 1
+    plans = json.loads(
+        (data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+    )
+    assert plans[origin.session_id]["executed_actions"] == 1

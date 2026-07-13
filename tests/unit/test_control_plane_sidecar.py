@@ -492,6 +492,59 @@ async def test_h1_control_plane_sidecar_surfaces_semantic_rpc_errors(
 
 
 @pytest.mark.asyncio
+async def test_f2_control_plane_sidecar_cancels_exact_stage2_correlation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle = await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    try:
+        origin = Origin(
+            session_id="sess-f2-stage2-cancel",
+            user_id="alice",
+            workspace_id="ws-f2",
+            actor="planner",
+        )
+        previous_hash = await handle.client.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal="read then send",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=3,
+            capabilities={Capability.FILE_READ},
+        )
+        action = build_action(
+            tool_name="message.send",
+            arguments={"recipient": "alice", "content": "done"},
+            origin=origin,
+            risk_tier=RiskTier.MEDIUM,
+            workspace_roots=[tmp_path],
+        )
+        correlation_id = "confirmation-1:attempt-1"
+        amended_hash = await handle.client.approve_stage2(
+            action=action,
+            approved_by="human_confirmation",
+            correlation_id=correlation_id,
+            expected_previous_hash=previous_hash,
+        )
+
+        assert await handle.client.active_plan_hash(origin.session_id) == amended_hash
+        assert await handle.client.cancel_stage2(
+            session_id=origin.session_id,
+            correlation_id=correlation_id,
+            expected_plan_hash=amended_hash,
+            reason="stage2_ready_transition_failed",
+            actor="human_confirmation",
+        )
+        assert await handle.client.active_plan_hash(origin.session_id) == ""
+    finally:
+        await handle.close()
+
+
+@pytest.mark.asyncio
 async def test_h1_control_plane_sidecar_fails_closed_after_midrun_exit(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

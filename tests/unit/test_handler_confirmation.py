@@ -247,14 +247,37 @@ def _registry_for_confirmation() -> ToolRegistry:
 class _ControlPlaneRecorder:
     def __init__(self) -> None:
         self.approved_actions: list[object] = []
+        self.approved_correlations: list[tuple[str, str]] = []
+        self.cancelled_correlations: list[str] = []
 
     def active_plan_hash(self, _session_id: str) -> str:
         return "plan-before"
 
-    def approve_stage2(self, *, action: object, approved_by: str) -> str:
+    def approve_stage2(
+        self,
+        *,
+        action: object,
+        approved_by: str,
+        correlation_id: str = "",
+        expected_previous_hash: str = "",
+    ) -> str:
         _ = approved_by
         self.approved_actions.append(action)
+        self.approved_correlations.append((correlation_id, expected_previous_hash))
         return "plan-after"
+
+    def cancel_stage2(
+        self,
+        *,
+        session_id: str,
+        correlation_id: str,
+        expected_plan_hash: str = "",
+        reason: str,
+        actor: str,
+    ) -> bool:
+        _ = session_id, expected_plan_hash, reason, actor
+        self.cancelled_correlations.append(correlation_id)
+        return True
 
 
 class _SchedulerRecorder:
@@ -1598,6 +1621,13 @@ async def test_f2_stage2_ready_write_fault_contains_recovery_before_effect(
         )
 
     assert len(harness._control_plane.approved_actions) == 1
+    assert pending.stage2_correlation_id
+    assert harness._control_plane.approved_correlations == [
+        (pending.stage2_correlation_id, "plan-before")
+    ]
+    assert harness._control_plane.cancelled_correlations == [
+        pending.stage2_correlation_id
+    ]
     assert sum(isinstance(event, PlanAmended) for event in harness.published_events) == 1
     assert pending.status == "executing"
     assert pending.status_reason == "stage2_amendment_pending"
@@ -1613,6 +1643,82 @@ async def test_f2_stage2_ready_write_fault_contains_recovery_before_effect(
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_f2_stage2_commit_then_response_loss_cancels_exact_correlation(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path, allow_amendment=True)
+
+    class _CommitThenResponseLoss(_ControlPlaneRecorder):
+        def approve_stage2(
+            self,
+            *,
+            action: object,
+            approved_by: str,
+            correlation_id: str = "",
+            expected_previous_hash: str = "",
+        ) -> str:
+            super().approve_stage2(
+                action=action,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                expected_previous_hash=expected_previous_hash,
+            )
+            raise ControlPlaneRpcError(
+                message="stage2 committed before response loss",
+                reason_code="rpc.unavailable",
+            )
+
+    control_plane = _CommitThenResponseLoss()
+    harness._control_plane = control_plane
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.preflight_action = None
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert pending.stage2_correlation_id
+    assert control_plane.cancelled_correlations == [pending.stage2_correlation_id]
+    assert harness.effect_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_f2_stage2_event_publication_failure_cancels_exact_correlation(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path, allow_amendment=True)
+
+    async def _fail_plan_amended(event: object) -> None:
+        if isinstance(event, PlanAmended):
+            raise OSError("plan amendment audit unavailable")
+        harness.published_events.append(event)
+
+    harness._event_bus = SimpleNamespace(publish=_fail_plan_amended)
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.preflight_action = None
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    with pytest.raises(OSError, match="audit unavailable"):
+        await harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+
+    assert pending.stage2_correlation_id
+    assert harness._control_plane.cancelled_correlations == [
+        pending.stage2_correlation_id
+    ]
+    assert harness.effect_calls == 0
 
 
 @pytest.mark.asyncio
@@ -2170,7 +2276,7 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     assert loaded.decision_nonce == ""
 
 
-def test_f1_live_pending_with_expiry_nonce_backfill_is_persisted(tmp_path: Path) -> None:
+def test_f2_current_contract_blank_nonce_fails_closed(tmp_path: Path) -> None:
     pending = _pending_action(nonce="")
     payload = HandlerImplementation._pending_to_dict(pending)
     pending_actions_file = tmp_path / "pending_actions.json"
@@ -2182,10 +2288,12 @@ def test_f1_live_pending_with_expiry_nonce_backfill_is_persisted(tmp_path: Path)
     harness._load_pending_actions()
 
     loaded = harness._pending_actions[pending.confirmation_id]
-    assert loaded.status == "pending"
-    assert loaded.decision_nonce
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_contract_mismatch"
+    assert loaded.decision_nonce == ""
     persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
-    assert persisted["decision_nonce"] == loaded.decision_nonce
+    assert persisted["status"] == "failed"
+    assert persisted["decision_nonce"] == ""
 
 
 def test_f2_parent_contract_blank_nonce_migration_is_verified_and_rebound(
@@ -5605,8 +5713,15 @@ async def test_h1_confirmation_returns_plan_state_failure_when_stage2_amend_reje
         def active_plan_hash(self, _session_id: str) -> str:
             return ""
 
-        def approve_stage2(self, *, action: object, approved_by: str) -> str:
-            _ = (action, approved_by)
+        def approve_stage2(
+            self,
+            *,
+            action: object,
+            approved_by: str,
+            correlation_id: str = "",
+            expected_previous_hash: str = "",
+        ) -> str:
+            _ = (action, approved_by, correlation_id, expected_previous_hash)
             raise ControlPlaneRpcError(
                 message="cannot amend missing or inactive plan",
                 reason_code="rpc.invalid_params",

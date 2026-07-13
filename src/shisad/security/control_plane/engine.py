@@ -399,20 +399,33 @@ class ControlPlaneEngine:
     ) -> None:
         normalized_key = idempotency_key.strip()
         existing_record = self._history_store.idempotent_record(normalized_key)
+        if existing_record is not None and (
+            existing_record.session_id != action.origin.session_id
+            or existing_record.action_kind != action.action_kind
+            or existing_record.resource_id != action.resource_id
+            or existing_record.tool_name != action.tool_name
+        ):
+            raise ValueError("control_plane_execution_idempotency_conflict")
         active_plan = self._trace_verifier.active_plan(action.origin.session_id)
         trace_plan_hash = (
             existing_record.trace_plan_hash
             if existing_record is not None
             else (active_plan.plan_hash if active_plan is not None else "")
         )
-        self._history_store.append_action(
-            action,
-            decision_status=ControlDecision.ALLOW.value,
-            execution_status="success" if success else "failed",
-            idempotency_key=idempotency_key,
-            trace_plan_hash=trace_plan_hash,
+        if existing_record is None:
+            self._history_store.append_action(
+                action,
+                decision_status=ControlDecision.ALLOW.value,
+                execution_status="success" if success else "failed",
+                idempotency_key=idempotency_key,
+                trace_plan_hash=trace_plan_hash,
+            )
+        effective_success = (
+            existing_record.execution_status == "success"
+            if existing_record is not None
+            else success
         )
-        if success and existing_record is not None and not trace_plan_hash:
+        if effective_success and existing_record is not None and not trace_plan_hash:
             if active_plan is not None and self._trace_verifier.cancel(
                 session_id=action.origin.session_id,
                 reason="trace_accounting_plan_binding_unavailable",
@@ -428,7 +441,7 @@ class ControlPlaneEngine:
                 )
             return
         if (
-            success
+            effective_success
             and trace_plan_hash
             and active_plan is not None
             and active_plan.plan_hash == trace_plan_hash
@@ -497,6 +510,8 @@ class ControlPlaneEngine:
         *,
         action: ControlPlaneAction,
         approved_by: str,
+        correlation_id: str = "",
+        expected_previous_hash: str = "",
     ) -> str:
         amended = self._trace_verifier.amend(
             session_id=action.origin.session_id,
@@ -509,6 +524,8 @@ class ControlPlaneEngine:
                 ActionKind.MESSAGE_SEND,
             },
             allow_resources=set(action.resource_ids),
+            correlation_id=correlation_id,
+            expected_previous_hash=expected_previous_hash,
         )
         self._audit_log.append(
             event_type="plan_amended",
@@ -518,10 +535,44 @@ class ControlPlaneEngine:
                 "plan_hash": amended.plan_hash,
                 "amendment_of": amended.amendment_of,
                 "stage": amended.stage,
+                "correlation_id": amended.amendment_correlation_id,
                 "allowed_actions": sorted(item.value for item in amended.allowed_actions),
             },
         )
         return amended.plan_hash
+
+    def cancel_stage2(
+        self,
+        *,
+        session_id: str,
+        correlation_id: str,
+        expected_plan_hash: str = "",
+        reason: str,
+        actor: str,
+    ) -> bool:
+        plan = self._trace_verifier.active_plan(session_id)
+        normalized_correlation = correlation_id.strip()
+        normalized_plan_hash = expected_plan_hash.strip()
+        if (
+            plan is None
+            or not normalized_correlation
+            or plan.amendment_correlation_id != normalized_correlation
+            or (normalized_plan_hash and plan.plan_hash != normalized_plan_hash)
+        ):
+            return False
+        cancelled = self._trace_verifier.cancel(session_id=session_id, reason=reason)
+        if cancelled:
+            self._audit_log.append(
+                event_type="plan_cancelled",
+                session_id=session_id,
+                actor=actor,
+                data={
+                    "reason": reason,
+                    "plan_hash": plan.plan_hash,
+                    "correlation_id": normalized_correlation,
+                },
+            )
+        return cancelled
 
     def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:
         cancelled = self._trace_verifier.cancel(session_id=session_id, reason=reason)
