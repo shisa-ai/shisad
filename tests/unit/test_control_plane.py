@@ -3134,6 +3134,88 @@ def test_f2_execution_attempt_key_deduplicates_normal_and_recovery_accounting(
     assert plans[origin.session_id]["executed_actions"] == 1
 
 
+@pytest.mark.parametrize(
+    "drift",
+    ["resource_ids", "network_hosts", "risk_tier", "origin_identity"],
+)
+def test_f2_execution_attempt_key_rejects_stable_action_surface_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / f"attempt-drift-{drift}",
+        workspace_roots=[tmp_path],
+    )
+    origin = _origin("s-attempt-drift")
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        risk_tier=RiskTier.LOW,
+        workspace_roots=[tmp_path],
+    )
+    if drift == "resource_ids":
+        replay = action.model_copy(
+            update={"resource_ids": [*action.resource_ids, str(tmp_path / "forged.txt")]}
+        )
+    elif drift == "network_hosts":
+        replay = action.model_copy(update={"network_hosts": ["forged.example"]})
+    elif drift == "risk_tier":
+        replay = action.model_copy(update={"risk_tier": RiskTier.HIGH})
+    else:
+        replay = action.model_copy(
+            update={"origin": origin.model_copy(update={"user_id": "mallory"})}
+        )
+    execution_key = "execution:attempt-drift:control-plane"
+    engine.record_execution(
+        action=action,
+        success=True,
+        idempotency_key=execution_key,
+    )
+
+    with pytest.raises(ValueError, match="control_plane_execution_idempotency_conflict"):
+        engine.record_execution(
+            action=replay,
+            success=True,
+            idempotency_key=execution_key,
+        )
+
+
+def test_f2_legacy_execution_record_without_surface_hash_still_deduplicates(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "legacy-attempt-surface"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = _origin("s-legacy-attempt-surface")
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    execution_key = "execution:legacy-attempt:control-plane"
+    engine.record_execution(action=action, success=True, idempotency_key=execution_key)
+    history_path = data_dir / "control_plane" / "history.jsonl"
+    rows = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    rows[0].pop("execution_action_surface_hash")
+    history_path.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    restarted = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    restarted.record_execution(
+        action=action.model_copy(
+            update={"origin": origin.model_copy(update={"actor": "recovery"})}
+        ),
+        success=True,
+        idempotency_key=execution_key,
+    )
+    persisted = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    assert len(persisted) == 1
+
+
 def test_f2_execution_status_returns_first_durable_attempt_outcome(
     tmp_path: Path,
 ) -> None:

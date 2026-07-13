@@ -1055,6 +1055,23 @@ def test_f2_public_pending_payload_never_exposes_stable_idempotency_key() -> Non
     assert stable_key not in json.dumps(public, sort_keys=True)
 
 
+def test_f2_pending_persist_rejects_empty_recovery_authenticator(tmp_path: Path) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    pending = _pending_action(nonce="")
+    pending.status = "failed"
+    pending.status_reason = "terminal-fixture"
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._confirmation_evidence_authenticator = SimpleNamespace(
+        authenticate_recovery_snapshot=lambda _snapshot: "",
+    )
+
+    with pytest.raises(ValueError, match="recovery snapshot is not canonical"):
+        harness._persist_pending_actions()
+
+    assert not harness._pending_actions_file.exists()
+
+
 def test_f2_outcome_unknown_payload_shows_evidence_and_requires_fresh_approval() -> None:
     pending = _pending_action(nonce="must-not-remain-reusable")
     pending.status = "outcome_unknown"
@@ -2347,6 +2364,37 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     assert loaded.status == "cancelled"
     assert loaded.status_reason == status_reason
     assert loaded.decision_nonce == ""
+    assert loaded.recovery_accounting_pending is False
+
+
+def test_f2_expired_pending_persist_does_not_mint_terminal_recovery_authority(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    now = datetime.now(UTC)
+    pending.created_at = now - timedelta(hours=2)
+    pending.expires_at = now - timedelta(hours=1)
+    pending.task_id = "task-expired"
+    _bind_pending_action_identity(pending)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+
+    harness._persist_pending_actions()
+
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["status"] == "pending"
+    assert persisted["result_id"] == ""
+    assert persisted["recovery_authority_mac"] == ""
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._load_pending_actions()
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_expired"
     assert loaded.recovery_accounting_pending is False
 
 

@@ -28,7 +28,7 @@ from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
 from shisad.daemon.services import DaemonServices
 from shisad.scheduler.schema import Schedule
-from shisad.security.control_plane.schema import Origin
+from shisad.security.control_plane.schema import Origin, build_action
 
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,6 +97,8 @@ async def _wait_for_recovery_accounting(impl: object) -> None:
 
 async def _seed_unresolved_scheduled_time_attempt(
     config: DaemonConfig,
+    *,
+    bind_preflight_action: bool = False,
 ) -> tuple[str, str]:
     services = await DaemonServices.build(config)
     try:
@@ -114,6 +116,23 @@ async def _seed_unresolved_scheduled_time_attempt(
             workspace_id=session.workspace_id,
             max_runs=1,
         )
+        preflight_action = (
+            build_action(
+                tool_name="time.now",
+                arguments={"timezone": "UTC"},
+                origin=Origin(
+                    session_id=str(session_id),
+                    user_id=str(session.user_id),
+                    workspace_id=str(session.workspace_id),
+                    task_id=task.id,
+                    actor="planner",
+                    channel="cli",
+                ),
+                workspace_roots=list(config.assistant_fs_roots),
+            )
+            if bind_preflight_action
+            else None
+        )
         pending = impl._queue_pending_action(
             session_id=session_id,
             user_id=session.user_id,
@@ -125,6 +144,7 @@ async def _seed_unresolved_scheduled_time_attempt(
             confirmation_requirement=legacy_software_confirmation_requirement(),
             origin_turn_id="turn-recovery-accounting-fault",
             task_id=task.id,
+            preflight_action=preflight_action,
         )
         services.scheduler.queue_confirmation(
             task.id,
@@ -150,6 +170,105 @@ async def _seed_unresolved_scheduled_time_attempt(
         return pending.confirmation_id, task.id
     finally:
         await services.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("mutation_phase", "surface"),
+    [
+        ("durable", "preflight"),
+        ("durable", "evidence"),
+        ("loaded", "preflight"),
+        ("loaded", "evidence"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation_phase: str,
+    surface: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    confirmation_id, task_id = await _seed_unresolved_scheduled_time_attempt(
+        config,
+        bind_preflight_action=True,
+    )
+    pending_path = config.data_dir / "pending_actions.json"
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        impl = handlers._impl
+        accounting_tasks = list(impl._recovery_accounting_tasks)
+        assert len(accounting_tasks) == 1
+        for task in accounting_tasks:
+            task.cancel()
+        await asyncio.gather(*accounting_tasks, return_exceptions=True)
+        recovered = impl._pending_actions[confirmation_id]
+        assert recovered.status == "approved"
+        assert recovered.recovery_effect_invoked is True
+        assert recovered.recovery_accounting_pending is True
+        assert recovered.preflight_action is not None
+        assert recovered.confirmation_evidence is not None
+
+        if mutation_phase == "loaded":
+            if surface == "preflight":
+                recovered.preflight_action = recovered.preflight_action.model_copy(
+                    update={"resource_ids": ["forged://resource"]}
+                )
+            else:
+                recovered.confirmation_evidence = recovered.confirmation_evidence.model_copy(
+                    update={"approver_principal_id": "mallory"}
+                )
+            await impl._account_recovered_attempt(confirmation_id)
+            terminal = impl._pending_actions[confirmation_id]
+            assert terminal.status == "outcome_unknown"
+            assert terminal.status_reason == "uncertain_effect_requires_fresh_approval"
+            assert terminal.recovery_accounting_pending is False
+    finally:
+        await restarted.shutdown()
+
+    if mutation_phase == "durable":
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+        durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
+        if surface == "preflight":
+            durable["preflight_action"]["resource_ids"] = ["forged://resource"]
+        else:
+            durable["confirmation_evidence"]["approver_principal_id"] = "mallory"
+        pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+
+        replayed = await DaemonServices.build(config)
+        try:
+            replayed_handlers = DaemonControlHandlers(services=replayed)
+            await _wait_for_recovery_accounting(replayed_handlers._impl)
+            terminal = replayed_handlers._impl._pending_actions[confirmation_id]
+            assert terminal.status == "outcome_unknown"
+            assert terminal.status_reason == "uncertain_effect_requires_fresh_approval"
+            assert terminal.recovery_accounting_pending is False
+        finally:
+            await replayed.shutdown()
+
+    recovery_events = [
+        row
+        for row in _audit_rows(config)
+        if row.get("actor") == "recovery"
+        and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
+    ]
+    assert [row.get("event_type") for row in recovery_events] == ["ToolRejected"]
+    assert all(
+        row.get("data", {}).get("approval_approver_principal_id") != "mallory"
+        for row in recovery_events
+    )
+    recovered_task = (
+        replayed.scheduler.get_task(task_id)
+        if mutation_phase == "durable"
+        else restarted.scheduler.get_task(task_id)
+    )
+    assert recovered_task is not None
+    assert recovered_task.success_count == 1
+    assert recovered_task.failure_count == 0
+    assert recovered_task.enabled is False
 
 
 @pytest.mark.asyncio
@@ -1563,6 +1682,8 @@ tools:
         pytest.param("changed-key", 1, False, False, id="changed-key"),
         pytest.param("fabricated-evidence", 1, False, False, id="fabricated-evidence"),
         pytest.param("adapter-error", 1, False, False, id="adapter-error"),
+        pytest.param("adapter-non-finite", 1, False, False, id="adapter-non-finite"),
+        pytest.param("adapter-lone-surrogate", 1, False, False, id="adapter-lone-surrogate"),
         pytest.param("success-then-failure", 1, False, False, id="success-then-failure"),
         pytest.param("failure-then-success", 1, False, False, id="failure-then-success"),
         pytest.param("exact-key", 0, False, True, id="exact-key-unlimited"),
@@ -1623,6 +1744,10 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         )
         if recovery_case == "adapter-error" and len(calls) > 1:
             raise RuntimeError("provider accepted keyed operation before transport failure")
+        if recovery_case == "adapter-non-finite" and len(calls) > 1:
+            return {"ok": True, "value": float("nan")}
+        if recovery_case == "adapter-lone-surrogate" and len(calls) > 1:
+            return {"ok": True, "value": "\ud800"}
         return result
 
     services = await DaemonServices.build(config)
@@ -1749,13 +1874,16 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert calls == [stable_key]
         elif recovery_case in {
             "adapter-error",
+            "adapter-non-finite",
+            "adapter-lone-surrogate",
             "success-then-failure",
             "failure-then-success",
         }:
             assert recovered.status == "outcome_unknown"
             assert recovered.status_reason == (
                 "idempotent_adapter_outcome_unknown"
-                if recovery_case == "adapter-error"
+                if recovery_case
+                in {"adapter-error", "adapter-non-finite", "adapter-lone-surrogate"}
                 else "idempotent_adapter_outcome_conflict"
             )
             assert recovered.retry_generation == 1
@@ -1817,6 +1945,8 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert recovery_execution_records == []
         elif recovery_case in {
             "adapter-error",
+            "adapter-non-finite",
+            "adapter-lone-surrogate",
             "success-then-failure",
             "failure-then-success",
         }:
@@ -1830,11 +1960,32 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     finally:
         await restarted.shutdown()
 
+    if recovery_case in {"adapter-non-finite", "adapter-lone-surrogate"}:
+        second_restart = await DaemonServices.build(config)
+        try:
+            second_restart.registry.register(tool_definition)
+            second_restart.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+            second_handlers = DaemonControlHandlers(services=second_restart)
+            await _wait_for_recovery_accounting(second_handlers._impl)
+            terminal = second_handlers._impl._pending_actions[pending.confirmation_id]
+            assert terminal.status == "outcome_unknown"
+            assert terminal.status_reason == "idempotent_adapter_outcome_unknown"
+            assert terminal.recovery_accounting_pending is False
+            assert terminal.recovery_authority_mac.startswith("hmac-sha256:")
+            assert calls == [stable_key, stable_key]
+        finally:
+            await second_restart.shutdown()
 
+
+@pytest.mark.parametrize(
+    "adapter_outcome",
+    ["exception", "non-finite", "lone-surrogate"],
+)
 @pytest.mark.asyncio
 async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    adapter_outcome: str,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -1854,7 +2005,11 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
     ) -> dict[str, object]:
         calls.append(stable_idempotency_key)
         logical_effects.add(stable_idempotency_key)
-        raise RuntimeError("provider accepted keyed operation before transport failure")
+        if adapter_outcome == "exception":
+            raise RuntimeError("provider accepted keyed operation before transport failure")
+        if adapter_outcome == "non-finite":
+            return {"ok": True, "value": float("nan")}
+        return {"ok": True, "value": "\ud800"}
 
     services = await DaemonServices.build(config)
     try:

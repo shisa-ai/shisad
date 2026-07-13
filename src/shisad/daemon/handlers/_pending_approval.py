@@ -245,13 +245,9 @@ def pending_action_identity(
             if value is not None
         )
     )
-    state = lifecycle_state or action_lifecycle_state(
-        status=str(getattr(pending, "status", "pending")),
-        status_reason=str(getattr(pending, "status_reason", "")),
-        expires_at=getattr(pending, "expires_at", None),
-    )
+    stored_status = str(getattr(pending, "status", "pending")).strip().lower()
     result_id = str(getattr(pending, "result_id", "")).strip()
-    if not result_id and state not in {"pending", "executing"}:
+    if not result_id and stored_status not in {"pending", "executing"}:
         result_id = derive_action_result_id(action_id)
     return ActionIdentity(
         action_id=action_id,

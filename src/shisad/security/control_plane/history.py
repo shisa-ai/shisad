@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,36 @@ from pydantic import BaseModel, Field, ValidationError
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin
 
 logger = logging.getLogger(__name__)
+
+
+def execution_action_surface_hash(action: ControlPlaneAction) -> str:
+    """Bind replay accounting to stable action metadata, excluding runtime actor."""
+
+    origin = action.origin
+    payload = {
+        "origin": {
+            "session_id": origin.session_id,
+            "user_id": origin.user_id,
+            "workspace_id": origin.workspace_id,
+            "task_id": origin.task_id,
+            "skill_name": origin.skill_name,
+            "channel": origin.channel,
+            "trust_level": origin.trust_level,
+        },
+        "tool_name": action.tool_name,
+        "action_kind": action.action_kind.value,
+        "risk_tier": action.risk_tier.value,
+        "resource_id": action.resource_id,
+        "resource_ids": list(action.resource_ids),
+        "network_hosts": list(action.network_hosts),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 class ActionHistoryRecord(BaseModel, frozen=True):
@@ -30,6 +61,7 @@ class ActionHistoryRecord(BaseModel, frozen=True):
     source: str = ""
     idempotency_key: str = ""
     trace_plan_hash: str = ""
+    execution_action_surface_hash: str = ""
 
 
 class SessionActionHistoryStore:
@@ -88,6 +120,9 @@ class SessionActionHistoryStore:
             source=source,
             idempotency_key=idempotency_key.strip(),
             trace_plan_hash=trace_plan_hash.strip(),
+            execution_action_surface_hash=(
+                execution_action_surface_hash(action) if execution_status else ""
+            ),
         )
         return self.append(record)
 

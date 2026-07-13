@@ -27,7 +27,10 @@ from shisad.security.control_plane.consensus import (
     SequenceVoter,
     TraceVoter,
 )
-from shisad.security.control_plane.history import SessionActionHistoryStore
+from shisad.security.control_plane.history import (
+    SessionActionHistoryStore,
+    execution_action_surface_hash,
+)
 from shisad.security.control_plane.network import (
     BaselineDatabase,
     NetworkIntelligenceMonitor,
@@ -400,13 +403,19 @@ class ControlPlaneEngine:
     ) -> None:
         normalized_key = idempotency_key.strip()
         existing_record = self._history_store.idempotent_record(normalized_key)
-        if existing_record is not None and (
-            existing_record.session_id != action.origin.session_id
-            or existing_record.action_kind != action.action_kind
-            or existing_record.resource_id != action.resource_id
-            or existing_record.tool_name != action.tool_name
-        ):
-            raise ValueError("control_plane_execution_idempotency_conflict")
+        if existing_record is not None:
+            stored_surface_hash = existing_record.execution_action_surface_hash.strip()
+            if stored_surface_hash:
+                replay_conflict = stored_surface_hash != execution_action_surface_hash(action)
+            else:
+                replay_conflict = (
+                    existing_record.session_id != action.origin.session_id
+                    or existing_record.action_kind != action.action_kind
+                    or existing_record.resource_id != action.resource_id
+                    or existing_record.tool_name != action.tool_name
+                )
+            if replay_conflict:
+                raise ValueError("control_plane_execution_idempotency_conflict")
         active_plan = self._trace_verifier.active_plan(action.origin.session_id)
         trace_plan_hash = (
             existing_record.trace_plan_hash

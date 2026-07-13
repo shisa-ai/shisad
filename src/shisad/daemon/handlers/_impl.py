@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -60,6 +60,7 @@ from shisad.core.approval import (
     WebAuthnBackend,
     approval_audit_fields,
     approval_envelope_hash,
+    canonical_json_dumps,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
     confirmation_evidence_satisfies_requirement,
@@ -1718,7 +1719,7 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
 
     evidence = pending.confirmation_evidence
     snapshot = {
-        "schema_version": "shisad.pending_recovery_snapshot.v1",
+        "schema_version": "shisad.pending_recovery_snapshot.v2",
         "confirmation_id": pending.confirmation_id,
         "action_id": pending.action_id,
         "origin_turn_id": pending.origin_turn_id,
@@ -1735,6 +1736,9 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "confirmation_evidence_authenticator_mac": (
             evidence.authenticator_mac if evidence is not None else ""
         ),
+        "confirmation_evidence": (
+            evidence.model_dump(mode="json") if evidence is not None else None
+        ),
         "decision_nonce": pending.decision_nonce,
         "status": pending.status,
         "status_reason": pending.status_reason,
@@ -1742,6 +1746,11 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "result_id": pending.result_id,
         "followup_id": pending.followup_id,
         "provider_operation_id": pending.provider_operation_id,
+        "preflight_action": (
+            pending.preflight_action.model_dump(mode="json")
+            if pending.preflight_action is not None
+            else None
+        ),
         "retry_descriptor": (
             pending.retry_descriptor.model_dump(mode="json")
             if pending.retry_descriptor is not None
@@ -3817,14 +3826,22 @@ class HandlerImplementation(
     def _persist_pending_actions(self) -> None:
         for pending in self._pending_actions.values():
             canonical_identity = pending_action_state_view(pending).identity
-            if canonical_identity.result_id and not pending.result_id.strip():
+            stored_status = str(pending.status).strip().lower()
+            if (
+                stored_status in _PENDING_ACTION_STORED_STATUSES - {"pending", "executing"}
+                and canonical_identity.result_id
+                and not pending.result_id.strip()
+            ):
                 pending.result_id = canonical_identity.result_id
             if _pending_action_has_started_execution_authority(pending):
-                pending.recovery_authority_mac = (
+                recovery_authority_mac = (
                     self._confirmation_evidence_authenticator.authenticate_recovery_snapshot(
                         _pending_recovery_authority_snapshot(pending)
                     )
                 )
+                if not recovery_authority_mac:
+                    raise ValueError("pending recovery snapshot is not canonical")
+                pending.recovery_authority_mac = recovery_authority_mac
             else:
                 pending.recovery_authority_mac = ""
         payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
@@ -4317,6 +4334,11 @@ class HandlerImplementation(
                     )
                 )
                 raw_arguments, arguments_valid = _loaded_state_mapping(item.get("arguments", {}))
+                if arguments_valid:
+                    try:
+                        canonical_json_dumps(raw_arguments).encode("utf-8")
+                    except (TypeError, ValueError, UnicodeEncodeError):
+                        raw_arguments = {}
                 recovery_authority_invalid = recovery_authority_invalid or not arguments_valid
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
                 group = _pending_payload_group(item)
@@ -5221,6 +5243,41 @@ class HandlerImplementation(
             **approval_audit_fields(evidence),
         }
 
+    def _recovered_authority_invalid_reason(self, pending: PendingAction) -> str:
+        if not pending.recovery_authority_mac or not (
+            self._confirmation_evidence_authenticator.verify_recovery_snapshot(
+                _pending_recovery_authority_snapshot(pending),
+                pending.recovery_authority_mac,
+            )
+        ):
+            return "recovery_authority_mismatch"
+        evidence = pending.confirmation_evidence
+        require_evidence = evidence is not None or bool(pending.approval_evidence_hash.strip())
+        validation_pending = (
+            replace(pending, decision_nonce=evidence.decision_nonce)
+            if evidence is not None
+            else pending
+        )
+        return self._pending_approval_contract_invalid_reason(
+            validation_pending,
+            require_evidence=require_evidence,
+        )
+
+    def _invalidate_recovered_authority(self, pending: PendingAction) -> None:
+        pending.status = "outcome_unknown"
+        pending.status_reason = "uncertain_effect_requires_fresh_approval"
+        pending.decision_nonce = ""
+        pending.approval_evidence_hash = ""
+        pending.confirmation_evidence = None
+        pending.preflight_action = None
+        pending.merged_policy = None
+        pending.pep_context = None
+        pending.pep_elevation = None
+        pending.retry_descriptor = None
+        pending.provider_operation_id = ""
+        pending.recovery_result = {}
+        pending.recovery_effect_invoked = False
+
     def _recovery_control_plane_action(
         self,
         pending: PendingAction,
@@ -5248,6 +5305,9 @@ class HandlerImplementation(
         pending = self._pending_actions.get(confirmation_id)
         if pending is None or not pending.recovery_accounting_pending:
             return
+
+        if self._recovered_authority_invalid_reason(pending):
+            self._invalidate_recovered_authority(pending)
 
         execution_key = ""
         accounting_status = ""
@@ -5365,6 +5425,7 @@ class HandlerImplementation(
         except AtomicWriteError:
             pending.recovery_accounting_pending = True
             raise
+        self._sync_task_confirmation_status(pending)
 
     def _recover_loaded_pending_attempts(self) -> None:
         recovery_not_before = _monotonic() + _AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS
@@ -5416,7 +5477,7 @@ class HandlerImplementation(
                             pending.stable_idempotency_key,
                         )
                     )
-                    json.dumps(result, ensure_ascii=True, sort_keys=True)
+                    canonical_json_dumps(result).encode("utf-8")
                 except Exception:
                     logger.warning(
                         "Stable-key recovery adapter outcome is uncertain for %s",
@@ -5585,6 +5646,7 @@ class HandlerImplementation(
             session=session,
             actor=approval_actor,
             skill_name=str(arguments.get("skill_name") or "").strip(),
+            task_id=str(task_id).strip(),
         )
         executed_action = execution_action or build_action(
             tool_name=str(tool_name),
@@ -5741,7 +5803,7 @@ class HandlerImplementation(
             else:
                 try:
                     provider_payload = dict(adapter(dict(arguments), stable_idempotency_key))
-                    json.dumps(provider_payload, ensure_ascii=True, sort_keys=True)
+                    canonical_json_dumps(provider_payload).encode("utf-8")
                 except Exception:
                     logger.warning(
                         "Stable-key adapter outcome is uncertain for %s",
