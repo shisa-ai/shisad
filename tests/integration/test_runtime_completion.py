@@ -1745,12 +1745,14 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
             approved_by: str,
             correlation_id: str = "",
             expected_previous_hash: str = "",
+            execution_idempotency_key: str = "",
         ) -> str:
             return self._engine.approve_stage2(
                 action=action,
                 approved_by=approved_by,
                 correlation_id=correlation_id,
                 expected_previous_hash=expected_previous_hash,
+                execution_idempotency_key=execution_idempotency_key,
             )
 
         async def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:

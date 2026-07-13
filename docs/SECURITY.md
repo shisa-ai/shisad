@@ -119,10 +119,12 @@ scheduled task, that task is disabled so it cannot automatically repeat the
 possibly completed effect; you must reconcile the result before
 creating or enabling further work.
 
-Stage-two amendments are correlated to one confirmation and execution attempt.
-Failures before the durable ready transition cancel only the exact correlated
-amendment, and unexecuted correlated authority is inactive after control-plane
-restart. Execution-accounted amendments retain their ordinary plan lifetime.
+Stage-two amendments are correlated to one confirmation and an explicit
+execution-attempt idempotency key. Uncertain transport or internal results and
+failures before the durable ready transition cancel only the exact correlated
+amendment. After control-plane restart, authority remains active only when the
+exact correlated attempt key appears in durable trace-action accounting;
+aggregate execution by unrelated same-session actions is not reconciliation.
 
 Concurrent confirmation clicks for one action are serialized by an in-memory
 per-confirmation lock while that daemon process is running. That lock is a

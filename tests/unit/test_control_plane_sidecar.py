@@ -529,6 +529,7 @@ async def test_f2_control_plane_sidecar_cancels_exact_stage2_correlation(
             approved_by="human_confirmation",
             correlation_id=correlation_id,
             expected_previous_hash=previous_hash,
+            execution_idempotency_key="execution:attempt-1:control-plane",
         )
 
         assert await handle.client.active_plan_hash(origin.session_id) == amended_hash

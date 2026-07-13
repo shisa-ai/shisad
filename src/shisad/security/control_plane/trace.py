@@ -21,6 +21,7 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     action_kinds_for_capabilities,
+    control_plane_trace_action_idempotency_key,
     normalize_workspace_path,
 )
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
@@ -147,6 +148,7 @@ class CommittedPlan(BaseModel):
     stage: str = PlanStage.STAGE1_PRECONTENT
     amendment_of: str = ""
     amendment_correlation_id: str = ""
+    amendment_execution_idempotency_key: str = ""
     cancelled: bool = False
     cancelled_reason: str = ""
     executed_actions: int = 0
@@ -389,6 +391,7 @@ class ExecutionTraceVerifier:
         ttl_seconds: int | None = None,
         correlation_id: str = "",
         expected_previous_hash: str = "",
+        execution_idempotency_key: str = "",
     ) -> CommittedPlan:
         if not approved_by.strip():
             raise ValueError("approved_by is required for plan amendment")
@@ -397,6 +400,9 @@ class ExecutionTraceVerifier:
             raise ValueError("cannot amend missing or inactive plan")
         normalized_correlation = correlation_id.strip()
         normalized_previous_hash = expected_previous_hash.strip()
+        normalized_execution_key = execution_idempotency_key.strip()
+        if bool(normalized_correlation) != bool(normalized_execution_key):
+            raise ValueError("stage2 correlation execution-key mismatch")
         if (
             normalized_correlation
             and current.amendment_correlation_id == normalized_correlation
@@ -406,6 +412,8 @@ class ExecutionTraceVerifier:
                 and current.amendment_of != normalized_previous_hash
             ):
                 raise ValueError("stage2 correlation previous-plan mismatch")
+            if current.amendment_execution_idempotency_key != normalized_execution_key:
+                raise ValueError("stage2 correlation execution-key mismatch")
             return current
         if normalized_previous_hash and current.plan_hash != normalized_previous_hash:
             raise ValueError("stage2 previous plan changed")
@@ -424,6 +432,7 @@ class ExecutionTraceVerifier:
             stage=PlanStage.STAGE2_POSTEVIDENCE,
             amendment_of=current.plan_hash,
             amendment_correlation_id=normalized_correlation,
+            amendment_execution_idempotency_key=normalized_execution_key,
         )
         amended.reachable_resources = set(current.reachable_resources)
         amended.recorded_dependency_keys = set(current.recorded_dependency_keys)
@@ -447,6 +456,7 @@ class ExecutionTraceVerifier:
         stage: str,
         amendment_of: str,
         amendment_correlation_id: str = "",
+        amendment_execution_idempotency_key: str = "",
     ) -> CommittedPlan:
         payload: dict[str, Any] = {
             "session_id": session_id,
@@ -463,6 +473,10 @@ class ExecutionTraceVerifier:
         }
         if amendment_correlation_id:
             payload["amendment_correlation_id"] = amendment_correlation_id
+        if amendment_execution_idempotency_key:
+            payload["amendment_execution_idempotency_key"] = (
+                amendment_execution_idempotency_key
+            )
         encoded = json.dumps(payload, sort_keys=True)
         plan_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         return CommittedPlan(
@@ -479,6 +493,9 @@ class ExecutionTraceVerifier:
             stage=stage,
             amendment_of=amendment_of,
             amendment_correlation_id=amendment_correlation_id,
+            amendment_execution_idempotency_key=(
+                amendment_execution_idempotency_key
+            ),
             executed_actions=0,
         )
 
@@ -676,9 +693,17 @@ class ExecutionTraceVerifier:
                 plan = CommittedPlan.model_validate(value)
             except ValidationError:
                 continue
+            correlated_action_key = control_plane_trace_action_idempotency_key(
+                plan.amendment_execution_idempotency_key
+            )
+            correlated_execution_recorded = (
+                plan.executed_actions > 0
+                and bool(correlated_action_key)
+                and correlated_action_key in plan.recorded_action_keys
+            )
             if (
                 plan.amendment_correlation_id
-                and plan.executed_actions == 0
+                and not correlated_execution_recorded
                 and not plan.cancelled
             ):
                 plan.cancelled = True

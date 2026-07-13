@@ -185,6 +185,7 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     build_action,
+    control_plane_execution_idempotency_key,
     extract_request_size_bytes,
     infer_action_kind,
 )
@@ -1688,15 +1689,6 @@ def _pending_action_has_started_execution_authority(pending: PendingAction) -> b
         or pending.stage2_correlation_id.strip()
         or pending.stage2_previous_plan_hash.strip()
         or pending.stage2_plan_hash.strip()
-    )
-
-
-def _control_plane_execution_idempotency_key(execution_attempt_id: str) -> str:
-    normalized_attempt_id = execution_attempt_id.strip()
-    return (
-        f"execution:{normalized_attempt_id}:control-plane"
-        if normalized_attempt_id
-        else ""
     )
 
 
@@ -5119,7 +5111,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=self._recovery_control_plane_action(pending, session=session),
                 success=success,
-                idempotency_key=_control_plane_execution_idempotency_key(
+                idempotency_key=control_plane_execution_idempotency_key(
                     pending.execution_attempt_id,
                 ),
             )
@@ -5383,7 +5375,7 @@ class HandlerImplementation(
             result_id=result_id,
             followup_id=followup_id,
         )
-        control_plane_execution_key = _control_plane_execution_idempotency_key(
+        control_plane_execution_key = control_plane_execution_idempotency_key(
             operation_identity.execution_attempt_id
         )
 

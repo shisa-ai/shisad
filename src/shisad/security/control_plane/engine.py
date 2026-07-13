@@ -42,6 +42,7 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     build_action,
+    control_plane_trace_action_idempotency_key,
     extract_request_size_bytes,
     metadata_payload_current_turn_contained_omissions,
     metadata_payload_omitted_fields,
@@ -454,7 +455,9 @@ class ControlPlaneEngine:
             )
             self._trace_verifier.record_action(
                 session_id=action.origin.session_id,
-                idempotency_key=f"{normalized_key}:action" if normalized_key else "",
+                idempotency_key=control_plane_trace_action_idempotency_key(
+                    normalized_key
+                ),
                 expected_plan_hash=trace_plan_hash,
             )
 
@@ -512,6 +515,7 @@ class ControlPlaneEngine:
         approved_by: str,
         correlation_id: str = "",
         expected_previous_hash: str = "",
+        execution_idempotency_key: str = "",
     ) -> str:
         amended = self._trace_verifier.amend(
             session_id=action.origin.session_id,
@@ -526,6 +530,7 @@ class ControlPlaneEngine:
             allow_resources=set(action.resource_ids),
             correlation_id=correlation_id,
             expected_previous_hash=expected_previous_hash,
+            execution_idempotency_key=execution_idempotency_key,
         )
         self._audit_log.append(
             event_type="plan_amended",
@@ -536,6 +541,9 @@ class ControlPlaneEngine:
                 "amendment_of": amended.amendment_of,
                 "stage": amended.stage,
                 "correlation_id": amended.amendment_correlation_id,
+                "execution_idempotency_key": (
+                    amended.amendment_execution_idempotency_key
+                ),
                 "allowed_actions": sorted(item.value for item in amended.allowed_actions),
             },
         )

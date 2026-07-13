@@ -95,7 +95,10 @@ from shisad.memory.timeline import TimelineIndex
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
-from shisad.security.control_plane.sidecar import ControlPlaneRpcError
+from shisad.security.control_plane.sidecar import (
+    ControlPlaneRpcError,
+    ControlPlaneUnavailableError,
+)
 from shisad.security.credentials import (
     ApprovalFactorRecord,
     InMemoryCredentialStore,
@@ -247,7 +250,7 @@ def _registry_for_confirmation() -> ToolRegistry:
 class _ControlPlaneRecorder:
     def __init__(self) -> None:
         self.approved_actions: list[object] = []
-        self.approved_correlations: list[tuple[str, str]] = []
+        self.approved_correlations: list[tuple[str, str, str]] = []
         self.cancelled_correlations: list[str] = []
 
     def active_plan_hash(self, _session_id: str) -> str:
@@ -260,10 +263,13 @@ class _ControlPlaneRecorder:
         approved_by: str,
         correlation_id: str = "",
         expected_previous_hash: str = "",
+        execution_idempotency_key: str = "",
     ) -> str:
         _ = approved_by
         self.approved_actions.append(action)
-        self.approved_correlations.append((correlation_id, expected_previous_hash))
+        self.approved_correlations.append(
+            (correlation_id, expected_previous_hash, execution_idempotency_key)
+        )
         return "plan-after"
 
     def cancel_stage2(
@@ -1623,7 +1629,11 @@ async def test_f2_stage2_ready_write_fault_contains_recovery_before_effect(
     assert len(harness._control_plane.approved_actions) == 1
     assert pending.stage2_correlation_id
     assert harness._control_plane.approved_correlations == [
-        (pending.stage2_correlation_id, "plan-before")
+        (
+            pending.stage2_correlation_id,
+            "plan-before",
+            f"execution:{pending.execution_attempt_id}:control-plane",
+        )
     ]
     assert harness._control_plane.cancelled_correlations == [
         pending.stage2_correlation_id
@@ -1659,19 +1669,67 @@ async def test_f2_stage2_commit_then_response_loss_cancels_exact_correlation(
             approved_by: str,
             correlation_id: str = "",
             expected_previous_hash: str = "",
+            execution_idempotency_key: str = "",
         ) -> str:
             super().approve_stage2(
                 action=action,
                 approved_by=approved_by,
                 correlation_id=correlation_id,
                 expected_previous_hash=expected_previous_hash,
+                execution_idempotency_key=execution_idempotency_key,
             )
-            raise ControlPlaneRpcError(
+            raise ControlPlaneUnavailableError(
                 message="stage2 committed before response loss",
-                reason_code="rpc.unavailable",
             )
 
     control_plane = _CommitThenResponseLoss()
+    harness._control_plane = control_plane
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.preflight_action = None
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert pending.stage2_correlation_id
+    assert control_plane.cancelled_correlations == [pending.stage2_correlation_id]
+    assert harness.effect_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_f2_stage2_post_commit_rpc_internal_error_cancels_exact_correlation(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path, allow_amendment=True)
+
+    class _CommitThenAuditFailure(_ControlPlaneRecorder):
+        def approve_stage2(
+            self,
+            *,
+            action: object,
+            approved_by: str,
+            correlation_id: str = "",
+            expected_previous_hash: str = "",
+            execution_idempotency_key: str = "",
+        ) -> str:
+            super().approve_stage2(
+                action=action,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                expected_previous_hash=expected_previous_hash,
+                execution_idempotency_key=execution_idempotency_key,
+            )
+            raise ControlPlaneRpcError(
+                message="plan audit failed after stage2 commit",
+                reason_code="rpc.internal_error",
+            )
+
+    control_plane = _CommitThenAuditFailure()
     harness._control_plane = control_plane
     pending = _pending_action(nonce="expected")
     pending.reason = "trace:stage2_upgrade_required"
@@ -5720,8 +5778,15 @@ async def test_h1_confirmation_returns_plan_state_failure_when_stage2_amend_reje
             approved_by: str,
             correlation_id: str = "",
             expected_previous_hash: str = "",
+            execution_idempotency_key: str = "",
         ) -> str:
-            _ = (action, approved_by, correlation_id, expected_previous_hash)
+            _ = (
+                action,
+                approved_by,
+                correlation_id,
+                expected_previous_hash,
+                execution_idempotency_key,
+            )
             raise ControlPlaneRpcError(
                 message="cannot amend missing or inactive plan",
                 reason_code="rpc.invalid_params",

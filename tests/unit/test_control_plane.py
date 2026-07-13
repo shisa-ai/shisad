@@ -3049,15 +3049,24 @@ def test_f2_correlated_stage2_replay_and_restart_containment(
         approved_by="human_confirmation",
         correlation_id="confirmation-1:attempt-1",
         expected_previous_hash=previous_hash,
+        execution_idempotency_key="execution:attempt-1:control-plane",
     )
     replayed_hash = engine.approve_stage2(
         action=action,
         approved_by="human_confirmation",
         correlation_id="confirmation-1:attempt-1",
         expected_previous_hash=previous_hash,
+        execution_idempotency_key="execution:attempt-1:control-plane",
     )
 
     assert replayed_hash == amended_hash
+    with pytest.raises(ValueError, match="execution-key mismatch"):
+        engine.approve_stage2(
+            action=action,
+            approved_by="human_confirmation",
+            correlation_id="confirmation-1:attempt-1",
+            expected_previous_hash=previous_hash,
+        )
     if execution_recorded:
         engine.record_execution(
             action=action,
@@ -3123,3 +3132,46 @@ def test_f2_execution_attempt_key_deduplicates_normal_and_recovery_accounting(
         (data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
     )
     assert plans[origin.session_id]["executed_actions"] == 1
+
+
+def test_f2_unrelated_execution_does_not_reconcile_correlated_stage2_restart(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "correlated-stage2-wrong-attempt"
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    origin = _origin("s-correlated-stage2-wrong-attempt")
+    previous_hash = engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="read then send",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=3,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="message.send",
+        arguments={"recipient": "alice", "content": "done"},
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        workspace_roots=[tmp_path],
+    )
+
+    engine.approve_stage2(
+        action=action,
+        approved_by="human_confirmation",
+        correlation_id="confirmation-1:attempt-1",
+        expected_previous_hash=previous_hash,
+        execution_idempotency_key="execution:attempt-1:control-plane",
+    )
+    engine.record_execution(
+        action=action,
+        success=True,
+        idempotency_key="execution:unrelated-attempt:control-plane",
+    )
+
+    restarted = ControlPlaneEngine.build(
+        data_dir=data_dir,
+        workspace_roots=[tmp_path],
+    )
+
+    assert restarted.active_plan_hash(origin.session_id) == ""

@@ -120,6 +120,7 @@ class ControlPlaneGateway(Protocol):
         approved_by: str,
         correlation_id: str = "",
         expected_previous_hash: str = "",
+        execution_idempotency_key: str = "",
     ) -> str: ...
 
     async def cancel_stage2(
@@ -209,6 +210,7 @@ class _ApproveStage2Params(BaseModel):
     approved_by: str
     correlation_id: str = ""
     expected_previous_hash: str = ""
+    execution_idempotency_key: str = ""
 
 
 class _CancelStage2Params(BaseModel):
@@ -398,6 +400,7 @@ class _ControlPlaneSidecarHandlers:
             approved_by=params.approved_by,
             correlation_id=params.correlation_id,
             expected_previous_hash=params.expected_previous_hash,
+            execution_idempotency_key=params.execution_idempotency_key,
         )
         return _PlanHashResult(plan_hash=plan_hash)
 
@@ -581,6 +584,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         approved_by: str,
         correlation_id: str = "",
         expected_previous_hash: str = "",
+        execution_idempotency_key: str = "",
     ) -> str:
         result = await self._call(
             "control_plane.approve_stage2",
@@ -589,6 +593,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
                 approved_by=approved_by,
                 correlation_id=correlation_id,
                 expected_previous_hash=expected_previous_hash,
+                execution_idempotency_key=execution_idempotency_key,
             ).model_dump(mode="json"),
             _PlanHashResult,
         )

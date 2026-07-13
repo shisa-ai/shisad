@@ -82,6 +82,24 @@ class ControlDecision(StrEnum):
     REQUIRE_CONFIRMATION = "require_confirmation"
 
 
+def control_plane_execution_idempotency_key(execution_attempt_id: str) -> str:
+    """Return the control-plane key shared by one execution attempt."""
+    normalized_attempt_id = execution_attempt_id.strip()
+    return (
+        f"execution:{normalized_attempt_id}:control-plane"
+        if normalized_attempt_id
+        else ""
+    )
+
+
+def control_plane_trace_action_idempotency_key(
+    execution_idempotency_key: str,
+) -> str:
+    """Return the trace-action mutation key derived from an execution key."""
+    normalized_key = execution_idempotency_key.strip()
+    return f"{normalized_key}:action" if normalized_key else ""
+
+
 class Origin(BaseModel, frozen=True):
     """Frozen origin metadata propagated across execution paths."""
 

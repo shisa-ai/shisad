@@ -67,8 +67,15 @@ from shisad.daemon.handlers._pending_approval import (
     pending_approval_contract_hash,
     pep_arguments_for_policy_evaluation,
 )
-from shisad.security.control_plane.schema import RiskTier, build_action
-from shisad.security.control_plane.sidecar import ControlPlaneRpcError
+from shisad.security.control_plane.schema import (
+    RiskTier,
+    build_action,
+    control_plane_execution_idempotency_key,
+)
+from shisad.security.control_plane.sidecar import (
+    ControlPlaneRpcError,
+    ControlPlaneUnavailableError,
+)
 from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord, SignerKeyRecord
 
 logger = logging.getLogger(__name__)
@@ -186,7 +193,11 @@ def _validate_signer_public_key(public_key_pem: str, *, algorithm: str) -> str:
     return "unsupported_signer_algorithm"
 
 
-def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
+def _confirmation_control_plane_reason(
+    exc: ControlPlaneRpcError | ControlPlaneUnavailableError,
+) -> str:
+    if isinstance(exc, ControlPlaneUnavailableError):
+        return "control_plane_unavailable"
     message = str(exc.message).strip().lower()
     if exc.reason_code == "rpc.invalid_params" and "inactive plan" in message:
         return "plan_missing_or_inactive"
@@ -195,6 +206,16 @@ def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
     if exc.reason_code in {"rpc.unavailable", "rpc.timeout"}:
         return "control_plane_unavailable"
     return "control_plane_rejected"
+
+
+def _stage2_approval_outcome_is_uncertain(
+    exc: ControlPlaneRpcError | ControlPlaneUnavailableError,
+) -> bool:
+    return isinstance(exc, ControlPlaneUnavailableError) or exc.reason_code in {
+        "rpc.internal_error",
+        "rpc.timeout",
+        "rpc.unavailable",
+    }
 
 
 def _parse_confirmed_tool_output_payload(raw_content: str) -> dict[str, Any]:
@@ -2673,10 +2694,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     approved_by="human_confirmation",
                     correlation_id=pending.stage2_correlation_id,
                     expected_previous_hash=pending.stage2_previous_plan_hash,
+                    execution_idempotency_key=(
+                        control_plane_execution_idempotency_key(
+                            pending.execution_attempt_id
+                        )
+                    ),
                 )
-            except ControlPlaneRpcError as exc:
+            except (ControlPlaneRpcError, ControlPlaneUnavailableError) as exc:
                 reason = _confirmation_control_plane_reason(exc)
-                if reason == "control_plane_unavailable":
+                if _stage2_approval_outcome_is_uncertain(exc):
                     await self._cancel_stage2_authority(
                         pending,
                         reason="stage2_approval_response_uncertain",

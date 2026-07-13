@@ -103,10 +103,13 @@ cannot be reused. v0.8.1 does not provide universal provider reconciliation or
 exactly-once guarantees for arbitrary external services.
 
 Stage-two plan amendments carry the pending action's exact confirmation/attempt
-correlation. If amendment response delivery, audit publication, or the durable
-ready transition fails, shisad cancels only that correlated amendment. An
-unexecuted correlated amendment is also inactive after control-plane restart;
-an execution-accounted amendment retains the normal plan lifetime.
+correlation and execution-attempt idempotency key. If amendment response
+delivery is unavailable, the control plane reports an internal failure after a
+possible commit, audit publication fails, or the durable ready transition
+fails, shisad cancels only that correlated amendment. After control-plane
+restart, the amendment retains its normal plan lifetime only when that exact
+attempt key appears in durable trace-action accounting; unrelated same-session
+execution does not reconcile it.
 
 ### What is a "factor"
 
