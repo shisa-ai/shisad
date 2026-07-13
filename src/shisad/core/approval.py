@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import secrets
+import stat
 from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import suppress
@@ -37,6 +38,7 @@ from fido2.webauthn import (
 )
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from shisad.core.atomic_state import atomic_write_bytes
 from shisad.core.tools.schema import ToolDefinition
 from shisad.security.credentials import (
     ApprovalFactorRecord,
@@ -356,6 +358,7 @@ class ConfirmationEvidence(BaseModel):
     fallback_used: bool = False
     evidence_payload: dict[str, Any] = Field(default_factory=dict)
     evidence_hash: str = ""
+    authenticator_mac: str = ""
     intent_envelope_hash: str = ""
     signature: str = ""
     signer_key_id: str = ""
@@ -464,6 +467,103 @@ def canonical_json_dumps(value: Any) -> str:
 
 def canonical_sha256(value: Any) -> str:
     return f"sha256:{hashlib.sha256(canonical_json_dumps(value).encode('utf-8')).hexdigest()}"
+
+
+def _decode_prefixed_sha256(value: Any, *, prefix: str) -> bytes | None:
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    encoded = value[len(prefix) :]
+    if len(encoded) != 64:
+        return None
+    try:
+        return bytes.fromhex(encoded)
+    except ValueError:
+        return None
+
+
+def safe_compare_sha256(left: Any, right: Any) -> bool:
+    """Compare canonical SHA-256 values without raising on loaded text."""
+
+    left_digest = _decode_prefixed_sha256(left, prefix="sha256:")
+    right_digest = _decode_prefixed_sha256(right, prefix="sha256:")
+    return (
+        left_digest is not None
+        and right_digest is not None
+        and hmac.compare_digest(left_digest, right_digest)
+    )
+
+
+class ConfirmationEvidenceAuthenticator:
+    """Stamp verified evidence with a daemon-local durable HMAC."""
+
+    _MAC_PREFIX = "hmac-sha256:"
+
+    def __init__(self, key: bytes) -> None:
+        if len(key) != 32:
+            raise ValueError("confirmation evidence authenticator key must be 32 bytes")
+        self._key = bytes(key)
+
+    @classmethod
+    def from_path(cls, path: Path) -> ConfirmationEvidenceAuthenticator:
+        target = Path(path)
+        if not target.exists():
+            atomic_write_bytes(target, secrets.token_bytes(32))
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(target, flags)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("confirmation evidence authenticator key must be a file")
+            os.fchmod(fd, 0o600)
+            key_buffer = bytearray()
+            while len(key_buffer) < 33:
+                chunk = os.read(fd, 33 - len(key_buffer))
+                if not chunk:
+                    break
+                key_buffer.extend(chunk)
+            key = bytes(key_buffer)
+        finally:
+            os.close(fd)
+        if len(key) != 32:
+            raise ValueError("confirmation evidence authenticator key has invalid length")
+        return cls(key)
+
+    @staticmethod
+    def _payload(evidence: ConfirmationEvidence) -> dict[str, Any]:
+        return {
+            "schema_version": "shisad.confirmation_evidence_auth.v1",
+            "evidence": evidence.model_dump(
+                mode="json",
+                exclude={"authenticator_mac"},
+            ),
+        }
+
+    def stamp(self, evidence: ConfirmationEvidence) -> ConfirmationEvidence:
+        digest = hmac.new(
+            self._key,
+            canonical_json_dumps(self._payload(evidence)).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return evidence.model_copy(
+            update={"authenticator_mac": f"{self._MAC_PREFIX}{digest}"}
+        )
+
+    def verify(self, evidence: ConfirmationEvidence) -> bool:
+        stored = _decode_prefixed_sha256(
+            evidence.authenticator_mac,
+            prefix=self._MAC_PREFIX,
+        )
+        if stored is None:
+            return False
+        try:
+            expected = hmac.new(
+                self._key,
+                canonical_json_dumps(self._payload(evidence)).encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        except (TypeError, ValueError):
+            return False
+        return hmac.compare_digest(stored, expected)
 
 
 def _quarantine_state_file(path: Path, *, label: str) -> None:
@@ -2459,7 +2559,7 @@ def confirmation_evidence_is_canonical(
         evidence.schema_version != "shisad.confirmation_evidence.v1"
         or payload.get("schema_version") != evidence.schema_version
         or not evidence.evidence_hash
-        or not hmac.compare_digest(evidence.evidence_hash, expected_hash)
+        or not safe_compare_sha256(evidence.evidence_hash, expected_hash)
         or evidence.backend_id != backend.backend_id
         or evidence.binding_scope != backend.binding_scope
         or evidence.third_party_verifiable != backend.third_party_verifiable
@@ -2533,6 +2633,106 @@ def confirmation_evidence_is_canonical(
     for key, expected in optional_duplicates.items():
         if key in payload and payload[key] != expected:
             return False
+    return True
+
+
+def confirmation_evidence_has_backend_proof(
+    *,
+    pending_action: Any,
+    evidence: ConfirmationEvidence,
+    backend: ConfirmationBackend,
+) -> bool:
+    """Revalidate durable proof invariants exposed by built-in backends."""
+
+    confirmation_id = str(getattr(pending_action, "confirmation_id", "")).strip()
+    user_id = str(getattr(pending_action, "user_id", "")).strip()
+    if isinstance(backend, TOTPBackend):
+        factor = backend._credential_store.get_approval_factor(evidence.credential_id)
+        if (
+            factor is None
+            or not evidence.approver_principal_id
+            or not evidence.credential_id
+            or factor.user_id != user_id
+            or factor.method != backend.method
+            or factor.principal_id != evidence.approver_principal_id
+            or factor.last_verified_at is None
+            or factor.last_used_at is None
+        ):
+            return False
+        if evidence.method == "recovery_code":
+            return any(
+                record.consumed_at is not None
+                and record.consumed_confirmation_id == confirmation_id
+                for record in factor.recovery_codes
+            )
+        return evidence.method == backend.method and confirmation_id in set(
+            factor.used_time_steps.values()
+        )
+
+    if isinstance(backend, WebAuthnBackend):
+        factor = backend._credential_store.get_approval_factor(evidence.credential_id)
+        payload = evidence.evidence_payload
+        sign_count = payload.get("sign_count")
+        return not (
+            factor is None
+            or not evidence.approver_principal_id
+            or not evidence.credential_id
+            or factor.user_id != user_id
+            or factor.method != backend.method
+            or factor.principal_id != evidence.approver_principal_id
+            or not factor.webauthn_attested_credential_data_b64
+            or factor.webauthn_rp_id != backend.rp_id
+            or payload.get("rp_id") != backend.rp_id
+            or payload.get("origin") != backend.approval_origin
+            or isinstance(sign_count, bool)
+            or not isinstance(sign_count, int)
+            or sign_count < 0
+            or sign_count > factor.webauthn_sign_count
+            or factor.last_verified_at is None
+            or factor.last_used_at is None
+        )
+
+    if isinstance(backend, SignerConfirmationAdapter):
+        if (
+            not evidence.signature
+            or not evidence.signer_key_id
+            or evidence.signer_key_id != evidence.credential_id
+            or not evidence.intent_envelope_hash
+        ):
+            return False
+        intent_envelope = getattr(pending_action, "intent_envelope", None)
+        try:
+            intent = (
+                IntentEnvelope.model_validate(intent_envelope)
+                if isinstance(intent_envelope, Mapping)
+                else intent_envelope
+            )
+            if not isinstance(intent, IntentEnvelope):
+                return False
+            if not safe_compare_sha256(
+                evidence.intent_envelope_hash,
+                intent_envelope_hash(intent),
+            ):
+                return False
+            candidates = [
+                item
+                for item in backend._signer_backend.list_registered_keys(
+                    user_id=user_id,
+                    include_revoked=True,
+                )
+                if item.key_id == evidence.signer_key_id
+                and item.principal_id == evidence.approver_principal_id
+                and not item.revoked
+                and item.last_used_at is not None
+            ]
+            return len(candidates) == 1 and backend._signer_backend.verify_signature(
+                envelope=intent,
+                signature=evidence.signature,
+                signer_key=candidates[0],
+            )
+        except (TypeError, ValueError):
+            return False
+
     return True
 
 

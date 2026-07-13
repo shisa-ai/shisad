@@ -15,6 +15,7 @@ from shisad.core.approval import (
     ConfirmationBackendRegistry,
     ConfirmationCapabilities,
     ConfirmationEvidence,
+    ConfirmationEvidenceAuthenticator,
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
@@ -35,6 +36,7 @@ from shisad.core.approval import (
     _origin_matches,
     approval_envelope_hash,
     canonical_json_dumps,
+    canonical_sha256,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
     confirmation_evidence_satisfies_requirement,
@@ -193,6 +195,46 @@ def test_approval_envelope_hash_ignores_action_summary() -> None:
 
     assert approval_envelope_hash(envelope) == expected
     assert approval_envelope_hash(variant) == expected
+
+
+def test_confirmation_evidence_authenticator_is_durable_and_tamper_evident(
+    tmp_path,
+) -> None:
+    key_path = tmp_path / "confirmation_evidence.key"
+    authenticator = ConfirmationEvidenceAuthenticator.from_path(key_path)
+    payload = {
+        "schema_version": "shisad.confirmation_evidence.v1",
+        "backend_id": "software.default",
+        "method": "software",
+        "confirmation_id": "confirmation-1",
+        "decision_nonce": "nonce-1",
+        "approval_envelope_hash": "sha256:" + ("1" * 64),
+        "action_digest": "sha256:" + ("2" * 64),
+        "approver_principal_id": "alice",
+        "fallback_used": False,
+    }
+    evidence = ConfirmationEvidence(
+        level=ConfirmationLevel.SOFTWARE,
+        method="software",
+        backend_id="software.default",
+        approver_principal_id="alice",
+        approval_envelope_hash=str(payload["approval_envelope_hash"]),
+        action_digest=str(payload["action_digest"]),
+        decision_nonce="nonce-1",
+        evidence_payload=payload,
+        evidence_hash=canonical_sha256(payload),
+    )
+
+    stamped = authenticator.stamp(evidence)
+
+    assert stamped.authenticator_mac.startswith("hmac-sha256:")
+    assert authenticator.verify(stamped) is True
+    assert key_path.stat().st_mode & 0o777 == 0o600
+    assert ConfirmationEvidenceAuthenticator.from_path(key_path).verify(stamped) is True
+    assert (
+        authenticator.verify(stamped.model_copy(update={"backend_id": "fabricated"}))
+        is False
+    )
 
 
 def test_intent_envelope_hash_matches_reference_vector() -> None:

@@ -802,8 +802,16 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
   unresolved executing attempts become `outcome_unknown`.
 - The lifetime binding includes the optional `execute_after` cooldown, which
   must be timezone-aware and fall between creation and expiry. Loaded
-  confirmation evidence is accepted only when its payload hash and duplicated
-  proof/backend metadata validate canonically against the selected backend.
+  confirmation evidence is accepted only when its payload hash, duplicated
+  proof/backend metadata, built-in backend proof invariants, and daemon-local
+  durable HMAC all validate. The HMAC key is stored separately with owner-only
+  permissions; software confirmation is proofless but still receives this
+  durable daemon authentication before it can become replay evidence.
+- The evidence-authentication key defaults to
+  `SHISAD_DATA_DIR/confirmation_evidence.key` (`0600`). Treat it as secret
+  daemon state when backing up or migrating a data directory. If it is missing
+  or no longer matches, unresolved executing approvals fail closed and require
+  fresh approval rather than replaying.
 - `action_summary` is excluded so display text cannot change the
   cryptographic binding.
 

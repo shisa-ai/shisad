@@ -24,16 +24,22 @@ from shisad.core.approval import (
     ConfirmationBackendRegistry,
     ConfirmationCapabilities,
     ConfirmationEvidence,
+    ConfirmationEvidenceAuthenticator,
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
+    EnterpriseKmsSignerBackend,
     IntentAction,
     IntentEnvelope,
     IntentPolicyContext,
+    LocalFido2Backend,
+    SignerConfirmationAdapter,
     SoftwareConfirmationBackend,
     TOTPBackend,
+    WebAuthnBackend,
     approval_envelope_hash,
+    canonical_sha256,
     compute_action_digest,
     generate_totp_code,
     hash_recovery_code,
@@ -92,6 +98,7 @@ from shisad.security.credentials import (
     ApprovalFactorRecord,
     InMemoryCredentialStore,
     RecoveryCodeRecord,
+    SignerKeyRecord,
 )
 from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.pep import PEP, PolicyContext
@@ -374,6 +381,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(
+            b"a" * 32
+        )
         self._credential_store = InMemoryCredentialStore()
         self._credential_store.set_approval_store_path(tmp_path / "approval-factors.json")
         self._pending_two_factor_enrollments: dict[str, object] = {}
@@ -1711,6 +1721,233 @@ async def test_f2_confirmation_rejects_noncanonical_backend_evidence(
     assert harness.effect_calls == 0
 
 
+@pytest.mark.parametrize(
+    "proof_backend",
+    ["totp", "webauthn", "local_fido2", "signer"],
+)
+def test_f2_real_proof_backends_reject_coherent_fabricated_evidence(
+    tmp_path: Path,
+    proof_backend: str,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending: PendingAction
+    extra_payload: dict[str, object] = {}
+    evidence_updates: dict[str, object] = {}
+    if proof_backend == "totp":
+        factor = _register_totp_factor(harness)
+        pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
+        backend = harness._confirmation_backend_registry.get_backend("totp.default")
+        assert isinstance(backend, TOTPBackend)
+    else:
+        factor = ApprovalFactorRecord(
+            credential_id=f"{proof_backend}-credential",
+            user_id="alice",
+            method="local_fido2" if proof_backend == "local_fido2" else "webauthn",
+            principal_id=f"{proof_backend}-principal",
+            webauthn_rp_id="",
+        )
+        if proof_backend == "webauthn":
+            backend = WebAuthnBackend(
+                credential_store=harness._credential_store,
+                approval_origin="https://approver.example.test",
+                rp_id="approver.example.test",
+            )
+        elif proof_backend == "local_fido2":
+            backend = LocalFido2Backend(
+                credential_store=harness._credential_store,
+                daemon_id="daemon-1",
+            )
+        else:
+            private_key = generate_secp256k1_private_key()
+            harness._credential_store.register_signer_key(
+                SignerKeyRecord(
+                    credential_id="kms-key-1",
+                    user_id="alice",
+                    backend="kms",
+                    principal_id="kms-principal",
+                    algorithm="ecdsa-secp256k1",
+                    device_type="kms",
+                    public_key_pem=public_key_pem(private_key),
+                )
+            )
+            backend = SignerConfirmationAdapter(
+                EnterpriseKmsSignerBackend(
+                    credential_store=harness._credential_store,
+                    endpoint_url="https://kms.example.test/sign",
+                )
+            )
+            factor = SimpleNamespace(
+                credential_id="kms-key-1",
+                principal_id="kms-principal",
+            )
+        harness._confirmation_backend_registry.register(backend)
+        pending = _webauthn_pending_action(nonce="expected")
+        pending.delivery_target = None
+        pending.allowed_channel_principals = []
+        pending.allowed_principals = []
+        pending.allowed_credentials = []
+        pending.selected_backend_id = backend.backend_id
+        pending.selected_backend_method = backend.method
+        pending.required_level = backend.level
+        pending.required_methods = [backend.method]
+        pending.required_capabilities = ConfirmationCapabilities()
+        if proof_backend == "signer":
+            pending.intent_envelope = IntentEnvelope(
+                intent_id=pending.action_id,
+                agent_id="daemon-1",
+                workspace_id=str(pending.workspace_id),
+                session_id=str(pending.session_id),
+                created_at=pending.created_at,
+                expires_at=pending.expires_at,
+                action=IntentAction(
+                    tool=str(pending.tool_name),
+                    display_summary="fabricated signer evidence",
+                    parameters=dict(pending.arguments),
+                    destinations=[],
+                ),
+                policy_context=IntentPolicyContext(
+                    required_level=backend.level,
+                    confirmation_reason=pending.reason,
+                    action_digest=pending.action_digest,
+                ),
+                nonce="signer-intent-nonce",
+            )
+            assert pending.approval_envelope is not None
+            pending.approval_envelope = pending.approval_envelope.model_copy(
+                update={
+                    "intent_envelope_hash": intent_envelope_hash(
+                        pending.intent_envelope
+                    )
+                }
+            )
+        elif isinstance(backend, WebAuthnBackend):
+            factor.webauthn_rp_id = backend.rp_id
+            harness._credential_store.register_approval_factor(factor)
+            extra_payload = {
+                "rp_id": backend.rp_id,
+                "origin": backend.approval_origin,
+                "sign_count": 0,
+            }
+        _bind_pending_action_identity(pending)
+
+    payload: dict[str, object] = {
+        "schema_version": "shisad.confirmation_evidence.v1",
+        "backend_id": backend.backend_id,
+        "method": backend.method,
+        "confirmation_id": pending.confirmation_id,
+        "decision_nonce": pending.decision_nonce,
+        "approval_envelope_hash": pending.approval_envelope_hash,
+        "action_digest": pending.action_digest,
+        "approver_principal_id": factor.principal_id,
+        "credential_id": factor.credential_id,
+        "fallback_used": pending.fallback_used,
+        **extra_payload,
+    }
+    if proof_backend == "signer":
+        assert pending.intent_envelope is not None
+        payload.update(
+            {
+                "intent_envelope_hash": intent_envelope_hash(pending.intent_envelope),
+                "signature": "",
+                "signer_key_id": "",
+                "review_surface": backend.review_surface.value,
+                "blind_sign_detected": False,
+            }
+        )
+        evidence_updates = {
+            "intent_envelope_hash": payload["intent_envelope_hash"],
+        }
+    evidence = ConfirmationEvidence(
+        level=backend.level,
+        method=backend.method,
+        backend_id=backend.backend_id,
+        approver_principal_id=factor.principal_id,
+        credential_id=factor.credential_id,
+        binding_scope=backend.binding_scope,
+        review_surface=backend.review_surface,
+        third_party_verifiable=backend.third_party_verifiable,
+        approval_envelope_hash=pending.approval_envelope_hash,
+        action_digest=pending.action_digest,
+        decision_nonce=pending.decision_nonce,
+        fallback_used=pending.fallback_used,
+        evidence_payload=payload,
+        evidence_hash=canonical_sha256(payload),
+        **evidence_updates,
+    )
+    pending.confirmation_evidence = evidence
+
+    assert (
+        harness._pending_approval_contract_invalid_reason(
+            pending,
+            require_evidence=True,
+        )
+        == "approval_contract_mismatch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_f2_live_totp_backend_cannot_self_assert_unverified_evidence(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    factor = _register_totp_factor(harness)
+
+    class _FabricatingTotpBackend(TOTPBackend):
+        def verify(
+            self,
+            *,
+            pending_action: object,
+            params: dict[str, object],
+            now: datetime | None = None,
+        ) -> ConfirmationEvidence:
+            _ = params, now
+            payload = {
+                "schema_version": "shisad.confirmation_evidence.v1",
+                "backend_id": self.backend_id,
+                "method": self.method,
+                "confirmation_id": str(getattr(pending_action, "confirmation_id", "")),
+                "decision_nonce": str(getattr(pending_action, "decision_nonce", "")),
+                "approval_envelope_hash": str(
+                    getattr(pending_action, "approval_envelope_hash", "")
+                ),
+                "action_digest": str(getattr(pending_action, "action_digest", "")),
+                "approver_principal_id": factor.principal_id,
+                "channel_principal_id": "",
+                "credential_id": factor.credential_id,
+                "fallback_used": False,
+            }
+            return ConfirmationEvidence(
+                level=self.level,
+                method=self.method,
+                backend_id=self.backend_id,
+                approver_principal_id=factor.principal_id,
+                credential_id=factor.credential_id,
+                binding_scope=self.binding_scope,
+                review_surface=self.review_surface,
+                third_party_verifiable=self.third_party_verifiable,
+                approval_envelope_hash=str(payload["approval_envelope_hash"]),
+                action_digest=str(payload["action_digest"]),
+                decision_nonce=str(payload["decision_nonce"]),
+                evidence_payload=payload,
+                evidence_hash=canonical_sha256(payload),
+            )
+
+    harness._confirmation_backend_registry.register(
+        _FabricatingTotpBackend(credential_store=harness._credential_store)
+    )
+    pending = _totp_pending_action(nonce="expected", required_methods=["totp"])
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "approval_contract_mismatch"
+    assert pending.confirmation_evidence is None
+    assert harness.execution_kwargs == []
+
+
 @pytest.mark.parametrize("proof_backend", ["software", "totp", "webauthn", "signer"])
 def test_f2_approval_contract_validator_is_shared_across_proof_backends(
     tmp_path: Path,
@@ -2737,6 +2974,9 @@ def _load_pending_actions_harness(
     harness._registry = _registry_for_confirmation()
     harness._confirmation_backend_registry = ConfirmationBackendRegistry()
     harness._confirmation_backend_registry.register(SoftwareConfirmationBackend())
+    harness._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(
+        b"a" * 32
+    )
     return harness
 
 
@@ -3825,6 +4065,7 @@ async def test_a0_confirmation_success_records_software_level_evidence(tmp_path)
     assert pending.confirmation_evidence is not None
     assert pending.confirmation_evidence.level == ConfirmationLevel.SOFTWARE
     assert pending.confirmation_evidence.method == "software"
+    assert pending.confirmation_evidence.authenticator_mac.startswith("hmac-sha256:")
     assert len(harness.execution_kwargs) == 1
     forwarded_evidence = harness.execution_kwargs[0]["approval_evidence"]
     assert forwarded_evidence is not None

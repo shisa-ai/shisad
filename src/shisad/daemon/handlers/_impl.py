@@ -42,6 +42,7 @@ from shisad.core.approval import (
     ConfirmationBackendRegistry,
     ConfirmationCapabilities,
     ConfirmationEvidence,
+    ConfirmationEvidenceAuthenticator,
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
@@ -1776,6 +1777,11 @@ class HandlerImplementation(
         self._daemon_id = hashlib.sha256(
             str(self._config.data_dir.resolve()).encode("utf-8", errors="ignore")
         ).hexdigest()[:32]
+        self._confirmation_evidence_authenticator = (
+            ConfirmationEvidenceAuthenticator.from_path(
+                self._config.data_dir / "confirmation_evidence.key"
+            )
+        )
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
         self._confirmation_backend_registry.register(

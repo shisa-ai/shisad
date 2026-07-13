@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 
 from shisad.core.api.schema import SessionCreateParams
-from shisad.core.approval import canonical_sha256, legacy_software_confirmation_requirement
+from shisad.core.approval import (
+    approval_envelope_hash,
+    canonical_sha256,
+    legacy_software_confirmation_requirement,
+)
 from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
 from shisad.core.request_context import RequestContext
@@ -1184,6 +1188,8 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "valid_backend_method_drift",
         "valid_fallback_drift",
         "fabricated_confirmation_evidence",
+        "non_ascii_evidence_hash",
+        "non_ascii_contract_hash",
         "action_digest_mismatch",
         "retry_generation_exhausted",
         "principal_mismatch",
@@ -1325,6 +1331,14 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         }
     elif tamper == "fabricated_confirmation_evidence":
         _replace_with_self_asserted_fabricated_evidence(durable_rows[0])
+    elif tamper == "non_ascii_evidence_hash":
+        durable_rows[0]["confirmation_evidence"]["evidence_hash"] = "sha256:☃"
+        durable_rows[0]["approval_evidence_hash"] = "sha256:☃"
+    elif tamper == "non_ascii_contract_hash":
+        durable_rows[0]["approval_envelope"]["approval_contract_hash"] = "sha256:☃"
+        durable_rows[0]["approval_envelope_hash"] = approval_envelope_hash(
+            durable_rows[0]["approval_envelope"]
+        )
     elif tamper == "action_digest_mismatch":
         durable_rows[0]["action_digest"] = "sha256:" + ("f" * 64)
     elif tamper == "retry_generation_exhausted":

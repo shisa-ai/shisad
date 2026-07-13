@@ -30,6 +30,7 @@ from shisad.core.approval import (
     approval_envelope_hash,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
+    confirmation_evidence_has_backend_proof,
     confirmation_evidence_is_canonical,
     confirmation_evidence_satisfies_requirement,
     generate_recovery_codes,
@@ -38,6 +39,7 @@ from shisad.core.approval import (
     intent_envelope_hash,
     match_totp_window,
     resolve_confirmation_destinations,
+    safe_compare_sha256,
 )
 from shisad.core.atomic_state import AtomicWriteError, StatePersistenceDegradedError
 from shisad.core.events import (
@@ -538,7 +540,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             expected_contract_hash = pending_approval_contract_hash(pending)
         except (TypeError, ValueError):
             return "approval_contract_mismatch"
-        if not hmac.compare_digest(stored_contract_hash, expected_contract_hash):
+        if not safe_compare_sha256(stored_contract_hash, expected_contract_hash):
             return "approval_contract_mismatch"
 
         intent_envelope = getattr(pending, "intent_envelope", None)
@@ -558,6 +560,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         if require_evidence:
             evidence = getattr(pending, "confirmation_evidence", None)
+            evidence_authenticator = getattr(
+                self,
+                "_confirmation_evidence_authenticator",
+                None,
+            )
             if (
                 evidence is None
                 or backend is None
@@ -579,6 +586,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     backend=backend,
                     confirmation_id=identity.confirmation_id,
                 )
+                or not confirmation_evidence_has_backend_proof(
+                    pending_action=pending,
+                    evidence=evidence,
+                    backend=backend,
+                )
+                or evidence_authenticator is None
+                or not evidence_authenticator.verify(evidence)
                 or not confirmation_evidence_satisfies_requirement(
                     requirement=self._pending_confirmation_requirement(pending),
                     evidence=evidence,
@@ -2367,6 +2381,28 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "confirmation_requirement_unsatisfied",
             }
+        if not confirmation_evidence_is_canonical(
+            evidence=validated_evidence,
+            backend=backend,
+            confirmation_id=str(pending.confirmation_id),
+        ) or not confirmation_evidence_has_backend_proof(
+            pending_action=pending,
+            evidence=validated_evidence,
+            backend=backend,
+        ):
+            pending.confirmation_evidence = None
+            self._confirmation_failure_tracker.record_failure(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "approval_contract_mismatch",
+            }
+        validated_evidence = self._confirmation_evidence_authenticator.stamp(
+            validated_evidence
+        )
         pending.confirmation_evidence = validated_evidence
         evidence_binding_reason = self._pending_approval_contract_invalid_reason(
             pending,
