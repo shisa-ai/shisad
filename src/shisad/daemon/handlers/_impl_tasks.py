@@ -699,6 +699,7 @@ class TasksImplMixin(HandlerMixinBase):
                         str(task.id),
                         reason=cancel_reason,
                     )
+                    self._finalize_pending_scheduler_accounting(pending)
                 self._schedule_recovery_accounting(pending)
             except Exception:
                 self._contain_unresolved_task_attempt(str(task.id))
@@ -725,6 +726,7 @@ class TasksImplMixin(HandlerMixinBase):
                     str(task.id),
                     reason=cancel_reason,
                 )
+                self._finalize_pending_scheduler_accounting(pending)
         except Exception:
             self._contain_unresolved_task_attempt(str(task.id))
             raise

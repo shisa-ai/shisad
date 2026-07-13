@@ -383,6 +383,8 @@ class _AvailableWebAuthnRouteBackend:
 
 
 class _ConfirmationImplHarness(ConfirmationImplMixin):
+    _capture_pending_scheduler_posture = HandlerImplementation._capture_pending_scheduler_posture
+
     def __init__(
         self,
         tmp_path,
@@ -590,6 +592,9 @@ class _QueuePendingHarness(HandlerImplementation):
         self._pending_actions_file = tmp_path / "pending_actions.json"
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator(
+            b"a" * 32
+        )
         self._credential_store = InMemoryCredentialStore()
         self._credential_store.set_approval_store_path(tmp_path / "approval-factors.json")
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
@@ -2322,12 +2327,19 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     pending.status = "cancelled"
     pending.status_reason = status_reason
     pending.task_id = "task-1"
-    payload = HandlerImplementation._pending_to_dict(pending)
+    _bind_pending_action_identity(pending)
     pending_actions_file = tmp_path / "pending_actions.json"
-    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
     harness = _load_pending_actions_harness(
         pending_actions_file=pending_actions_file,
     )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._persist_pending_actions()
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["result_id"]
+    assert persisted["recovery_authority_mac"].startswith("hmac-sha256:")
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
 
     harness._load_pending_actions()
 
@@ -2335,6 +2347,7 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     assert loaded.status == "cancelled"
     assert loaded.status_reason == status_reason
     assert loaded.decision_nonce == ""
+    assert loaded.recovery_accounting_pending is False
 
 
 def test_f2_current_contract_blank_nonce_fails_closed(tmp_path: Path) -> None:
@@ -3412,6 +3425,11 @@ def _load_pending_actions_harness(
     harness._pending_actions = {}
     harness._pending_by_session = {}
     harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    harness._scheduler = _SchedulerRecorder()
+    harness._schedule_recovery_accounting = lambda _pending: None  # type: ignore[method-assign]
+    harness._schedule_recovered_task_cancellation = (  # type: ignore[method-assign]
+        lambda _pending, *, reason: None
+    )
     harness._daemon_id = "daemon-1"
     harness._registry = _registry_for_confirmation()
     harness._confirmation_backend_registry = ConfirmationBackendRegistry()

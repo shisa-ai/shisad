@@ -2063,6 +2063,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         task_id,
                         reason=deferred_cancel_reason,
                     )
+                    finalize_accounting = getattr(
+                        self,
+                        "_finalize_pending_scheduler_accounting",
+                        None,
+                    )
+                    if callable(finalize_accounting) and pending is not None:
+                        finalize_accounting(pending)
             finally:
                 if confirmation_lock_acquired:
                     confirmation_lock.release()
@@ -2656,6 +2663,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
             pending.stage2_previous_plan_hash = stage2_previous_hash
             pending.stage2_plan_hash = ""
+        capture_scheduler_posture = getattr(
+            self,
+            "_capture_pending_scheduler_posture",
+            None,
+        )
+        if str(getattr(pending, "task_id", "")).strip() and not callable(capture_scheduler_posture):
+            raise RuntimeError("scheduler_posture_capture_unavailable")
         action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         pending.status = "executing"
@@ -2664,7 +2678,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if stage2_action is not None
             else "confirmation_execution_started"
         )
-        self._capture_pending_scheduler_posture(pending)
+        if callable(capture_scheduler_posture):
+            capture_scheduler_posture(pending)
         executing_attempt = _capture_pending_attempt_snapshot(pending)
         try:
             self._persist_pending_actions()

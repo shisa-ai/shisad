@@ -3816,6 +3816,9 @@ class HandlerImplementation(
 
     def _persist_pending_actions(self) -> None:
         for pending in self._pending_actions.values():
+            canonical_identity = pending_action_state_view(pending).identity
+            if canonical_identity.result_id and not pending.result_id.strip():
+                pending.result_id = canonical_identity.result_id
             if _pending_action_has_started_execution_authority(pending):
                 pending.recovery_authority_mac = (
                     self._confirmation_evidence_authenticator.authenticate_recovery_snapshot(
@@ -5116,13 +5119,19 @@ class HandlerImplementation(
             return self._recovery_task_cancel_reason(pending)
         self._record_pending_scheduler_state(pending)
         cancel_reason = self._recovery_task_cancel_reason(pending)
+        if not cancel_reason:
+            self._finalize_pending_scheduler_accounting(pending)
+        return cancel_reason
+
+    def _finalize_pending_scheduler_accounting(self, pending: PendingAction) -> None:
+        if not pending.scheduler_accounting_pending:
+            return
         pending.scheduler_accounting_pending = False
         try:
             self._persist_pending_actions()
         except AtomicWriteError:
             pending.scheduler_accounting_pending = True
             raise
-        return cancel_reason
 
     def _recovery_task_cancel_reason(self, pending: PendingAction) -> str:
         task_id = pending.task_id.strip()
@@ -5167,10 +5176,11 @@ class HandlerImplementation(
     async def _cancel_recovered_task_siblings(
         self,
         *,
-        task_id: str,
+        pending: PendingAction,
         reason: str,
     ) -> None:
-        await self._cancel_pending_actions_for_task(task_id, reason=reason)
+        await self._cancel_pending_actions_for_task(pending.task_id, reason=reason)
+        self._finalize_pending_scheduler_accounting(pending)
 
     def _schedule_recovered_task_cancellation(
         self,
@@ -5180,7 +5190,7 @@ class HandlerImplementation(
     ) -> None:
         task = asyncio.create_task(
             self._cancel_recovered_task_siblings(
-                task_id=pending.task_id,
+                pending=pending,
                 reason=reason,
             ),
             name=f"shisad-recovery-task-cancel-{pending.confirmation_id}",

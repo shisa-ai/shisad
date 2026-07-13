@@ -371,19 +371,27 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
 
 
 @pytest.mark.parametrize(
-    ("crash_point", "authority_tamper"),
+    ("crash_point", "authority_tamper", "fail_first_recovery_cancellation"),
     [
-        pytest.param("before_accounting", "none", id="before-accounting"),
-        pytest.param("after_accounting", "none", id="after-accounting"),
+        pytest.param("before_accounting", "none", False, id="before-accounting"),
+        pytest.param("after_accounting", "none", False, id="after-accounting"),
         pytest.param(
             "after_accounting",
             "missing_mac",
+            False,
             id="after-accounting-missing-mac",
         ),
         pytest.param(
             "after_accounting",
             "mismatched_mac",
+            False,
             id="after-accounting-mismatched-mac",
+        ),
+        pytest.param(
+            "after_accounting",
+            "none",
+            True,
+            id="after-accounting-cancellation-second-restart",
         ),
     ],
 )
@@ -393,6 +401,7 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
     monkeypatch: pytest.MonkeyPatch,
     crash_point: str,
     authority_tamper: str,
+    fail_first_recovery_cancellation: bool,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -513,42 +522,71 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         )
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
-    restarted = await DaemonServices.build(config)
-    try:
-        restarted_handlers = DaemonControlHandlers(services=restarted)
-        await _wait_for_recovery_accounting(restarted_handlers._impl)
-        recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
-        assert recovered.status == (
-            "approved" if authority_tamper == "none" else "outcome_unknown"
-        )
-        recovered_sibling = restarted_handlers._impl._pending_actions[
-            sibling.confirmation_id
-        ]
-        assert recovered_sibling.status == "cancelled"
-        assert recovered_sibling.status_reason == (
-            "max_runs_reached" if authority_tamper == "none" else "outcome_unknown"
-        )
-        reconciled_task = restarted.scheduler.get_task(task.id)
-        assert reconciled_task is not None
-        assert reconciled_task.success_count == 1
-        assert reconciled_task.failure_count == 0
-        assert reconciled_task.enabled is False
-        rows = restarted.scheduler._pending_confirmations[task.id]
-        scheduler_row = next(
-            row for row in rows if row["confirmation_id"] == pending.confirmation_id
-        )
-        assert scheduler_row["run_outcome_recorded"] is True
-        assert scheduler_row["run_outcome_success"] is True
-        durable = next(
-            row
-            for row in json.loads(
-                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+    recovery_attempts = 2 if fail_first_recovery_cancellation else 1
+    for recovery_attempt in range(recovery_attempts):
+        restarted = await DaemonServices.build(config)
+        try:
+            restarted_handlers = DaemonControlHandlers(services=restarted)
+            recovered_impl = restarted_handlers._impl
+            if fail_first_recovery_cancellation and recovery_attempt == 0:
+
+                def _fail_sibling_cancellation(stage: AtomicWriteStage) -> None:
+                    if stage == AtomicWriteStage.FILE_FSYNC:
+                        raise OSError("process stopped during sibling cancellation")
+
+                recovered_impl._pending_state_fault_injector = _fail_sibling_cancellation
+                cancellation_tasks = [
+                    recovery_task
+                    for recovery_task in recovered_impl._recovery_accounting_tasks
+                    if recovery_task.get_name().startswith("shisad-recovery-task-cancel-")
+                ]
+                assert len(cancellation_tasks) == 1
+                with pytest.raises(AtomicWriteError):
+                    await asyncio.gather(*cancellation_tasks)
+                durable_rows = json.loads(
+                    (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+                )
+                durable_recovered = next(
+                    row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id
+                )
+                durable_sibling = next(
+                    row for row in durable_rows if row["confirmation_id"] == sibling.confirmation_id
+                )
+                assert durable_recovered["scheduler_accounting_pending"] is True
+                assert durable_sibling["status"] == "pending"
+                continue
+
+            await _wait_for_recovery_accounting(recovered_impl)
+            recovered = recovered_impl._pending_actions[pending.confirmation_id]
+            assert recovered.status == (
+                "approved" if authority_tamper == "none" else "outcome_unknown"
             )
-            if row["confirmation_id"] == pending.confirmation_id
-        )
-        assert durable["scheduler_accounting_pending"] is False
-    finally:
-        await restarted.shutdown()
+            recovered_sibling = recovered_impl._pending_actions[sibling.confirmation_id]
+            assert recovered_sibling.status == "cancelled"
+            assert recovered_sibling.status_reason == (
+                "max_runs_reached" if authority_tamper == "none" else "outcome_unknown"
+            )
+            reconciled_task = restarted.scheduler.get_task(task.id)
+            assert reconciled_task is not None
+            assert reconciled_task.success_count == 1
+            assert reconciled_task.failure_count == 0
+            assert reconciled_task.enabled is False
+            rows = restarted.scheduler._pending_confirmations[task.id]
+            scheduler_row = next(
+                row for row in rows if row["confirmation_id"] == pending.confirmation_id
+            )
+            assert scheduler_row["run_outcome_recorded"] is True
+            assert scheduler_row["run_outcome_success"] is True
+            durable = next(
+                row
+                for row in json.loads(
+                    (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+                )
+                if row["confirmation_id"] == pending.confirmation_id
+            )
+            assert durable["scheduler_accounting_pending"] is False
+        finally:
+            await restarted.shutdown()
 
 
 @pytest.mark.parametrize("producer", ["direct", "confirmed"])
