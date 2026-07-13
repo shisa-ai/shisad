@@ -28,6 +28,7 @@ from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
 from shisad.daemon.services import DaemonServices
 from shisad.scheduler.schema import Schedule
+from shisad.security.control_plane.schema import Origin
 
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1214,6 +1215,7 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "top_level_pep_elevation",
         "top_level_retry_descriptor",
         "coherent_origin_identity_drift",
+        "coherent_execution_identity_drift",
         "top_level_expiry_extension",
         "valid_backend_method_drift",
         "valid_fallback_drift",
@@ -1352,6 +1354,9 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
     elif tamper == "coherent_origin_identity_drift":
         durable_rows[0]["origin_turn_id"] = "different-origin-turn"
         durable_rows[0]["identity"]["origin_turn_id"] = "different-origin-turn"
+    elif tamper == "coherent_execution_identity_drift":
+        durable_rows[0]["execution_attempt_id"] = "attempt-tampered"
+        durable_rows[0]["identity"]["execution_attempt_id"] = "attempt-tampered"
     elif tamper == "top_level_expiry_extension":
         durable_rows[0]["expires_at"] = (
             datetime.now(UTC) + timedelta(days=7)
@@ -1419,7 +1424,14 @@ tools:
 
 @pytest.mark.parametrize(
     "recovery_case",
-    ["exact-key", "changed-key", "fabricated-evidence", "adapter-error"],
+    [
+        "exact-key",
+        "changed-key",
+        "fabricated-evidence",
+        "adapter-error",
+        "success-then-failure",
+        "failure-then-success",
+    ],
 )
 @pytest.mark.asyncio
 async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effect(
@@ -1444,6 +1456,23 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         stable_idempotency_key: str,
     ) -> dict[str, object]:
         calls.append(stable_idempotency_key)
+        if recovery_case == "success-then-failure" and len(calls) > 1:
+            return {
+                "ok": False,
+                "error": "provider_contradicted_initial_success",
+            }
+        if recovery_case == "failure-then-success":
+            if len(calls) == 1:
+                logical_effects.setdefault(
+                    stable_idempotency_key,
+                    {"ok": False, "error": "provider_initial_failure"},
+                )
+                return {"ok": False, "error": "provider_initial_failure"}
+            return {
+                "ok": True,
+                "provider_operation_id": "provider-operation-contradiction",
+                "value": str(arguments.get("value", "")),
+            }
         result = logical_effects.setdefault(
             stable_idempotency_key,
             {
@@ -1464,6 +1493,19 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         impl = raw_impl
         session = services.session_manager.get(session_id)
         assert session is not None
+        await services.control_plane.begin_precontent_plan(
+            session_id=str(session_id),
+            goal="Run one keyed fixture effect",
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="planner",
+                channel="cli",
+            ),
+            ttl_seconds=600,
+            max_actions=1,
+        )
         task = services.scheduler.create_task(
             name=f"keyed-recovery-{recovery_case}",
             goal="Recover one keyed fixture effect",
@@ -1543,12 +1585,26 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert recovered.provider_operation_id == ""
             assert recovered.recovery_result == {}
             assert calls == [stable_key]
-        elif recovery_case == "adapter-error":
+        elif recovery_case in {
+            "adapter-error",
+            "success-then-failure",
+            "failure-then-success",
+        }:
             assert recovered.status == "outcome_unknown"
-            assert recovered.status_reason == "idempotent_adapter_outcome_unknown"
+            assert recovered.status_reason == (
+                "idempotent_adapter_outcome_unknown"
+                if recovery_case == "adapter-error"
+                else "idempotent_adapter_outcome_conflict"
+            )
             assert recovered.retry_generation == 1
-            assert recovered.provider_operation_id == ""
-            assert recovered.recovery_result["ok"] is False
+            assert recovered.provider_operation_id == (
+                "provider-operation-contradiction"
+                if recovery_case == "failure-then-success"
+                else ""
+            )
+            assert recovered.recovery_result["ok"] is (
+                recovery_case == "failure-then-success"
+            )
             assert calls == [stable_key, stable_key]
         else:
             assert recovered.status == "approved"
@@ -1587,12 +1643,27 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             if row.get("tool_name") == str(tool_name)
         ]
         assert len(all_execution_records) == 1
-        assert all_execution_records[0].get("execution_status") == "success"
+        expected_initial_status = (
+            "failed" if recovery_case == "failure-then-success" else "success"
+        )
+        assert all_execution_records[0].get("execution_status") == expected_initial_status
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plans[str(recovered.session_id)]["executed_actions"] == (
+            0 if expected_initial_status == "failed" else 1
+        )
         if recovery_case == "exact-key":
             assert len(executed_events) == 1
             assert rejected_events == []
             assert recovery_execution_records == []
-        elif recovery_case == "adapter-error":
+        elif recovery_case in {
+            "adapter-error",
+            "success-then-failure",
+            "failure-then-success",
+        }:
             assert len(executed_events) == 1
             assert len(rejected_events) == 1
             assert recovery_execution_records == []

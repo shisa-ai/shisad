@@ -105,6 +105,8 @@ class ControlPlaneGateway(Protocol):
         idempotency_key: str = "",
     ) -> None: ...
 
+    async def execution_status(self, *, idempotency_key: str) -> str: ...
+
     async def observe_denied_action(
         self,
         *,
@@ -172,6 +174,10 @@ class _AckResult(BaseModel):
     ok: bool = True
 
 
+class _ExecutionStatusResult(BaseModel):
+    status: str = ""
+
+
 class _BeginPrecontentPlanParams(BaseModel):
     session_id: str
     goal: str
@@ -203,6 +209,10 @@ class _RecordExecutionParams(BaseModel):
     action: ControlPlaneAction
     success: bool
     idempotency_key: str = ""
+
+
+class _ExecutionStatusParams(BaseModel):
+    idempotency_key: str
 
 
 class _ApproveStage2Params(BaseModel):
@@ -374,6 +384,18 @@ class _ControlPlaneSidecarHandlers:
             idempotency_key=params.idempotency_key,
         )
         return _AckResult()
+
+    async def handle_execution_status(
+        self,
+        params: _ExecutionStatusParams,
+        ctx: RequestContext,
+    ) -> _ExecutionStatusResult:
+        _ = ctx
+        return _ExecutionStatusResult(
+            status=self._engine.execution_status(
+                idempotency_key=params.idempotency_key,
+            )
+        )
 
     async def handle_observe_denied_action(
         self,
@@ -558,6 +580,16 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             ).model_dump(mode="json"),
             _AckResult,
         )
+
+    async def execution_status(self, *, idempotency_key: str) -> str:
+        result = await self._call(
+            "control_plane.execution_status",
+            _ExecutionStatusParams(idempotency_key=idempotency_key).model_dump(
+                mode="json"
+            ),
+            _ExecutionStatusResult,
+        )
+        return result.status
 
     async def observe_denied_action(
         self,
@@ -866,6 +898,11 @@ async def _run_sidecar(
         "control_plane.record_execution",
         cast(Any, handlers.handle_record_execution),
         params_model=_RecordExecutionParams,
+    )
+    server.register_method(
+        "control_plane.execution_status",
+        cast(Any, handlers.handle_execution_status),
+        params_model=_ExecutionStatusParams,
     )
     server.register_method(
         "control_plane.observe_denied_action",

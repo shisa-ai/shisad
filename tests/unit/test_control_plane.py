@@ -3134,6 +3134,39 @@ def test_f2_execution_attempt_key_deduplicates_normal_and_recovery_accounting(
     assert plans[origin.session_id]["executed_actions"] == 1
 
 
+def test_f2_execution_status_returns_first_durable_attempt_outcome(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / "attempt-outcome",
+        workspace_roots=[tmp_path],
+    )
+    origin = _origin("s-attempt-outcome")
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(tmp_path / "source.txt")},
+        origin=origin,
+        risk_tier=RiskTier.LOW,
+        workspace_roots=[tmp_path],
+    )
+    execution_key = "execution:attempt-outcome:control-plane"
+
+    assert engine.execution_status(idempotency_key=execution_key) == ""
+
+    engine.record_execution(
+        action=action,
+        success=True,
+        idempotency_key=execution_key,
+    )
+    engine.record_execution(
+        action=action,
+        success=False,
+        idempotency_key=execution_key,
+    )
+
+    assert engine.execution_status(idempotency_key=execution_key) == "success"
+
+
 def test_f2_unrelated_execution_does_not_reconcile_correlated_stage2_restart(
     tmp_path: Path,
 ) -> None:

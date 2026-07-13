@@ -1731,6 +1731,9 @@ async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
                 idempotency_key=idempotency_key,
             )
 
+        async def execution_status(self, *, idempotency_key: str) -> str:
+            return self._engine.execution_status(idempotency_key=idempotency_key)
+
         async def observe_denied_action(self, *, action: Any, source: str, reason_code: str) -> Any:
             return self._engine.observe_denied_action(
                 action=action,

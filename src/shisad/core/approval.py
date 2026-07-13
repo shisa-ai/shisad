@@ -578,6 +578,48 @@ class ConfirmationEvidenceAuthenticator:
             return False
         return hmac.compare_digest(stored, expected)
 
+    @staticmethod
+    def _recovery_snapshot_payload(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": "shisad.pending_recovery_auth.v1",
+            "snapshot": dict(snapshot),
+        }
+
+    def authenticate_recovery_snapshot(self, snapshot: Mapping[str, Any]) -> str:
+        """Authenticate daemon-owned post-decision recovery state."""
+        try:
+            payload = canonical_json_dumps(
+                self._recovery_snapshot_payload(snapshot)
+            ).encode("utf-8")
+        except (TypeError, UnicodeEncodeError, ValueError):
+            return ""
+        digest = hmac.new(self._key, payload, hashlib.sha256).hexdigest()
+        return f"{self._MAC_PREFIX}{digest}"
+
+    def verify_recovery_snapshot(
+        self,
+        snapshot: Mapping[str, Any],
+        authenticator_mac: Any,
+    ) -> bool:
+        """Verify daemon-owned post-decision recovery state."""
+        stored = _decode_prefixed_sha256(
+            authenticator_mac,
+            prefix=self._MAC_PREFIX,
+        )
+        if stored is None:
+            return False
+        try:
+            expected = hmac.new(
+                self._key,
+                canonical_json_dumps(
+                    self._recovery_snapshot_payload(snapshot)
+                ).encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        except (TypeError, ValueError):
+            return False
+        return hmac.compare_digest(stored, expected)
+
 
 def _quarantine_state_file(path: Path, *, label: str) -> None:
     if not path.exists():

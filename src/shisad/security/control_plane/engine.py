@@ -461,6 +461,11 @@ class ControlPlaneEngine:
                 expected_plan_hash=trace_plan_hash,
             )
 
+    def execution_status(self, *, idempotency_key: str) -> str:
+        """Return the first durable outcome for an execution attempt key."""
+        record = self._history_store.idempotent_record(idempotency_key.strip())
+        return record.execution_status if record is not None else ""
+
     def observe_denied_action(
         self,
         *,

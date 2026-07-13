@@ -93,8 +93,12 @@ daemon durably records the action digest, approval-evidence hash, execution
 attempt ID, result ID, and `executing` state. On restart, only the exact
 in-process `time.now` route or a trusted adapter carrying the same persisted
 provider idempotency key may receive one bounded automatic recovery call. The
-daemon revalidates the live tool schema, action and retry descriptors, session
-and principal, current policy, approval evidence, and expiry before that call.
+daemon authenticates the post-decision recovery-authority snapshot with a
+separate domain under its durable confirmation-evidence HMAC key, then
+revalidates the live tool schema, action and retry descriptors, execution
+identity, session and principal, current policy, approval evidence, and expiry
+before that call. A missing or mismatched recovery authenticator fails closed
+to `outcome_unknown` and clears replay authority.
 Normal execution and recovery reuse one attempt-scoped control-plane accounting
 identity, so history and trace counters record the logical attempt once.
 Automatic recovery in v0.8.1 additionally requires that the durable attempt has
@@ -114,10 +118,13 @@ first; retrying means re-requesting the action and satisfying a new approval.
 Provider reconciliation is not generally available in v0.8.1, and shisad does
 not claim universal exactly-once behavior for arbitrary external services.
 Stable provider idempotency keys remain in private durable state and are not
-returned by the public pending-action API. If an uncertain attempt belongs to a
-scheduled task, that task is disabled so it cannot automatically repeat the
-possibly completed effect; you must reconcile the result before
-creating or enabling further work.
+returned by the public pending-action API. If a stable-key adapter contradicts
+the first durable control-plane outcome for the same attempt, the action becomes
+`outcome_unknown`; the first outcome remains authoritative for history and
+trace accounting, and scheduler containment records a failure without consuming
+a second logical run. If an uncertain attempt belongs to a scheduled task, that
+task is disabled so it cannot automatically repeat the possibly completed
+effect; you must reconcile the result before creating or enabling further work.
 
 Stage-two amendments are correlated to one confirmation and an explicit
 execution-attempt idempotency key. Uncertain transport or internal results and

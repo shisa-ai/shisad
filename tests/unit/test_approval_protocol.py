@@ -237,6 +237,36 @@ def test_confirmation_evidence_authenticator_is_durable_and_tamper_evident(
     )
 
 
+def test_recovery_snapshot_authenticator_is_domain_separated_and_tamper_evident(
+    tmp_path,
+) -> None:
+    authenticator = ConfirmationEvidenceAuthenticator.from_path(
+        tmp_path / "confirmation_evidence.key"
+    )
+    snapshot = {
+        "confirmation_id": "confirmation-1",
+        "execution_attempt_id": "attempt-1",
+        "status": "executing",
+    }
+
+    recovery_mac = authenticator.authenticate_recovery_snapshot(snapshot)
+
+    assert authenticator.verify_recovery_snapshot(snapshot, recovery_mac) is True
+    assert (
+        authenticator.authenticate_recovery_snapshot(
+            {**snapshot, "arguments": {"value": float("nan")}}
+        )
+        == ""
+    )
+    assert (
+        authenticator.verify_recovery_snapshot(
+            {**snapshot, "execution_attempt_id": "attempt-tampered"},
+            recovery_mac,
+        )
+        is False
+    )
+
+
 def test_intent_envelope_hash_matches_reference_vector() -> None:
     envelope = IntentEnvelope(
         intent_id="intent-1",

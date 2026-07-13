@@ -1023,6 +1023,7 @@ def test_f2_public_pending_payload_never_exposes_stable_idempotency_key() -> Non
         retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
     )
     pending.stable_idempotency_key = stable_key
+    pending.recovery_authority_mac = "hmac-sha256:" + ("a" * 64)
     pending.recovery_result = {
         "ok": True,
         "stable_idempotency_key": stable_key,
@@ -1037,11 +1038,13 @@ def test_f2_public_pending_payload_never_exposes_stable_idempotency_key() -> Non
     public = HandlerImplementation._pending_to_dict(pending, public=True)
 
     assert durable["stable_idempotency_key"] == stable_key
+    assert durable["recovery_authority_mac"] == pending.recovery_authority_mac
     assert durable["retry_descriptor"]["stable_idempotency_key"] == stable_key
     assert durable["recovery_result"]["stable_idempotency_key"] == stable_key
     assert public["stable_idempotency_key_present"] is True
     assert public["recovery_result_available"] is True
     assert "stable_idempotency_key" not in public
+    assert "recovery_authority_mac" not in public
     assert "stable_idempotency_key" not in public["retry_descriptor"]
     assert "recovery_result" not in public
     assert stable_key not in json.dumps(public, sort_keys=True)

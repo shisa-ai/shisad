@@ -89,12 +89,17 @@ result is durable, the action is not returned to the approval queue. Exact
 trusted retry metadata permits one bounded automatic recovery only for the
 in-process `time.now` route or an adapter-backed operation using the same
 persisted idempotency key, and only when the durable attempt has no delivery
-target. Every target-bearing attempt becomes `outcome_unknown`, even if its
-stored target appears unchanged, because v0.8.1 does not automatically deliver
-or continue from a recovered result. Other operations also become
-`outcome_unknown`, with the old decision nonce cleared. A scheduled task that
-reaches this state is disabled to prevent automatic repetition. This state does
-not mean the effect failed: inspect the action/attempt/result/provider
+target. The daemon also authenticates the post-decision execution identity and
+recovery state with its durable local HMAC key; missing or changed recovery
+authority fails closed. Every target-bearing attempt becomes `outcome_unknown`,
+even if its stored target appears unchanged, because v0.8.1 does not
+automatically deliver or continue from a recovered result. Other operations
+also become `outcome_unknown`, with the old decision nonce cleared. A stable-key
+adapter result that contradicts the first durable control-plane outcome also
+becomes `outcome_unknown`; the first outcome remains authoritative for history
+and trace accounting. A scheduled task that reaches this state is disabled and
+records one contained failure without consuming a second logical run. This
+state does not mean the effect failed: inspect the action/attempt/result/provider
 identifiers shown by `shisad action list --status outcome_unknown`, check
 provider or local evidence, and then
 re-request the action if you choose to retry. The re-request creates a new
@@ -831,6 +836,12 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
   daemon state when backing up or migrating a data directory. If it is missing
   or no longer matches, unresolved executing approvals fail closed and require
   fresh approval rather than replaying.
+- Started attempts also carry a domain-separated HMAC over daemon-owned
+  post-decision recovery state, including attempt/result identity, retry state,
+  provider operation identity, recovery result, accounting markers, and
+  scheduler containment markers. The authenticator is private durable state and
+  is never returned by the public pending-action API. Coherent edits to both
+  flat and nested execution identity still fail verification on restart.
 - For stage-two trace upgrades, the authenticated approval and an `executing`
   attempt with `stage2_amendment_pending` are persisted before plan authority is
   amended. Tool execution begins only after the amended plan and the

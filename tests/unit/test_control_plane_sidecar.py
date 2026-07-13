@@ -357,7 +357,17 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
         assert evaluation.action.origin.session_id == "sess-h1"
         assert evaluation.trace_result.allowed is True
 
-        await handle.client.record_execution(action=evaluation.action, success=True)
+        execution_key = "h1-sidecar-execution"
+        assert await handle.client.execution_status(idempotency_key=execution_key) == ""
+        await handle.client.record_execution(
+            action=evaluation.action,
+            success=True,
+            idempotency_key=execution_key,
+        )
+        assert (
+            await handle.client.execution_status(idempotency_key=execution_key)
+            == "success"
+        )
 
         history_path = tmp_path / "data" / "control_plane" / "history.jsonl"
         history_rows = [
