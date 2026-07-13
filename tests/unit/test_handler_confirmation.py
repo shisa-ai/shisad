@@ -2222,7 +2222,10 @@ def test_f2_parent_contract_blank_nonce_migration_is_verified_and_rebound(
     assert persisted["approval_envelope_hash"] == loaded.approval_envelope_hash
 
 
-@pytest.mark.parametrize("malformed_surface", ["contract", "envelope"])
+@pytest.mark.parametrize(
+    "malformed_surface",
+    ["contract", "envelope", "arguments_text", "arguments_non_finite"],
+)
 def test_f2_parent_contract_malformed_text_fails_closed(
     tmp_path: Path,
     malformed_surface: str,
@@ -2231,10 +2234,14 @@ def test_f2_parent_contract_malformed_text_fails_closed(
     payload = HandlerImplementation._pending_to_dict(pending)
     if malformed_surface == "contract":
         payload["safe_preview"] = "\ud800"
-    else:
+    elif malformed_surface == "envelope":
         envelope = payload["approval_envelope"]
         assert isinstance(envelope, dict)
         envelope["policy_reason"] = "\ud800"
+    elif malformed_surface == "arguments_text":
+        payload["arguments"] = {"query": "\ud800"}
+    else:
+        payload["arguments"] = {"query": float("nan")}
     pending_actions_file = tmp_path / "pending_actions.json"
     pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
     harness = _load_pending_actions_harness(
@@ -2247,6 +2254,32 @@ def test_f2_parent_contract_malformed_text_fails_closed(
     assert loaded.status == "failed"
     assert loaded.status_reason == "approval_contract_mismatch"
     assert loaded.decision_nonce == ""
+
+
+@pytest.mark.parametrize("decision_nonce", ["expected", ""])
+def test_f2_pending_attempt_identity_recovers_as_outcome_unknown(
+    tmp_path: Path,
+    decision_nonce: str,
+) -> None:
+    pending = _pending_action(nonce=decision_nonce)
+    pending.execution_attempt_id = "attempt-already-started"
+    pending.result_id = "result-already-reserved"
+    payload = HandlerImplementation._pending_to_dict(pending)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "outcome_unknown"
+    assert loaded.status_reason == "uncertain_effect_requires_fresh_approval"
+    assert loaded.decision_nonce == ""
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["status"] == "outcome_unknown"
+    assert persisted["decision_nonce"] == ""
 
 
 @pytest.mark.parametrize("drift", ["removed", "shortened", "naive"])

@@ -110,7 +110,7 @@ not claim universal exactly-once behavior for arbitrary external services.
 Stable provider idempotency keys remain in private durable state and are not
 returned by the public pending-action API. If an uncertain attempt belongs to a
 scheduled task, that task is disabled so it cannot automatically repeat the
-possibly completed effect; an operator must reconcile the result before
+possibly completed effect; you must reconcile the result before
 creating or enabling further work.
 
 Concurrent confirmation clicks for one action are serialized by an in-memory

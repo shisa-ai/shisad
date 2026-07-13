@@ -1666,6 +1666,25 @@ class PendingAction:
         )
 
 
+def _pending_action_has_started_execution_authority(pending: PendingAction) -> bool:
+    """Return whether a stored pending row carries post-decision authority."""
+
+    return bool(
+        pending.execution_attempt_id.strip()
+        or pending.result_id.strip()
+        or pending.provider_operation_id.strip()
+        or pending.approval_evidence_hash.strip()
+        or pending.confirmation_evidence is not None
+        or pending.retry_generation > 0
+        or pending.recovery_started_at is not None
+        or pending.recovery_result
+        or pending.recovery_accounting_pending
+        or pending.recovery_effect_invoked
+        or pending.recovery_scheduler_accounted
+        or pending.scheduler_accounting_pending
+    )
+
+
 @dataclass(slots=True)
 class ToolOutputRecord:
     tool_name: str
@@ -4473,6 +4492,12 @@ class HandlerImplementation(
                     continue
                 pending = fallback_pending
                 recovery_authority_invalid = True
+            if (
+                pending.status == "pending"
+                and _pending_action_has_started_execution_authority(pending)
+            ):
+                pending.status = "outcome_unknown"
+                recovery_authority_invalid = True
             if recovery_authority_invalid:
                 pruned_stale = True
                 pending.recovery_accounting_pending = False
@@ -4675,26 +4700,33 @@ class HandlerImplementation(
         )
         if descriptor != expected_descriptor:
             return False
-        normalized_arguments = pep_arguments_for_policy_evaluation(
-            pending.tool_name,
-            pending.arguments,
-        )
-        destinations = resolve_confirmation_destinations(
-            tool_definition=tool_definition,
-            arguments=normalized_arguments,
-        )
-        expected_action_digest = compute_action_digest(
-            tool_definition=tool_definition,
-            arguments=normalized_arguments,
-            destinations=destinations,
-            stable_idempotency_key=stable_idempotency_key,
-        )
+        try:
+            normalized_arguments = pep_arguments_for_policy_evaluation(
+                pending.tool_name,
+                pending.arguments,
+            )
+            destinations = resolve_confirmation_destinations(
+                tool_definition=tool_definition,
+                arguments=normalized_arguments,
+            )
+            expected_action_digest = compute_action_digest(
+                tool_definition=tool_definition,
+                arguments=normalized_arguments,
+                destinations=destinations,
+                stable_idempotency_key=stable_idempotency_key,
+            )
+        except (TypeError, ValueError):
+            return False
         if pending.action_digest != expected_action_digest:
             return False
         approval_envelope = pending.approval_envelope
         if approval_envelope is None or approval_envelope.action_digest != expected_action_digest:
             return False
-        if approval_envelope_hash(approval_envelope) != pending.approval_envelope_hash:
+        try:
+            expected_approval_envelope_hash = approval_envelope_hash(approval_envelope)
+        except (TypeError, ValueError):
+            return False
+        if expected_approval_envelope_hash != pending.approval_envelope_hash:
             return False
         evidence = pending.confirmation_evidence
         if evidence is None or not pending.approval_evidence_hash:

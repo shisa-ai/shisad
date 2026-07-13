@@ -511,21 +511,24 @@ class ConfirmationImplMixin(HandlerMixinBase):
         tool_definition = get_tool(pending.tool_name) if callable(get_tool) else None
         if tool_definition is None:
             return "approval_contract_mismatch"
-        normalized_arguments = pep_arguments_for_policy_evaluation(
-            pending.tool_name,
-            pending.arguments,
-        )
-        expected_action_digest = compute_action_digest(
-            tool_definition=tool_definition,
-            arguments=normalized_arguments,
-            destinations=resolve_confirmation_destinations(
+        try:
+            normalized_arguments = pep_arguments_for_policy_evaluation(
+                pending.tool_name,
+                pending.arguments,
+            )
+            expected_action_digest = compute_action_digest(
                 tool_definition=tool_definition,
                 arguments=normalized_arguments,
-            ),
-            stable_idempotency_key=str(
-                getattr(pending, "stable_idempotency_key", "")
-            ).strip(),
-        )
+                destinations=resolve_confirmation_destinations(
+                    tool_definition=tool_definition,
+                    arguments=normalized_arguments,
+                ),
+                stable_idempotency_key=str(
+                    getattr(pending, "stable_idempotency_key", "")
+                ).strip(),
+            )
+        except (TypeError, ValueError):
+            return "approval_contract_mismatch"
         if not str(getattr(pending, "action_digest", "")).strip() or not str(
             getattr(approval_envelope, "action_digest", "")
         ).strip():

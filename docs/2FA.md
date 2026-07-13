@@ -82,7 +82,7 @@ The pending-action deadline is separate from TOTP code windows, enrollment
 deadlines, and approval-web capability-link TTLs. Issuing or refreshing a link
 does not extend the action's deadline. `shisad action list` shows canonical
 state, age, creation/expiry timestamps, origin turn, and terminal state reason
-so an operator can distinguish an expired action from a live approval request.
+so you can distinguish an expired action from a live approval request.
 
 If the daemon restarts after an approved effect may have started but before its
 result is durable, the action is not returned to the approval queue. Exact

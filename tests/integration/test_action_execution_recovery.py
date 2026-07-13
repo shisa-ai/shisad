@@ -492,6 +492,7 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         "result_both_missing",
         "result_malformed",
         "result_mismatch",
+        "status_pending",
     ],
 )
 @pytest.mark.asyncio
@@ -675,6 +676,9 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["result_id"] = ["not", "text"]
     elif corruption == "result_mismatch":
         durable["result_id"] = "result-mismatch"
+    elif corruption == "status_pending":
+        durable["status"] = "pending"
+        durable["status_reason"] = ""
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
     restarted = await DaemonServices.build(config)
@@ -702,6 +706,9 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
                 if row["confirmation_id"] == pending.confirmation_id
             )
             assert durable["scheduler_accounting_pending"] is False
+            if corruption == "status_pending":
+                assert durable["status"] == "outcome_unknown"
+                assert durable["decision_nonce"] == ""
         if decoy_task_id:
             decoy_task = restarted.scheduler.get_task(decoy_task_id)
             assert decoy_task is not None
@@ -1169,6 +1176,8 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "corrupt_confirmation_evidence",
         "top_level_created_at",
         "top_level_arguments",
+        "arguments_lone_surrogate",
+        "arguments_non_finite",
         "top_level_capabilities",
         "top_level_required_level",
         "top_level_required_capabilities",
@@ -1287,6 +1296,10 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         durable_rows[0]["created_at"] = "not-a-timestamp"
     elif tamper == "top_level_arguments":
         durable_rows[0]["arguments"] = "not-a-mapping"
+    elif tamper == "arguments_lone_surrogate":
+        durable_rows[0]["arguments"] = {"timezone": "\ud800"}
+    elif tamper == "arguments_non_finite":
+        durable_rows[0]["arguments"] = {"timezone": float("nan")}
     elif tamper == "top_level_capabilities":
         durable_rows[0]["capabilities"] = ["not-a-capability"]
     elif tamper == "top_level_required_level":
