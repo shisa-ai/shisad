@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -60,7 +61,6 @@ from shisad.core.approval import (
     WebAuthnBackend,
     approval_audit_fields,
     approval_envelope_hash,
-    canonical_json_dumps,
     compute_action_digest,
     confirmation_backend_satisfies_constraints,
     confirmation_evidence_satisfies_requirement,
@@ -265,6 +265,90 @@ def _loaded_state_mapping(value: Any) -> tuple[dict[str, Any], bool]:
     if isinstance(value, Mapping):
         return dict(value), True
     return {}, False
+
+
+def _require_native_json_payload(value: Any) -> None:
+    """Reject values that require Python-specific normalization before JSON."""
+
+    def _validate(candidate: Any) -> None:
+        if candidate is None or isinstance(candidate, (bool, int)):
+            return
+        if isinstance(candidate, float):
+            if not math.isfinite(candidate):
+                raise ValueError("non-finite floats are not valid JSON")
+            return
+        if isinstance(candidate, str):
+            candidate.encode("utf-8")
+            return
+        if isinstance(candidate, list):
+            for item in candidate:
+                _validate(item)
+            return
+        if isinstance(candidate, dict):
+            for key, item in candidate.items():
+                if not isinstance(key, str):
+                    raise TypeError("JSON object keys must be strings")
+                key.encode("utf-8")
+                _validate(item)
+            return
+        raise TypeError(f"{type(candidate).__name__} is not a native JSON value")
+
+    _validate(value)
+    json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _native_json_payload_is_valid(value: Any) -> bool:
+    try:
+        _require_native_json_payload(value)
+    except (TypeError, ValueError, UnicodeEncodeError):
+        return False
+    return True
+
+
+def _sanitize_loaded_json_payload(value: Any) -> tuple[Any, bool]:
+    """Return a native-JSON-safe loaded value plus whether it was unchanged."""
+
+    if value is None or isinstance(value, (bool, int)):
+        return value, True
+    if isinstance(value, float):
+        return (value, True) if math.isfinite(value) else (None, False)
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return "", False
+        return value, True
+    if isinstance(value, list):
+        sanitized_items: list[Any] = []
+        valid = True
+        for item in value:
+            sanitized, item_valid = _sanitize_loaded_json_payload(item)
+            sanitized_items.append(sanitized)
+            valid = valid and item_valid
+        return sanitized_items, valid
+    if isinstance(value, dict):
+        sanitized_mapping: dict[str, Any] = {}
+        valid = True
+        for key, item in value.items():
+            if not isinstance(key, str):
+                valid = False
+                continue
+            try:
+                key.encode("utf-8")
+            except UnicodeEncodeError:
+                valid = False
+                continue
+            sanitized, item_valid = _sanitize_loaded_json_payload(item)
+            sanitized_mapping[key] = sanitized
+            valid = valid and item_valid
+        return sanitized_mapping, valid
+    return None, False
 
 
 def _loaded_state_optional_mapping(
@@ -4114,6 +4198,13 @@ class HandlerImplementation(
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            recovery_result_json_valid = _native_json_payload_is_valid(
+                item.get("recovery_result", {})
+            )
+            sanitized_item, item_json_valid = _sanitize_loaded_json_payload(item)
+            if not isinstance(sanitized_item, dict):
+                continue
+            item = sanitized_item
             item, identity_binding_invalid = self._canonicalize_loaded_pending_identity(item)
             legacy_mixed_sensitive_payload = False
             erased_recovery_authority_present = False
@@ -4302,6 +4393,9 @@ class HandlerImplementation(
                 recovery_result, recovery_result_valid = _loaded_state_mapping(
                     recovery_result_payload
                 )
+                if not recovery_result_json_valid:
+                    recovery_result = {}
+                    recovery_result_valid = False
                 recovery_accounting_pending, recovery_accounting_pending_valid = _loaded_state_bool(
                     item.get("recovery_accounting_pending", False)
                 )
@@ -4334,11 +4428,6 @@ class HandlerImplementation(
                     )
                 )
                 raw_arguments, arguments_valid = _loaded_state_mapping(item.get("arguments", {}))
-                if arguments_valid:
-                    try:
-                        canonical_json_dumps(raw_arguments).encode("utf-8")
-                    except (TypeError, ValueError, UnicodeEncodeError):
-                        raw_arguments = {}
                 recovery_authority_invalid = recovery_authority_invalid or not arguments_valid
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
                 group = _pending_payload_group(item)
@@ -4610,6 +4699,8 @@ class HandlerImplementation(
                 recovery_authority_invalid = True
                 recovery_authority_mac_valid = False
             started_recovery_authority = _pending_action_has_started_execution_authority(pending)
+            if started_recovery_authority and not item_json_valid:
+                recovery_authority_invalid = True
             if started_recovery_authority:
                 recovery_authority_invalid = recovery_authority_invalid or not (
                     recovery_authority_mac_valid
@@ -5477,7 +5568,7 @@ class HandlerImplementation(
                             pending.stable_idempotency_key,
                         )
                     )
-                    canonical_json_dumps(result).encode("utf-8")
+                    _require_native_json_payload(result)
                 except Exception:
                     logger.warning(
                         "Stable-key recovery adapter outcome is uncertain for %s",
@@ -5803,7 +5894,7 @@ class HandlerImplementation(
             else:
                 try:
                     provider_payload = dict(adapter(dict(arguments), stable_idempotency_key))
-                    canonical_json_dumps(provider_payload).encode("utf-8")
+                    _require_native_json_payload(provider_payload)
                 except Exception:
                     logger.warning(
                         "Stable-key adapter outcome is uncertain for %s",

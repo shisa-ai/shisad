@@ -1435,6 +1435,10 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "top_level_arguments",
         "arguments_lone_surrogate",
         "arguments_non_finite",
+        "recovery_result_lone_surrogate",
+        "recovery_result_non_finite",
+        "confirmation_evidence_lone_surrogate",
+        "execution_identity_lone_surrogate",
         "top_level_capabilities",
         "top_level_required_level",
         "top_level_required_capabilities",
@@ -1566,6 +1570,15 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         durable_rows[0]["arguments"] = {"timezone": "\ud800"}
     elif tamper == "arguments_non_finite":
         durable_rows[0]["arguments"] = {"timezone": float("nan")}
+    elif tamper == "recovery_result_lone_surrogate":
+        durable_rows[0]["recovery_result"] = {"ok": True, "value": "\ud800"}
+    elif tamper == "recovery_result_non_finite":
+        durable_rows[0]["recovery_result"] = {"ok": True, "value": float("nan")}
+    elif tamper == "confirmation_evidence_lone_surrogate":
+        durable_rows[0]["confirmation_evidence"]["approver_principal_id"] = "\ud800"
+    elif tamper == "execution_identity_lone_surrogate":
+        durable_rows[0]["execution_attempt_id"] = "\ud800"
+        durable_rows[0]["identity"]["execution_attempt_id"] = "\ud800"
     elif tamper == "top_level_capabilities":
         durable_rows[0]["capabilities"] = ["not-a-capability"]
     elif tamper == "top_level_required_level":
@@ -1684,6 +1697,7 @@ tools:
         pytest.param("adapter-error", 1, False, False, id="adapter-error"),
         pytest.param("adapter-non-finite", 1, False, False, id="adapter-non-finite"),
         pytest.param("adapter-lone-surrogate", 1, False, False, id="adapter-lone-surrogate"),
+        pytest.param("adapter-pathlike", 1, False, False, id="adapter-pathlike"),
         pytest.param("success-then-failure", 1, False, False, id="success-then-failure"),
         pytest.param("failure-then-success", 1, False, False, id="failure-then-success"),
         pytest.param("exact-key", 0, False, True, id="exact-key-unlimited"),
@@ -1748,6 +1762,8 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             return {"ok": True, "value": float("nan")}
         if recovery_case == "adapter-lone-surrogate" and len(calls) > 1:
             return {"ok": True, "value": "\ud800"}
+        if recovery_case == "adapter-pathlike" and len(calls) > 1:
+            return {"ok": True, "value": Path("/tmp/provider-value")}
         return result
 
     services = await DaemonServices.build(config)
@@ -1876,6 +1892,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             "adapter-error",
             "adapter-non-finite",
             "adapter-lone-surrogate",
+            "adapter-pathlike",
             "success-then-failure",
             "failure-then-success",
         }:
@@ -1883,7 +1900,12 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert recovered.status_reason == (
                 "idempotent_adapter_outcome_unknown"
                 if recovery_case
-                in {"adapter-error", "adapter-non-finite", "adapter-lone-surrogate"}
+                in {
+                    "adapter-error",
+                    "adapter-non-finite",
+                    "adapter-lone-surrogate",
+                    "adapter-pathlike",
+                }
                 else "idempotent_adapter_outcome_conflict"
             )
             assert recovered.retry_generation == 1
@@ -1947,6 +1969,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             "adapter-error",
             "adapter-non-finite",
             "adapter-lone-surrogate",
+            "adapter-pathlike",
             "success-then-failure",
             "failure-then-success",
         }:
@@ -1960,7 +1983,11 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     finally:
         await restarted.shutdown()
 
-    if recovery_case in {"adapter-non-finite", "adapter-lone-surrogate"}:
+    if recovery_case in {
+        "adapter-non-finite",
+        "adapter-lone-surrogate",
+        "adapter-pathlike",
+    }:
         second_restart = await DaemonServices.build(config)
         try:
             second_restart.registry.register(tool_definition)
@@ -1979,7 +2006,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
 
 @pytest.mark.parametrize(
     "adapter_outcome",
-    ["exception", "non-finite", "lone-surrogate"],
+    ["exception", "non-finite", "lone-surrogate", "pathlike"],
 )
 @pytest.mark.asyncio
 async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
@@ -2009,7 +2036,9 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
             raise RuntimeError("provider accepted keyed operation before transport failure")
         if adapter_outcome == "non-finite":
             return {"ok": True, "value": float("nan")}
-        return {"ok": True, "value": "\ud800"}
+        if adapter_outcome == "lone-surrogate":
+            return {"ok": True, "value": "\ud800"}
+        return {"ok": True, "value": Path("/tmp/provider-value")}
 
     services = await DaemonServices.build(config)
     try:
