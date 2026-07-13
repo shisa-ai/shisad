@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import getpass
-import hmac
 import json
 import logging
 import uuid
@@ -40,6 +39,7 @@ from shisad.core.approval import (
     match_totp_window,
     resolve_confirmation_destinations,
     safe_compare_sha256,
+    safe_compare_text,
 )
 from shisad.core.atomic_state import AtomicWriteError, StatePersistenceDegradedError
 from shisad.core.events import (
@@ -2218,7 +2218,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "missing_decision_nonce",
             }
-        if not hmac.compare_digest(provided_nonce, pending.decision_nonce):
+        if not safe_compare_text(provided_nonce, pending.decision_nonce):
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -2426,6 +2426,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         pending_preflight_action = pending.preflight_action
         stage2_reason = "stage2_upgrade_required" in pending.reason
+        stage2_action: Any | None = None
+        stage2_previous_hash = ""
         if stage2_reason:
             if not bool(self._policy_loader.policy.control_plane.trace.allow_amendment):
                 await self._commit_and_publish_pending_terminal(
@@ -2444,7 +2446,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 if pending_preflight_action is not None
                 else RiskTier.LOW
             )
-            approved_action = pending_preflight_action or build_action(
+            stage2_action = pending_preflight_action or build_action(
                 tool_name=str(pending.tool_name),
                 arguments=dict(pending.arguments),
                 origin=self._origin_for(session=session, actor="human_confirmation"),
@@ -2453,41 +2455,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     getattr(getattr(self, "_config", None), "assistant_fs_roots", [Path.cwd()])
                 ),
             )
-            previous_hash = await _call_control_plane(
+            stage2_previous_hash = await _call_control_plane(
                 self,
                 "active_plan_hash",
                 str(pending.session_id),
-            )
-            try:
-                plan_hash = await _call_control_plane(
-                    self,
-                    "approve_stage2",
-                    action=approved_action,
-                    approved_by="human_confirmation",
-                )
-            except ControlPlaneRpcError as exc:
-                reason = _confirmation_control_plane_reason(exc)
-                await self._commit_and_publish_pending_terminal(
-                    pending,
-                    status="failed",
-                    status_reason=reason,
-                    rollback_snapshot=pre_decision_attempt,
-                )
-                return {
-                    "confirmed": False,
-                    "confirmation_id": confirmation_id,
-                    "reason": reason,
-                    "status": pending.status,
-                    "status_reason": pending.status_reason,
-                }
-            await self._event_bus.publish(
-                PlanAmended(
-                    session_id=pending.session_id,
-                    actor="human_confirmation",
-                    plan_hash=plan_hash,
-                    amendment_of=previous_hash,
-                    stage="stage2_postevidence",
-                )
             )
 
         execution_capabilities = set(pending.capabilities)
@@ -2611,7 +2582,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         action_identity = pending_action_state_view(pending).identity
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         pending.status = "executing"
-        pending.status_reason = "confirmation_execution_started"
+        pending.status_reason = (
+            "stage2_amendment_pending"
+            if stage2_action is not None
+            else "confirmation_execution_started"
+        )
         executing_attempt = _capture_pending_attempt_snapshot(pending)
         try:
             self._persist_pending_actions()
@@ -2630,6 +2605,57 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     raise rollback_error from write_error
             raise
         self._sync_task_confirmation_status(pending)
+        if stage2_action is not None:
+            try:
+                plan_hash = await _call_control_plane(
+                    self,
+                    "approve_stage2",
+                    action=stage2_action,
+                    approved_by="human_confirmation",
+                )
+            except ControlPlaneRpcError as exc:
+                reason = _confirmation_control_plane_reason(exc)
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="failed",
+                    status_reason=reason,
+                )
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": reason,
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
+            await self._event_bus.publish(
+                PlanAmended(
+                    session_id=pending.session_id,
+                    actor="human_confirmation",
+                    plan_hash=plan_hash,
+                    amendment_of=stage2_previous_hash,
+                    stage="stage2_postevidence",
+                )
+            )
+            stage2_pending_attempt = _capture_pending_attempt_snapshot(pending)
+            pending.status_reason = "confirmation_execution_started"
+            stage2_ready_attempt = _capture_pending_attempt_snapshot(pending)
+            try:
+                self._persist_pending_actions()
+            except AtomicWriteError as write_error:
+                _restore_pending_attempt_snapshot(pending, stage2_pending_attempt)
+                if write_error.publication_may_have_committed:
+                    try:
+                        self._persist_pending_actions()
+                    except AtomicWriteError as rollback_error:
+                        _restore_pending_attempt_snapshot(pending, stage2_ready_attempt)
+                        self._pending_state_degradation = {
+                            "transition": "stage2_ready",
+                            "stage": rollback_error.stage.value,
+                            "reason": "pending_state_rollback_uncommitted",
+                        }
+                        raise rollback_error from write_error
+                raise
+            self._sync_task_confirmation_status(pending)
         execution_result = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
@@ -2918,7 +2944,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "missing_decision_nonce",
             }
-        if not hmac.compare_digest(provided_nonce, pending.decision_nonce):
+        if not safe_compare_text(provided_nonce, pending.decision_nonce):
             return {
                 "rejected": False,
                 "confirmation_id": confirmation_id,

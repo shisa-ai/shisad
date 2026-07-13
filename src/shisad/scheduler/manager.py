@@ -317,13 +317,27 @@ class SchedulerManager:
         row: dict[str, Any],
         success: bool,
     ) -> bool:
-        if bool(row.get("run_outcome_recorded", False)):
-            return True
         task = self._tasks.get(task_id)
         if task is None:
             return False
+        confirmation_id = str(row.get("confirmation_id", "")).strip()
+        if confirmation_id in task.confirmation_outcome_dedup:
+            recorded_success = task.confirmation_outcome_dedup[confirmation_id]
+            row["run_outcome_recorded"] = True
+            row["run_outcome_success"] = recorded_success
+            self._persist_pending_confirmations()
+            return True
+        if bool(row.get("run_outcome_recorded", False)):
+            if confirmation_id:
+                task.confirmation_outcome_dedup[confirmation_id] = bool(
+                    row.get("run_outcome_success", success)
+                )
+                self._persist_tasks()
+            return True
         row["run_outcome_recorded"] = True
         row["run_outcome_success"] = bool(success)
+        if confirmation_id:
+            task.confirmation_outcome_dedup[confirmation_id] = bool(success)
         if success:
             task.success_count += 1
         else:
@@ -334,7 +348,7 @@ class SchedulerManager:
             "task.run_outcome",
             {
                 "task_id": task_id,
-                "confirmation_id": str(row.get("confirmation_id", "")).strip(),
+                "confirmation_id": confirmation_id,
                 "success": success,
                 "success_count": task.success_count,
                 "failure_count": task.failure_count,
@@ -857,7 +871,14 @@ class SchedulerManager:
     def _persist_tasks(self) -> None:
         if self._tasks_file is None:
             return
-        payload = [task.model_dump(mode="json") for task in self._tasks.values()]
+        payload: list[dict[str, Any]] = []
+        for task in self._tasks.values():
+            task_payload = task.model_dump(mode="json")
+            if task.confirmation_outcome_dedup:
+                task_payload["_confirmation_outcome_dedup"] = dict(
+                    task.confirmation_outcome_dedup
+                )
+            payload.append(task_payload)
         self._tasks_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _load_tasks(self) -> None:
@@ -870,10 +891,21 @@ class SchedulerManager:
         if not isinstance(raw, list):
             return
         for item in raw:
+            if not isinstance(item, dict):
+                continue
             try:
                 task = ScheduledTask.model_validate(item)
             except ValidationError:
                 continue
+            outcome_dedup = item.get("_confirmation_outcome_dedup", {})
+            if isinstance(outcome_dedup, dict):
+                task.confirmation_outcome_dedup = {
+                    confirmation_id.strip(): outcome
+                    for confirmation_id, outcome in outcome_dedup.items()
+                    if isinstance(confirmation_id, str)
+                    and confirmation_id.strip()
+                    and isinstance(outcome, bool)
+                }
             self._tasks[task.id] = task
 
     def _persist_pending_confirmations(self) -> None:

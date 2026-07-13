@@ -4566,6 +4566,17 @@ class HandlerImplementation(
                 pruned_stale = True
             if not pending.decision_nonce and pending_action_state_view(pending).is_live_pending:
                 pending.decision_nonce = uuid.uuid4().hex
+                assert pending.approval_envelope is not None
+                pending.approval_envelope = pending.approval_envelope.model_copy(
+                    update={
+                        "approval_contract_hash": pending_approval_contract_hash(
+                            pending
+                        ),
+                    }
+                )
+                pending.approval_envelope_hash = approval_envelope_hash(
+                    pending.approval_envelope
+                )
                 migrated_legacy_decision_nonce = True
         if (
             pruned_stale
@@ -4588,6 +4599,11 @@ class HandlerImplementation(
         *,
         retry_class: ToolRetryClass,
     ) -> bool:
+        if (
+            str(getattr(pending, "status_reason", "")).strip()
+            == "stage2_amendment_pending"
+        ):
+            return False
         if self._pending_approval_contract_invalid_reason(
             pending,
             require_evidence=True,

@@ -98,6 +98,7 @@ def pending_approval_contract_payload(pending: Any) -> dict[str, Any]:
         "schema_version": "shisad.pending_approval_contract.v1",
         "identity": {
             "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
+            "decision_nonce": str(getattr(pending, "decision_nonce", "")),
             "action_id": str(getattr(pending, "action_id", "")).strip(),
             "origin_turn_id": str(getattr(pending, "origin_turn_id", "")).strip(),
             "session_id": str(getattr(pending, "session_id", "")).strip(),

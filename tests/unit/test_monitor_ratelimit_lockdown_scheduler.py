@@ -899,6 +899,66 @@ def test_f1_scheduler_pending_projection_excludes_expired_confirmation(
     assert persisted["status_reason"] == "approval_expired"
 
 
+def test_f2_confirmation_outcome_deduplicates_after_tasks_only_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = tmp_path / "tasks"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task = scheduler.create_task(
+        name="confirmation-outcome-dedup",
+        goal="Count one confirmed run",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot=set(),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        max_runs=3,
+    )
+    scheduler.queue_confirmation(
+        task.id,
+        {
+            "confirmation_id": "confirm-outcome-once",
+            "status": "failed",
+            "status_reason": "execution_failed",
+        },
+    )
+
+    def _crash_before_pending_marker() -> None:
+        raise OSError("injected crash after tasks.json outcome publication")
+
+    monkeypatch.setattr(
+        scheduler,
+        "_persist_pending_confirmations",
+        _crash_before_pending_marker,
+    )
+    with pytest.raises(OSError, match=r"tasks\.json outcome publication"):
+        scheduler.record_confirmation_outcome(
+            task.id,
+            confirmation_id="confirm-outcome-once",
+            success=False,
+        )
+
+    restarted = SchedulerManager(storage_dir=storage)
+    reloaded = restarted.get_task(task.id)
+    assert reloaded is not None
+    assert reloaded.failure_count == 1
+
+    assert restarted.record_confirmation_outcome(
+        task.id,
+        confirmation_id="confirm-outcome-once",
+        success=False,
+    )
+    assert reloaded.failure_count == 1
+    assert (
+        restarted.confirmation_outcome(
+            task.id,
+            confirmation_id="confirm-outcome-once",
+        )
+        is False
+    )
+
+
 def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmations(
     tmp_path: Path,
 ) -> None:

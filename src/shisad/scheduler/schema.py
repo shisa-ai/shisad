@@ -109,6 +109,12 @@ class ScheduledTask(BaseModel):
     failure_count: int = 0
     max_runs: int = 0
     enabled: bool = True
+    confirmation_outcome_dedup: dict[str, bool] = Field(
+        default_factory=dict,
+        exclude=True,
+        repr=False,
+        description="Internal confirmation outcome identities persisted with task counters",
+    )
 
     @model_validator(mode="before")
     @classmethod

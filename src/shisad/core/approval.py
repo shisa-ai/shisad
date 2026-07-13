@@ -493,6 +493,14 @@ def safe_compare_sha256(left: Any, right: Any) -> bool:
     )
 
 
+def safe_compare_text(left: Any, right: Any) -> bool:
+    """Compare arbitrary text in constant time without ASCII-only failures."""
+
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 class ConfirmationEvidenceAuthenticator:
     """Stamp verified evidence with a daemon-local durable HMAC."""
 

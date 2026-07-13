@@ -746,7 +746,7 @@ hash). It is a Pydantic model with `frozen=True`.
 | Field | Type | Description |
 |---|---|---|
 | `schema_version` | `str` | Always `"shisad.intent.v1"` |
-| `intent_id` | `str` | Unique ID for this intent (same as `confirmation_id`) |
+| `intent_id` | `str` | Unique ID for this intent (the distinct canonical `action_id`) |
 | `agent_id` | `str` | Daemon instance fingerprint |
 | `workspace_id` | `str` | Workspace UUID |
 | `session_id` | `str` | Session UUID |
@@ -805,6 +805,9 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
   `approval_contract_hash` and the current tool-schema `action_digest`. Missing,
   legacy, or inconsistent bindings are terminalized rather than authorized;
   unresolved executing attempts become `outcome_unknown`.
+- The immutable contract includes the decision nonce. Confirm/reject compare
+  nonce text as UTF-8 bytes in constant time, so loaded nonce replacement is a
+  contract mismatch and malformed or non-ASCII input fails closed.
 - The lifetime binding includes the optional `execute_after` cooldown, which
   must be timezone-aware and fall between creation and expiry. Loaded
   confirmation evidence is accepted only when its payload hash, duplicated
@@ -817,6 +820,10 @@ full `IntentEnvelope` via `intent_envelope_hash`. Signers sign the
   daemon state when backing up or migrating a data directory. If it is missing
   or no longer matches, unresolved executing approvals fail closed and require
   fresh approval rather than replaying.
+- For stage-two trace upgrades, the authenticated approval and an `executing`
+  attempt with `stage2_amendment_pending` are persisted before plan authority is
+  amended. Tool execution begins only after the amended plan and the
+  `confirmation_execution_started` readiness transition are both durable.
 - `action_summary` is excluded so display text cannot change the
   cryptographic binding.
 
