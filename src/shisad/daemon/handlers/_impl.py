@@ -3306,6 +3306,8 @@ class HandlerImplementation(
             payload.pop("recovery_accounting_pending", None)
             payload.pop("recovery_effect_invoked", None)
             payload.pop("recovery_scheduler_accounted", None)
+            payload.pop("recovery_scheduler_posture_captured", None)
+            payload.pop("recovery_scheduler_restore_enabled", None)
             payload.pop("scheduler_accounting_pending", None)
             payload.pop("stage2_correlation_id", None)
             payload.pop("stage2_previous_plan_hash", None)
@@ -5030,7 +5032,21 @@ class HandlerImplementation(
             else None
         )
         if recorded_outcome is not None and recorded_outcome != success:
-            raise RuntimeError("recovery_scheduler_outcome_conflict")
+            pending.status = "outcome_unknown"
+            pending.status_reason = "uncertain_effect_requires_fresh_approval"
+            pending.decision_nonce = ""
+            self._sync_task_confirmation_status(pending)
+            task = scheduler.get_task(task_id)
+            if task is not None and not scheduler.disable_task(task_id):
+                raise RuntimeError("recovery_scheduler_containment_failed")
+            logger.warning(
+                "Recovery scheduler outcome conflicts with pending state for %s; task disabled",
+                confirmation_id,
+            )
+            pending.recovery_scheduler_accounted = True
+            pending.recovery_scheduler_posture_captured = False
+            pending.recovery_scheduler_restore_enabled = False
+            return True
         changed = not pending.recovery_scheduler_accounted
         if recorded_outcome is None:
             self._sync_task_confirmation_status(pending)

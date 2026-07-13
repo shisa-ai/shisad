@@ -250,10 +250,20 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
         await restarted.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("crash_publication", "authority_tamper"),
+    [
+        pytest.param(2, "none", id="before-terminal-publication"),
+        pytest.param(3, "missing_mac", id="after-accounting-missing-mac"),
+        pytest.param(3, "mismatched_mac", id="after-accounting-mismatched-mac"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    crash_publication: int,
+    authority_tamper: str,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -293,8 +303,8 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
             nonlocal publication
             if stage == AtomicWriteStage.TEMP_OPEN:
                 publication += 1
-            if publication == 2 and stage == AtomicWriteStage.FILE_FSYNC:
-                raise OSError("process stopped before direct terminal publication")
+            if publication == crash_publication and stage == AtomicWriteStage.FILE_FSYNC:
+                raise OSError("process stopped during direct terminal accounting")
 
         monkeypatch.setattr(impl, "_execute_approved_action", _successful_effect)
         impl._pending_state_fault_injector = _fail_terminal_write
@@ -312,10 +322,13 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
             )
             if row["task_id"] == task.id
         )
-        assert durable["status"] == "executing"
+        assert durable["status"] == (
+            "executing" if crash_publication == 2 else "approved"
+        )
+        assert durable["scheduler_accounting_pending"] is (crash_publication == 3)
         contained_task = services.scheduler.get_task(task.id)
         assert contained_task is not None
-        assert contained_task.success_count == 0
+        assert contained_task.success_count == (1 if crash_publication == 3 else 0)
         assert contained_task.failure_count == 0
         assert contained_task.enabled is False
         assert (
@@ -327,6 +340,15 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
         assert effect_calls == 1
     finally:
         await services.shutdown()
+
+    if authority_tamper != "none":
+        pending_path = config.data_dir / "pending_actions.json"
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+        durable = next(row for row in durable_rows if row["task_id"] == task.id)
+        durable["recovery_authority_mac"] = (
+            "" if authority_tamper == "missing_mac" else "sha256:" + ("0" * 64)
+        )
+        pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
     restarted = await DaemonServices.build(config)
     try:
@@ -340,20 +362,37 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
         assert recovered.status == "outcome_unknown"
         recovered_task = restarted.scheduler.get_task(task.id)
         assert recovered_task is not None
-        assert recovered_task.success_count == 0
-        assert recovered_task.failure_count == 1
+        assert recovered_task.success_count == (1 if crash_publication == 3 else 0)
+        assert recovered_task.failure_count == (1 if crash_publication == 2 else 0)
         assert recovered_task.enabled is False
         assert effect_calls == 1
     finally:
         await restarted.shutdown()
 
 
-@pytest.mark.parametrize("crash_point", ["before_accounting", "after_accounting"])
+@pytest.mark.parametrize(
+    ("crash_point", "authority_tamper"),
+    [
+        pytest.param("before_accounting", "none", id="before-accounting"),
+        pytest.param("after_accounting", "none", id="after-accounting"),
+        pytest.param(
+            "after_accounting",
+            "missing_mac",
+            id="after-accounting-missing-mac",
+        ),
+        pytest.param(
+            "after_accounting",
+            "mismatched_mac",
+            id="after-accounting-mismatched-mac",
+        ),
+    ],
+)
 @pytest.mark.asyncio
 async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     crash_point: str,
+    authority_tamper: str,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -447,10 +486,25 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
     finally:
         await services.shutdown()
 
+    if authority_tamper != "none":
+        pending_path = config.data_dir / "pending_actions.json"
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+        durable = next(
+            row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id
+        )
+        durable["recovery_authority_mac"] = (
+            "" if authority_tamper == "missing_mac" else "sha256:" + ("0" * 64)
+        )
+        pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+
     restarted = await DaemonServices.build(config)
     try:
         restarted_handlers = DaemonControlHandlers(services=restarted)
         await _wait_for_recovery_accounting(restarted_handlers._impl)
+        recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
+        assert recovered.status == (
+            "approved" if authority_tamper == "none" else "outcome_unknown"
+        )
         reconciled_task = restarted.scheduler.get_task(task.id)
         assert reconciled_task is not None
         assert reconciled_task.success_count == 1
@@ -1610,6 +1664,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert precontained_task.enabled is False
             assert recovered.recovery_scheduler_posture_captured is True
             assert recovered.recovery_scheduler_restore_enabled is (not disable_before_restart)
+            public = restarted_handlers._impl._pending_to_dict(recovered, public=True)
+            assert "recovery_scheduler_posture_captured" not in public
+            assert "recovery_scheduler_restore_enabled" not in public
             precontained_rows = json.loads(
                 (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
             )
