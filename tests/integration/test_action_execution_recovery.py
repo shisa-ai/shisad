@@ -432,6 +432,22 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
             task.id,
             impl._pending_to_dict(pending, public=True),
         )
+        sibling = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reason="confirmed-accounting-sibling",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id=f"turn-confirmed-accounting-sibling-{crash_point}",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(sibling, public=True),
+        )
 
         if crash_point == "before_accounting":
 
@@ -504,6 +520,13 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
         assert recovered.status == (
             "approved" if authority_tamper == "none" else "outcome_unknown"
+        )
+        recovered_sibling = restarted_handlers._impl._pending_actions[
+            sibling.confirmation_id
+        ]
+        assert recovered_sibling.status == "cancelled"
+        assert recovered_sibling.status_reason == (
+            "max_runs_reached" if authority_tamper == "none" else "outcome_unknown"
         )
         reconciled_task = restarted.scheduler.get_task(task.id)
         assert reconciled_task is not None
@@ -799,7 +822,11 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_time
                 raise OSError("process stopped before corrupt-evidence marker clear")
 
         impl._pending_state_fault_injector = _fail_marker_clear
-        accounting_tasks = list(impl._recovery_accounting_tasks)
+        accounting_tasks = [
+            task
+            for task in impl._recovery_accounting_tasks
+            if task.get_name().startswith("shisad-recovery-accounting-")
+        ]
         assert len(accounting_tasks) == 1
         with pytest.raises(AtomicWriteError):
             await asyncio.gather(*accounting_tasks)

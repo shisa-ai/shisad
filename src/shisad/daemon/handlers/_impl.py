@@ -5164,6 +5164,43 @@ class HandlerImplementation(
 
         task.add_done_callback(_accounting_done)
 
+    async def _cancel_recovered_task_siblings(
+        self,
+        *,
+        task_id: str,
+        reason: str,
+    ) -> None:
+        await self._cancel_pending_actions_for_task(task_id, reason=reason)
+
+    def _schedule_recovered_task_cancellation(
+        self,
+        pending: PendingAction,
+        *,
+        reason: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self._cancel_recovered_task_siblings(
+                task_id=pending.task_id,
+                reason=reason,
+            ),
+            name=f"shisad-recovery-task-cancel-{pending.confirmation_id}",
+        )
+        self._recovery_accounting_tasks.add(task)
+
+        def _cancellation_done(completed: asyncio.Task[None]) -> None:
+            self._recovery_accounting_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.error(
+                    "Recovery sibling cancellation failed for confirmation %s",
+                    pending.confirmation_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(_cancellation_done)
+
     def _recovery_approval_event_fields(self, pending: PendingAction) -> dict[str, Any]:
         evidence = pending.confirmation_evidence
         approval_timestamp = self._recovery_event_timestamp(pending).isoformat()
@@ -5405,7 +5442,12 @@ class HandlerImplementation(
         scheduler_state_changed = False
         for pending in self._pending_actions.values():
             if pending.scheduler_accounting_pending:
-                self._complete_pending_scheduler_accounting(pending)
+                cancel_reason = self._complete_pending_scheduler_accounting(pending)
+                if cancel_reason:
+                    self._schedule_recovered_task_cancellation(
+                        pending,
+                        reason=cancel_reason,
+                    )
                 continue
             deferred_stable_key_accounting = (
                 pending.recovery_accounting_pending
