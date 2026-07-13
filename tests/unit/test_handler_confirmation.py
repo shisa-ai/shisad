@@ -2398,6 +2398,55 @@ def test_f2_expired_pending_persist_does_not_mint_terminal_recovery_authority(
     assert loaded.recovery_accounting_pending is False
 
 
+@pytest.mark.parametrize(
+    "authority_marker",
+    [
+        "recovery_started_at",
+        "execution_attempt_id",
+        "result_id",
+        "approval_evidence_hash",
+        "provider_operation_id",
+        "stage2_correlation_id",
+        "stage2_previous_plan_hash",
+        "stage2_plan_hash",
+        "recovery_authority_mac",
+    ],
+)
+def test_f2_sanitized_raw_recovery_marker_cannot_restore_live_pending(
+    tmp_path: Path,
+    authority_marker: str,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload[authority_marker] = "\ud800"
+    if authority_marker in {"execution_attempt_id", "result_id"}:
+        payload["identity"][authority_marker] = "\ud800"
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "outcome_unknown"
+    assert loaded.status_reason == "uncertain_effect_requires_fresh_approval"
+    assert loaded.decision_nonce == ""
+    assert loaded.recovery_accounting_pending is False
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["recovery_authority_mac"].startswith("hmac-sha256:")
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+
+    harness._load_pending_actions()
+
+    replayed = harness._pending_actions[pending.confirmation_id]
+    assert replayed.status == "outcome_unknown"
+    assert replayed.decision_nonce == ""
+    assert replayed.recovery_accounting_pending is False
+
+
 def test_f2_current_contract_blank_nonce_fails_closed(tmp_path: Path) -> None:
     pending = _pending_action(nonce="")
     payload = HandlerImplementation._pending_to_dict(pending)

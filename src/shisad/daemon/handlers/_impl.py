@@ -1798,6 +1798,56 @@ def _pending_action_has_started_execution_authority(pending: PendingAction) -> b
     )
 
 
+def _loaded_pending_payload_has_started_execution_authority(
+    item: Mapping[str, Any],
+) -> bool:
+    """Detect raw post-decision markers before load sanitation can erase them."""
+
+    identity = item.get("identity")
+    identity_fields = identity if isinstance(identity, Mapping) else {}
+
+    def _text_marker_present(value: Any) -> bool:
+        return bool(value.strip()) if isinstance(value, str) else value is not None
+
+    if any(
+        _text_marker_present(item.get(field, ""))
+        for field in (
+            "execution_attempt_id",
+            "result_id",
+            "provider_operation_id",
+            "approval_evidence_hash",
+            "recovery_started_at",
+            "stage2_correlation_id",
+            "stage2_previous_plan_hash",
+            "stage2_plan_hash",
+            "recovery_authority_mac",
+        )
+    ):
+        return True
+    if any(
+        _text_marker_present(identity_fields.get(field, ""))
+        for field in ("execution_attempt_id", "result_id")
+    ):
+        return True
+    if item.get("confirmation_evidence") is not None:
+        return True
+    if item.get("retry_generation", 0) != 0:
+        return True
+    if item.get("recovery_result", {}) != {}:
+        return True
+    return any(
+        item.get(field, False) is not False
+        for field in (
+            "recovery_accounting_pending",
+            "recovery_effect_invoked",
+            "recovery_scheduler_accounted",
+            "recovery_scheduler_posture_captured",
+            "recovery_scheduler_restore_enabled",
+            "scheduler_accounting_pending",
+        )
+    )
+
+
 def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, Any]:
     """Return the daemon-authenticated post-decision recovery snapshot."""
 
@@ -4198,6 +4248,9 @@ class HandlerImplementation(
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            raw_started_authority_present = (
+                _loaded_pending_payload_has_started_execution_authority(item)
+            )
             recovery_result_json_valid = _native_json_payload_is_valid(
                 item.get("recovery_result", {})
             )
@@ -4699,6 +4752,8 @@ class HandlerImplementation(
                 recovery_authority_invalid = True
                 recovery_authority_mac_valid = False
             started_recovery_authority = _pending_action_has_started_execution_authority(pending)
+            if raw_started_authority_present and not started_recovery_authority:
+                erased_recovery_authority_present = True
             if started_recovery_authority and not item_json_valid:
                 recovery_authority_invalid = True
             if started_recovery_authority:
