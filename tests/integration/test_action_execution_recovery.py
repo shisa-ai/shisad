@@ -214,9 +214,12 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
         assert contained_task is not None
         assert contained_task.failure_count == 1
         assert contained_task.enabled is False
-        assert services.scheduler.trigger_due(
-            now=task.created_at + timedelta(seconds=3),
-        ) == []
+        assert (
+            services.scheduler.trigger_due(
+                now=task.created_at + timedelta(seconds=3),
+            )
+            == []
+        )
     finally:
         await services.shutdown()
 
@@ -315,9 +318,12 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
         assert contained_task.success_count == 0
         assert contained_task.failure_count == 0
         assert contained_task.enabled is False
-        assert services.scheduler.trigger_due(
-            now=task.created_at + timedelta(seconds=3),
-        ) == []
+        assert (
+            services.scheduler.trigger_due(
+                now=task.created_at + timedelta(seconds=3),
+            )
+            == []
+        )
         assert effect_calls == 1
     finally:
         await services.shutdown()
@@ -520,17 +526,13 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             name=f"terminal-corruption-{producer}-{corruption}",
             goal="Account one scheduled effect",
             schedule=Schedule(kind="interval", expression="1s"),
-            capability_snapshot=(
-                {Capability.MESSAGE_SEND} if producer == "direct" else set()
-            ),
+            capability_snapshot=({Capability.MESSAGE_SEND} if producer == "direct" else set()),
             policy_snapshot_ref="terminal-corruption-recovery",
             created_by=session.user_id,
             workspace_id=session.workspace_id,
             allowed_recipients=["ops-room"] if producer == "direct" else [],
             delivery_target=(
-                {"channel": "discord", "recipient": "ops-room"}
-                if producer == "direct"
-                else {}
+                {"channel": "discord", "recipient": "ops-room"} if producer == "direct" else {}
             ),
             max_runs=1,
         )
@@ -569,7 +571,9 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             matching_runs = [run for run in runs if run.task_id == task.id]
             assert len(matching_runs) == 1
 
-            async def _successful_effect(**_kwargs: object) -> ApprovedToolExecutionResult:
+            async def _successful_effect(
+                **_kwargs: object,
+            ) -> ApprovedToolExecutionResult:
                 return ApprovedToolExecutionResult(success=True)
 
             monkeypatch.setattr(impl, "_execute_approved_action", _successful_effect)
@@ -688,17 +692,13 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         await _wait_for_recovery_accounting(restarted_handlers._impl)
         reconciled_task = restarted.scheduler.get_task(task.id)
         assert reconciled_task is not None
-        identity_uncertain = corruption not in {"unrelated_metadata", "marker"}
         unrecoverable_confirmation = corruption == "confirmation_both_missing"
         if unrecoverable_confirmation:
             assert reconciled_task.success_count == 0
             assert reconciled_task.failure_count == 0
-        elif identity_uncertain:
+        else:
             assert reconciled_task.success_count == 0
             assert reconciled_task.failure_count == 1
-        else:
-            assert reconciled_task.success_count == 1
-            assert reconciled_task.failure_count == 0
         assert reconciled_task.enabled is False
         if not unrecoverable_confirmation:
             durable = next(
@@ -912,8 +912,7 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         all_execution_records = [
             row
             for row in _control_plane_history_rows(config)
-            if row.get("tool_name") == "time.now"
-            and row.get("execution_status") == "success"
+            if row.get("tool_name") == "time.now" and row.get("execution_status") == "success"
         ]
         assert len(all_execution_records) == 1
     finally:
@@ -1011,8 +1010,7 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
         first_control = [
             row
             for row in _control_plane_history_rows(config)
-            if row.get("tool_name") == "time.now"
-            and row.get("execution_status") == "success"
+            if row.get("tool_name") == "time.now" and row.get("execution_status") == "success"
         ]
         assert len(first_control) == 1
     finally:
@@ -1046,8 +1044,7 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
         total_control = [
             row
             for row in _control_plane_history_rows(config)
-            if row.get("tool_name") == "time.now"
-            and row.get("execution_status") == "success"
+            if row.get("tool_name") == "time.now" and row.get("execution_status") == "success"
         ]
         assert len(total_control) == 1
         assert len({row["idempotency_key"] for row in total_control}) == 1
@@ -1216,6 +1213,9 @@ async def test_nonidempotent_crash_window_recovers_outcome_unknown_without_repla
         "top_level_retry_descriptor",
         "coherent_origin_identity_drift",
         "coherent_execution_identity_drift",
+        "terminal_status_approved",
+        "terminal_status_failed",
+        "terminal_status_missing_mac",
         "top_level_expiry_extension",
         "valid_backend_method_drift",
         "valid_fallback_drift",
@@ -1255,7 +1255,12 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         session = services.session_manager.get(session_id)
         assert session is not None
         scheduled_task = None
-        if tamper == "top_level_status":
+        if tamper in {
+            "top_level_status",
+            "terminal_status_approved",
+            "terminal_status_failed",
+            "terminal_status_missing_mac",
+        }:
             scheduled_task = services.scheduler.create_task(
                 name="corrupt-status-recovery",
                 goal="Contain a corrupt scheduled attempt",
@@ -1357,10 +1362,15 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
     elif tamper == "coherent_execution_identity_drift":
         durable_rows[0]["execution_attempt_id"] = "attempt-tampered"
         durable_rows[0]["identity"]["execution_attempt_id"] = "attempt-tampered"
+    elif tamper == "terminal_status_approved":
+        durable_rows[0]["status"] = "approved"
+    elif tamper == "terminal_status_failed":
+        durable_rows[0]["status"] = "failed"
+    elif tamper == "terminal_status_missing_mac":
+        durable_rows[0]["status"] = "approved"
+        durable_rows[0]["recovery_authority_mac"] = ""
     elif tamper == "top_level_expiry_extension":
-        durable_rows[0]["expires_at"] = (
-            datetime.now(UTC) + timedelta(days=7)
-        ).isoformat()
+        durable_rows[0]["expires_at"] = (datetime.now(UTC) + timedelta(days=7)).isoformat()
     elif tamper == "valid_backend_method_drift":
         durable_rows[0]["selected_backend_method"] = "totp"
     elif tamper == "valid_fallback_drift":
@@ -1423,14 +1433,22 @@ tools:
 
 
 @pytest.mark.parametrize(
-    "recovery_case",
+    (
+        "recovery_case",
+        "max_runs",
+        "disable_before_restart",
+        "expected_task_enabled",
+    ),
     [
-        "exact-key",
-        "changed-key",
-        "fabricated-evidence",
-        "adapter-error",
-        "success-then-failure",
-        "failure-then-success",
+        pytest.param("exact-key", 1, False, False, id="exact-key-max-runs"),
+        pytest.param("changed-key", 1, False, False, id="changed-key"),
+        pytest.param("fabricated-evidence", 1, False, False, id="fabricated-evidence"),
+        pytest.param("adapter-error", 1, False, False, id="adapter-error"),
+        pytest.param("success-then-failure", 1, False, False, id="success-then-failure"),
+        pytest.param("failure-then-success", 1, False, False, id="failure-then-success"),
+        pytest.param("exact-key", 0, False, True, id="exact-key-unlimited"),
+        pytest.param("exact-key", 3, False, True, id="exact-key-runs-remaining"),
+        pytest.param("exact-key", 3, True, False, id="exact-key-pre-disabled"),
     ],
 )
 @pytest.mark.asyncio
@@ -1438,6 +1456,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recovery_case: str,
+    max_runs: int,
+    disable_before_restart: bool,
+    expected_task_enabled: bool,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -1514,7 +1535,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             policy_snapshot_ref="keyed-recovery-test",
             created_by=session.user_id,
             workspace_id=session.workspace_id,
-            max_runs=1,
+            max_runs=max_runs,
         )
         pending = impl._queue_pending_action(
             session_id=session_id,
@@ -1559,6 +1580,8 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert stable_key.startswith("shisad-")
         assert calls == [stable_key]
         assert len(logical_effects) == 1
+        if disable_before_restart:
+            assert services.scheduler.disable_task(task.id) is True
     finally:
         await services.shutdown()
 
@@ -1575,8 +1598,25 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     try:
         restarted.registry.register(tool_definition)
         restarted.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+        loaded_task = restarted.scheduler.get_task(task.id)
+        assert loaded_task is not None
+        assert loaded_task.enabled is False
+        assert bool(loaded_task.recovery_containment_token) is (not disable_before_restart)
         restarted_handlers = DaemonControlHandlers(services=restarted)
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
+        if recovery_case not in {"changed-key", "fabricated-evidence"}:
+            precontained_task = restarted.scheduler.get_task(task.id)
+            assert precontained_task is not None
+            assert precontained_task.enabled is False
+            assert recovered.recovery_scheduler_posture_captured is True
+            assert recovered.recovery_scheduler_restore_enabled is (not disable_before_restart)
+            precontained_rows = json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
+            assert precontained_rows[0]["recovery_scheduler_posture_captured"] is True
+            assert precontained_rows[0]["recovery_scheduler_restore_enabled"] is (
+                not disable_before_restart
+            )
         await _wait_for_recovery_accounting(restarted_handlers._impl)
         if recovery_case in {"changed-key", "fabricated-evidence"}:
             assert recovered.status == "outcome_unknown"
@@ -1602,9 +1642,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
                 if recovery_case == "failure-then-success"
                 else ""
             )
-            assert recovered.recovery_result["ok"] is (
-                recovery_case == "failure-then-success"
-            )
+            assert recovered.recovery_result["ok"] is (recovery_case == "failure-then-success")
             assert calls == [stable_key, stable_key]
         else:
             assert recovered.status == "approved"
@@ -1618,7 +1656,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert recovered_task is not None
         assert recovered_task.success_count == (1 if recovery_case == "exact-key" else 0)
         assert recovered_task.failure_count == (0 if recovery_case == "exact-key" else 1)
-        assert recovered_task.enabled is False
+        assert recovered_task.enabled is expected_task_enabled
         recovery_events = [
             row
             for row in _audit_rows(config)
@@ -1643,14 +1681,10 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             if row.get("tool_name") == str(tool_name)
         ]
         assert len(all_execution_records) == 1
-        expected_initial_status = (
-            "failed" if recovery_case == "failure-then-success" else "success"
-        )
+        expected_initial_status = "failed" if recovery_case == "failure-then-success" else "success"
         assert all_execution_records[0].get("execution_status") == expected_initial_status
         plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
         )
         assert plans[str(recovered.session_id)]["executed_actions"] == (
             0 if expected_initial_status == "failed" else 1

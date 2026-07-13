@@ -76,7 +76,11 @@ from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
     ControlPlaneUnavailableError,
 )
-from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord, SignerKeyRecord
+from shisad.security.credentials import (
+    ApprovalFactorRecord,
+    RecoveryCodeRecord,
+    SignerKeyRecord,
+)
 
 logger = logging.getLogger(__name__)
 _CONFIRMATION_SHORT_COOLDOWN_WAIT_MAX_SECONDS = 3.5
@@ -117,6 +121,8 @@ class _PendingAttemptSnapshot:
     stage2_correlation_id: str
     stage2_previous_plan_hash: str
     stage2_plan_hash: str
+    recovery_scheduler_posture_captured: bool
+    recovery_scheduler_restore_enabled: bool
     confirmation_evidence: ConfirmationEvidence | None
 
 
@@ -130,10 +136,14 @@ def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
         execution_attempt_id=str(getattr(pending, "execution_attempt_id", "")),
         result_id=str(getattr(pending, "result_id", "")),
         stage2_correlation_id=str(getattr(pending, "stage2_correlation_id", "")),
-        stage2_previous_plan_hash=str(
-            getattr(pending, "stage2_previous_plan_hash", "")
-        ),
+        stage2_previous_plan_hash=str(getattr(pending, "stage2_previous_plan_hash", "")),
         stage2_plan_hash=str(getattr(pending, "stage2_plan_hash", "")),
+        recovery_scheduler_posture_captured=bool(
+            getattr(pending, "recovery_scheduler_posture_captured", False)
+        ),
+        recovery_scheduler_restore_enabled=bool(
+            getattr(pending, "recovery_scheduler_restore_enabled", False)
+        ),
         confirmation_evidence=getattr(pending, "confirmation_evidence", None),
     )
 
@@ -152,6 +162,8 @@ def _restore_pending_attempt_snapshot(
     pending.stage2_correlation_id = snapshot.stage2_correlation_id
     pending.stage2_previous_plan_hash = snapshot.stage2_previous_plan_hash
     pending.stage2_plan_hash = snapshot.stage2_plan_hash
+    pending.recovery_scheduler_posture_captured = snapshot.recovery_scheduler_posture_captured
+    pending.recovery_scheduler_restore_enabled = snapshot.recovery_scheduler_restore_enabled
     pending.confirmation_evidence = snapshot.confirmation_evidence
 
 
@@ -439,18 +451,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
         approval_envelope = getattr(pending, "approval_envelope", None)
         if approval_envelope is None:
             return "approval_envelope_missing"
-        if str(getattr(approval_envelope, "schema_version", "")) != (
-            "shisad.approval.v2"
-        ):
+        if str(getattr(approval_envelope, "schema_version", "")) != ("shisad.approval.v2"):
             return "approval_contract_missing"
-        stored_contract_hash = str(
-            getattr(approval_envelope, "approval_contract_hash", "")
-        ).strip()
+        stored_contract_hash = str(getattr(approval_envelope, "approval_contract_hash", "")).strip()
         if not stored_contract_hash:
             return "approval_contract_missing"
-        stored_envelope_hash = str(
-            getattr(pending, "approval_envelope_hash", "")
-        ).strip()
+        stored_envelope_hash = str(getattr(pending, "approval_envelope_hash", "")).strip()
         try:
             expected_envelope_hash = approval_envelope_hash(approval_envelope)
         except (TypeError, ValueError):
@@ -485,17 +491,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
         ):
             return "approval_contract_mismatch"
         if (
-            str(getattr(approval_envelope, "approval_id", "")).strip()
-            != identity.confirmation_id
+            str(getattr(approval_envelope, "approval_id", "")).strip() != identity.confirmation_id
             or str(getattr(approval_envelope, "pending_action_id", "")).strip()
             != identity.action_id
         ):
             return "action_identity_mismatch"
         if (
-            str(getattr(approval_envelope, "session_id", "")).strip()
-            != identity.session_id
-            or str(getattr(approval_envelope, "workspace_id", "")).strip()
-            != identity.workspace_id
+            str(getattr(approval_envelope, "session_id", "")).strip() != identity.session_id
+            or str(getattr(approval_envelope, "workspace_id", "")).strip() != identity.workspace_id
             or str(getattr(approval_envelope, "daemon_id", "")).strip()
             != str(getattr(self, "_daemon_id", "")).strip()
             or getattr(approval_envelope, "required_level", None)
@@ -513,19 +516,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         get_backend = getattr(backend_registry, "get_backend", None)
         backend = (
             get_backend(
-                str(getattr(pending, "selected_backend_id", "")).strip()
-                or "software.default"
+                str(getattr(pending, "selected_backend_id", "")).strip() or "software.default"
             )
             if callable(get_backend)
             else None
         )
-        selected_backend_method = str(
-            getattr(pending, "selected_backend_method", "")
-        ).strip()
+        selected_backend_method = str(getattr(pending, "selected_backend_method", "")).strip()
         if (
             backend is None
-            or str(getattr(backend, "method", "")).strip()
-            != selected_backend_method
+            or str(getattr(backend, "method", "")).strip() != selected_backend_method
             or not confirmation_backend_satisfies_constraints(
                 backend,
                 user_id=identity.user_id,
@@ -557,19 +556,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     tool_definition=tool_definition,
                     arguments=normalized_arguments,
                 ),
-                stable_idempotency_key=str(
-                    getattr(pending, "stable_idempotency_key", "")
-                ).strip(),
+                stable_idempotency_key=str(getattr(pending, "stable_idempotency_key", "")).strip(),
             )
         except (TypeError, ValueError):
             return "approval_contract_mismatch"
-        if not str(getattr(pending, "action_digest", "")).strip() or not str(
-            getattr(approval_envelope, "action_digest", "")
-        ).strip():
+        if (
+            not str(getattr(pending, "action_digest", "")).strip()
+            or not str(getattr(approval_envelope, "action_digest", "")).strip()
+        ):
             return "action_digest_missing"
         if (
-            str(getattr(pending, "action_digest", "")).strip()
-            != expected_action_digest
+            str(getattr(pending, "action_digest", "")).strip() != expected_action_digest
             or str(getattr(approval_envelope, "action_digest", "")).strip()
             != expected_action_digest
         ):
@@ -608,8 +605,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 or backend is None
                 or str(getattr(evidence, "approval_envelope_hash", "")).strip()
                 != stored_envelope_hash
-                or str(getattr(evidence, "action_digest", "")).strip()
-                != expected_action_digest
+                or str(getattr(evidence, "action_digest", "")).strip() != expected_action_digest
                 or str(getattr(evidence, "decision_nonce", "")).strip()
                 != str(getattr(pending, "decision_nonce", "")).strip()
                 or bool(getattr(evidence, "fallback_used", False))
@@ -702,8 +698,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if not transitions:
             return
         previous = rollback_snapshots or [
-            _capture_pending_attempt_snapshot(pending)
-            for pending, _status, _reason in transitions
+            _capture_pending_attempt_snapshot(pending) for pending, _status, _reason in transitions
         ]
         if len(previous) != len(transitions):
             raise ValueError("terminal rollback snapshot count mismatch")
@@ -712,8 +707,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             pending.status_reason = reason
             pending.decision_nonce = ""
         terminal = [
-            _capture_pending_attempt_snapshot(pending)
-            for pending, _status, _reason in transitions
+            _capture_pending_attempt_snapshot(pending) for pending, _status, _reason in transitions
         ]
         try:
             self._persist_pending_actions()
@@ -769,9 +763,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> None:
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_nonce = str(getattr(pending, "decision_nonce", ""))
-        evidence_fields = approval_audit_fields(
-            getattr(pending, "confirmation_evidence", None)
-        )
+        evidence_fields = approval_audit_fields(getattr(pending, "confirmation_evidence", None))
         self._commit_pending_terminal_state(
             pending,
             status=status,
@@ -813,9 +805,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         *,
         reason: str,
     ) -> bool:
-        correlation_id = str(
-            getattr(pending, "stage2_correlation_id", "")
-        ).strip()
+        correlation_id = str(getattr(pending, "stage2_correlation_id", "")).strip()
         if not correlation_id:
             return False
         try:
@@ -825,9 +815,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "cancel_stage2",
                     session_id=str(pending.session_id),
                     correlation_id=correlation_id,
-                    expected_plan_hash=str(
-                        getattr(pending, "stage2_plan_hash", "")
-                    ).strip(),
+                    expected_plan_hash=str(getattr(pending, "stage2_plan_hash", "")).strip(),
                     reason=reason,
                     actor="human_confirmation",
                 )
@@ -877,10 +865,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 cancelled.append(pending)
             if cancelled:
                 self._commit_pending_terminal_states(
-                    [
-                        (pending, "cancelled", reason)
-                        for pending in cancelled
-                    ]
+                    [(pending, "cancelled", reason) for pending in cancelled]
                 )
             for pending in cancelled:
                 self._sync_task_confirmation_status(pending)
@@ -1057,7 +1042,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             return "outcome_unknown"
         return ""
 
-    def _contain_confirmation_scheduler_attempt(self, task_id: str) -> None:
+    def _contain_confirmation_scheduler_attempt(self, pending: Any) -> None:
+        contain_recovery = getattr(self, "_precontain_pending_scheduler_task", None)
+        if callable(contain_recovery):
+            contain_recovery(pending)
+            return
+        task_id = str(getattr(pending, "task_id", "")).strip()
         contain_attempt = getattr(self, "_contain_unresolved_task_attempt", None)
         if callable(contain_attempt):
             contain_attempt(task_id)
@@ -1307,7 +1297,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> dict[str, Any]:
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
-            return {"confirmed": False, "reason": "not_found", "confirmation_id": confirmation_id}
+            return {
+                "confirmed": False,
+                "reason": "not_found",
+                "confirmation_id": confirmation_id,
+            }
         return await self.do_action_confirm(
             {
                 "confirmation_id": confirmation_id,
@@ -1613,7 +1607,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if algorithm not in {"ed25519", "ecdsa-secp256k1"}:
             return {"registered": False, "reason": "unsupported_signer_algorithm"}
         if backend == "ledger" and algorithm != "ecdsa-secp256k1":
-            return {"registered": False, "reason": "unsupported_ledger_signer_algorithm"}
+            return {
+                "registered": False,
+                "reason": "unsupported_ledger_signer_algorithm",
+            }
         default_device_type = "ledger-consumer" if backend == "ledger" else "ledger-enterprise"
         device_type = (
             str(params.get("device_type") or default_device_type).strip() or default_device_type
@@ -2032,7 +2029,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if degraded_response is not None:
             return degraded_response
         if self._pending_actions.get(confirmation_id) is None:
-            return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "not_found",
+            }
         waited_for_short_cooldown = False
         while True:
             pending = self._pending_actions.get(confirmation_id)
@@ -2474,9 +2475,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "approval_contract_mismatch",
             }
-        validated_evidence = self._confirmation_evidence_authenticator.stamp(
-            validated_evidence
-        )
+        validated_evidence = self._confirmation_evidence_authenticator.stamp(validated_evidence)
         pending.confirmation_evidence = validated_evidence
         evidence_binding_reason = self._pending_approval_contract_invalid_reason(
             pending,
@@ -2526,7 +2525,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 origin=self._origin_for(session=session, actor="human_confirmation"),
                 risk_tier=fallback_risk_tier,
                 workspace_roots=list(
-                    getattr(getattr(self, "_config", None), "assistant_fs_roots", [Path.cwd()])
+                    getattr(
+                        getattr(self, "_config", None),
+                        "assistant_fs_roots",
+                        [Path.cwd()],
+                    )
                 ),
             )
             stage2_previous_hash = await _call_control_plane(
@@ -2570,9 +2573,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
             execution_capabilities = set(policy_context.capabilities)
             if pep_decision.kind.value == "reject":
-                status_reason = (
-                    pep_decision.reason_code.strip() or "pep_reject_after_confirmation"
-                )
+                status_reason = pep_decision.reason_code.strip() or "pep_reject_after_confirmation"
                 await self._commit_and_publish_pending_terminal(
                     pending,
                     status="rejected",
@@ -2611,9 +2612,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         )
                     ):
                         terminal_status = "rejected"
-                        terminal_reason = (
-                            "confirmation_requirement_unsatisfied_after_confirmation"
-                        )
+                        terminal_reason = "confirmation_requirement_unsatisfied_after_confirmation"
                 if terminal_status:
                     await self._commit_and_publish_pending_terminal(
                         pending,
@@ -2643,9 +2642,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         decision_at = datetime.fromisoformat(decision_timestamp)
         if not str(getattr(pending, "action_digest", "")).strip():
             approval_envelope = getattr(pending, "approval_envelope", None)
-            pending.action_digest = str(
-                getattr(approval_envelope, "action_digest", "")
-            ).strip()
+            pending.action_digest = str(getattr(approval_envelope, "action_digest", "")).strip()
         pending.approval_evidence_hash = str(
             getattr(pending.confirmation_evidence, "evidence_hash", "")
         ).strip()
@@ -2667,6 +2664,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if stage2_action is not None
             else "confirmation_execution_started"
         )
+        self._capture_pending_scheduler_posture(pending)
         executing_attempt = _capture_pending_attempt_snapshot(pending)
         try:
             self._persist_pending_actions()
@@ -2695,9 +2693,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     correlation_id=pending.stage2_correlation_id,
                     expected_previous_hash=pending.stage2_previous_plan_hash,
                     execution_idempotency_key=(
-                        control_plane_execution_idempotency_key(
-                            pending.execution_attempt_id
-                        )
+                        control_plane_execution_idempotency_key(pending.execution_attempt_id)
                     ),
                 )
             except (ControlPlaneRpcError, ControlPlaneUnavailableError) as exc:
@@ -2931,7 +2927,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
         except Exception:
             if pending_task_id:
-                self._contain_confirmation_scheduler_attempt(pending_task_id)
+                self._contain_confirmation_scheduler_attempt(pending)
             raise
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
@@ -2981,7 +2977,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             return degraded_response
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
-            return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+            return {
+                "rejected": False,
+                "confirmation_id": confirmation_id,
+                "reason": "not_found",
+            }
         task_id = str(getattr(pending, "task_id", "")).strip()
         task_lock = self._task_lifecycle_lock(task_id) if task_id else None
         confirmation_lock = self._action_confirmation_lock(confirmation_id)

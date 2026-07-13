@@ -126,6 +126,12 @@ a second logical run. If an uncertain attempt belongs to a scheduled task, that
 task is disabled so it cannot automatically repeat the possibly completed
 effect; you must reconcile the result before creating or enabling further work.
 
+During a consistent stable-key recovery, the scheduler's original enabled
+posture is authenticated and preserved across restart containment. The daemon
+restores an originally enabled task only after accounting completes and only
+when its run limit still permits another run; an already-disabled task stays
+disabled, and uncertainty or contradiction never re-enables it.
+
 Stage-two amendments are correlated to one confirmation and an explicit
 execution-attempt idempotency key. Uncertain transport or internal results and
 failures before the durable ready transition cancel only the exact correlated

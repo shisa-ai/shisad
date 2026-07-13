@@ -107,6 +107,12 @@ pending action and requires fresh approval; the old confirmation ID or nonce
 cannot be reused. v0.8.1 does not provide universal provider reconciliation or
 exactly-once guarantees for arbitrary external services.
 
+Stable-key recovery temporarily disables its scheduled task while the durable
+outcome is reconciled. After consistent accounting, a task that was enabled
+before containment is enabled again only when its run limit has not been
+reached. A task already disabled before recovery stays disabled, and any
+uncertain or contradictory outcome remains contained.
+
 Stage-two plan amendments carry the pending action's exact confirmation/attempt
 correlation and execution-attempt idempotency key. If amendment response
 delivery is unavailable, the control plane reports an internal failure after a

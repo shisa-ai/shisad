@@ -115,6 +115,12 @@ class ScheduledTask(BaseModel):
         repr=False,
         description="Internal confirmation outcome identities persisted with task counters",
     )
+    recovery_containment_token: str = Field(
+        default="",
+        exclude=True,
+        repr=False,
+        description="Internal ownership token for temporary recovery containment",
+    )
 
     @model_validator(mode="before")
     @classmethod

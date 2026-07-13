@@ -116,8 +116,43 @@ class SchedulerManager:
         if task is None:
             return False
         task.enabled = False
+        task.recovery_containment_token = ""
         self._persist_tasks()
         self._audit("task.disable", {"task_id": task_id})
+        return True
+
+    def contain_task_for_recovery(self, task_id: str, *, token: str) -> bool:
+        task = self._tasks.get(task_id)
+        normalized_token = token.strip()
+        if task is None or not normalized_token:
+            return False
+        task.enabled = False
+        task.recovery_containment_token = normalized_token
+        self._persist_tasks()
+        self._audit("task.recovery_contain", {"task_id": task_id})
+        return True
+
+    def release_task_recovery_containment(
+        self,
+        task_id: str,
+        *,
+        token: str,
+        enable: bool,
+    ) -> bool:
+        task = self._tasks.get(task_id)
+        normalized_token = token.strip()
+        if task is None or not normalized_token:
+            return False
+        if task.recovery_containment_token != normalized_token:
+            return not task.recovery_containment_token
+        task.recovery_containment_token = ""
+        if enable:
+            task.enabled = True
+        self._persist_tasks()
+        self._audit(
+            "task.recovery_release",
+            {"task_id": task_id, "enabled": task.enabled},
+        )
         return True
 
     def attach_execution_session(self, task_id: str, session_id: str) -> bool:
@@ -127,7 +162,10 @@ class SchedulerManager:
             return False
         task.execution_session_id = normalized
         self._persist_tasks()
-        self._audit("task.attach_execution_session", {"task_id": task_id, "session_id": normalized})
+        self._audit(
+            "task.attach_execution_session",
+            {"task_id": task_id, "session_id": normalized},
+        )
         return True
 
     def can_execute_with_capabilities(
@@ -180,7 +218,11 @@ class SchedulerManager:
             )
             self._audit(
                 "task.trigger",
-                {"task_id": task.id, "event_type": event_type, "payload_taint": "UNTRUSTED"},
+                {
+                    "task_id": task.id,
+                    "event_type": event_type,
+                    "payload_taint": "UNTRUSTED",
+                },
             )
         if dirty:
             self._persist_tasks()
@@ -901,9 +943,9 @@ class SchedulerManager:
         for task in self._tasks.values():
             task_payload = task.model_dump(mode="json")
             if task.confirmation_outcome_dedup:
-                task_payload["_confirmation_outcome_dedup"] = dict(
-                    task.confirmation_outcome_dedup
-                )
+                task_payload["_confirmation_outcome_dedup"] = dict(task.confirmation_outcome_dedup)
+            if task.recovery_containment_token:
+                task_payload["_recovery_containment_token"] = task.recovery_containment_token
             payload.append(task_payload)
         self._tasks_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -932,6 +974,9 @@ class SchedulerManager:
                     and confirmation_id.strip()
                     and isinstance(outcome, bool)
                 }
+            recovery_containment_token = item.get("_recovery_containment_token", "")
+            if isinstance(recovery_containment_token, str):
+                task.recovery_containment_token = recovery_containment_token.strip()
             self._tasks[task.id] = task
 
     def _persist_pending_confirmations(self) -> None:

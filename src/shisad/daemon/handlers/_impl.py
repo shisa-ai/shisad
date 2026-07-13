@@ -134,7 +134,9 @@ from shisad.daemon.handlers._impl_tool_execution import (
     ToolExecutionImplMixin,
     _tool_execute_runtime_arguments,
 )
-from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
+from shisad.daemon.handlers._mixin_typing import (
+    call_control_plane as _call_control_plane,
+)
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
@@ -679,7 +681,10 @@ def _structured_email_search(
         return {
             "ok": False,
             "error": "email_search_query_required",
-            "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
+            "taint_labels": [
+                TaintLabel.UNTRUSTED.value,
+                TaintLabel.SENSITIVE_EMAIL.value,
+            ],
         }
     return dict(
         handler._msgvault_toolkit.search(
@@ -701,7 +706,10 @@ def _structured_email_read(
         return {
             "ok": False,
             "error": "email_message_id_required",
-            "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
+            "taint_labels": [
+                TaintLabel.UNTRUSTED.value,
+                TaintLabel.SENSITIVE_EMAIL.value,
+            ],
         }
     return dict(
         handler._msgvault_toolkit.read_message(
@@ -1361,7 +1369,11 @@ async def _structured_evidence_read(
         return {"ok": False, "error": "invalid or unknown evidence reference"}
     ref, content = await asyncio.to_thread(store.resolve_ref_content, context.session_id, ref_id)
     if ref is None or content is None:
-        return {"ok": False, "error": "invalid or unknown evidence reference", "ref_id": ref_id}
+        return {
+            "ok": False,
+            "error": "invalid or unknown evidence reference",
+            "ref_id": ref_id,
+        }
     return {
         "ok": True,
         "ref_id": ref_id,
@@ -1385,7 +1397,11 @@ async def _structured_evidence_promote(
         return {"ok": False, "error": "invalid or unknown evidence reference"}
     ref, content = await asyncio.to_thread(store.resolve_ref_content, context.session_id, ref_id)
     if ref is None or content is None:
-        return {"ok": False, "error": "invalid or unknown evidence reference", "ref_id": ref_id}
+        return {
+            "ok": False,
+            "error": "invalid or unknown evidence reference",
+            "ref_id": ref_id,
+        }
     taint_labels = sorted(
         {
             *[label.value for label in ref.taint_labels if label != TaintLabel.UNTRUSTED],
@@ -1620,6 +1636,8 @@ class PendingAction:
     recovery_accounting_pending: bool = False
     recovery_effect_invoked: bool = False
     recovery_scheduler_accounted: bool = False
+    recovery_scheduler_posture_captured: bool = False
+    recovery_scheduler_restore_enabled: bool = False
     scheduler_accounting_pending: bool = False
     stage2_correlation_id: str = ""
     stage2_previous_plan_hash: str = ""
@@ -1686,6 +1704,8 @@ def _pending_action_has_started_execution_authority(pending: PendingAction) -> b
         or pending.recovery_accounting_pending
         or pending.recovery_effect_invoked
         or pending.recovery_scheduler_accounted
+        or pending.recovery_scheduler_posture_captured
+        or pending.recovery_scheduler_restore_enabled
         or pending.scheduler_accounting_pending
         or pending.stage2_correlation_id.strip()
         or pending.stage2_previous_plan_hash.strip()
@@ -1697,7 +1717,7 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
     """Return the daemon-authenticated post-decision recovery snapshot."""
 
     evidence = pending.confirmation_evidence
-    return {
+    snapshot = {
         "schema_version": "shisad.pending_recovery_snapshot.v1",
         "confirmation_id": pending.confirmation_id,
         "action_id": pending.action_id,
@@ -1711,9 +1731,7 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "action_digest": pending.action_digest,
         "approval_envelope_hash": pending.approval_envelope_hash,
         "approval_evidence_hash": pending.approval_evidence_hash,
-        "confirmation_evidence_hash": (
-            evidence.evidence_hash if evidence is not None else ""
-        ),
+        "confirmation_evidence_hash": (evidence.evidence_hash if evidence is not None else ""),
         "confirmation_evidence_authenticator_mac": (
             evidence.authenticator_mac if evidence is not None else ""
         ),
@@ -1747,6 +1765,16 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "created_at": pending.created_at.isoformat(),
         "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
     }
+    if pending.recovery_scheduler_posture_captured or pending.recovery_scheduler_restore_enabled:
+        snapshot.update(
+            {
+                "recovery_scheduler_posture_captured": (
+                    pending.recovery_scheduler_posture_captured
+                ),
+                "recovery_scheduler_restore_enabled": (pending.recovery_scheduler_restore_enabled),
+            }
+        )
+    return snapshot
 
 
 @dataclass(slots=True)
@@ -1862,10 +1890,8 @@ class HandlerImplementation(
         self._daemon_id = hashlib.sha256(
             str(self._config.data_dir.resolve()).encode("utf-8", errors="ignore")
         ).hexdigest()[:32]
-        self._confirmation_evidence_authenticator = (
-            ConfirmationEvidenceAuthenticator.from_path(
-                self._config.data_dir / "confirmation_evidence.key"
-            )
+        self._confirmation_evidence_authenticator = ConfirmationEvidenceAuthenticator.from_path(
+            self._config.data_dir / "confirmation_evidence.key"
         )
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
@@ -2206,7 +2232,11 @@ class HandlerImplementation(
         arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
         tool_name_value = canonical_tool_name(str(tool_name), warn_on_alias=False)
-        if tool_name_value not in {"browser.navigate", "browser.click", "browser.type_text"}:
+        if tool_name_value not in {
+            "browser.navigate",
+            "browser.click",
+            "browser.type_text",
+        }:
             return dict(arguments)
         return dict(
             await self._browser_toolkit.prepare_action_arguments(
@@ -2927,7 +2957,9 @@ class HandlerImplementation(
         return dict(await self._browser_toolkit.doctor_status())
 
     @staticmethod
-    def _normalized_pairing_request_entry(raw: Mapping[str, Any]) -> dict[str, str] | None:
+    def _normalized_pairing_request_entry(
+        raw: Mapping[str, Any],
+    ) -> dict[str, str] | None:
         channel = str(raw.get("channel", "")).strip().lower()
         external_user_id = str(raw.get("external_user_id", "")).strip()
         workspace_hint = str(raw.get("workspace_hint", "")).strip()
@@ -3164,6 +3196,8 @@ class HandlerImplementation(
             "recovery_accounting_pending": pending.recovery_accounting_pending,
             "recovery_effect_invoked": pending.recovery_effect_invoked,
             "recovery_scheduler_accounted": pending.recovery_scheduler_accounted,
+            "recovery_scheduler_posture_captured": (pending.recovery_scheduler_posture_captured),
+            "recovery_scheduler_restore_enabled": (pending.recovery_scheduler_restore_enabled),
             "scheduler_accounting_pending": pending.scheduler_accounting_pending,
             "stage2_correlation_id": pending.stage2_correlation_id,
             "stage2_previous_plan_hash": pending.stage2_previous_plan_hash,
@@ -3278,16 +3312,13 @@ class HandlerImplementation(
             payload.pop("stage2_plan_hash", None)
             payload.pop("recovery_authority_mac", None)
             payload.pop("stable_idempotency_key", None)
-            payload["stable_idempotency_key_present"] = bool(
-                pending.stable_idempotency_key
-            )
+            payload["stable_idempotency_key_present"] = bool(pending.stable_idempotency_key)
             retry_descriptor_payload = payload.get("retry_descriptor")
             if isinstance(retry_descriptor_payload, dict):
                 retry_descriptor_payload.pop("stable_idempotency_key", None)
             public_structural_clock_result = (
                 pending.retry_descriptor is not None
-                and pending.retry_descriptor.retry_class
-                == ToolRetryClass.STRUCTURAL_READ
+                and pending.retry_descriptor.retry_class == ToolRetryClass.STRUCTURAL_READ
                 and str(pending.tool_name) == "time.now"
             )
             if not public_structural_clock_result:
@@ -3579,12 +3610,15 @@ class HandlerImplementation(
         )
         stable_idempotency_key = ""
         if effective_tool_definition.retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
-            stable_idempotency_key = "shisad-" + hashlib.sha256(
-                (
-                    f"{action_id}\x00{effective_tool_definition.name}\x00"
-                    f"{effective_tool_definition.schema_hash()}"
-                ).encode()
-            ).hexdigest()
+            stable_idempotency_key = (
+                "shisad-"
+                + hashlib.sha256(
+                    (
+                        f"{action_id}\x00{effective_tool_definition.name}\x00"
+                        f"{effective_tool_definition.schema_hash()}"
+                    ).encode()
+                ).hexdigest()
+            )
         retry_descriptor = ToolRetryDescriptor.from_tool_definition(
             effective_tool_definition,
             stable_idempotency_key=stable_idempotency_key,
@@ -3796,10 +3830,10 @@ class HandlerImplementation(
         )
 
     @staticmethod
-    def _fallback_corrupt_pending_action(item: Mapping[str, Any]) -> PendingAction | None:
-        confirmation_id, confirmation_id_valid = _loaded_state_text(
-            item.get("confirmation_id", "")
-        )
+    def _fallback_corrupt_pending_action(
+        item: Mapping[str, Any],
+    ) -> PendingAction | None:
+        confirmation_id, confirmation_id_valid = _loaded_state_text(item.get("confirmation_id", ""))
         if not confirmation_id or not confirmation_id_valid:
             return None
         identity = item.get("identity")
@@ -3826,21 +3860,11 @@ class HandlerImplementation(
         tool_name, _ = _loaded_state_text(item.get("tool_name", ""))
         reason, _ = _loaded_state_text(item.get("reason", ""))
         action_digest, _ = _loaded_state_text(item.get("action_digest", ""))
-        approval_evidence_hash, _ = _loaded_state_text(
-            item.get("approval_evidence_hash", "")
-        )
-        stable_idempotency_key, _ = _loaded_state_text(
-            item.get("stable_idempotency_key", "")
-        )
-        provider_operation_id, _ = _loaded_state_text(
-            item.get("provider_operation_id", "")
-        )
-        stage2_correlation_id, _ = _loaded_state_text(
-            item.get("stage2_correlation_id", "")
-        )
-        stage2_previous_plan_hash, _ = _loaded_state_text(
-            item.get("stage2_previous_plan_hash", "")
-        )
+        approval_evidence_hash, _ = _loaded_state_text(item.get("approval_evidence_hash", ""))
+        stable_idempotency_key, _ = _loaded_state_text(item.get("stable_idempotency_key", ""))
+        provider_operation_id, _ = _loaded_state_text(item.get("provider_operation_id", ""))
+        stage2_correlation_id, _ = _loaded_state_text(item.get("stage2_correlation_id", ""))
+        stage2_previous_plan_hash, _ = _loaded_state_text(item.get("stage2_previous_plan_hash", ""))
         stage2_plan_hash, _ = _loaded_state_text(item.get("stage2_plan_hash", ""))
         recovery_result = (
             dict(item["recovery_result"])
@@ -3902,9 +3926,7 @@ class HandlerImplementation(
         )
 
         def _shadow_bindings(confirmation_ids: set[str]) -> set[tuple[str, str]]:
-            task_ids_for_confirmation = getattr(
-                scheduler, "task_ids_for_confirmation", None
-            )
+            task_ids_for_confirmation = getattr(scheduler, "task_ids_for_confirmation", None)
             if not callable(task_ids_for_confirmation):
                 return set()
             return {
@@ -3922,17 +3944,12 @@ class HandlerImplementation(
 
         if raw_identity is None:
             legacy_invalid = any(
-                key in item and not isinstance(item.get(key), str)
-                for key in binding_fields
+                key in item and not isinstance(item.get(key), str) for key in binding_fields
             )
             scheduler_accounting_pending, scheduler_marker_valid = _loaded_state_bool(
                 item.get("scheduler_accounting_pending", False)
             )
-            if (
-                not legacy_invalid
-                and scheduler_marker_valid
-                and not scheduler_accounting_pending
-            ):
+            if not legacy_invalid and scheduler_marker_valid and not scheduler_accounting_pending:
                 return normalized, False
             confirmation_id, confirmation_id_valid = _loaded_state_text(
                 item.get("confirmation_id", "")
@@ -3944,15 +3961,11 @@ class HandlerImplementation(
             task_candidates = {task_id} if task_id_valid and task_id else set()
             shadow_bindings = _shadow_bindings(confirmation_candidates)
             if len(shadow_bindings) == 1:
-                canonical_confirmation_id, canonical_task_id = next(
-                    iter(shadow_bindings)
-                )
+                canonical_confirmation_id, canonical_task_id = next(iter(shadow_bindings))
                 normalized["confirmation_id"] = canonical_confirmation_id
                 normalized["task_id"] = canonical_task_id
             else:
-                _disable_tasks(
-                    task_candidates | {task_id for _, task_id in shadow_bindings}
-                )
+                _disable_tasks(task_candidates | {task_id for _, task_id in shadow_bindings})
                 normalized["task_id"] = ""
             return normalized, True
         if not isinstance(raw_identity, Mapping):
@@ -3966,15 +3979,11 @@ class HandlerImplementation(
             task_candidates = {task_id} if task_id_valid and task_id else set()
             shadow_bindings = _shadow_bindings(confirmation_candidates)
             if len(shadow_bindings) == 1:
-                canonical_confirmation_id, canonical_task_id = next(
-                    iter(shadow_bindings)
-                )
+                canonical_confirmation_id, canonical_task_id = next(iter(shadow_bindings))
                 normalized["confirmation_id"] = canonical_confirmation_id
                 normalized["task_id"] = canonical_task_id
             else:
-                _disable_tasks(
-                    task_candidates | {task_id for _, task_id in shadow_bindings}
-                )
+                _disable_tasks(task_candidates | {task_id for _, task_id in shadow_bindings})
                 normalized["task_id"] = ""
             return normalized, True
 
@@ -4004,18 +4013,12 @@ class HandlerImplementation(
         if not direct_values["confirmation_id"] or not nested_values["confirmation_id"]:
             binding_invalid = True
         task_candidates = {
-            value
-            for value in (direct_values["task_id"], nested_values["task_id"])
-            if value
+            value for value in (direct_values["task_id"], nested_values["task_id"]) if value
         }
         shadow_bindings = _shadow_bindings(confirmation_candidates)
-        if shadow_bindings and (
-            not direct_values["task_id"] or not nested_values["task_id"]
-        ):
+        if shadow_bindings and (not direct_values["task_id"] or not nested_values["task_id"]):
             binding_invalid = True
-        stored_status, stored_status_valid = _loaded_state_text(
-            item.get("status", "pending")
-        )
+        stored_status, stored_status_valid = _loaded_state_text(item.get("status", "pending"))
         if (
             shadow_bindings
             and stored_status_valid
@@ -4033,9 +4036,7 @@ class HandlerImplementation(
             identity["confirmation_id"] = canonical_confirmation_id
             identity["task_id"] = canonical_task_id
         elif binding_invalid:
-            _disable_tasks(
-                task_candidates | {task_id for _, task_id in shadow_bindings}
-            )
+            _disable_tasks(task_candidates | {task_id for _, task_id in shadow_bindings})
             normalized["task_id"] = ""
             identity["task_id"] = ""
 
@@ -4100,29 +4101,19 @@ class HandlerImplementation(
                 )
                 if not confirmation_id:
                     continue
-                recovery_authority_invalid = (
-                    not confirmation_id_valid or identity_binding_invalid
-                )
-                created_at_raw, created_at_valid = _loaded_state_text(
-                    item.get("created_at", "")
-                )
+                recovery_authority_invalid = not confirmation_id_valid or identity_binding_invalid
+                created_at_raw, created_at_valid = _loaded_state_text(item.get("created_at", ""))
                 try:
                     created_at = datetime.fromisoformat(created_at_raw)
                 except ValueError:
                     created_at = datetime.fromtimestamp(0, UTC)
                     created_at_valid = False
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not created_at_valid
-                )
-                session_id_raw, session_id_valid = _loaded_state_text(
-                    item.get("session_id", "")
-                )
+                recovery_authority_invalid = recovery_authority_invalid or not created_at_valid
+                session_id_raw, session_id_valid = _loaded_state_text(item.get("session_id", ""))
                 session_id = SessionId(session_id_raw)
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not session_id_valid
-                )
-                delivery_target_payload, delivery_target_valid = (
-                    _loaded_state_optional_mapping(item.get("delivery_target"))
+                recovery_authority_invalid = recovery_authority_invalid or not session_id_valid
+                delivery_target_payload, delivery_target_valid = _loaded_state_optional_mapping(
+                    item.get("delivery_target")
                 )
                 try:
                     delivery_target = (
@@ -4133,11 +4124,9 @@ class HandlerImplementation(
                 except ValidationError:
                     delivery_target = None
                     delivery_target_valid = False
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not delivery_target_valid
-                )
-                preflight_action_payload, preflight_action_valid = (
-                    _loaded_state_optional_mapping(item.get("preflight_action"))
+                recovery_authority_invalid = recovery_authority_invalid or not delivery_target_valid
+                preflight_action_payload, preflight_action_valid = _loaded_state_optional_mapping(
+                    item.get("preflight_action")
                 )
                 try:
                     preflight_action = (
@@ -4163,9 +4152,7 @@ class HandlerImplementation(
                 except ValidationError:
                     merged_policy = None
                     merged_policy_valid = False
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not merged_policy_valid
-                )
+                recovery_authority_invalid = recovery_authority_invalid or not merged_policy_valid
                 execute_after_raw = str(item.get("execute_after", "")).strip()
                 try:
                     execute_after = (
@@ -4176,9 +4163,7 @@ class HandlerImplementation(
                     recovery_authority_invalid = True
                 expires_at_raw = str(item.get("expires_at", "")).strip()
                 try:
-                    expires_at = (
-                        datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
-                    )
+                    expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
                 except ValueError:
                     expires_at = None
                     recovery_authority_invalid = True
@@ -4208,11 +4193,9 @@ class HandlerImplementation(
                 except (TypeError, ValueError, ValidationError):
                     pep_elevation = None
                     pep_elevation_valid = False
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not pep_elevation_valid
-                )
-                approval_envelope_payload, approval_envelope_valid = (
-                    _loaded_state_optional_mapping(item.get("approval_envelope"))
+                recovery_authority_invalid = recovery_authority_invalid or not pep_elevation_valid
+                approval_envelope_payload, approval_envelope_valid = _loaded_state_optional_mapping(
+                    item.get("approval_envelope")
                 )
                 try:
                     approval_envelope = (
@@ -4238,9 +4221,7 @@ class HandlerImplementation(
                 except ValidationError:
                     intent_envelope = None
                     intent_envelope_valid = False
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not intent_envelope_valid
-                )
+                recovery_authority_invalid = recovery_authority_invalid or not intent_envelope_valid
                 confirmation_evidence_payload, confirmation_evidence_valid = (
                     _loaded_state_optional_mapping(item.get("confirmation_evidence"))
                 )
@@ -4256,8 +4237,8 @@ class HandlerImplementation(
                 recovery_authority_invalid = (
                     recovery_authority_invalid or not confirmation_evidence_valid
                 )
-                retry_descriptor_payload, retry_descriptor_valid = (
-                    _loaded_state_optional_mapping(item.get("retry_descriptor"))
+                retry_descriptor_payload, retry_descriptor_valid = _loaded_state_optional_mapping(
+                    item.get("retry_descriptor")
                 )
                 try:
                     retry_descriptor = (
@@ -4299,8 +4280,8 @@ class HandlerImplementation(
                 recovery_result, recovery_result_valid = _loaded_state_mapping(
                     recovery_result_payload
                 )
-                recovery_accounting_pending, recovery_accounting_pending_valid = (
-                    _loaded_state_bool(item.get("recovery_accounting_pending", False))
+                recovery_accounting_pending, recovery_accounting_pending_valid = _loaded_state_bool(
+                    item.get("recovery_accounting_pending", False)
                 )
                 recovery_effect_invoked, recovery_effect_invoked_valid = _loaded_state_bool(
                     item.get("recovery_effect_invoked", False)
@@ -4308,6 +4289,14 @@ class HandlerImplementation(
                 recovery_scheduler_accounted, recovery_scheduler_accounted_valid = (
                     _loaded_state_bool(item.get("recovery_scheduler_accounted", False))
                 )
+                (
+                    recovery_scheduler_posture_captured,
+                    recovery_scheduler_posture_captured_valid,
+                ) = _loaded_state_bool(item.get("recovery_scheduler_posture_captured", False))
+                (
+                    recovery_scheduler_restore_enabled,
+                    recovery_scheduler_restore_enabled_valid,
+                ) = _loaded_state_bool(item.get("recovery_scheduler_restore_enabled", False))
                 scheduler_accounting_pending, scheduler_accounting_pending_valid = (
                     _loaded_state_bool(item.get("scheduler_accounting_pending", False))
                 )
@@ -4316,16 +4305,14 @@ class HandlerImplementation(
                         recovery_accounting_pending_valid,
                         recovery_effect_invoked_valid,
                         recovery_scheduler_accounted_valid,
+                        recovery_scheduler_posture_captured_valid,
+                        recovery_scheduler_restore_enabled_valid,
                         scheduler_accounting_pending_valid,
                         recovery_result_valid,
                     )
                 )
-                raw_arguments, arguments_valid = _loaded_state_mapping(
-                    item.get("arguments", {})
-                )
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not arguments_valid
-                )
+                raw_arguments, arguments_valid = _loaded_state_mapping(item.get("arguments", {}))
+                recovery_authority_invalid = recovery_authority_invalid or not arguments_valid
                 sensitive_public_payload = bool(item.get("sensitive_public_payload", False))
                 group = _pending_payload_group(item)
                 payload_session_id = _pending_payload_session(item)
@@ -4352,12 +4339,8 @@ class HandlerImplementation(
                     identity_fields, identity_valid = {}, True
                 else:
                     identity_fields, identity_valid = _loaded_state_mapping(identity_payload)
-                recovery_authority_invalid = (
-                    recovery_authority_invalid or not identity_valid
-                )
-                loaded_action_id, action_id_valid = _loaded_state_text(
-                    item.get("action_id", "")
-                )
+                recovery_authority_invalid = recovery_authority_invalid or not identity_valid
+                loaded_action_id, action_id_valid = _loaded_state_text(item.get("action_id", ""))
                 identity_action_id, identity_action_id_valid = _loaded_state_text(
                     identity_fields.get("action_id", "")
                 )
@@ -4391,9 +4374,7 @@ class HandlerImplementation(
                 loaded_execution_attempt_id = (
                     loaded_execution_attempt_id or identity_execution_attempt_id
                 )
-                loaded_result_id, result_id_valid = _loaded_state_text(
-                    item.get("result_id", "")
-                )
+                loaded_result_id, result_id_valid = _loaded_state_text(item.get("result_id", ""))
                 identity_result_id, identity_result_id_valid = _loaded_state_text(
                     identity_fields.get("result_id", "")
                 )
@@ -4406,11 +4387,11 @@ class HandlerImplementation(
                         identity_result_id_valid,
                     )
                 )
-                loaded_recovery_authority_mac, recovery_authority_mac_valid = (
-                    _loaded_state_text(item.get("recovery_authority_mac", ""))
+                loaded_recovery_authority_mac, recovery_authority_mac_valid = _loaded_state_text(
+                    item.get("recovery_authority_mac", "")
                 )
-                loaded_stage2_correlation_id, stage2_correlation_id_valid = (
-                    _loaded_state_text(item.get("stage2_correlation_id", ""))
+                loaded_stage2_correlation_id, stage2_correlation_id_valid = _loaded_state_text(
+                    item.get("stage2_correlation_id", "")
                 )
                 loaded_stage2_previous_plan_hash, stage2_previous_plan_hash_valid = (
                     _loaded_state_text(item.get("stage2_previous_plan_hash", ""))
@@ -4425,15 +4406,11 @@ class HandlerImplementation(
                         stage2_plan_hash_valid,
                     )
                 )
-                loaded_status, status_valid = _loaded_state_text(
-                    item.get("status", "pending")
-                )
+                loaded_status, status_valid = _loaded_state_text(item.get("status", "pending"))
                 if loaded_status not in _PENDING_ACTION_STORED_STATUSES:
                     status_valid = False
                 if not status_valid:
-                    loaded_status = (
-                        "outcome_unknown" if loaded_execution_attempt_id else "failed"
-                    )
+                    loaded_status = "outcome_unknown" if loaded_execution_attempt_id else "failed"
                 recovery_authority_invalid = recovery_authority_invalid or not status_valid
                 loaded_status_reason, status_reason_valid = _loaded_state_text(
                     item.get("status_reason", "")
@@ -4449,25 +4426,19 @@ class HandlerImplementation(
                 loaded_action_digest = str(item.get("action_digest", "")).strip()
                 if not loaded_action_digest and approval_envelope is not None:
                     loaded_action_digest = str(approval_envelope.action_digest).strip()
-                    migrated_attempt_metadata = (
-                        migrated_attempt_metadata or bool(loaded_action_digest)
+                    migrated_attempt_metadata = migrated_attempt_metadata or bool(
+                        loaded_action_digest
                     )
-                loaded_approval_evidence_hash = str(
-                    item.get("approval_evidence_hash", "")
-                ).strip()
+                loaded_approval_evidence_hash = str(item.get("approval_evidence_hash", "")).strip()
                 if not loaded_approval_evidence_hash and confirmation_evidence is not None:
-                    loaded_approval_evidence_hash = str(
-                        confirmation_evidence.evidence_hash
-                    ).strip()
-                    migrated_attempt_metadata = (
-                        migrated_attempt_metadata or bool(loaded_approval_evidence_hash)
+                    loaded_approval_evidence_hash = str(confirmation_evidence.evidence_hash).strip()
+                    migrated_attempt_metadata = migrated_attempt_metadata or bool(
+                        loaded_approval_evidence_hash
                     )
                 capabilities, capabilities_valid = _loaded_state_capabilities(
                     item.get("capabilities", [])
                 )
-                warnings, warnings_valid = _loaded_state_string_list(
-                    item.get("warnings", [])
-                )
+                warnings, warnings_valid = _loaded_state_string_list(item.get("warnings", []))
                 required_methods, required_methods_valid = _loaded_state_string_list(
                     item.get("required_methods", [])
                 )
@@ -4480,9 +4451,7 @@ class HandlerImplementation(
                 allowed_credentials, allowed_credentials_valid = _loaded_state_string_list(
                     item.get("allowed_credentials", [])
                 )
-                leak_check, leak_check_valid = _loaded_state_mapping(
-                    item.get("leak_check", {})
-                )
+                leak_check, leak_check_valid = _loaded_state_mapping(item.get("leak_check", {}))
                 try:
                     required_level = ConfirmationLevel(
                         item.get("required_level", ConfirmationLevel.SOFTWARE.value)
@@ -4500,9 +4469,7 @@ class HandlerImplementation(
                     required_capabilities = ConfirmationCapabilities()
                     required_capabilities_valid = False
                 try:
-                    fallback = ConfirmationFallbackPolicy.model_validate(
-                        item.get("fallback", {})
-                    )
+                    fallback = ConfirmationFallbackPolicy.model_validate(item.get("fallback", {}))
                     fallback_valid = True
                 except ValidationError:
                     fallback = ConfirmationFallbackPolicy()
@@ -4546,13 +4513,13 @@ class HandlerImplementation(
                     recovery_accounting_pending=recovery_accounting_pending,
                     recovery_effect_invoked=recovery_effect_invoked,
                     recovery_scheduler_accounted=recovery_scheduler_accounted,
+                    recovery_scheduler_posture_captured=(recovery_scheduler_posture_captured),
+                    recovery_scheduler_restore_enabled=(recovery_scheduler_restore_enabled),
                     scheduler_accounting_pending=scheduler_accounting_pending,
                     stage2_correlation_id=loaded_stage2_correlation_id,
                     stage2_previous_plan_hash=loaded_stage2_previous_plan_hash,
                     stage2_plan_hash=loaded_stage2_plan_hash,
-                    stable_idempotency_key=str(
-                        item.get("stable_idempotency_key", "")
-                    ).strip(),
+                    stable_idempotency_key=str(item.get("stable_idempotency_key", "")).strip(),
                     provider_operation_id=str(item.get("provider_operation_id", "")).strip(),
                     execution_attempt_id=loaded_execution_attempt_id,
                     result_id=loaded_result_id,
@@ -4615,12 +4582,7 @@ class HandlerImplementation(
                 pending = fallback_pending
                 recovery_authority_invalid = True
                 recovery_authority_mac_valid = False
-            started_recovery_authority = _pending_action_has_started_execution_authority(
-                pending
-            )
-            recovery_rejection_accounting_required = (
-                pending.status == "executing" or pending.recovery_accounting_pending
-            )
+            started_recovery_authority = _pending_action_has_started_execution_authority(pending)
             if started_recovery_authority:
                 recovery_authority_invalid = recovery_authority_invalid or not (
                     recovery_authority_mac_valid
@@ -4629,12 +4591,13 @@ class HandlerImplementation(
                         pending.recovery_authority_mac,
                     )
                 )
-            if (
-                pending.status == "pending"
-                and (
-                    erased_recovery_authority_present
-                    or _pending_action_has_started_execution_authority(pending)
-                )
+            recovery_rejection_accounting_required = pending.recovery_accounting_pending or (
+                started_recovery_authority
+                and (pending.status == "executing" or recovery_authority_invalid)
+            )
+            if pending.status == "pending" and (
+                erased_recovery_authority_present
+                or _pending_action_has_started_execution_authority(pending)
             ):
                 pending.status = "outcome_unknown"
                 recovery_authority_invalid = True
@@ -4642,10 +4605,11 @@ class HandlerImplementation(
                 pruned_stale = True
                 pending.retry_descriptor = None
                 pending.recovery_effect_invoked = False
-                pending.recovery_accounting_pending = (
-                    recovery_rejection_accounting_required
-                )
-                if pending.status in {"executing", "outcome_unknown"}:
+                pending.recovery_accounting_pending = recovery_rejection_accounting_required
+                if started_recovery_authority or pending.status in {
+                    "executing",
+                    "outcome_unknown",
+                }:
                     pending.status = "outcome_unknown"
                     pending.status_reason = "uncertain_effect_requires_fresh_approval"
                     pending.decision_nonce = ""
@@ -4653,10 +4617,11 @@ class HandlerImplementation(
                     pending.status = "failed"
                     pending.status_reason = "pending_state_metadata_invalid"
                     pending.decision_nonce = ""
-                scheduled_terminal = (
-                    bool(pending.task_id.strip())
-                    and pending.status in {"approved", "failed", "outcome_unknown"}
-                )
+                scheduled_terminal = bool(pending.task_id.strip()) and pending.status in {
+                    "approved",
+                    "failed",
+                    "outcome_unknown",
+                }
                 scheduled_terminal_attempt = (
                     scheduled_terminal
                     and bool(pending.execution_attempt_id.strip())
@@ -4735,12 +4700,8 @@ class HandlerImplementation(
                 and pending.approval_envelope.schema_version == "shisad.approval.v2"
             ):
                 try:
-                    expected_envelope_hash = approval_envelope_hash(
-                        pending.approval_envelope
-                    )
-                    expected_parent_contract_hash = (
-                        pending_approval_parent_contract_hash(pending)
-                    )
+                    expected_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+                    expected_parent_contract_hash = pending_approval_parent_contract_hash(pending)
                 except (TypeError, ValueError):
                     pass
                 else:
@@ -4756,14 +4717,10 @@ class HandlerImplementation(
                 pending.decision_nonce = uuid.uuid4().hex
                 pending.approval_envelope = pending.approval_envelope.model_copy(
                     update={
-                        "approval_contract_hash": pending_approval_contract_hash(
-                            pending
-                        ),
+                        "approval_contract_hash": pending_approval_contract_hash(pending),
                     }
                 )
-                pending.approval_envelope_hash = approval_envelope_hash(
-                    pending.approval_envelope
-                )
+                pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
                 migrated_legacy_decision_nonce = True
             stale_reason = self._stale_pending_action_reason(pending)
             if stale_reason:
@@ -4803,10 +4760,7 @@ class HandlerImplementation(
         *,
         retry_class: ToolRetryClass,
     ) -> bool:
-        if (
-            str(getattr(pending, "status_reason", "")).strip()
-            == "stage2_amendment_pending"
-        ):
+        if str(getattr(pending, "status_reason", "")).strip() == "stage2_amendment_pending":
             return False
         if str(getattr(pending, "stage2_correlation_id", "")).strip():
             return False
@@ -4996,6 +4950,20 @@ class HandlerImplementation(
         return f"recovery:{digest}"
 
     @staticmethod
+    def _recovery_scheduler_containment_token(pending: PendingAction) -> str:
+        identity = pending_action_state_view(pending).identity
+        payload = {
+            "confirmation_id": identity.confirmation_id,
+            "action_id": identity.action_id,
+            "execution_attempt_id": identity.execution_attempt_id,
+            "task_id": identity.task_id,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return f"recovery-containment:{digest}"
+
+    @staticmethod
     def _recovery_event_timestamp(pending: PendingAction) -> datetime:
         if pending.recovery_started_at is not None:
             return pending.recovery_started_at
@@ -5003,23 +4971,53 @@ class HandlerImplementation(
             return pending.confirmation_evidence.verified_at
         return pending.created_at
 
-    def _precontain_pending_scheduler_task(self, pending: PendingAction) -> None:
+    def _capture_pending_scheduler_posture(self, pending: PendingAction) -> bool:
         task_id = pending.task_id.strip()
         if not task_id:
-            return
+            return False
         task = self._scheduler.get_task(task_id)
-        if (
-            task is not None
-            and bool(getattr(task, "enabled", False))
-            and not self._scheduler.disable_task(task_id)
+        if task is None:
+            return False
+        if not pending.recovery_scheduler_posture_captured:
+            pending.recovery_scheduler_posture_captured = True
+            pending.recovery_scheduler_restore_enabled = bool(getattr(task, "enabled", False))
+            return True
+        return False
+
+    def _precontain_pending_scheduler_task(self, pending: PendingAction) -> None:
+        posture_changed = self._capture_pending_scheduler_posture(pending)
+        if not pending.recovery_scheduler_posture_captured:
+            return
+        if posture_changed:
+            self._persist_pending_actions()
+        task_id = pending.task_id.strip()
+        task = self._scheduler.get_task(task_id)
+        if task is None:
+            return
+        containment_token = self._recovery_scheduler_containment_token(pending)
+        if not bool(getattr(task, "enabled", False)):
+            existing_token = str(getattr(task, "recovery_containment_token", "")).strip()
+            if existing_token != containment_token:
+                pending.recovery_scheduler_restore_enabled = False
+                self._persist_pending_actions()
+            return
+        contain_task = getattr(self._scheduler, "contain_task_for_recovery", None)
+        if not callable(contain_task) or not contain_task(
+            task_id,
+            token=containment_token,
         ):
             raise RuntimeError("recovery_scheduler_containment_failed")
 
     def _record_pending_scheduler_state(self, pending: PendingAction) -> bool:
         task_id = pending.task_id.strip()
         if not task_id:
-            changed = not pending.recovery_scheduler_accounted
+            changed = not pending.recovery_scheduler_accounted or bool(
+                pending.recovery_scheduler_posture_captured
+                or pending.recovery_scheduler_restore_enabled
+            )
             pending.recovery_scheduler_accounted = True
+            pending.recovery_scheduler_posture_captured = False
+            pending.recovery_scheduler_restore_enabled = False
             return changed
 
         scheduler = self._scheduler
@@ -5056,6 +5054,8 @@ class HandlerImplementation(
                     confirmation_id,
                 )
                 pending.recovery_scheduler_accounted = True
+                pending.recovery_scheduler_posture_captured = False
+                pending.recovery_scheduler_restore_enabled = False
                 return True
             changed = True
 
@@ -5064,8 +5064,7 @@ class HandlerImplementation(
         if task is not None and success:
             should_disable = should_disable or (
                 int(getattr(task, "max_runs", 0)) > 0
-                and int(getattr(task, "success_count", 0))
-                >= int(getattr(task, "max_runs", 0))
+                and int(getattr(task, "success_count", 0)) >= int(getattr(task, "max_runs", 0))
             )
         if (
             task is not None
@@ -5074,6 +5073,25 @@ class HandlerImplementation(
             and not scheduler.disable_task(task_id)
         ):
             raise RuntimeError("recovery_scheduler_containment_failed")
+        if task is not None and pending.recovery_scheduler_posture_captured:
+            release_containment = getattr(
+                self._scheduler,
+                "release_task_recovery_containment",
+                None,
+            )
+            if not callable(release_containment) or not release_containment(
+                task_id,
+                token=self._recovery_scheduler_containment_token(pending),
+                enable=(not should_disable and pending.recovery_scheduler_restore_enabled),
+            ):
+                raise RuntimeError("recovery_scheduler_restore_failed")
+        if (
+            pending.recovery_scheduler_posture_captured
+            or pending.recovery_scheduler_restore_enabled
+        ):
+            changed = True
+        pending.recovery_scheduler_posture_captured = False
+        pending.recovery_scheduler_restore_enabled = False
         pending.recovery_scheduler_accounted = True
         return changed
 
@@ -5101,10 +5119,8 @@ class HandlerImplementation(
         task = self._scheduler.get_task(task_id)
         if task is None:
             return ""
-        if (
-            int(getattr(task, "max_runs", 0)) > 0
-            and int(getattr(task, "success_count", 0))
-            >= int(getattr(task, "max_runs", 0))
+        if int(getattr(task, "max_runs", 0)) > 0 and int(getattr(task, "success_count", 0)) >= int(
+            getattr(task, "max_runs", 0)
         ):
             return "max_runs_reached"
         return ""
@@ -5137,9 +5153,7 @@ class HandlerImplementation(
         approval_timestamp = self._recovery_event_timestamp(pending).isoformat()
         return {
             **pending_action_event_identity_fields(pending),
-            "approval_decision_nonce": (
-                evidence.decision_nonce if evidence is not None else ""
-            ),
+            "approval_decision_nonce": (evidence.decision_nonce if evidence is not None else ""),
             "approval_timestamp": approval_timestamp,
             **approval_audit_fields(evidence),
         }
@@ -5234,9 +5248,7 @@ class HandlerImplementation(
                 )
             await self._event_bus.publish(
                 ToolExecuted(
-                    event_id=EventId(
-                        self._recovery_accounting_key(pending, "audit:ToolExecuted")
-                    ),
+                    event_id=EventId(self._recovery_accounting_key(pending, "audit:ToolExecuted")),
                     timestamp=event_timestamp,
                     session_id=pending.session_id,
                     actor="recovery",
@@ -5261,9 +5273,7 @@ class HandlerImplementation(
         else:
             await self._event_bus.publish(
                 ToolRejected(
-                    event_id=EventId(
-                        self._recovery_accounting_key(pending, "audit:ToolRejected")
-                    ),
+                    event_id=EventId(self._recovery_accounting_key(pending, "audit:ToolRejected")),
                     timestamp=event_timestamp,
                     session_id=pending.session_id,
                     actor="recovery",
@@ -5385,16 +5395,14 @@ class HandlerImplementation(
                 pending.recovery_accounting_pending
                 and pending.recovery_effect_invoked
                 and pending.retry_descriptor is not None
-                and pending.retry_descriptor.retry_class
-                == ToolRetryClass.STABLE_IDEMPOTENCY_KEY
+                and pending.retry_descriptor.retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY
             )
             if deferred_stable_key_accounting:
                 self._precontain_pending_scheduler_task(pending)
                 continue
             if pending.recovery_accounting_pending or pending.status == "outcome_unknown":
                 scheduler_state_changed = (
-                    self._record_pending_scheduler_state(pending)
-                    or scheduler_state_changed
+                    self._record_pending_scheduler_state(pending) or scheduler_state_changed
                 )
         if scheduler_state_changed:
             self._persist_pending_actions()
@@ -5645,8 +5653,7 @@ class HandlerImplementation(
                 and pending_attempt.status == "executing"
                 and pending_attempt.tool_name == tool_name
                 and pending_attempt.action_id == operation_identity.action_id
-                and pending_attempt.execution_attempt_id
-                == operation_identity.execution_attempt_id
+                and pending_attempt.execution_attempt_id == operation_identity.execution_attempt_id
             ):
                 stable_idempotency_key = pending_attempt.stable_idempotency_key
             adapter = self._services.idempotent_recovery_adapters.get(str(tool_name))
@@ -5679,9 +5686,7 @@ class HandlerImplementation(
                     }
                     provider_outcome_unknown = True
             success = provider_payload.get("ok") is True
-            provider_operation_id = str(
-                provider_payload.get("provider_operation_id", "")
-            ).strip()
+            provider_operation_id = str(provider_payload.get("provider_operation_id", "")).strip()
             error = "" if success else str(provider_payload.get("error", "adapter_failed"))
             if not success:
                 await self._event_bus.publish(
@@ -6167,7 +6172,10 @@ class HandlerImplementation(
                         upstream_tool_name,
                         exc,
                     )
-                    mcp_payload = {"ok": False, "error": str(exc).strip() or "mcp_tool_failed"}
+                    mcp_payload = {
+                        "ok": False,
+                        "error": str(exc).strip() or "mcp_tool_failed",
+                    }
             return await _execute_structured_payload_tool(
                 mcp_payload,
                 default_error="mcp_tool_failed",
@@ -6285,11 +6293,23 @@ class HandlerImplementation(
             "web.search": (_structured_web_search, "web_search_failed"),
             "web.fetch": (_structured_web_fetch, "web_fetch_failed"),
             "time.now": (_structured_time_now, "time_now_failed"),
-            "browser.navigate": (_structured_browser_navigate, "browser_navigate_failed"),
-            "browser.read_page": (_structured_browser_read_page, "browser_read_page_failed"),
-            "browser.screenshot": (_structured_browser_screenshot, "browser_screenshot_failed"),
+            "browser.navigate": (
+                _structured_browser_navigate,
+                "browser_navigate_failed",
+            ),
+            "browser.read_page": (
+                _structured_browser_read_page,
+                "browser_read_page_failed",
+            ),
+            "browser.screenshot": (
+                _structured_browser_screenshot,
+                "browser_screenshot_failed",
+            ),
             "browser.click": (_structured_browser_click, "browser_click_failed"),
-            "browser.type_text": (_structured_browser_type_text, "browser_type_text_failed"),
+            "browser.type_text": (
+                _structured_browser_type_text,
+                "browser_type_text_failed",
+            ),
             "browser.end_session": (
                 _structured_browser_end_session,
                 "browser_end_session_failed",
@@ -6298,8 +6318,14 @@ class HandlerImplementation(
                 _structured_realitycheck_search,
                 "realitycheck_search_failed",
             ),
-            "realitycheck.read": (_structured_realitycheck_read, "realitycheck_read_failed"),
-            "attachment.ingest": (_structured_attachment_ingest, "attachment_ingest_failed"),
+            "realitycheck.read": (
+                _structured_realitycheck_read,
+                "realitycheck_read_failed",
+            ),
+            "attachment.ingest": (
+                _structured_attachment_ingest,
+                "attachment_ingest_failed",
+            ),
             "email.search": (_structured_email_search, "email_search_failed"),
             "email.read": (_structured_email_read, "email_read_failed"),
             "fs.list": (_structured_fs_list, "fs_list_failed"),
@@ -6322,7 +6348,10 @@ class HandlerImplementation(
             "reminder.create": (_structured_reminder_create, "reminder_create_failed"),
             "reminder.list": (_structured_reminder_list, "reminder_list_failed"),
             "evidence.read": (_structured_evidence_read, "evidence_read_failed"),
-            "evidence.promote": (_structured_evidence_promote, "evidence_promote_failed"),
+            "evidence.promote": (
+                _structured_evidence_promote,
+                "evidence_promote_failed",
+            ),
         }
 
     def _sanitize_tool_output_text(self, raw: str) -> str:
@@ -6519,6 +6548,11 @@ class HandlerImplementation(
                 if candidate.exists() and candidate.is_file():
                     candidate.unlink()
                     deleted += 1
-            except (OSError, TypeError, ValueError, binascii.Error) as exc:  # pragma: no cover
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                binascii.Error,
+            ) as exc:  # pragma: no cover
                 errors.append(f"{path}:{exc.__class__.__name__}")
         return restored, deleted, errors
