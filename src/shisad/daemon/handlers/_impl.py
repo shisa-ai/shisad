@@ -4183,17 +4183,14 @@ class HandlerImplementation(
                 if recovery_authority_invalid:
                     retry_descriptor = None
                 raw_retry_generation = item.get("retry_generation", 0)
-                try:
-                    parsed_retry_generation = int(raw_retry_generation or 0)
-                except (TypeError, ValueError):
-                    parsed_retry_generation = 0
-                    erased_recovery_authority_present = True
-                retry_generation = max(0, parsed_retry_generation)
                 if (
-                    isinstance(raw_retry_generation, bool)
-                    or not isinstance(raw_retry_generation, int)
-                    or parsed_retry_generation < 0
+                    isinstance(raw_retry_generation, int)
+                    and not isinstance(raw_retry_generation, bool)
+                    and raw_retry_generation >= 0
                 ):
+                    retry_generation = raw_retry_generation
+                else:
+                    retry_generation = 0
                     erased_recovery_authority_present = True
                     retry_descriptor = None
                 recovery_started_at_raw = str(item.get("recovery_started_at", "")).strip()

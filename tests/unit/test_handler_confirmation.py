@@ -2287,6 +2287,8 @@ def test_f2_pending_attempt_identity_recovers_as_outcome_unknown(
     [
         ("retry_generation", "not-an-integer"),
         ("retry_generation", -1),
+        ("retry_generation", float("inf")),
+        ("retry_generation", False),
         ("recovery_started_at", "not-a-timestamp"),
     ],
 )
