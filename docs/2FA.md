@@ -375,6 +375,11 @@ rpIds** and are stored in **separate credential pools**. They are not
 interchangeable. If you switch from browser to helper (or vice versa), you
 must enroll new credentials.
 
+Legacy browser factors that predate stored rpId metadata remain usable only
+when the configured WebAuthn server successfully verifies a live assertion.
+After that verification, shisad persists the configured rpId into the factor
+record; a nonblank mismatched rpId is never migrated implicitly.
+
 ---
 
 ## L3: Signer / KMS Authorization

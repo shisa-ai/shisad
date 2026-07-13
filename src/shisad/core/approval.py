@@ -2258,6 +2258,8 @@ class WebAuthnBackend:
         updated = factor.model_copy(deep=True)
         if counter > updated.webauthn_sign_count:
             updated.webauthn_sign_count = counter
+        if not updated.webauthn_rp_id.strip():
+            updated.webauthn_rp_id = self._rp_id
         updated.last_verified_at = current
         updated.last_used_at = current
         self._credential_store.update_approval_factor(updated)

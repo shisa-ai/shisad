@@ -105,6 +105,7 @@ from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 from shisad.ui.confirmation import ConfirmationWarningGenerator
 from tests.helpers.signer import generate_secp256k1_private_key, public_key_pem
+from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
 class _StubImpl:
@@ -1946,6 +1947,64 @@ async def test_f2_live_totp_backend_cannot_self_assert_unverified_evidence(
     assert result["reason"] == "approval_contract_mismatch"
     assert pending.confirmation_evidence is None
     assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_f2_live_webauthn_migrates_legacy_blank_rp_id_after_verification(
+    tmp_path: Path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    backend = WebAuthnBackend(
+        credential_store=harness._credential_store,
+        approval_origin="https://approve.example.test",
+        rp_id="approve.example.test",
+    )
+    harness._confirmation_backend_registry.register(backend)
+    registration_options, registration_state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-legacy",
+    )
+    credential, registration_payload = make_registration_payload(
+        public_key_options=registration_options,
+        origin=backend.approval_origin,
+        rp_id=backend.rp_id,
+    )
+    factor = backend.registration_complete(
+        credential_id="webauthn-legacy",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime.now(UTC),
+        state=registration_state,
+        response_payload=registration_payload,
+    ).model_copy(update={"webauthn_rp_id": ""})
+    harness._credential_store.register_approval_factor(factor)
+    pending = _webauthn_pending_action(nonce="expected")
+    pending.delivery_target = None
+    pending.allowed_channel_principals = []
+    pending.allowed_principals = [factor.principal_id]
+    pending.allowed_credentials = [factor.credential_id]
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    assertion = make_authentication_payload(
+        public_key_options=backend.approval_request_options(pending_action=pending),
+        credential=credential,
+    )
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": pending.confirmation_id,
+            "decision_nonce": pending.decision_nonce,
+            "approval_method": "webauthn",
+            "credential_id": factor.credential_id,
+            "proof": assertion,
+        }
+    )
+
+    assert result["confirmed"] is True
+    migrated = harness._credential_store.get_approval_factor(factor.credential_id)
+    assert migrated is not None
+    assert migrated.webauthn_rp_id == backend.rp_id
 
 
 @pytest.mark.parametrize("proof_backend", ["software", "totp", "webauthn", "signer"])
