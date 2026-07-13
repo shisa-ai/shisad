@@ -2282,6 +2282,36 @@ def test_f2_pending_attempt_identity_recovers_as_outcome_unknown(
     assert persisted["decision_nonce"] == ""
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("retry_generation", "not-an-integer"),
+        ("retry_generation", -1),
+        ("recovery_started_at", "not-a-timestamp"),
+    ],
+)
+def test_f2_pending_erased_recovery_authority_recovers_as_outcome_unknown(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload[field] = value
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "outcome_unknown"
+    assert loaded.status_reason == "uncertain_effect_requires_fresh_approval"
+    assert loaded.decision_nonce == ""
+
+
 @pytest.mark.parametrize("drift", ["removed", "shortened", "naive"])
 def test_f2_load_terminalizes_execute_after_contract_drift(
     tmp_path: Path,

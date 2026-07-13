@@ -4002,6 +4002,7 @@ class HandlerImplementation(
                 continue
             item, identity_binding_invalid = self._canonicalize_loaded_pending_identity(item)
             legacy_mixed_sensitive_payload = False
+            erased_recovery_authority_present = False
             try:
                 confirmation_id, confirmation_id_valid = _loaded_state_text(
                     item.get("confirmation_id", "")
@@ -4181,10 +4182,19 @@ class HandlerImplementation(
                 )
                 if recovery_authority_invalid:
                     retry_descriptor = None
+                raw_retry_generation = item.get("retry_generation", 0)
                 try:
-                    retry_generation = max(0, int(item.get("retry_generation", 0) or 0))
+                    parsed_retry_generation = int(raw_retry_generation or 0)
                 except (TypeError, ValueError):
-                    retry_generation = 0
+                    parsed_retry_generation = 0
+                    erased_recovery_authority_present = True
+                retry_generation = max(0, parsed_retry_generation)
+                if (
+                    isinstance(raw_retry_generation, bool)
+                    or not isinstance(raw_retry_generation, int)
+                    or parsed_retry_generation < 0
+                ):
+                    erased_recovery_authority_present = True
                     retry_descriptor = None
                 recovery_started_at_raw = str(item.get("recovery_started_at", "")).strip()
                 try:
@@ -4196,6 +4206,7 @@ class HandlerImplementation(
                 except ValueError:
                     recovery_started_at = None
                     retry_descriptor = None
+                    erased_recovery_authority_present = True
                 recovery_result_payload = item.get("recovery_result", {})
                 recovery_result, recovery_result_valid = _loaded_state_mapping(
                     recovery_result_payload
@@ -4494,7 +4505,10 @@ class HandlerImplementation(
                 recovery_authority_invalid = True
             if (
                 pending.status == "pending"
-                and _pending_action_has_started_execution_authority(pending)
+                and (
+                    erased_recovery_authority_present
+                    or _pending_action_has_started_execution_authority(pending)
+                )
             ):
                 pending.status = "outcome_unknown"
                 recovery_authority_invalid = True
