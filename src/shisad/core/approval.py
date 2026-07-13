@@ -498,7 +498,12 @@ def safe_compare_text(left: Any, right: Any) -> bool:
 
     if not isinstance(left, str) or not isinstance(right, str):
         return False
-    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+    try:
+        left_bytes = left.encode("utf-8")
+        right_bytes = right.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return hmac.compare_digest(left_bytes, right_bytes)
 
 
 class ConfirmationEvidenceAuthenticator:

@@ -46,7 +46,10 @@ class SchedulerManager:
         if self._storage_dir is not None:
             self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._load_tasks()
-        self._load_pending_confirmations()
+        pending_confirmation_state_loaded = self._load_pending_confirmations()
+        if pending_confirmation_state_loaded:
+            for task_id in self._tasks:
+                self._prune_confirmation_outcome_dedup(task_id)
 
     def create_task(
         self,
@@ -264,6 +267,7 @@ class SchedulerManager:
         self._pending_confirmations[task_id].append(payload)
         self._prune_confirmation_rows(task_id)
         self._persist_pending_confirmations()
+        self._prune_confirmation_outcome_dedup(task_id)
         self._audit("task.confirmation_queued", {"task_id": task_id})
 
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
@@ -308,6 +312,7 @@ class SchedulerManager:
         if reconciled_expiry:
             self._prune_confirmation_rows(task_id)
             self._persist_pending_confirmations()
+            self._prune_confirmation_outcome_dedup(task_id)
         return pending
 
     def _record_confirmation_outcome_row(
@@ -326,6 +331,7 @@ class SchedulerManager:
             row["run_outcome_recorded"] = True
             row["run_outcome_success"] = recorded_success
             self._persist_pending_confirmations()
+            self._prune_confirmation_outcome_dedup(task_id)
             return True
         if bool(row.get("run_outcome_recorded", False)):
             if confirmation_id:
@@ -344,6 +350,7 @@ class SchedulerManager:
             task.failure_count += 1
         self._persist_tasks()
         self._persist_pending_confirmations()
+        self._prune_confirmation_outcome_dedup(task_id)
         self._audit(
             "task.run_outcome",
             {
@@ -406,6 +413,7 @@ class SchedulerManager:
                 audit_event = "task.confirmation_resolved"
             self._prune_confirmation_rows(task_id)
             self._persist_pending_confirmations()
+            self._prune_confirmation_outcome_dedup(task_id)
             self._audit(
                 audit_event,
                 {
@@ -654,6 +662,24 @@ class SchedulerManager:
         if len(resolved) > _MAX_RESOLVED_CONFIRMATIONS_PER_TASK:
             resolved = resolved[-_MAX_RESOLVED_CONFIRMATIONS_PER_TASK:]
         self._pending_confirmations[task_id] = [*active, *resolved]
+
+    def _prune_confirmation_outcome_dedup(self, task_id: str) -> None:
+        """Drop task tombstones only after the retained row set is durable."""
+
+        task = self._tasks.get(task_id)
+        if task is None or not task.confirmation_outcome_dedup:
+            return
+        retained_ids = {
+            str(row.get("confirmation_id", "")).strip()
+            for row in self._pending_confirmations.get(task_id, [])
+            if str(row.get("confirmation_id", "")).strip()
+        }
+        stale_ids = set(task.confirmation_outcome_dedup).difference(retained_ids)
+        if not stale_ids:
+            return
+        for confirmation_id in stale_ids:
+            task.confirmation_outcome_dedup.pop(confirmation_id, None)
+        self._persist_tasks()
 
     def _validate_schedule(self, schedule: Schedule) -> None:
         if schedule.kind == ScheduleKind.EVENT:
@@ -914,22 +940,28 @@ class SchedulerManager:
         payload = {task_id: rows for task_id, rows in self._pending_confirmations.items()}
         self._pending_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    def _load_pending_confirmations(self) -> None:
+    def _load_pending_confirmations(self) -> bool:
         if self._pending_file is None or not self._pending_file.exists():
-            return
+            return False
         try:
             raw = json.loads(self._pending_file.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
-            return
+            return False
         if not isinstance(raw, dict):
-            return
+            return False
+        authoritative = True
         restored: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
         for task_id, rows in raw.items():
             if not isinstance(task_id, str):
+                authoritative = False
                 continue
             if not isinstance(rows, list):
+                authoritative = False
                 continue
             cleaned_rows = [item for item in rows if isinstance(item, dict)]
+            if len(cleaned_rows) != len(rows):
+                authoritative = False
             if cleaned_rows:
                 restored[task_id] = cleaned_rows
         self._pending_confirmations = restored
+        return authoritative

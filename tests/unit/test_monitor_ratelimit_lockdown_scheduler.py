@@ -959,6 +959,53 @@ def test_f2_confirmation_outcome_deduplicates_after_tasks_only_crash(
     )
 
 
+def test_f2_confirmation_outcome_dedup_retention_tracks_durable_rows(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "tasks"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task = scheduler.create_task(
+        name="bounded-confirmation-outcome-dedup",
+        goal="Retain bounded confirmation outcome identities",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot=set(),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    for index in range(40):
+        confirmation_id = f"confirm-{index:02d}"
+        scheduler.queue_confirmation(
+            task.id,
+            {"confirmation_id": confirmation_id, "status": "pending"},
+        )
+        assert scheduler.resolve_confirmation(
+            task.id,
+            confirmation_id=confirmation_id,
+            status="failed",
+            status_reason="execution_failed",
+        )
+        assert scheduler.record_confirmation_outcome(
+            task.id,
+            confirmation_id=confirmation_id,
+            success=False,
+        )
+
+    retained_ids = {
+        str(row.get("confirmation_id", "")) for row in scheduler._pending_confirmations[task.id]
+    }
+    assert len(retained_ids) == 32
+    assert set(task.confirmation_outcome_dedup) == retained_ids
+    assert task.failure_count == 40
+
+    restarted = SchedulerManager(storage_dir=storage)
+    reloaded = restarted.get_task(task.id)
+    assert reloaded is not None
+    assert set(reloaded.confirmation_outcome_dedup) == retained_ids
+    assert reloaded.failure_count == 40
+
+
 def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmations(
     tmp_path: Path,
 ) -> None:

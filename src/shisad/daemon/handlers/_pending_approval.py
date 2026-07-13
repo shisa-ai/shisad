@@ -202,6 +202,16 @@ def pending_approval_contract_hash(pending: Any) -> str:
     return canonical_sha256(pending_approval_contract_payload(pending))
 
 
+def pending_approval_parent_contract_hash(pending: Any) -> str:
+    """Return the exact pre-decision-nonce approval contract hash."""
+
+    payload = pending_approval_contract_payload(pending)
+    identity = payload["identity"]
+    if isinstance(identity, dict):
+        identity.pop("decision_nonce", None)
+    return canonical_sha256(payload)
+
+
 def pending_action_is_live_pending(pending: Any, *, now: datetime | None = None) -> bool:
     return pending_action_state_view(pending, now=now).is_live_pending
 

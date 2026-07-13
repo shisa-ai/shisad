@@ -68,6 +68,7 @@ from shisad.core.approval import (
     legacy_software_confirmation_requirement,
     new_approval_nonce,
     resolve_confirmation_destinations,
+    safe_compare_sha256,
 )
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -141,6 +142,7 @@ from shisad.daemon.handlers._pending_approval import (
     pending_action_event_identity_fields,
     pending_action_state_view,
     pending_approval_contract_hash,
+    pending_approval_parent_contract_hash,
     pending_pep_context_from_payload,
     pending_pep_context_to_payload,
     pending_pep_elevation_from_payload,
@@ -4555,6 +4557,32 @@ class HandlerImplementation(
                 pending.session_id,
                 [],
             ).append(pending.confirmation_id)
+            if (
+                not pending.decision_nonce
+                and pending_action_state_view(pending).is_live_pending
+                and pending.approval_envelope is not None
+                and pending.approval_envelope.schema_version == "shisad.approval.v2"
+                and safe_compare_sha256(
+                    pending.approval_envelope_hash,
+                    approval_envelope_hash(pending.approval_envelope),
+                )
+                and safe_compare_sha256(
+                    pending.approval_envelope.approval_contract_hash,
+                    pending_approval_parent_contract_hash(pending),
+                )
+            ):
+                pending.decision_nonce = uuid.uuid4().hex
+                pending.approval_envelope = pending.approval_envelope.model_copy(
+                    update={
+                        "approval_contract_hash": pending_approval_contract_hash(
+                            pending
+                        ),
+                    }
+                )
+                pending.approval_envelope_hash = approval_envelope_hash(
+                    pending.approval_envelope
+                )
+                migrated_legacy_decision_nonce = True
             stale_reason = self._stale_pending_action_reason(pending)
             if stale_reason:
                 self._mark_stale_pending_action(

@@ -87,6 +87,7 @@ from shisad.daemon.handlers._pending_approval import (
     PendingPepElevationRequest,
     pending_action_state_view,
     pending_approval_contract_hash,
+    pending_approval_contract_payload,
     pep_arguments_for_policy_evaluation,
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
@@ -2187,6 +2188,40 @@ def test_f1_live_pending_with_expiry_nonce_backfill_is_persisted(tmp_path: Path)
     assert persisted["decision_nonce"] == loaded.decision_nonce
 
 
+def test_f2_parent_contract_blank_nonce_migration_is_verified_and_rebound(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="")
+    assert pending.approval_envelope is not None
+    legacy_contract = pending_approval_contract_payload(pending)
+    identity = legacy_contract["identity"]
+    assert isinstance(identity, dict)
+    del identity["decision_nonce"]
+    legacy_contract_hash = canonical_sha256(legacy_contract)
+    pending.approval_envelope = pending.approval_envelope.model_copy(
+        update={"approval_contract_hash": legacy_contract_hash}
+    )
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    payload = HandlerImplementation._pending_to_dict(pending)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "pending"
+    assert loaded.decision_nonce
+    assert loaded.approval_envelope is not None
+    assert loaded.approval_envelope.approval_contract_hash == pending_approval_contract_hash(loaded)
+    assert loaded.approval_envelope_hash == approval_envelope_hash(loaded.approval_envelope)
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["decision_nonce"] == loaded.decision_nonce
+    assert persisted["approval_envelope_hash"] == loaded.approval_envelope_hash
+
+
 @pytest.mark.parametrize("drift", ["removed", "shortened", "naive"])
 def test_f2_load_terminalizes_execute_after_contract_drift(
     tmp_path: Path,
@@ -4075,10 +4110,12 @@ async def test_m1_pf11_confirmation_rejects_invalid_nonce(tmp_path) -> None:
     ("decision_method", "decision_field"),
     [("confirm", "confirmed"), ("reject", "rejected")],
 )
+@pytest.mark.parametrize("invalid_nonce", ["☃", "\ud800"])
 async def test_f2_non_ascii_decision_nonce_fails_closed(
     tmp_path: Path,
     decision_method: str,
     decision_field: str,
+    invalid_nonce: str,
 ) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")
@@ -4090,7 +4127,7 @@ async def test_f2_non_ascii_decision_nonce_fails_closed(
     )
 
     result = await decision(
-        {"confirmation_id": pending.confirmation_id, "decision_nonce": "☃"}
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": invalid_nonce}
     )
 
     assert result[decision_field] is False
