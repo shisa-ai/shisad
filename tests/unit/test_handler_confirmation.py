@@ -2222,6 +2222,33 @@ def test_f2_parent_contract_blank_nonce_migration_is_verified_and_rebound(
     assert persisted["approval_envelope_hash"] == loaded.approval_envelope_hash
 
 
+@pytest.mark.parametrize("malformed_surface", ["contract", "envelope"])
+def test_f2_parent_contract_malformed_text_fails_closed(
+    tmp_path: Path,
+    malformed_surface: str,
+) -> None:
+    pending = _pending_action(nonce="")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    if malformed_surface == "contract":
+        payload["safe_preview"] = "\ud800"
+    else:
+        envelope = payload["approval_envelope"]
+        assert isinstance(envelope, dict)
+        envelope["policy_reason"] = "\ud800"
+    pending_actions_file = tmp_path / "pending_actions.json"
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+
+    harness._load_pending_actions()
+
+    loaded = harness._pending_actions[pending.confirmation_id]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_contract_mismatch"
+    assert loaded.decision_nonce == ""
+
+
 @pytest.mark.parametrize("drift", ["removed", "shortened", "naive"])
 def test_f2_load_terminalizes_execute_after_contract_drift(
     tmp_path: Path,

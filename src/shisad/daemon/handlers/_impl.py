@@ -4557,20 +4557,32 @@ class HandlerImplementation(
                 pending.session_id,
                 [],
             ).append(pending.confirmation_id)
+            parent_contract_verified = False
             if (
                 not pending.decision_nonce
                 and pending_action_state_view(pending).is_live_pending
                 and pending.approval_envelope is not None
                 and pending.approval_envelope.schema_version == "shisad.approval.v2"
-                and safe_compare_sha256(
-                    pending.approval_envelope_hash,
-                    approval_envelope_hash(pending.approval_envelope),
-                )
-                and safe_compare_sha256(
-                    pending.approval_envelope.approval_contract_hash,
-                    pending_approval_parent_contract_hash(pending),
-                )
             ):
+                try:
+                    expected_envelope_hash = approval_envelope_hash(
+                        pending.approval_envelope
+                    )
+                    expected_parent_contract_hash = (
+                        pending_approval_parent_contract_hash(pending)
+                    )
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    parent_contract_verified = safe_compare_sha256(
+                        pending.approval_envelope_hash,
+                        expected_envelope_hash,
+                    ) and safe_compare_sha256(
+                        pending.approval_envelope.approval_contract_hash,
+                        expected_parent_contract_hash,
+                    )
+            if parent_contract_verified:
+                assert pending.approval_envelope is not None
                 pending.decision_nonce = uuid.uuid4().hex
                 pending.approval_envelope = pending.approval_envelope.model_copy(
                     update={

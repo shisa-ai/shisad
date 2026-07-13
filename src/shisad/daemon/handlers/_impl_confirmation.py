@@ -417,10 +417,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         stored_envelope_hash = str(
             getattr(pending, "approval_envelope_hash", "")
         ).strip()
-        if (
-            not stored_envelope_hash
-            or approval_envelope_hash(approval_envelope) != stored_envelope_hash
-        ):
+        try:
+            expected_envelope_hash = approval_envelope_hash(approval_envelope)
+        except (TypeError, ValueError):
+            return "approval_contract_mismatch"
+        if not stored_envelope_hash or expected_envelope_hash != stored_envelope_hash:
             return "approval_contract_mismatch"
 
         identity = pending_action_state_view(pending).identity
