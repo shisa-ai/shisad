@@ -4321,6 +4321,12 @@ class HandlerImplementation(
                 _loaded_pending_payload_has_started_execution_authority(item)
             )
             raw_scheduler_accounting_mode = item.get("scheduler_accounting_mode", "")
+            raw_unrecorded_scheduler_shadow = (
+                _loaded_pending_has_unrecorded_scheduler_shadow(
+                    getattr(self, "_scheduler", None),
+                    item,
+                )
+            )
             raw_scheduler_accounting_intent_present = (
                 item.get("scheduler_accounting_pending", False) is not False
                 or (
@@ -4328,10 +4334,7 @@ class HandlerImplementation(
                     if isinstance(raw_scheduler_accounting_mode, str)
                     else raw_scheduler_accounting_mode is not None
                 )
-                or _loaded_pending_has_unrecorded_scheduler_shadow(
-                    getattr(self, "_scheduler", None),
-                    item,
-                )
+                or raw_unrecorded_scheduler_shadow
             )
             recovery_result_json_valid = _native_json_payload_is_valid(
                 item.get("recovery_result", {})
@@ -4844,6 +4847,12 @@ class HandlerImplementation(
                 recovery_authority_mac_valid = False
             started_recovery_authority = _pending_action_has_started_execution_authority(pending)
             if raw_started_authority_present and not started_recovery_authority:
+                erased_recovery_authority_present = True
+            if (
+                raw_unrecorded_scheduler_shadow
+                and pending.status == "pending"
+                and not started_recovery_authority
+            ):
                 erased_recovery_authority_present = True
             if started_recovery_authority and not item_json_valid:
                 recovery_authority_invalid = True

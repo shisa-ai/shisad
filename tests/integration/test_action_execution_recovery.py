@@ -985,6 +985,138 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
 
 
 @pytest.mark.asyncio
+async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+
+    class _ProcessStopped(BaseException):
+        pass
+
+    effect_calls = 0
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name="confirmed-preconfirmation-row-rollback",
+            goal="Do not repeat a confirmed effect after cross-store rollback",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="confirmed-preconfirmation-row-rollback",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=1,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reason="confirmed-preconfirmation-row-rollback",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-confirmed-preconfirmation-row-rollback",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
+        )
+        pending_path = config.data_dir / "pending_actions.json"
+        preconfirmation_rows = pending_path.read_text(encoding="utf-8")
+        original_nonce = pending.decision_nonce
+
+        async def _successful_effect(**_kwargs: object) -> ApprovedToolExecutionResult:
+            nonlocal effect_calls
+            effect_calls += 1
+            return ApprovedToolExecutionResult(success=True)
+
+        monkeypatch.setattr(impl, "_execute_approved_action", _successful_effect)
+
+        def _stop_before_accounting(
+            _task_id: str,
+            *,
+            confirmation_id: str,
+            success: bool,
+        ) -> bool:
+            _ = confirmation_id, success
+            raise _ProcessStopped("process stopped before scheduler accounting")
+
+        monkeypatch.setattr(
+            services.scheduler,
+            "record_confirmation_outcome",
+            _stop_before_accounting,
+        )
+        with pytest.raises(_ProcessStopped):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": original_nonce,
+                }
+            )
+        assert effect_calls == 1
+        shadow = services.scheduler._pending_confirmations[task.id][0]
+        assert shadow["status"] == "approved"
+        assert shadow["run_outcome_recorded"] is False
+    finally:
+        await services.shutdown()
+
+    pending_path.write_text(preconfirmation_rows, encoding="utf-8")
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        restarted_impl = restarted_handlers._impl
+        await _wait_for_recovery_accounting(restarted_impl)
+        monkeypatch.setattr(
+            restarted_impl,
+            "_execute_approved_action",
+            _successful_effect,
+        )
+        result = await restarted_impl.do_action_confirm(
+            {
+                "confirmation_id": pending.confirmation_id,
+                "decision_nonce": original_nonce,
+            }
+        )
+        assert result["confirmed"] is False
+        assert effect_calls == 1
+        recovered = restarted_impl._pending_actions[pending.confirmation_id]
+        assert recovered.status == "outcome_unknown"
+        assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+        assert recovered.decision_nonce == ""
+        assert recovered.scheduler_accounting_mode == "ambiguous"
+        recovered_task = restarted.scheduler.get_task(task.id)
+        assert recovered_task is not None
+        assert recovered_task.success_count == 0
+        assert recovered_task.failure_count == 0
+        assert recovered_task.enabled is False
+    finally:
+        await restarted.shutdown()
+
+    converged = await DaemonServices.build(config)
+    try:
+        converged_handlers = DaemonControlHandlers(services=converged)
+        await _wait_for_recovery_accounting(converged_handlers._impl)
+        recovered = converged_handlers._impl._pending_actions[pending.confirmation_id]
+        assert recovered.status == "outcome_unknown"
+        assert recovered.decision_nonce == ""
+        converged_task = converged.scheduler.get_task(task.id)
+        assert converged_task is not None
+        assert converged_task.success_count == 0
+        assert converged_task.failure_count == 0
+        assert converged_task.enabled is False
+        assert effect_calls == 1
+    finally:
+        await converged.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_timestamp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
