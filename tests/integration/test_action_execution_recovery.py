@@ -382,10 +382,16 @@ async def test_initial_stable_key_invocation_guard_rejects_post_queue_adapter_dr
         ("durable", "evidence"),
         ("durable", "delivery-target"),
         ("durable", "task-envelope"),
+        ("durable", "origin-turn"),
+        ("durable", "result-id"),
+        ("durable", "marker-timestamp"),
         ("loaded", "preflight"),
         ("loaded", "evidence"),
         ("loaded", "delivery-target"),
         ("loaded", "task-envelope"),
+        ("loaded", "origin-turn"),
+        ("loaded", "result-id"),
+        ("loaded", "marker-timestamp"),
     ],
 )
 @pytest.mark.asyncio
@@ -436,8 +442,17 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
                         channel="matrix",
                         recipient="mallory-room",
                     )
-                else:
+                elif surface == "task-envelope":
                     recovered.approval_task_envelope_id = "forged-task-envelope"
+                elif surface == "origin-turn":
+                    recovered.origin_turn_id = "forged-origin-turn"
+                elif surface == "result-id":
+                    recovered.result_id = "result-forged"
+                else:
+                    recovered.recovery_event_identity_untrusted = True
+                    recovered.recovery_event_identity_untrusted_at = datetime.fromisoformat(
+                        "2000-01-01T00:00:00+00:00"
+                    )
             await impl._account_recovered_attempt(confirmation_id)
             terminal = impl._pending_actions[confirmation_id]
             assert terminal.status == "outcome_unknown"
@@ -460,8 +475,15 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
                 "workspace_hint": "",
                 "thread_id": "",
             }
-        else:
+        elif surface == "task-envelope":
             durable["approval_task_envelope_id"] = "forged-task-envelope"
+        elif surface == "origin-turn":
+            durable["origin_turn_id"] = "forged-origin-turn"
+        elif surface == "result-id":
+            durable["result_id"] = "result-forged"
+        else:
+            durable["recovery_event_identity_untrusted"] = True
+            durable["recovery_event_identity_untrusted_at"] = "2000-01-01T00:00:00+00:00"
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
         replayed = await DaemonServices.build(config)
@@ -479,7 +501,6 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         row
         for row in _audit_rows(config)
         if row.get("actor") == "recovery"
-        and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
     ]
     assert [row.get("event_type") for row in recovery_events] == ["ToolRejected"]
     assert all(
@@ -487,13 +508,30 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         for row in recovery_events
     )
     for row in recovery_events:
+        assert row.get("timestamp") != "2000-01-01T00:00:00+00:00"
+        assert row.get("session_id") is None
         event_data = row.get("data")
         assert isinstance(event_data, dict)
-        delivery_target = event_data.get("delivery_target")
-        assert not isinstance(delivery_target, dict) or (
-            delivery_target.get("recipient") != "mallory-room"
-        )
-        assert event_data.get("approval_task_envelope_id") != "forged-task-envelope"
+        assert event_data.get("session_id") is None
+        assert event_data.get("tool_name") == ""
+        assert event_data.get("delivery_target") is None
+        for identity_field in (
+            "action_id",
+            "origin_turn_id",
+            "user_id",
+            "workspace_id",
+            "task_id",
+            "execution_attempt_id",
+            "result_id",
+            "followup_id",
+            "approval_session_id",
+            "approval_task_envelope_id",
+            "approval_confirmation_id",
+        ):
+            assert event_data.get(identity_field) == ""
+        assert event_data.get("approval_decision_nonce") == ""
+        assert event_data.get("approval_timestamp") == ""
+        assert event_data.get("approval_evidence_hash") == ""
     recovered_task = (
         replayed.scheduler.get_task(task_id)
         if mutation_phase == "durable"
@@ -2011,7 +2049,7 @@ async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
 
 
 @pytest.mark.asyncio
-async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_timestamp(
+async def test_corrupt_confirmation_evidence_recovery_replay_uses_trusted_marker_timestamp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2022,7 +2060,6 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_time
     durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
     durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
     durable["confirmation_evidence"]["level"] = "not-a-confirmation-level"
-    persisted_created_at = str(durable["created_at"])
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
     restarted = await DaemonServices.build(config)
@@ -2048,9 +2085,18 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_time
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolRejected"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
         ]
         assert len(recovery_rejections) == 1
+        durable = next(
+            row
+            for row in json.loads(pending_path.read_text(encoding="utf-8"))
+            if row["confirmation_id"] == confirmation_id
+        )
+        trusted_marker_timestamp = str(durable["recovery_event_identity_untrusted_at"])
+        assert trusted_marker_timestamp
+        assert recovery_rejections[0].get("timestamp") == trusted_marker_timestamp
+        assert recovery_rejections[0].get("data", {}).get("approval_timestamp") == ""
+        assert recovery_rejections[0].get("data", {}).get("approval_confirmation_id") == ""
     finally:
         await restarted.shutdown()
 
@@ -2064,12 +2110,11 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_persisted_time
             for row in _audit_rows(config)
             if row.get("event_type") == "ToolRejected"
             and row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id") == confirmation_id
         ]
         assert len(recovery_rejections) == 1
-        assert (
-            recovery_rejections[0].get("data", {}).get("approval_timestamp") == persisted_created_at
-        )
+        assert recovery_rejections[0].get("timestamp") == trusted_marker_timestamp
+        assert recovery_rejections[0].get("data", {}).get("approval_timestamp") == ""
+        assert recovery_rejections[0].get("data", {}).get("approval_confirmation_id") == ""
         durable = next(
             row
             for row in json.loads(pending_path.read_text(encoding="utf-8"))
@@ -3302,12 +3347,21 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         if recovery_case in {"changed-key", "fabricated-evidence"}:
             assert recovered.scheduler_accounting_mode == "ambiguous"
         assert recovered_task.enabled is expected_task_enabled
-        recovery_events = [
+        all_recovery_events = [
             row
             for row in _audit_rows(config)
             if row.get("actor") == "recovery"
-            and row.get("data", {}).get("approval_confirmation_id") == pending.confirmation_id
         ]
+        recovery_events = (
+            all_recovery_events
+            if recovery_case in {"changed-key", "fabricated-evidence"}
+            else [
+                row
+                for row in all_recovery_events
+                if row.get("data", {}).get("approval_confirmation_id")
+                == pending.confirmation_id
+            ]
+        )
         executed_events = [
             row for row in recovery_events if row.get("event_type") == "ToolExecuted"
         ]
@@ -3354,6 +3408,13 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert executed_events == []
             assert len(rejected_events) == 1
             assert recovery_execution_records == []
+            rejected_data = rejected_events[0].get("data")
+            assert isinstance(rejected_data, dict)
+            assert rejected_events[0].get("session_id") is None
+            assert rejected_data.get("session_id") is None
+            assert rejected_data.get("tool_name") == ""
+            assert rejected_data.get("approval_confirmation_id") == ""
+            assert rejected_data.get("approval_session_id") == ""
     finally:
         await restarted.shutdown()
 

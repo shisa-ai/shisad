@@ -1738,6 +1738,13 @@ class PendingAction:
     result_id: str = ""
     followup_id: str = ""
     recovery_authority_mac: str = ""
+    recovery_event_identity_untrusted: bool = False
+    recovery_event_identity_untrusted_at: datetime | None = None
+    recovery_event_identity_trusted_at: datetime | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not self.action_id.strip():
@@ -1893,7 +1900,7 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
 
     evidence = pending.confirmation_evidence
     snapshot = {
-        "schema_version": "shisad.pending_recovery_snapshot.v4",
+        "schema_version": "shisad.pending_recovery_snapshot.v6",
         "confirmation_id": pending.confirmation_id,
         "action_id": pending.action_id,
         "origin_turn_id": pending.origin_turn_id,
@@ -1945,6 +1952,12 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "recovery_result": dict(pending.recovery_result),
         "recovery_accounting_pending": pending.recovery_accounting_pending,
         "recovery_effect_invoked": pending.recovery_effect_invoked,
+        "recovery_event_identity_untrusted": pending.recovery_event_identity_untrusted,
+        "recovery_event_identity_untrusted_at": (
+            pending.recovery_event_identity_untrusted_at.isoformat()
+            if pending.recovery_event_identity_untrusted_at is not None
+            else ""
+        ),
         "recovery_scheduler_accounted": pending.recovery_scheduler_accounted,
         "scheduler_accounting_pending": pending.scheduler_accounting_pending,
         "stable_idempotency_key": pending.stable_idempotency_key,
@@ -1973,6 +1986,23 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
 def _neutralize_untrusted_recovery_event_identity(pending: PendingAction) -> None:
     pending.delivery_target = None
     pending.approval_task_envelope_id = ""
+
+
+def _unauthenticated_recovery_event_identity_fields() -> dict[str, Any]:
+    return {
+        "action_id": "",
+        "origin_turn_id": "",
+        "user_id": "",
+        "workspace_id": "",
+        "task_id": "",
+        "delivery_target": None,
+        "execution_attempt_id": "",
+        "result_id": "",
+        "followup_id": "",
+        "approval_session_id": "",
+        "approval_task_envelope_id": "",
+        "approval_confirmation_id": "",
+    }
 
 
 def _neutralize_untrusted_scheduler_accounting_intent(
@@ -3424,6 +3454,12 @@ class HandlerImplementation(
             "recovery_result": dict(pending.recovery_result),
             "recovery_accounting_pending": pending.recovery_accounting_pending,
             "recovery_effect_invoked": pending.recovery_effect_invoked,
+            "recovery_event_identity_untrusted": pending.recovery_event_identity_untrusted,
+            "recovery_event_identity_untrusted_at": (
+                pending.recovery_event_identity_untrusted_at.isoformat()
+                if pending.recovery_event_identity_untrusted_at is not None
+                else ""
+            ),
             "recovery_scheduler_accounted": pending.recovery_scheduler_accounted,
             "recovery_scheduler_posture_captured": (pending.recovery_scheduler_posture_captured),
             "recovery_scheduler_restore_enabled": (pending.recovery_scheduler_restore_enabled),
@@ -3535,6 +3571,8 @@ class HandlerImplementation(
         if public:
             payload.pop("recovery_accounting_pending", None)
             payload.pop("recovery_effect_invoked", None)
+            payload.pop("recovery_event_identity_untrusted", None)
+            payload.pop("recovery_event_identity_untrusted_at", None)
             payload.pop("recovery_scheduler_accounted", None)
             payload.pop("recovery_scheduler_posture_captured", None)
             payload.pop("recovery_scheduler_restore_enabled", None)
@@ -4598,6 +4636,26 @@ class HandlerImplementation(
                 recovery_effect_invoked, recovery_effect_invoked_valid = _loaded_state_bool(
                     item.get("recovery_effect_invoked", False)
                 )
+                (
+                    recovery_event_identity_untrusted,
+                    recovery_event_identity_untrusted_valid,
+                ) = _loaded_state_bool(item.get("recovery_event_identity_untrusted", False))
+                recovery_event_identity_untrusted_at_raw = str(
+                    item.get("recovery_event_identity_untrusted_at", "")
+                ).strip()
+                try:
+                    recovery_event_identity_untrusted_at = (
+                        datetime.fromisoformat(recovery_event_identity_untrusted_at_raw)
+                        if recovery_event_identity_untrusted_at_raw
+                        else None
+                    )
+                    recovery_event_identity_untrusted_at_valid = (
+                        recovery_event_identity_untrusted
+                        == (recovery_event_identity_untrusted_at is not None)
+                    )
+                except ValueError:
+                    recovery_event_identity_untrusted_at = None
+                    recovery_event_identity_untrusted_at_valid = False
                 recovery_scheduler_accounted, recovery_scheduler_accounted_valid = (
                     _loaded_state_bool(item.get("recovery_scheduler_accounted", False))
                 )
@@ -4623,6 +4681,8 @@ class HandlerImplementation(
                     (
                         recovery_accounting_pending_valid,
                         recovery_effect_invoked_valid,
+                        recovery_event_identity_untrusted_valid,
+                        recovery_event_identity_untrusted_at_valid,
                         recovery_scheduler_accounted_valid,
                         recovery_scheduler_posture_captured_valid,
                         recovery_scheduler_restore_enabled_valid,
@@ -4842,6 +4902,8 @@ class HandlerImplementation(
                     recovery_result=recovery_result,
                     recovery_accounting_pending=recovery_accounting_pending,
                     recovery_effect_invoked=recovery_effect_invoked,
+                    recovery_event_identity_untrusted=recovery_event_identity_untrusted,
+                    recovery_event_identity_untrusted_at=recovery_event_identity_untrusted_at,
                     recovery_scheduler_accounted=recovery_scheduler_accounted,
                     recovery_scheduler_posture_captured=(recovery_scheduler_posture_captured),
                     recovery_scheduler_restore_enabled=(recovery_scheduler_restore_enabled),
@@ -4924,14 +4986,24 @@ class HandlerImplementation(
                 erased_recovery_authority_present = True
             if started_recovery_authority and not item_json_valid:
                 recovery_authority_invalid = True
+            recovery_authority_snapshot_mac_valid = False
             if started_recovery_authority:
-                recovery_authority_invalid = recovery_authority_invalid or not (
+                recovery_authority_snapshot_mac_valid = (
                     recovery_authority_mac_valid
                     and self._confirmation_evidence_authenticator.verify_recovery_snapshot(
                         _pending_recovery_authority_snapshot(pending),
                         pending.recovery_authority_mac,
                     )
                 )
+                recovery_authority_invalid = (
+                    recovery_authority_invalid or not recovery_authority_snapshot_mac_valid
+                )
+            pending.recovery_event_identity_trusted_at = (
+                pending.recovery_event_identity_untrusted_at
+                if recovery_authority_snapshot_mac_valid
+                and pending.recovery_event_identity_untrusted
+                else None
+            )
             recovery_rejection_accounting_required = pending.recovery_accounting_pending or (
                 started_recovery_authority
                 and (pending.status == "executing" or recovery_authority_invalid)
@@ -4946,6 +5018,15 @@ class HandlerImplementation(
                 pruned_stale = True
                 pending.retry_descriptor = None
                 pending.recovery_effect_invoked = False
+                pending.recovery_event_identity_untrusted = True
+                if (
+                    not recovery_authority_snapshot_mac_valid
+                    or pending.recovery_event_identity_untrusted_at is None
+                ):
+                    pending.recovery_event_identity_untrusted_at = datetime.now(UTC)
+                pending.recovery_event_identity_trusted_at = (
+                    pending.recovery_event_identity_untrusted_at
+                )
                 pending.recovery_accounting_pending = recovery_rejection_accounting_required
                 _neutralize_untrusted_recovery_event_identity(pending)
                 if started_recovery_authority or pending.status in {
@@ -5629,17 +5710,30 @@ class HandlerImplementation(
 
         task.add_done_callback(_cancellation_done)
 
-    def _recovery_approval_event_fields(self, pending: PendingAction) -> dict[str, Any]:
-        evidence = pending.confirmation_evidence
-        approval_timestamp = self._recovery_event_timestamp(pending).isoformat()
+    def _recovery_approval_event_fields(
+        self,
+        pending: PendingAction,
+        *,
+        authority_authenticated: bool,
+    ) -> dict[str, Any]:
+        evidence = pending.confirmation_evidence if authority_authenticated else None
+        approval_timestamp = (
+            self._recovery_event_timestamp(pending).isoformat()
+            if authority_authenticated
+            else ""
+        )
         return {
-            **pending_action_event_identity_fields(pending),
+            **(
+                pending_action_event_identity_fields(pending)
+                if authority_authenticated
+                else _unauthenticated_recovery_event_identity_fields()
+            ),
             "approval_decision_nonce": (evidence.decision_nonce if evidence is not None else ""),
             "approval_timestamp": approval_timestamp,
             **approval_audit_fields(evidence),
         }
 
-    def _recovery_authority_snapshot_is_authenticated(
+    def _recovery_authority_snapshot_mac_is_valid(
         self,
         pending: PendingAction,
     ) -> bool:
@@ -5648,6 +5742,15 @@ class HandlerImplementation(
                 _pending_recovery_authority_snapshot(pending),
                 pending.recovery_authority_mac,
             )
+        )
+
+    def _recovery_authority_snapshot_is_authenticated(
+        self,
+        pending: PendingAction,
+    ) -> bool:
+        return (
+            not pending.recovery_event_identity_untrusted
+            and self._recovery_authority_snapshot_mac_is_valid(pending)
         )
 
     def _recovered_authority_invalid_reason(
@@ -5693,6 +5796,17 @@ class HandlerImplementation(
         pending.execution_authorization_kind = ""
         pending.confirmation_evidence = None
         pending.preflight_action = None
+        if not preserve_authenticated_effect_posture:
+            pending.recovery_event_identity_untrusted = True
+            if (
+                pending.recovery_event_identity_untrusted_at is None
+                or pending.recovery_event_identity_untrusted_at
+                != pending.recovery_event_identity_trusted_at
+            ):
+                pending.recovery_event_identity_untrusted_at = datetime.now(UTC)
+            pending.recovery_event_identity_trusted_at = (
+                pending.recovery_event_identity_untrusted_at
+            )
         _neutralize_untrusted_recovery_event_identity(pending)
         pending.merged_policy = None
         pending.pep_context = None
@@ -5731,6 +5845,9 @@ class HandlerImplementation(
         if pending is None or not pending.recovery_accounting_pending:
             return
 
+        recovery_authority_authenticated = self._recovery_authority_snapshot_is_authenticated(
+            pending
+        )
         terminal_recovery_result_published = bool(
             pending.recovery_effect_invoked
             and pending.retry_generation > 0
@@ -5741,9 +5858,6 @@ class HandlerImplementation(
             pending,
             require_live_authority=not terminal_recovery_result_published,
         ):
-            recovery_authority_authenticated = (
-                self._recovery_authority_snapshot_is_authenticated(pending)
-            )
             self._invalidate_recovered_authority(
                 pending,
                 preserve_authenticated_effect_posture=recovery_authority_authenticated,
@@ -5794,8 +5908,17 @@ class HandlerImplementation(
         success = pending.status == "approved"
         outcome_unknown = pending.status == "outcome_unknown"
         error = "" if success else pending.status_reason or "recovery_failed"
-        event_fields = self._recovery_approval_event_fields(pending)
-        event_timestamp = self._recovery_event_timestamp(pending)
+        event_fields = self._recovery_approval_event_fields(
+            pending,
+            authority_authenticated=recovery_authority_authenticated,
+        )
+        event_timestamp = (
+            self._recovery_event_timestamp(pending)
+            if recovery_authority_authenticated
+            else pending.recovery_event_identity_untrusted_at or datetime.now(UTC)
+        )
+        event_session_id = pending.session_id if recovery_authority_authenticated else None
+        event_tool_name = pending.tool_name if recovery_authority_authenticated else ToolName("")
 
         if pending.recovery_effect_invoked:
             if not success:
@@ -5805,9 +5928,9 @@ class HandlerImplementation(
                             self._recovery_accounting_key(pending, "audit:ToolRejected")
                         ),
                         timestamp=event_timestamp,
-                        session_id=pending.session_id,
+                        session_id=event_session_id,
                         actor="recovery",
-                        tool_name=pending.tool_name,
+                        tool_name=event_tool_name,
                         reason=error,
                         **event_fields,
                     )
@@ -5816,9 +5939,9 @@ class HandlerImplementation(
                 ToolExecuted(
                     event_id=EventId(self._recovery_accounting_key(pending, "audit:ToolExecuted")),
                     timestamp=event_timestamp,
-                    session_id=pending.session_id,
+                    session_id=event_session_id,
                     actor="recovery",
-                    tool_name=pending.tool_name,
+                    tool_name=event_tool_name,
                     success=success,
                     error=error,
                     details={"outcome_unknown": outcome_unknown},
@@ -5842,9 +5965,9 @@ class HandlerImplementation(
                 ToolRejected(
                     event_id=EventId(self._recovery_accounting_key(pending, "audit:ToolRejected")),
                     timestamp=event_timestamp,
-                    session_id=pending.session_id,
+                    session_id=event_session_id,
                     actor="recovery",
-                    tool_name=pending.tool_name,
+                    tool_name=event_tool_name,
                     reason=error,
                     **event_fields,
                 )
