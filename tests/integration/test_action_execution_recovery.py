@@ -473,6 +473,168 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
     assert recovered_task.enabled is False
 
 
+@pytest.mark.parametrize(
+    "live_drift",
+    ["human-backend", "human-tool-schema", "policy-stable-adapter"],
+)
+@pytest.mark.asyncio
+async def test_terminal_recovery_accounting_preserves_authenticated_result_across_live_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    live_drift: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    adapter_calls: list[str] = []
+    stable_tool_name = ToolName("test.terminal-accounting-stable")
+    stable_tool_definition = ToolDefinition(
+        name=stable_tool_name,
+        description="Persist one stable-key recovery result before accounting.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+
+    def _stable_adapter(
+        _arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        adapter_calls.append(stable_idempotency_key)
+        return {
+            "ok": True,
+            "provider_operation_id": "terminal-accounting-provider-operation",
+        }
+
+    task_id = ""
+    if live_drift == "policy-stable-adapter":
+
+        class _ProcessStopped(BaseException):
+            pass
+
+        seeded = await DaemonServices.build(config)
+        try:
+            seeded.registry.register(stable_tool_definition)
+            seeded.idempotent_recovery_adapters[str(stable_tool_name)] = (
+                StableIdempotencyAdapter(
+                    guarantee_id="test.terminal-accounting-stable/provider-v1",
+                    operation=_stable_adapter,
+                )
+            )
+            session_id, raw_impl = await _session_and_impl(seeded)
+            impl = raw_impl
+            session = seeded.session_manager.get(session_id)
+            assert session is not None
+            action = build_action(
+                tool_name=str(stable_tool_name),
+                arguments={"value": "create-once"},
+                origin=Origin(
+                    session_id=str(session_id),
+                    user_id=str(session.user_id),
+                    workspace_id=str(session.workspace_id),
+                    actor="policy_loop",
+                    channel="cli",
+                ),
+                workspace_roots=list(config.assistant_fs_roots),
+            )
+
+            def _stop_before_effect(**_kwargs: object) -> None:
+                raise _ProcessStopped
+
+            monkeypatch.setattr(impl._rate_limiter, "consume", _stop_before_effect)
+            with pytest.raises(_ProcessStopped):
+                await impl._execute_approved_action(
+                    sid=session_id,
+                    user_id=session.user_id,
+                    workspace_id=session.workspace_id,
+                    tool_name=stable_tool_name,
+                    arguments={"value": "create-once"},
+                    capabilities=set(),
+                    approval_actor="policy_loop",
+                    execution_action=action,
+                    persist_attempt_before_effect=True,
+                )
+            seeded_pending = next(iter(impl._pending_actions.values()))
+            confirmation_id = seeded_pending.confirmation_id
+            assert seeded_pending.status == "executing"
+            assert seeded_pending.execution_authorization_kind == "policy_allow"
+        finally:
+            await seeded.shutdown()
+    else:
+        confirmation_id, task_id = await _seed_unresolved_scheduled_time_attempt(
+            config,
+            bind_preflight_action=True,
+        )
+
+    recovered_services = await DaemonServices.build(config)
+    try:
+        if live_drift == "policy-stable-adapter":
+            recovered_services.registry.register(stable_tool_definition)
+            recovered_services.idempotent_recovery_adapters[str(stable_tool_name)] = (
+                StableIdempotencyAdapter(
+                    guarantee_id="test.terminal-accounting-stable/provider-v1",
+                    operation=_stable_adapter,
+                )
+            )
+        recovered_handlers = DaemonControlHandlers(services=recovered_services)
+        recovered_impl = recovered_handlers._impl
+        accounting_tasks = list(recovered_impl._recovery_accounting_tasks)
+        assert len(accounting_tasks) == 1
+        for task in accounting_tasks:
+            task.cancel()
+        await asyncio.gather(*accounting_tasks, return_exceptions=True)
+        recovered = recovered_impl._pending_actions[confirmation_id]
+        assert recovered.status == "approved"
+        assert recovered.recovery_effect_invoked is True
+        assert recovered.recovery_accounting_pending is True
+        assert recovered.recovery_authority_mac.startswith("hmac-sha256:")
+        authenticated_result = dict(recovered.recovery_result)
+        authenticated_provider_operation_id = recovered.provider_operation_id
+    finally:
+        await recovered_services.shutdown()
+
+    replayed = await DaemonServices.build(config)
+    try:
+        if live_drift == "human-tool-schema":
+            time_definition = replayed.registry.get_tool(ToolName("time.now"))
+            assert time_definition is not None
+            replayed.registry._tools[time_definition.name] = time_definition.model_copy(
+                update={"description": "Drifted after terminal recovery publication."}
+            )
+        elif live_drift == "policy-stable-adapter":
+            replayed.registry.register(stable_tool_definition)
+            replayed.idempotent_recovery_adapters[str(stable_tool_name)] = (
+                StableIdempotencyAdapter(
+                    guarantee_id="test.terminal-accounting-stable/provider-v2",
+                    operation=_stable_adapter,
+                )
+            )
+        replayed_handlers = DaemonControlHandlers(services=replayed)
+        if live_drift == "human-backend":
+            replayed_handlers._impl._confirmation_backend_registry._backends.pop(
+                "software.default"
+            )
+        await _wait_for_recovery_accounting(replayed_handlers._impl)
+        terminal = replayed_handlers._impl._pending_actions[confirmation_id]
+        assert terminal.status == "approved"
+        assert terminal.status_reason in {
+            "recovered_structural_read",
+            "recovered_stable_idempotency_key",
+        }
+        assert terminal.recovery_result == authenticated_result
+        assert terminal.provider_operation_id == authenticated_provider_operation_id
+        assert terminal.recovery_effect_invoked is True
+        assert terminal.recovery_accounting_pending is False
+        assert terminal.recovery_authority_mac.startswith("hmac-sha256:")
+        if live_drift == "policy-stable-adapter":
+            assert len(adapter_calls) == 1
+        if task_id:
+            recovered_task = replayed.scheduler.get_task(task_id)
+            assert recovered_task is not None
+            assert recovered_task.success_count == 1
+            assert recovered_task.failure_count == 0
+    finally:
+        await replayed.shutdown()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "cancel_execution",

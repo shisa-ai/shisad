@@ -5632,14 +5632,27 @@ class HandlerImplementation(
             **approval_audit_fields(evidence),
         }
 
-    def _recovered_authority_invalid_reason(self, pending: PendingAction) -> str:
-        if not pending.recovery_authority_mac or not (
+    def _recovery_authority_snapshot_is_authenticated(
+        self,
+        pending: PendingAction,
+    ) -> bool:
+        return bool(pending.recovery_authority_mac) and (
             self._confirmation_evidence_authenticator.verify_recovery_snapshot(
                 _pending_recovery_authority_snapshot(pending),
                 pending.recovery_authority_mac,
             )
-        ):
+        )
+
+    def _recovered_authority_invalid_reason(
+        self,
+        pending: PendingAction,
+        *,
+        require_live_authority: bool = True,
+    ) -> str:
+        if not self._recovery_authority_snapshot_is_authenticated(pending):
             return "recovery_authority_mismatch"
+        if not require_live_authority:
+            return ""
         policy_allow_authority = self._policy_allow_execution_authority_is_current(pending)
         if pending.execution_authorization_kind and not policy_allow_authority:
             return "recovery_authority_mismatch"
@@ -5695,7 +5708,7 @@ class HandlerImplementation(
             task_id=pending.task_id,
         )
         if pending.preflight_action is not None:
-            return pending.preflight_action.model_copy(update={"origin": origin})
+            return pending.preflight_action
         action = build_action(
             tool_name=str(pending.tool_name),
             arguments=dict(pending.arguments),
@@ -5710,12 +5723,18 @@ class HandlerImplementation(
         if pending is None or not pending.recovery_accounting_pending:
             return
 
-        if self._recovered_authority_invalid_reason(pending):
-            recovery_authority_authenticated = bool(pending.recovery_authority_mac) and (
-                self._confirmation_evidence_authenticator.verify_recovery_snapshot(
-                    _pending_recovery_authority_snapshot(pending),
-                    pending.recovery_authority_mac,
-                )
+        terminal_recovery_result_published = bool(
+            pending.recovery_effect_invoked
+            and pending.retry_generation > 0
+            and pending.recovery_started_at is not None
+            and pending.status in {"approved", "failed", "outcome_unknown"}
+        )
+        if self._recovered_authority_invalid_reason(
+            pending,
+            require_live_authority=not terminal_recovery_result_published,
+        ):
+            recovery_authority_authenticated = (
+                self._recovery_authority_snapshot_is_authenticated(pending)
             )
             self._invalidate_recovered_authority(
                 pending,

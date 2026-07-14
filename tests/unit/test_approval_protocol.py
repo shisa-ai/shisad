@@ -143,7 +143,8 @@ def test_action_digest_matches_reference_vector() -> None:
         "{"
         '"arguments":{"branch":"release/2026-04-05","environment":"prod"},'
         '"destinations":["prod-deploy.example.com"],'
-        '"schema_version":"shisad.action_digest.v1",'
+        '"schema_version":"shisad.action_digest.v2",'
+        '"stable_adapter_guarantee_id":"",'
         '"stable_idempotency_key":"",'
         '"tool_name":"deploy.production",'
         f'"tool_schema_hash":"sha256:{tool.schema_hash()}"'
