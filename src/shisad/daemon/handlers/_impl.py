@@ -5215,6 +5215,8 @@ class HandlerImplementation(
         *,
         session: Session,
     ) -> bool:
+        if self._lockdown_manager.should_block_all_actions(pending.session_id):
+            return False
         snapshot = pending.pep_context
         if snapshot is not None:
             context = build_policy_context_for_pending_action(
@@ -5235,6 +5237,10 @@ class HandlerImplementation(
                 filesystem_roots=tuple(self._config.assistant_fs_roots),
                 trust_level="untrusted",
             )
+        context.capabilities = self._lockdown_manager.apply_capability_restrictions(
+            pending.session_id,
+            context.capabilities,
+        )
 
         live_policy = self._policy_loader.policy
         live_allowlist: set[ToolName] | None = None
@@ -5802,7 +5808,7 @@ class HandlerImplementation(
         if pending.confirmation_evidence is not None:
             self._confirmation_analytics.record(
                 user_id=str(pending.user_id),
-                decision="approve",
+                decision="approve" if success or outcome_unknown else "reject",
                 created_at=pending.created_at,
             )
 

@@ -30,6 +30,7 @@ from shisad.daemon.services import DaemonServices
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.schema import Origin, build_action
+from shisad.security.lockdown import LockdownLevel
 
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,6 +101,7 @@ async def _seed_unresolved_scheduled_time_attempt(
     config: DaemonConfig,
     *,
     bind_preflight_action: bool = False,
+    lockdown_before_shutdown: bool = False,
 ) -> tuple[str, str]:
     services = await DaemonServices.build(config)
     try:
@@ -168,6 +170,14 @@ async def _seed_unresolved_scheduled_time_attempt(
                     "decision_nonce": pending.decision_nonce,
                 }
             )
+        if lockdown_before_shutdown:
+            impl._lockdown_manager.set_level(
+                session_id,
+                level=LockdownLevel.FULL_LOCKDOWN,
+                reason="recovery test lockdown",
+                trigger="test_recovery_lockdown",
+            )
+            assert impl._lockdown_manager.should_block_all_actions(session_id)
         return pending.confirmation_id, task.id
     finally:
         await services.shutdown()
@@ -626,14 +636,13 @@ async def test_allowed_immediate_structural_read_recovers_authenticated_policy_a
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "erase_authorization_before_restart",
-    [False, True],
-    ids=["authenticated", "tampered"],
+    "restart_posture",
+    ["authenticated", "tampered", "lockdown"],
 )
 async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    erase_authorization_before_restart: bool,
+    restart_posture: str,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -709,10 +718,18 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
         assert durable["execution_authorization_kind"] == "policy_allow"
         assert stable_key.startswith("shisad-")
         assert calls == []
+        if restart_posture == "lockdown":
+            impl._lockdown_manager.set_level(
+                session_id,
+                level=LockdownLevel.FULL_LOCKDOWN,
+                reason="recovery test lockdown",
+                trigger="test_recovery_lockdown",
+            )
+            assert impl._lockdown_manager.should_block_all_actions(session_id)
     finally:
         await services.shutdown()
 
-    if erase_authorization_before_restart:
+    if restart_posture == "tampered":
         pending_path = config.data_dir / "pending_actions.json"
         durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         durable_rows[0]["execution_authorization_kind"] = ""
@@ -724,11 +741,15 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
         restarted.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
         restarted_handlers = DaemonControlHandlers(services=restarted)
         recovered = restarted_handlers._impl._pending_actions[confirmation_id]
+        if restart_posture == "lockdown":
+            assert restarted.lockdown_manager.should_block_all_actions(recovered.session_id)
         await _wait_for_recovery_accounting(restarted_handlers._impl)
-        if erase_authorization_before_restart:
+        if restart_posture != "authenticated":
             assert recovered.status == "outcome_unknown"
             assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
-            assert recovered.execution_authorization_kind == ""
+            assert recovered.execution_authorization_kind == (
+                "" if restart_posture == "tampered" else "policy_allow"
+            )
             assert recovered.retry_generation == 0
             assert recovered.provider_operation_id == ""
             assert calls == []
@@ -739,6 +760,11 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
             assert recovered.retry_generation == 1
             assert recovered.provider_operation_id == "allowed-provider-operation-1"
             assert calls == [stable_key]
+        policy_metrics = restarted_handlers._impl._confirmation_analytics.metrics(
+            user_id=str(recovered.user_id),
+            window_seconds=3600,
+        )
+        assert policy_metrics["decisions"] == 0
     finally:
         await restarted.shutdown()
 
@@ -1810,6 +1836,89 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         assert len(recovery_backoffs) == 1
     finally:
         await second_restart.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_human_confirmed_structural_recovery_respects_restored_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    from shisad.daemon.handlers import _impl as impl_module
+
+    real_clock = impl_module.current_time_payload
+    clock_calls = 0
+
+    def _recording_clock(**kwargs: object) -> dict[str, object]:
+        nonlocal clock_calls
+        clock_calls += 1
+        return dict(real_clock(**kwargs))
+
+    monkeypatch.setattr(impl_module, "current_time_payload", _recording_clock)
+    confirmation_id, _task_id = await _seed_unresolved_scheduled_time_attempt(
+        config,
+        lockdown_before_shutdown=True,
+    )
+    assert clock_calls == 1
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        recovered = handlers._impl._pending_actions[confirmation_id]
+        assert restarted.lockdown_manager.should_block_all_actions(recovered.session_id)
+        assert recovered.status == "outcome_unknown"
+        assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+        assert recovered.retry_generation == 0
+        assert clock_calls == 1
+        await _wait_for_recovery_accounting(handlers._impl)
+        metrics = handlers._impl._confirmation_analytics.metrics(
+            user_id=str(recovered.user_id),
+            window_seconds=3600,
+        )
+        assert metrics["decisions"] == 1
+        assert metrics["approve_rate"] == 1.0
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_human_confirmed_recovery_records_reject_analytics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    from shisad.daemon.handlers import _impl as impl_module
+
+    clock_calls = 0
+
+    def _failing_recovery_clock(**kwargs: object) -> dict[str, object]:
+        nonlocal clock_calls
+        clock_calls += 1
+        return {"ok": False, "error": "clock_unavailable"}
+
+    monkeypatch.setattr(impl_module, "current_time_payload", _failing_recovery_clock)
+    confirmation_id, _task_id = await _seed_unresolved_scheduled_time_attempt(config)
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        recovered = handlers._impl._pending_actions[confirmation_id]
+        assert recovered.status == "failed"
+        assert recovered.status_reason == "structural_read_failed:clock_unavailable"
+        assert recovered.retry_generation == 1
+        assert clock_calls == 2
+        await _wait_for_recovery_accounting(handlers._impl)
+        assert recovered.status == "failed"
+        metrics = handlers._impl._confirmation_analytics.metrics(
+            user_id=str(recovered.user_id),
+            window_seconds=3600,
+        )
+        assert metrics["decisions"] == 1
+        assert metrics["approve_rate"] == 0.0
+    finally:
+        await restarted.shutdown()
 
 
 @pytest.mark.parametrize(
