@@ -716,6 +716,16 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         "marker",
         "marker_false",
         "marker_missing",
+        "marker_false+attempt_both_missing",
+        "marker_missing+attempt_both_missing",
+        "marker_false+attempt_both_malformed",
+        "marker_missing+attempt_both_malformed",
+        "marker_false+result_both_missing",
+        "marker_missing+result_both_missing",
+        "marker_false+result_both_malformed",
+        "marker_missing+result_both_malformed",
+        "marker_false+attempt_both_missing+status_pending",
+        "marker_missing+result_both_malformed+status_pending",
         "marker_false+identity_malformed",
         "marker_missing+identity_malformed",
         "marker_false+confirmation_mismatch",
@@ -916,23 +926,29 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["task_id"] = decoy_task_id
     elif corruption == "attempt_missing":
         durable["execution_attempt_id"] = ""
-    elif corruption == "attempt_both_missing":
+    elif "attempt_both_missing" in corruption_parts:
         durable["execution_attempt_id"] = ""
         durable["identity"]["execution_attempt_id"] = ""
+    elif "attempt_both_malformed" in corruption_parts:
+        durable["execution_attempt_id"] = ["not", "text"]
+        durable["identity"]["execution_attempt_id"] = ["not", "text"]
     elif corruption == "attempt_malformed":
         durable["execution_attempt_id"] = ["not", "text"]
     elif "attempt_mismatch" in corruption_parts:
         durable["execution_attempt_id"] = "attempt-mismatch"
     elif corruption == "result_missing":
         durable["result_id"] = ""
-    elif corruption == "result_both_missing":
+    elif "result_both_missing" in corruption_parts:
         durable["result_id"] = ""
         durable["identity"]["result_id"] = ""
+    elif "result_both_malformed" in corruption_parts:
+        durable["result_id"] = ["not", "text"]
+        durable["identity"]["result_id"] = ["not", "text"]
     elif corruption == "result_malformed":
         durable["result_id"] = ["not", "text"]
     elif "result_mismatch" in corruption_parts:
         durable["result_id"] = "result-mismatch"
-    elif corruption == "status_pending":
+    if "status_pending" in corruption_parts:
         durable["status"] = "pending"
         durable["status_reason"] = ""
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")

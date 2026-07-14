@@ -1852,6 +1852,37 @@ def _loaded_pending_payload_has_started_execution_authority(
     )
 
 
+def _loaded_pending_has_unrecorded_scheduler_shadow(
+    scheduler: Any,
+    item: Mapping[str, Any],
+) -> bool:
+    """Detect independent durable evidence of unresolved terminal accounting."""
+
+    identity = item.get("identity")
+    identity_fields = identity if isinstance(identity, Mapping) else {}
+    confirmation_ids: set[str] = set()
+    for value in (
+        item.get("confirmation_id", ""),
+        identity_fields.get("confirmation_id", ""),
+    ):
+        confirmation_id, valid = _loaded_state_text(value)
+        if valid and confirmation_id:
+            confirmation_ids.add(confirmation_id)
+    task_ids_for_confirmation = getattr(scheduler, "task_ids_for_confirmation", None)
+    has_unrecorded_outcome = getattr(
+        scheduler,
+        "has_unrecorded_terminal_confirmation_outcome",
+        None,
+    )
+    if not callable(task_ids_for_confirmation) or not callable(has_unrecorded_outcome):
+        return False
+    return any(
+        has_unrecorded_outcome(task_id, confirmation_id=confirmation_id)
+        for confirmation_id in confirmation_ids
+        for task_id in task_ids_for_confirmation(confirmation_id)
+    )
+
+
 def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, Any]:
     """Return the daemon-authenticated post-decision recovery snapshot."""
 
@@ -4296,6 +4327,10 @@ class HandlerImplementation(
                     bool(raw_scheduler_accounting_mode.strip())
                     if isinstance(raw_scheduler_accounting_mode, str)
                     else raw_scheduler_accounting_mode is not None
+                )
+                or _loaded_pending_has_unrecorded_scheduler_shadow(
+                    getattr(self, "_scheduler", None),
+                    item,
                 )
             )
             recovery_result_json_valid = _native_json_payload_is_valid(

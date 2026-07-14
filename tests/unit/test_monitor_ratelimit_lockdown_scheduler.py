@@ -959,6 +959,61 @@ def test_f2_confirmation_outcome_deduplicates_after_tasks_only_crash(
     )
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("pending", False),
+        ("executing", True),
+        ("approved", True),
+        ("failed", True),
+        ("outcome_unknown", True),
+        ("cancelled", False),
+    ],
+)
+def test_f2_scheduler_identifies_unrecorded_terminal_confirmation_outcome(
+    tmp_path: Path,
+    status: str,
+    expected: bool,
+) -> None:
+    scheduler = SchedulerManager(storage_dir=tmp_path / "tasks")
+    task = scheduler.create_task(
+        name=f"unrecorded-terminal-{status}",
+        goal="Expose independent scheduler accounting evidence",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot=set(),
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        max_runs=3,
+    )
+    confirmation_id = f"confirm-{status}"
+    scheduler.queue_confirmation(
+        task.id,
+        {
+            "confirmation_id": confirmation_id,
+            "status": status,
+        },
+    )
+
+    assert (
+        scheduler.has_unrecorded_terminal_confirmation_outcome(
+            task.id,
+            confirmation_id=confirmation_id,
+        )
+        is expected
+    )
+    if expected:
+        assert scheduler.record_confirmation_outcome(
+            task.id,
+            confirmation_id=confirmation_id,
+            success=False,
+        )
+        assert not scheduler.has_unrecorded_terminal_confirmation_outcome(
+            task.id,
+            confirmation_id=confirmation_id,
+        )
+
+
 def test_f2_confirmation_outcome_dedup_retention_tracks_durable_rows(
     tmp_path: Path,
 ) -> None:

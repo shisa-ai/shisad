@@ -500,6 +500,29 @@ class SchedulerManager:
             return bool(row.get("run_outcome_success", False))
         return None
 
+    def has_unrecorded_terminal_confirmation_outcome(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+    ) -> bool:
+        """Return whether a terminal scheduler shadow still needs an outcome."""
+
+        normalized_confirmation = confirmation_id.strip()
+        if not normalized_confirmation:
+            return False
+        for row in self._pending_confirmations.get(task_id, []):
+            if str(row.get("confirmation_id", "")).strip() != normalized_confirmation:
+                continue
+            status = str(row.get("status", "pending") or "pending").strip().lower()
+            return status in {
+                "executing",
+                "approved",
+                "failed",
+                "outcome_unknown",
+            } and not bool(row.get("run_outcome_recorded", False))
+        return False
+
     def task_ids_for_confirmation(self, confirmation_id: str) -> list[str]:
         normalized_confirmation = confirmation_id.strip()
         if not normalized_confirmation:
