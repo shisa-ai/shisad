@@ -233,6 +233,7 @@ _PENDING_ACTION_STORED_STATUSES = frozenset(
         "outcome_unknown",
     }
 )
+_SCHEDULER_ACCOUNTING_MODES = frozenset({"", "failure", "shadow_only", "ambiguous"})
 _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
     "reminder.create": frozenset({"reminder_intent"}),
@@ -1724,6 +1725,7 @@ class PendingAction:
     recovery_scheduler_posture_captured: bool = False
     recovery_scheduler_restore_enabled: bool = False
     scheduler_accounting_pending: bool = False
+    scheduler_accounting_mode: str = ""
     stage2_correlation_id: str = ""
     stage2_previous_plan_hash: str = ""
     stage2_plan_hash: str = ""
@@ -1792,6 +1794,7 @@ def _pending_action_has_started_execution_authority(pending: PendingAction) -> b
         or pending.recovery_scheduler_posture_captured
         or pending.recovery_scheduler_restore_enabled
         or pending.scheduler_accounting_pending
+        or pending.scheduler_accounting_mode.strip()
         or pending.stage2_correlation_id.strip()
         or pending.stage2_previous_plan_hash.strip()
         or pending.stage2_plan_hash.strip()
@@ -1821,6 +1824,7 @@ def _loaded_pending_payload_has_started_execution_authority(
             "stage2_previous_plan_hash",
             "stage2_plan_hash",
             "recovery_authority_mac",
+            "scheduler_accounting_mode",
         )
     ):
         return True
@@ -1917,6 +1921,8 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
                 "recovery_scheduler_restore_enabled": (pending.recovery_scheduler_restore_enabled),
             }
         )
+    if pending.scheduler_accounting_mode:
+        snapshot["scheduler_accounting_mode"] = pending.scheduler_accounting_mode
     return snapshot
 
 
@@ -3342,6 +3348,7 @@ class HandlerImplementation(
             "recovery_scheduler_posture_captured": (pending.recovery_scheduler_posture_captured),
             "recovery_scheduler_restore_enabled": (pending.recovery_scheduler_restore_enabled),
             "scheduler_accounting_pending": pending.scheduler_accounting_pending,
+            "scheduler_accounting_mode": pending.scheduler_accounting_mode,
             "stage2_correlation_id": pending.stage2_correlation_id,
             "stage2_previous_plan_hash": pending.stage2_previous_plan_hash,
             "stage2_plan_hash": pending.stage2_plan_hash,
@@ -3452,6 +3459,7 @@ class HandlerImplementation(
             payload.pop("recovery_scheduler_posture_captured", None)
             payload.pop("recovery_scheduler_restore_enabled", None)
             payload.pop("scheduler_accounting_pending", None)
+            payload.pop("scheduler_accounting_mode", None)
             payload.pop("stage2_correlation_id", None)
             payload.pop("stage2_previous_plan_hash", None)
             payload.pop("stage2_plan_hash", None)
@@ -4469,6 +4477,13 @@ class HandlerImplementation(
                 scheduler_accounting_pending, scheduler_accounting_pending_valid = (
                     _loaded_state_bool(item.get("scheduler_accounting_pending", False))
                 )
+                scheduler_accounting_mode, scheduler_accounting_mode_valid = _loaded_state_text(
+                    item.get("scheduler_accounting_mode", "")
+                )
+                scheduler_accounting_mode_valid = (
+                    scheduler_accounting_mode_valid
+                    and scheduler_accounting_mode in _SCHEDULER_ACCOUNTING_MODES
+                )
                 recovery_authority_invalid = recovery_authority_invalid or not all(
                     (
                         recovery_accounting_pending_valid,
@@ -4477,6 +4492,7 @@ class HandlerImplementation(
                         recovery_scheduler_posture_captured_valid,
                         recovery_scheduler_restore_enabled_valid,
                         scheduler_accounting_pending_valid,
+                        scheduler_accounting_mode_valid,
                         recovery_result_valid,
                     )
                 )
@@ -4685,6 +4701,7 @@ class HandlerImplementation(
                     recovery_scheduler_posture_captured=(recovery_scheduler_posture_captured),
                     recovery_scheduler_restore_enabled=(recovery_scheduler_restore_enabled),
                     scheduler_accounting_pending=scheduler_accounting_pending,
+                    scheduler_accounting_mode=scheduler_accounting_mode,
                     stage2_correlation_id=loaded_stage2_correlation_id,
                     stage2_previous_plan_hash=loaded_stage2_previous_plan_hash,
                     stage2_plan_hash=loaded_stage2_plan_hash,
@@ -5195,9 +5212,28 @@ class HandlerImplementation(
         scheduler = self._scheduler
         confirmation_id = pending.confirmation_id.strip()
         success = pending.status == "approved"
-        if pending.status == "cancelled" and pending.recovery_scheduler_accounted:
+        accounting_mode = pending.scheduler_accounting_mode.strip()
+        if accounting_mode in {"shadow_only", "ambiguous"}:
+            changed = not pending.recovery_scheduler_accounted
+            if accounting_mode == "ambiguous":
+                if pending.status_reason != "legacy_scheduler_accounting_intent_unknown":
+                    pending.status_reason = "legacy_scheduler_accounting_intent_unknown"
+                    changed = True
+                task = scheduler.get_task(task_id)
+                if (
+                    task is not None
+                    and bool(getattr(task, "enabled", False))
+                    and not scheduler.disable_task(task_id)
+                ):
+                    raise RuntimeError("scheduler_accounting_ambiguity_containment_failed")
+                logger.warning(
+                    "Legacy scheduler accounting intent is ambiguous for confirmation %s; "
+                    "task disabled without inventing a run outcome",
+                    confirmation_id,
+                )
             self._sync_task_confirmation_status(pending)
-            return False
+            pending.recovery_scheduler_accounted = True
+            return changed
         outcome_reader = getattr(scheduler, "confirmation_outcome", None)
         recorded_outcome = (
             outcome_reader(task_id, confirmation_id=confirmation_id)
@@ -5591,6 +5627,7 @@ class HandlerImplementation(
                 pending.scheduler_accounting_pending
                 or not task_id
                 or not confirmation_id
+                or pending.scheduler_accounting_mode.strip()
                 or terminal_status
                 not in {"failed", "rejected", "cancelled", "superseded"}
             ):
@@ -5602,7 +5639,15 @@ class HandlerImplementation(
             )
             if recorded_outcome is None:
                 if terminal_status == "cancelled":
-                    pending.recovery_scheduler_accounted = True
+                    pending.scheduler_accounting_mode = (
+                        "shadow_only"
+                        if pending.status_reason
+                        in {"max_runs_reached", "outcome_unknown", "task_cancelled"}
+                        else "ambiguous"
+                    )
+                else:
+                    pending.scheduler_accounting_mode = "failure"
+                pending.recovery_scheduler_accounted = False
                 pending.scheduler_accounting_pending = True
                 legacy_scheduler_accounting_marked = True
         if legacy_scheduler_accounting_marked:

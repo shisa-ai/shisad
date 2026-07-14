@@ -1570,6 +1570,8 @@ def test_f2_stale_terminal_state_commits_before_scheduler_side_effects(
     assert pending.status == "pending"
     assert pending.status_reason == ""
     assert pending.decision_nonce == "expected"
+    assert pending.scheduler_accounting_pending is False
+    assert pending.scheduler_accounting_mode == ""
     assert scheduler.resolved_confirmations == []
     assert scheduler.run_outcomes == []
 
@@ -1620,6 +1622,8 @@ async def test_f2_neighbor_terminal_families_commit_before_side_effects(
     assert pending.status == "pending"
     assert pending.status_reason == ""
     assert pending.decision_nonce == "expected"
+    assert pending.scheduler_accounting_pending is False
+    assert pending.scheduler_accounting_mode == ""
     assert harness.published_events == []
     assert scheduler.resolved_confirmations == []
     assert scheduler.run_outcomes == []
@@ -1722,6 +1726,9 @@ async def test_f2_scheduled_terminal_postcommit_fault_replays_after_restart(
     assert durable["status"] == expected_status
     assert durable["status_reason"] == expected_reason
     assert durable["scheduler_accounting_pending"] is True
+    assert durable["scheduler_accounting_mode"] == (
+        "failure" if expected_failure_accounting else "shadow_only"
+    )
     assert scheduler.run_outcomes == []
 
     restarted = _load_pending_actions_harness(
@@ -1734,6 +1741,9 @@ async def test_f2_scheduled_terminal_postcommit_fault_replays_after_restart(
     assert recovered.status == expected_status
     assert recovered.status_reason == expected_reason
     assert recovered.scheduler_accounting_pending is False
+    assert recovered.scheduler_accounting_mode == (
+        "failure" if expected_failure_accounting else "shadow_only"
+    )
     assert scheduler.resolved_confirmations[-1]["status"] == expected_status
     if expected_failure_accounting:
         assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
@@ -1742,12 +1752,14 @@ async def test_f2_scheduled_terminal_postcommit_fault_replays_after_restart(
         assert (pending.task_id, pending.confirmation_id) not in scheduler.confirmation_outcomes
         assert scheduler.run_outcomes == []
 
+    resolution_count = len(scheduler.resolved_confirmations)
     second_restart = _load_pending_actions_harness(
         pending_actions_file=harness._pending_actions_file,
     )
     second_restart._scheduler = scheduler
     second_restart._load_pending_actions()
     assert len(scheduler.run_outcomes) == int(expected_failure_accounting)
+    assert len(scheduler.resolved_confirmations) == resolution_count
 
 
 def test_f2_canonical_scheduled_terminal_without_marker_reconciles_once(
@@ -1786,6 +1798,48 @@ def test_f2_canonical_scheduled_terminal_without_marker_reconciles_once(
     second_restart._scheduler = scheduler
     second_restart._load_pending_actions()
     assert len(scheduler.run_outcomes) == 1
+
+
+def test_f2_legacy_cancelled_accounting_ambiguity_converges_once(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.task_id = "task-f2-legacy-cancelled-ambiguity"
+    pending.status = "cancelled"
+    pending.status_reason = "task_disabled"
+    pending.decision_nonce = ""
+    pending_actions_file = tmp_path / "pending_actions.json"
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._scheduler = scheduler
+
+    harness._load_pending_actions()
+
+    recovered = harness._pending_actions[pending.confirmation_id]
+    assert recovered.status == "cancelled"
+    assert recovered.status_reason == "legacy_scheduler_accounting_intent_unknown"
+    assert recovered.scheduler_accounting_mode == "ambiguous"
+    assert recovered.scheduler_accounting_pending is False
+    assert scheduler.task.enabled is False
+    assert scheduler.resolved_confirmations[-1]["status"] == "cancelled"
+    assert scheduler.run_outcomes == []
+    assert scheduler.confirmation_outcomes == {}
+    resolution_count = len(scheduler.resolved_confirmations)
+
+    second_restart = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    second_restart._scheduler = scheduler
+    second_restart._load_pending_actions()
+    assert len(scheduler.resolved_confirmations) == resolution_count
+    assert scheduler.run_outcomes == []
 
 
 @pytest.mark.asyncio
@@ -2043,6 +2097,101 @@ async def test_f2_pending_purge_rolls_back_when_deletion_is_not_durable(
 
 
 @pytest.mark.asyncio
+async def test_f2_pending_purge_postcommit_scheduler_fault_replays_before_deletion(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    scheduler.resolve_failures_remaining = 1
+    harness._scheduler = scheduler
+    pending = _pending_action(nonce="expected")
+    pending.created_at = datetime.now(UTC) - timedelta(days=10)
+    pending.task_id = "task-f2-purge-replay"
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._persist_pending_actions()
+
+    with pytest.raises(RuntimeError, match="scheduler confirmation publication fault"):
+        await harness.do_action_purge(
+            {"status": "pending", "older_than_days": 7, "limit": 10}
+        )
+
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == "failed"
+    assert durable["status_reason"] == "purged_stale_pending_action"
+    assert durable["scheduler_accounting_pending"] is True
+    assert durable["scheduler_accounting_mode"] == "failure"
+    assert scheduler.run_outcomes == []
+
+    restarted = _load_pending_actions_harness(
+        pending_actions_file=harness._pending_actions_file,
+    )
+    restarted._scheduler = scheduler
+    restarted._load_pending_actions()
+    recovered = restarted._pending_actions[pending.confirmation_id]
+    assert recovered.scheduler_accounting_pending is False
+    assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
+    assert len(scheduler.run_outcomes) == 1
+
+    purge_result = await restarted.do_action_purge(
+        {"status": "terminal", "limit": 10}
+    )
+    assert purge_result["confirmation_ids"] == [pending.confirmation_id]
+    assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+async def test_f2_pending_purge_deletion_fault_restores_committed_terminal_row(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    harness._scheduler = scheduler
+    pending = _pending_action(nonce="expected")
+    pending.created_at = datetime.now(UTC) - timedelta(days=10)
+    pending.task_id = "task-f2-purge-delete-rollback"
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._persist_pending_actions()
+    publication = 0
+
+    def _fail_deletion_write(stage: AtomicWriteStage) -> None:
+        nonlocal publication
+        if stage == AtomicWriteStage.TEMP_OPEN:
+            publication += 1
+        if publication == 3 and stage == AtomicWriteStage.FILE_FSYNC:
+            raise OSError("injected purge deletion persistence fault")
+
+    harness._pending_state_fault_injector = _fail_deletion_write
+
+    with pytest.raises(AtomicWriteError):
+        await harness.do_action_purge(
+            {"status": "pending", "older_than_days": 7, "limit": 10}
+        )
+
+    assert harness._pending_actions[pending.confirmation_id] is pending
+    assert pending.status == "failed"
+    assert pending.status_reason == "purged_stale_pending_action"
+    assert pending.scheduler_accounting_pending is False
+    assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
+    assert len(scheduler.run_outcomes) == 1
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == "failed"
+    assert durable["scheduler_accounting_pending"] is False
+
+    harness._pending_state_fault_injector = None
+    purge_result = await harness.do_action_purge(
+        {"status": "terminal", "limit": 10}
+    )
+    assert purge_result["confirmation_ids"] == [pending.confirmation_id]
+    assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
 async def test_f2_pending_purge_failed_rollback_surfaces_degradation(
     tmp_path: Path,
 ) -> None:
@@ -2068,14 +2217,16 @@ async def test_f2_pending_purge_failed_rollback_surfaces_degradation(
             {"status": "pending", "older_than_days": 7, "limit": 10}
         )
 
-    assert pending.confirmation_id not in harness._pending_actions
+    assert harness._pending_actions[pending.confirmation_id] is pending
     assert pending.status == "failed"
     assert pending.decision_nonce == ""
+    assert pending.scheduler_accounting_pending is True
+    assert pending.scheduler_accounting_mode == "failure"
     assert scheduler.resolved_confirmations == []
     assert scheduler.run_outcomes == []
     result = await harness.do_action_pending({"status": "all"})
     assert result["persistence_status"] == "degraded"
-    assert result["persistence_transition"] == "purge"
+    assert result["persistence_transition"] == "terminal"
     assert result["persistence_stage"] == "parent_fsync"
     assert result["persistence_reason"] == "pending_state_rollback_uncommitted"
 
@@ -2559,7 +2710,14 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
 
     loaded = harness._pending_actions[pending.confirmation_id]
     assert loaded.status == "cancelled"
-    assert loaded.status_reason == status_reason
+    assert loaded.status_reason == (
+        "legacy_scheduler_accounting_intent_unknown"
+        if status_reason == "task_disabled"
+        else status_reason
+    )
+    assert loaded.scheduler_accounting_mode == (
+        "ambiguous" if status_reason == "task_disabled" else "shadow_only"
+    )
     assert loaded.decision_nonce == ""
     assert loaded.recovery_accounting_pending is False
 

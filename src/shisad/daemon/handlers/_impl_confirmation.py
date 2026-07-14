@@ -123,6 +123,9 @@ class _PendingAttemptSnapshot:
     stage2_plan_hash: str
     recovery_scheduler_posture_captured: bool
     recovery_scheduler_restore_enabled: bool
+    recovery_scheduler_accounted: bool
+    scheduler_accounting_pending: bool
+    scheduler_accounting_mode: str
     confirmation_evidence: ConfirmationEvidence | None
 
 
@@ -144,6 +147,15 @@ def _capture_pending_attempt_snapshot(pending: Any) -> _PendingAttemptSnapshot:
         recovery_scheduler_restore_enabled=bool(
             getattr(pending, "recovery_scheduler_restore_enabled", False)
         ),
+        recovery_scheduler_accounted=bool(
+            getattr(pending, "recovery_scheduler_accounted", False)
+        ),
+        scheduler_accounting_pending=bool(
+            getattr(pending, "scheduler_accounting_pending", False)
+        ),
+        scheduler_accounting_mode=str(
+            getattr(pending, "scheduler_accounting_mode", "")
+        ),
         confirmation_evidence=getattr(pending, "confirmation_evidence", None),
     )
 
@@ -164,6 +176,9 @@ def _restore_pending_attempt_snapshot(
     pending.stage2_plan_hash = snapshot.stage2_plan_hash
     pending.recovery_scheduler_posture_captured = snapshot.recovery_scheduler_posture_captured
     pending.recovery_scheduler_restore_enabled = snapshot.recovery_scheduler_restore_enabled
+    pending.recovery_scheduler_accounted = snapshot.recovery_scheduler_accounted
+    pending.scheduler_accounting_pending = snapshot.scheduler_accounting_pending
+    pending.scheduler_accounting_mode = snapshot.scheduler_accounting_mode
     pending.confirmation_evidence = snapshot.confirmation_evidence
 
 
@@ -690,6 +705,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending.scheduler_accounting_pending = bool(
             str(getattr(pending, "task_id", "")).strip()
         )
+        pending.scheduler_accounting_mode = (
+            "failure" if pending.scheduler_accounting_pending else ""
+        )
+        if pending.scheduler_accounting_pending:
+            pending.recovery_scheduler_accounted = False
 
     def _commit_pending_terminal_states(
         self,
@@ -713,7 +733,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 str(getattr(pending, "task_id", "")).strip()
             )
             if pending.scheduler_accounting_pending:
-                pending.recovery_scheduler_accounted = not record_scheduler_failure
+                pending.scheduler_accounting_mode = (
+                    "failure" if record_scheduler_failure else "shadow_only"
+                )
+                pending.recovery_scheduler_accounted = False
         terminal = [
             _capture_pending_attempt_snapshot(pending) for pending, _status, _reason in transitions
         ]
@@ -772,8 +795,19 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if cancel_reason:
                 raise RuntimeError("unexpected_terminal_scheduler_cancel_reason")
             return
+        accounting_mode = str(
+            getattr(pending, "scheduler_accounting_mode", "")
+        ).strip()
+        if accounting_mode == "ambiguous":
+            pending.status_reason = "legacy_scheduler_accounting_intent_unknown"
         self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_failure(pending)
+        if accounting_mode not in {"shadow_only", "ambiguous"}:
+            self._record_task_confirmation_failure(pending)
+        elif accounting_mode == "ambiguous":
+            disable_task = getattr(getattr(self, "_scheduler", None), "disable_task", None)
+            task_id = str(getattr(pending, "task_id", "")).strip()
+            if callable(disable_task) and task_id and not bool(disable_task(task_id)):
+                raise RuntimeError("scheduler_accounting_ambiguity_containment_failed")
         pending.scheduler_accounting_pending = False
         try:
             self._persist_pending_actions()
@@ -1920,6 +1954,28 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     purge_items.append(item)
                 purge_ids = [item.confirmation_id for item in purge_items]
                 if purge_items:
+                    pending_terminal_transitions: list[tuple[Any, str, str]] = []
+                    for item in purge_items:
+                        item_status = str(getattr(item, "status", "")).strip().lower()
+                        if item_status != "pending":
+                            continue
+                        lifecycle_state = pending_action_state_view(item).lifecycle_state
+                        pending_terminal_transitions.append(
+                            (
+                                item,
+                                "failed",
+                                (
+                                    "approval_expired"
+                                    if lifecycle_state == "expired"
+                                    else _PURGED_STALE_PENDING_ACTION_REASON
+                                ),
+                            )
+                        )
+                    if pending_terminal_transitions:
+                        self._commit_pending_terminal_states(pending_terminal_transitions)
+                        for item, _status, _reason in pending_terminal_transitions:
+                            self._complete_committed_terminal_scheduler_accounting(item)
+
                     previous_actions = dict(self._pending_actions)
                     pending_by_session = getattr(self, "_pending_by_session", {})
                     previous_by_session = (
@@ -1934,21 +1990,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         _capture_pending_attempt_snapshot(item) for item in purge_items
                     ]
                     purge_id_set = set(purge_ids)
-                    pending_terminal_items: list[Any] = []
-                    for item in purge_items:
-                        item_status = str(getattr(item, "status", "")).strip().lower()
-                        if item_status == "pending":
-                            lifecycle_state = pending_action_state_view(item).lifecycle_state
-                            self._mark_stale_pending_action(
-                                item,
-                                reason=(
-                                    "approval_expired"
-                                    if lifecycle_state == "expired"
-                                    else _PURGED_STALE_PENDING_ACTION_REASON
-                                ),
-                                persist=False,
-                            )
-                            pending_terminal_items.append(item)
                     for confirmation_id in purge_ids:
                         self._pending_actions.pop(confirmation_id, None)
                     if isinstance(pending_by_session, dict):
@@ -2010,10 +2051,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                                 }
                                 raise rollback_error from write_error
                         raise
-                    for item in purge_items:
-                        self._sync_task_confirmation_status(item)
-                    for item in pending_terminal_items:
-                        self._record_task_confirmation_failure(item)
             finally:
                 for confirmation_id, lock in reversed(locks):
                     if lock.locked():
