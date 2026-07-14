@@ -1926,6 +1926,36 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
     return snapshot
 
 
+def _neutralize_untrusted_scheduler_accounting_intent(
+    pending: PendingAction,
+    *,
+    intent_present: bool | None = None,
+) -> None:
+    """Replace unauthenticated scheduler intent with conservative local state."""
+
+    accounting_mode = pending.scheduler_accounting_mode.strip()
+    has_intent = (
+        bool(
+            pending.scheduler_accounting_pending
+            or (
+                accounting_mode
+                and not (
+                    accounting_mode == "ambiguous"
+                    and pending.recovery_scheduler_accounted
+                )
+            )
+        )
+        if intent_present is None
+        else intent_present
+    )
+    if not has_intent:
+        return
+    scheduled = bool(pending.task_id.strip())
+    pending.scheduler_accounting_pending = scheduled
+    pending.scheduler_accounting_mode = "ambiguous" if scheduled else ""
+    pending.recovery_scheduler_accounted = False
+
+
 @dataclass(slots=True)
 class ToolOutputRecord:
     tool_name: str
@@ -4259,6 +4289,15 @@ class HandlerImplementation(
             raw_started_authority_present = (
                 _loaded_pending_payload_has_started_execution_authority(item)
             )
+            raw_scheduler_accounting_mode = item.get("scheduler_accounting_mode", "")
+            raw_scheduler_accounting_intent_present = (
+                item.get("scheduler_accounting_pending", False) is not False
+                or (
+                    bool(raw_scheduler_accounting_mode.strip())
+                    if isinstance(raw_scheduler_accounting_mode, str)
+                    else raw_scheduler_accounting_mode is not None
+                )
+            )
             recovery_result_json_valid = _native_json_payload_is_valid(
                 item.get("recovery_result", {})
             )
@@ -4824,6 +4863,10 @@ class HandlerImplementation(
                     pending.status_reason = "uncertain_effect_requires_fresh_approval"
                     pending.decision_nonce = ""
                     pending.scheduler_accounting_pending = False
+                _neutralize_untrusted_scheduler_accounting_intent(
+                    pending,
+                    intent_present=raw_scheduler_accounting_intent_present,
+                )
             if (
                 pending.status == "pending"
                 and pending_action_state_view(pending).lifecycle_state == "expired"
@@ -5215,10 +5258,9 @@ class HandlerImplementation(
         accounting_mode = pending.scheduler_accounting_mode.strip()
         if accounting_mode in {"shadow_only", "ambiguous"}:
             changed = not pending.recovery_scheduler_accounted
+            if not changed:
+                return False
             if accounting_mode == "ambiguous":
-                if pending.status_reason != "legacy_scheduler_accounting_intent_unknown":
-                    pending.status_reason = "legacy_scheduler_accounting_intent_unknown"
-                    changed = True
                 task = scheduler.get_task(task_id)
                 if (
                     task is not None
@@ -5227,7 +5269,7 @@ class HandlerImplementation(
                 ):
                     raise RuntimeError("scheduler_accounting_ambiguity_containment_failed")
                 logger.warning(
-                    "Legacy scheduler accounting intent is ambiguous for confirmation %s; "
+                    "Scheduler accounting intent is ambiguous for confirmation %s; "
                     "task disabled without inventing a run outcome",
                     confirmation_id,
                 )
@@ -5323,9 +5365,12 @@ class HandlerImplementation(
     def _complete_pending_scheduler_accounting(self, pending: PendingAction) -> str:
         if not pending.scheduler_accounting_pending:
             return self._recovery_task_cancel_reason(pending)
-        self._record_pending_scheduler_state(pending)
+        scheduler_state_changed = self._record_pending_scheduler_state(pending)
         cancel_reason = self._recovery_task_cancel_reason(pending)
-        if not cancel_reason:
+        if cancel_reason:
+            if scheduler_state_changed:
+                self._persist_pending_actions()
+        else:
             self._finalize_pending_scheduler_accounting(pending)
         return cancel_reason
 
@@ -5461,6 +5506,7 @@ class HandlerImplementation(
         pending.provider_operation_id = ""
         pending.recovery_result = {}
         pending.recovery_effect_invoked = False
+        _neutralize_untrusted_scheduler_accounting_intent(pending)
 
     def _recovery_control_plane_action(
         self,
@@ -5645,6 +5691,8 @@ class HandlerImplementation(
                         in {"max_runs_reached", "outcome_unknown", "task_cancelled"}
                         else "ambiguous"
                     )
+                    if pending.scheduler_accounting_mode == "ambiguous":
+                        pending.status_reason = "legacy_scheduler_accounting_intent_unknown"
                 else:
                     pending.scheduler_accounting_mode = "failure"
                 pending.recovery_scheduler_accounted = False

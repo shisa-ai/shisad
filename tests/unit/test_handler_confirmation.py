@@ -1842,6 +1842,101 @@ def test_f2_legacy_cancelled_accounting_ambiguity_converges_once(
     assert scheduler.run_outcomes == []
 
 
+@pytest.mark.parametrize(
+    ("original_mode", "tampered_mode", "status", "status_reason"),
+    [
+        ("failure", "shadow_only", "failed", "terminal-fixture"),
+        ("shadow_only", "failure", "cancelled", "task_cancelled"),
+        (
+            "ambiguous",
+            "shadow_only",
+            "cancelled",
+            "legacy_scheduler_accounting_intent_unknown",
+        ),
+    ],
+)
+def test_f2_invalid_recovery_mac_neutralizes_valid_scheduler_mode_substitution(
+    tmp_path: Path,
+    original_mode: str,
+    tampered_mode: str,
+    status: str,
+    status_reason: str,
+) -> None:
+    pending = _pending_action(nonce="")
+    pending.task_id = "task-f2-invalid-accounting-mode"
+    pending.status = status
+    pending.status_reason = status_reason
+    pending.scheduler_accounting_pending = True
+    pending.scheduler_accounting_mode = original_mode
+    _bind_pending_action_identity(pending)
+    pending_actions_file = tmp_path / "pending_actions.json"
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    harness._scheduler = scheduler
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._persist_pending_actions()
+    durable_rows = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    original_mac = durable_rows[0]["recovery_authority_mac"]
+    durable_rows[0]["scheduler_accounting_mode"] = tampered_mode
+    pending_actions_file.write_text(json.dumps(durable_rows), encoding="utf-8")
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+
+    harness._load_pending_actions()
+
+    recovered = harness._pending_actions[pending.confirmation_id]
+    assert recovered.status == "outcome_unknown"
+    assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+    assert recovered.scheduler_accounting_mode == "ambiguous"
+    assert recovered.scheduler_accounting_pending is True
+    assert recovered.recovery_scheduler_accounted is True
+    assert scheduler.task.enabled is False
+    assert scheduler.run_outcomes == []
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert persisted["scheduler_accounting_mode"] == "ambiguous"
+    assert persisted["scheduler_accounting_pending"] is True
+    assert persisted["recovery_authority_mac"] != original_mac
+    harness._finalize_pending_scheduler_accounting(recovered)
+    resolution_count = len(scheduler.resolved_confirmations)
+
+    second_restart = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    second_restart._scheduler = scheduler
+    second_restart._load_pending_actions()
+    replayed = second_restart._pending_actions[pending.confirmation_id]
+    assert replayed.scheduler_accounting_mode == "ambiguous"
+    assert replayed.scheduler_accounting_pending is False
+    assert len(scheduler.resolved_confirmations) == resolution_count
+
+
+@pytest.mark.parametrize("untrusted_mode", ["failure", "shadow_only"])
+def test_f2_runtime_authority_invalidation_neutralizes_scheduler_intent(
+    tmp_path: Path,
+    untrusted_mode: str,
+) -> None:
+    pending = _pending_action(nonce="")
+    pending.task_id = "task-f2-runtime-invalid-accounting-mode"
+    pending.status = "failed"
+    pending.scheduler_accounting_pending = True
+    pending.scheduler_accounting_mode = untrusted_mode
+    harness = _load_pending_actions_harness(
+        pending_actions_file=tmp_path / "pending_actions.json",
+    )
+
+    harness._invalidate_recovered_authority(pending)
+
+    assert pending.status == "outcome_unknown"
+    assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
+    assert pending.scheduler_accounting_mode == "ambiguous"
+    assert pending.scheduler_accounting_pending is True
+    assert pending.recovery_scheduler_accounted is False
+
+
 @pytest.mark.asyncio
 async def test_f2_stage2_amendment_waits_for_durable_executing_attempt(
     tmp_path: Path,
@@ -2139,6 +2234,43 @@ async def test_f2_pending_purge_postcommit_scheduler_fault_replays_before_deleti
         {"status": "terminal", "limit": 10}
     )
     assert purge_result["confirmation_ids"] == [pending.confirmation_id]
+    assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_status", ["terminal", "superseded", "all"])
+async def test_f2_pending_purge_retry_completes_terminal_accounting_before_deletion(
+    tmp_path: Path,
+    retry_status: str,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    scheduler.resolve_failures_remaining = 1
+    harness._scheduler = scheduler
+    pending = _pending_action(nonce="expected")
+    pending.created_at = datetime.now(UTC) - timedelta(days=10)
+    pending.task_id = "task-f2-purge-same-process-replay"
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
+    harness._persist_pending_actions()
+
+    with pytest.raises(RuntimeError, match="scheduler confirmation publication fault"):
+        await harness.do_action_purge(
+            {"status": "pending", "older_than_days": 7, "limit": 10}
+        )
+
+    assert pending.status == "failed"
+    assert pending.scheduler_accounting_pending is True
+    retry_params: dict[str, object] = {"status": retry_status, "limit": 10}
+    if retry_status == "all":
+        retry_params["older_than_days"] = 7
+    purge_result = await harness.do_action_purge(retry_params)
+
+    assert purge_result["confirmation_ids"] == [pending.confirmation_id]
+    assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
+    assert len(scheduler.run_outcomes) == 1
     assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
 
 

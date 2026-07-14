@@ -90,9 +90,9 @@ def _replace_with_self_asserted_fabricated_evidence(row: dict[str, object]) -> N
 
 
 async def _wait_for_recovery_accounting(impl: object) -> None:
-    tasks = list(getattr(impl, "_recovery_accounting_tasks", ()))
-    if tasks:
+    while tasks := list(getattr(impl, "_recovery_accounting_tasks", ())):
         await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
 
 
 async def _seed_unresolved_scheduled_time_attempt(
@@ -927,12 +927,8 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         reconciled_task = restarted.scheduler.get_task(task.id)
         assert reconciled_task is not None
         unrecoverable_confirmation = corruption == "confirmation_both_missing"
-        if unrecoverable_confirmation:
-            assert reconciled_task.success_count == 0
-            assert reconciled_task.failure_count == 0
-        else:
-            assert reconciled_task.success_count == 0
-            assert reconciled_task.failure_count == 1
+        assert reconciled_task.success_count == 0
+        assert reconciled_task.failure_count == 0
         assert reconciled_task.enabled is False
         if not unrecoverable_confirmation:
             durable = next(
@@ -941,9 +937,10 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
                 if row["confirmation_id"] == pending.confirmation_id
             )
             assert durable["scheduler_accounting_pending"] is False
-            if corruption == "status_pending":
-                assert durable["status"] == "outcome_unknown"
-                assert durable["decision_nonce"] == ""
+            assert durable["scheduler_accounting_mode"] == "ambiguous"
+            assert durable["status"] == "outcome_unknown"
+            assert durable["status_reason"] == "uncertain_effect_requires_fresh_approval"
+            assert durable["decision_nonce"] == ""
         if decoy_task_id:
             decoy_task = restarted.scheduler.get_task(decoy_task_id)
             assert decoy_task is not None

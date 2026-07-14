@@ -798,8 +798,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
         accounting_mode = str(
             getattr(pending, "scheduler_accounting_mode", "")
         ).strip()
-        if accounting_mode == "ambiguous":
-            pending.status_reason = "legacy_scheduler_accounting_intent_unknown"
         self._sync_task_confirmation_status(pending)
         if accounting_mode not in {"shadow_only", "ambiguous"}:
             self._record_task_confirmation_failure(pending)
@@ -1973,8 +1971,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         )
                     if pending_terminal_transitions:
                         self._commit_pending_terminal_states(pending_terminal_transitions)
-                        for item, _status, _reason in pending_terminal_transitions:
-                            self._complete_committed_terminal_scheduler_accounting(item)
+                    for item in purge_items:
+                        self._complete_committed_terminal_scheduler_accounting(item)
 
                     previous_actions = dict(self._pending_actions)
                     pending_by_session = getattr(self, "_pending_by_session", {})
