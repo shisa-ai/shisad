@@ -271,6 +271,110 @@ async def test_initial_stable_key_execution_rejects_adapter_guarantee_drift(
 
 
 @pytest.mark.parametrize(
+    "approval_actor",
+    ["control_api", "policy_loop", "daemon_recovery"],
+)
+@pytest.mark.asyncio
+async def test_initial_stable_key_invocation_guard_rejects_post_queue_adapter_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approval_actor: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    tool_name = ToolName("test.keyed-invocation-drift")
+    tool_definition = ToolDefinition(
+        name=tool_name,
+        description="Reject replacement adapters at the initial invocation boundary.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    initial_calls: list[str] = []
+    replacement_calls: list[str] = []
+
+    def _initial_adapter(
+        _arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        initial_calls.append(stable_idempotency_key)
+        return {"ok": True, "provider_operation_id": "initial-must-not-run"}
+
+    def _replacement_adapter(
+        _arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        replacement_calls.append(stable_idempotency_key)
+        return {"ok": True, "provider_operation_id": "replacement-must-not-run"}
+
+    services = await DaemonServices.build(config)
+    try:
+        services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-invocation-drift/provider-v1",
+            operation=_initial_adapter,
+        )
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        action = build_action(
+            tool_name=str(tool_name),
+            arguments={"value": "create-once"},
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor=approval_actor,
+                channel="cli",
+            ),
+            workspace_roots=list(config.assistant_fs_roots),
+        )
+        queued: list[object] = []
+        queue_pending_action = impl._queue_pending_action
+
+        def _queue_then_replace(**kwargs: object) -> object:
+            pending = queue_pending_action(**kwargs)
+            queued.append(pending)
+            services.idempotent_recovery_adapters[str(tool_name)] = (
+                StableIdempotencyAdapter(
+                    guarantee_id="test.keyed-invocation-drift/provider-v2",
+                    operation=_replacement_adapter,
+                )
+            )
+            return pending
+
+        monkeypatch.setattr(impl, "_queue_pending_action", _queue_then_replace)
+        result = await impl._execute_approved_action(
+            sid=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=tool_name,
+            arguments={"value": "create-once"},
+            capabilities=set(),
+            approval_actor=approval_actor,
+            execution_action=action,
+            persist_attempt_before_effect=True,
+        )
+
+        assert result.success is False
+        assert result.outcome_unknown is False
+        assert result.error == "idempotent_adapter_identity_mismatch"
+        assert len(queued) == 1
+        pending = queued[0]
+        assert pending.status == "failed"
+        assert pending.status_reason == "idempotent_adapter_identity_mismatch"
+        assert pending.retry_descriptor is not None
+        assert (
+            pending.retry_descriptor.stable_adapter_guarantee_id
+            == "test.keyed-invocation-drift/provider-v1"
+        )
+        assert initial_calls == []
+        assert replacement_calls == []
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.parametrize(
     ("mutation_phase", "surface"),
     [
         ("durable", "preflight"),
