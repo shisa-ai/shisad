@@ -340,6 +340,37 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
             )
             == []
         )
+        live_pending = next(
+            candidate
+            for candidate in impl._pending_actions.values()
+            if candidate.task_id == task.id
+        )
+        assert live_pending.recovery_effect_invoked is True
+        await _wait_for_recovery_accounting(impl)
+        execution_rows = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("execution_status") == "outcome_unknown"
+        ]
+        assert len(execution_rows) == 1
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plans[str(execution_rows[0]["session_id"])]["executed_actions"] == 1
+        recovery_audits = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == live_pending.confirmation_id
+        ]
+        assert len(recovery_audits) == 1
+        assert recovery_audits[0].get("data", {}).get("details", {}).get(
+            "outcome_unknown"
+        ) is True
     finally:
         await services.shutdown()
 
@@ -368,6 +399,93 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
         assert effect_calls == 1
     finally:
         await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_post_effect_exception_accounts_uncertain_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    effect_calls = 0
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        await services.control_plane.begin_precontent_plan(
+            session_id=str(session_id),
+            goal="Account one uncertain confirmed clock effect",
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="planner",
+                channel="cli",
+            ),
+            ttl_seconds=600,
+            max_actions=1,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reason="confirmed-post-effect-exception-accounting",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-confirmed-post-effect-exception-accounting",
+        )
+
+        async def _raise_after_possible_effect(**_kwargs: object) -> object:
+            nonlocal effect_calls
+            effect_calls += 1
+            raise RuntimeError("provider failed after possible clock effect")
+
+        monkeypatch.setattr(impl, "_execute_approved_action", _raise_after_possible_effect)
+        with pytest.raises(RuntimeError, match="possible clock effect"):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+
+        assert effect_calls == 1
+        assert pending.status == "outcome_unknown"
+        assert pending.recovery_effect_invoked is True
+        await _wait_for_recovery_accounting(impl)
+        assert pending.recovery_accounting_pending is False
+        execution_rows = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == "time.now"
+        ]
+        assert len(execution_rows) == 1
+        assert execution_rows[0]["execution_status"] == "outcome_unknown"
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plans[str(session_id)]["executed_actions"] == 1
+        recovery_audits = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == pending.confirmation_id
+        ]
+        assert len(recovery_audits) == 1
+        assert recovery_audits[0].get("data", {}).get("details", {}).get(
+            "outcome_unknown"
+        ) is True
+    finally:
+        await services.shutdown()
 
 
 @pytest.mark.parametrize(

@@ -1166,7 +1166,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending.status_reason = "uncertain_effect_requires_fresh_approval"
         pending.decision_nonce = ""
         pending.recovery_accounting_pending = True
-        pending.recovery_effect_invoked = False
+        pending.recovery_effect_invoked = True
         pending.scheduler_accounting_pending = bool(task_id)
         pending.scheduler_accounting_mode = "ambiguous" if task_id else ""
         pending.recovery_scheduler_accounted = False
@@ -1203,15 +1203,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
         except Exception:
             if task_id:
                 self._contain_confirmation_scheduler_attempt(pending)
+            raise
+        finally:
             await self._cancel_stage2_authority(
                 pending,
                 reason="confirmed_execution_exception",
             )
-            raise
-        await self._cancel_stage2_authority(
-            pending,
-            reason="confirmed_execution_exception",
-        )
         schedule_recovery = getattr(self, "_schedule_recovery_accounting", None)
         if callable(schedule_recovery):
             schedule_recovery(pending)

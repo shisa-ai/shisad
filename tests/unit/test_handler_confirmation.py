@@ -1436,6 +1436,7 @@ async def test_f2_confirmed_post_effect_exception_persists_uncertainty(
     assert pending.status == "outcome_unknown"
     assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
     assert pending.decision_nonce == ""
+    assert pending.recovery_effect_invoked is True
     assert harness._control_plane.cancelled_correlations == [
         pending.stage2_correlation_id
     ]
@@ -1454,6 +1455,55 @@ async def test_f2_confirmed_post_effect_exception_persists_uncertainty(
         assert scheduler.run_outcomes == []
         assert pending.scheduler_accounting_mode == "ambiguous"
         assert pending.scheduler_accounting_pending is False
+
+
+@pytest.mark.asyncio
+async def test_f2_confirmed_exception_revokes_stage2_when_fallback_containment_fails(
+    tmp_path: Path,
+) -> None:
+    class _PersistentContainmentFailureHarness(_AtomicConfirmationHarness):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path, allow_amendment=True)
+            self.fallback_containment_attempts = 0
+
+        async def _execute_approved_action(self, **_kwargs: object) -> object:
+            self.effect_calls += 1
+
+            def _fail_pending_persistence(stage: AtomicWriteStage) -> None:
+                if stage == AtomicWriteStage.FILE_FSYNC:
+                    raise OSError("persistent post-effect state failure")
+
+            self._pending_state_fault_injector = _fail_pending_persistence
+            raise RuntimeError("provider failed after possible effect")
+
+        def _contain_confirmation_scheduler_attempt(self, _pending: object) -> None:
+            self.fallback_containment_attempts += 1
+            self._persist_pending_actions()
+
+    harness = _PersistentContainmentFailureHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.task_id = "task-confirmed-degraded-containment"
+    _bind_pending_action_identity(pending)
+    harness._scheduler = _SchedulerRecorder()
+    harness._scheduler.task = SimpleNamespace(enabled=True)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    with pytest.raises(AtomicWriteError):
+        await harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+
+    assert harness.effect_calls == 1
+    assert harness.fallback_containment_attempts == 1
+    assert pending.stage2_correlation_id
+    assert harness._control_plane.cancelled_correlations == [
+        pending.stage2_correlation_id
+    ]
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == "executing"
+    assert durable["stage2_correlation_id"] == pending.stage2_correlation_id
 
 
 @pytest.mark.asyncio

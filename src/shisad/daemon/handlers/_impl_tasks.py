@@ -689,7 +689,7 @@ class TasksImplMixin(HandlerMixinBase):
                 pending.status_reason = "uncertain_effect_requires_fresh_approval"
                 pending.decision_nonce = ""
                 pending.recovery_accounting_pending = True
-                pending.recovery_effect_invoked = False
+                pending.recovery_effect_invoked = True
                 pending.scheduler_accounting_pending = True
                 self._persist_pending_actions()
                 self._sync_task_confirmation_status(pending)
