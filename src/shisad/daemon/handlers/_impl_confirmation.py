@@ -1158,6 +1158,64 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if not callable(disable_task) or not bool(disable_task(task_id)):
             raise RuntimeError("scheduler_attempt_containment_failed")
 
+    async def _contain_confirmed_execution_exception(self, pending: Any) -> None:
+        """Persist post-effect uncertainty and revoke adjacent execution authority."""
+
+        task_id = str(getattr(pending, "task_id", "")).strip()
+        pending.status = "outcome_unknown"
+        pending.status_reason = "uncertain_effect_requires_fresh_approval"
+        pending.decision_nonce = ""
+        pending.recovery_accounting_pending = True
+        pending.recovery_effect_invoked = False
+        pending.scheduler_accounting_pending = bool(task_id)
+        pending.scheduler_accounting_mode = "ambiguous" if task_id else ""
+        pending.recovery_scheduler_accounted = False
+        pending.recovery_scheduler_posture_captured = False
+        pending.recovery_scheduler_restore_enabled = False
+        try:
+            self._persist_pending_actions()
+            self._sync_task_confirmation_status(pending)
+            cancel_reason = (
+                await self._complete_confirmation_scheduler_accounting(
+                    pending,
+                    success=False,
+                    outcome_unknown=True,
+                )
+                if task_id
+                else ""
+            )
+            if cancel_reason:
+                await self._cancel_pending_actions_for_task(
+                    task_id,
+                    reason=cancel_reason,
+                )
+                finalize_accounting = getattr(
+                    self,
+                    "_finalize_pending_scheduler_accounting",
+                    None,
+                )
+                if pending.scheduler_accounting_pending:
+                    if not callable(finalize_accounting):
+                        raise RuntimeError(
+                            "terminal_scheduler_accounting_finalizer_unavailable"
+                        )
+                    finalize_accounting(pending)
+        except Exception:
+            if task_id:
+                self._contain_confirmation_scheduler_attempt(pending)
+            await self._cancel_stage2_authority(
+                pending,
+                reason="confirmed_execution_exception",
+            )
+            raise
+        await self._cancel_stage2_authority(
+            pending,
+            reason="confirmed_execution_exception",
+        )
+        schedule_recovery = getattr(self, "_schedule_recovery_accounting", None)
+        if callable(schedule_recovery):
+            schedule_recovery(pending)
+
     async def do_confirmation_metrics(self, params: Mapping[str, Any]) -> dict[str, Any]:
         window_seconds = max(60, int(params.get("window_seconds", 900)))
         requested_user = str(params.get("user_id") or "").strip()
@@ -2884,35 +2942,39 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
                 raise
             self._sync_task_confirmation_status(pending)
-        execution_result = await self._execute_approved_action(
-            sid=pending.session_id,
-            user_id=pending.user_id,
-            tool_name=pending.tool_name,
-            arguments=pending.arguments,
-            capabilities=execution_capabilities,
-            approval_actor="human_confirmation",
-            execution_action=pending_preflight_action,
-            merged_policy=pending.merged_policy,
-            user_confirmed=True,
-            action_id=action_identity.action_id,
-            origin_turn_id=action_identity.origin_turn_id,
-            execution_attempt_id=action_identity.execution_attempt_id,
-            result_id=action_identity.result_id,
-            followup_id=action_identity.followup_id,
-            workspace_id=pending.workspace_id,
-            task_id=action_identity.task_id,
-            delivery_target=pending.delivery_target,
-            approval_confirmation_id=str(pending.confirmation_id),
-            approval_decision_nonce=str(pending.decision_nonce),
-            approval_task_envelope_id=str(
-                getattr(pending, "approval_task_envelope_id", "")
-            ).strip(),
-            approval_timestamp=decision_timestamp,
-            approval_evidence=pending.confirmation_evidence,
-            strip_direct_tool_execute_envelope_keys=bool(
-                pending.should_strip_direct_tool_execute_envelope_keys()
-            ),
-        )
+        try:
+            execution_result = await self._execute_approved_action(
+                sid=pending.session_id,
+                user_id=pending.user_id,
+                tool_name=pending.tool_name,
+                arguments=pending.arguments,
+                capabilities=execution_capabilities,
+                approval_actor="human_confirmation",
+                execution_action=pending_preflight_action,
+                merged_policy=pending.merged_policy,
+                user_confirmed=True,
+                action_id=action_identity.action_id,
+                origin_turn_id=action_identity.origin_turn_id,
+                execution_attempt_id=action_identity.execution_attempt_id,
+                result_id=action_identity.result_id,
+                followup_id=action_identity.followup_id,
+                workspace_id=pending.workspace_id,
+                task_id=action_identity.task_id,
+                delivery_target=pending.delivery_target,
+                approval_confirmation_id=str(pending.confirmation_id),
+                approval_decision_nonce=str(pending.decision_nonce),
+                approval_task_envelope_id=str(
+                    getattr(pending, "approval_task_envelope_id", "")
+                ).strip(),
+                approval_timestamp=decision_timestamp,
+                approval_evidence=pending.confirmation_evidence,
+                strip_direct_tool_execute_envelope_keys=bool(
+                    pending.should_strip_direct_tool_execute_envelope_keys()
+                ),
+            )
+        except Exception:
+            await self._contain_confirmed_execution_exception(pending)
+            raise
         pending.provider_operation_id = str(
             getattr(execution_result, "provider_operation_id", "")
         ).strip()

@@ -27,6 +27,7 @@ from shisad.core.types import Capability, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
 from shisad.daemon.services import DaemonServices
+from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.schema import Origin, build_action
 
@@ -726,6 +727,8 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         "marker_missing+result_both_malformed",
         "marker_false+attempt_both_missing+status_pending",
         "marker_missing+result_both_malformed+status_pending",
+        "marker_false+identity_missing+task_missing",
+        "marker_missing+identity_missing+task_missing",
         "marker_false+identity_malformed",
         "marker_missing+identity_malformed",
         "marker_false+confirmation_mismatch",
@@ -948,6 +951,8 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["result_id"] = ["not", "text"]
     elif "result_mismatch" in corruption_parts:
         durable["result_id"] = "result-mismatch"
+    if "identity_missing" in corruption_parts and "task_missing" in corruption_parts:
+        durable["task_id"] = ""
     if "status_pending" in corruption_parts:
         durable["status"] = "pending"
         durable["status_reason"] = ""
@@ -984,10 +989,12 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         await restarted.shutdown()
 
 
+@pytest.mark.parametrize("recorded_outcome", [None, True, False])
 @pytest.mark.asyncio
 async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    recorded_outcome: bool | None,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
@@ -1010,7 +1017,7 @@ async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
             policy_snapshot_ref="confirmed-preconfirmation-row-rollback",
             created_by=session.user_id,
             workspace_id=session.workspace_id,
-            max_runs=1,
+            max_runs=3,
         )
         pending = impl._queue_pending_action(
             session_id=session_id,
@@ -1064,6 +1071,15 @@ async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
         shadow = services.scheduler._pending_confirmations[task.id][0]
         assert shadow["status"] == "approved"
         assert shadow["run_outcome_recorded"] is False
+        if recorded_outcome is not None:
+            assert SchedulerManager.record_confirmation_outcome(
+                services.scheduler,
+                task.id,
+                confirmation_id=pending.confirmation_id,
+                success=recorded_outcome,
+            )
+            assert shadow["run_outcome_recorded"] is True
+            assert shadow["run_outcome_success"] is recorded_outcome
     finally:
         await services.shutdown()
 
@@ -1093,8 +1109,8 @@ async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
         assert recovered.scheduler_accounting_mode == "ambiguous"
         recovered_task = restarted.scheduler.get_task(task.id)
         assert recovered_task is not None
-        assert recovered_task.success_count == 0
-        assert recovered_task.failure_count == 0
+        assert recovered_task.success_count == int(recorded_outcome is True)
+        assert recovered_task.failure_count == int(recorded_outcome is False)
         assert recovered_task.enabled is False
     finally:
         await restarted.shutdown()
@@ -1108,8 +1124,8 @@ async def test_terminal_scheduler_shadow_blocks_preconfirmation_row_replay(
         assert recovered.decision_nonce == ""
         converged_task = converged.scheduler.get_task(task.id)
         assert converged_task is not None
-        assert converged_task.success_count == 0
-        assert converged_task.failure_count == 0
+        assert converged_task.success_count == int(recorded_outcome is True)
+        assert converged_task.failure_count == int(recorded_outcome is False)
         assert converged_task.enabled is False
         assert effect_calls == 1
     finally:

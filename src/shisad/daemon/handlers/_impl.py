@@ -1852,7 +1852,7 @@ def _loaded_pending_payload_has_started_execution_authority(
     )
 
 
-def _loaded_pending_has_unrecorded_scheduler_shadow(
+def _loaded_pending_has_terminal_scheduler_shadow(
     scheduler: Any,
     item: Mapping[str, Any],
 ) -> bool:
@@ -1869,15 +1869,15 @@ def _loaded_pending_has_unrecorded_scheduler_shadow(
         if valid and confirmation_id:
             confirmation_ids.add(confirmation_id)
     task_ids_for_confirmation = getattr(scheduler, "task_ids_for_confirmation", None)
-    has_unrecorded_outcome = getattr(
+    has_terminal_shadow = getattr(
         scheduler,
-        "has_unrecorded_terminal_confirmation_outcome",
+        "has_terminal_confirmation_shadow",
         None,
     )
-    if not callable(task_ids_for_confirmation) or not callable(has_unrecorded_outcome):
+    if not callable(task_ids_for_confirmation) or not callable(has_terminal_shadow):
         return False
     return any(
-        has_unrecorded_outcome(task_id, confirmation_id=confirmation_id)
+        has_terminal_shadow(task_id, confirmation_id=confirmation_id)
         for confirmation_id in confirmation_ids
         for task_id in task_ids_for_confirmation(confirmation_id)
     )
@@ -4174,8 +4174,6 @@ class HandlerImplementation(
             scheduler_accounting_pending, scheduler_marker_valid = _loaded_state_bool(
                 item.get("scheduler_accounting_pending", False)
             )
-            if not legacy_invalid and scheduler_marker_valid and not scheduler_accounting_pending:
-                return normalized, False
             confirmation_id, confirmation_id_valid = _loaded_state_text(
                 item.get("confirmation_id", "")
             )
@@ -4185,6 +4183,25 @@ class HandlerImplementation(
             )
             task_candidates = {task_id} if task_id_valid and task_id else set()
             shadow_bindings = _shadow_bindings(confirmation_candidates)
+            has_terminal_shadow = getattr(
+                scheduler,
+                "has_terminal_confirmation_shadow",
+                None,
+            )
+            terminal_shadow_present = callable(has_terminal_shadow) and any(
+                has_terminal_shadow(
+                    shadow_task_id,
+                    confirmation_id=shadow_confirmation_id,
+                )
+                for shadow_confirmation_id, shadow_task_id in shadow_bindings
+            )
+            if (
+                not legacy_invalid
+                and scheduler_marker_valid
+                and not scheduler_accounting_pending
+                and not terminal_shadow_present
+            ):
+                return normalized, False
             if len(shadow_bindings) == 1:
                 canonical_confirmation_id, canonical_task_id = next(iter(shadow_bindings))
                 normalized["confirmation_id"] = canonical_confirmation_id
@@ -4321,8 +4338,8 @@ class HandlerImplementation(
                 _loaded_pending_payload_has_started_execution_authority(item)
             )
             raw_scheduler_accounting_mode = item.get("scheduler_accounting_mode", "")
-            raw_unrecorded_scheduler_shadow = (
-                _loaded_pending_has_unrecorded_scheduler_shadow(
+            raw_terminal_scheduler_shadow = (
+                _loaded_pending_has_terminal_scheduler_shadow(
                     getattr(self, "_scheduler", None),
                     item,
                 )
@@ -4334,7 +4351,7 @@ class HandlerImplementation(
                     if isinstance(raw_scheduler_accounting_mode, str)
                     else raw_scheduler_accounting_mode is not None
                 )
-                or raw_unrecorded_scheduler_shadow
+                or raw_terminal_scheduler_shadow
             )
             recovery_result_json_valid = _native_json_payload_is_valid(
                 item.get("recovery_result", {})
@@ -4849,7 +4866,7 @@ class HandlerImplementation(
             if raw_started_authority_present and not started_recovery_authority:
                 erased_recovery_authority_present = True
             if (
-                raw_unrecorded_scheduler_shadow
+                raw_terminal_scheduler_shadow
                 and pending.status == "pending"
                 and not started_recovery_authority
             ):

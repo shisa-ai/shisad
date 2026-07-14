@@ -1391,6 +1391,72 @@ async def test_pending_attempt_state_is_durable_before_effect(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_f2_confirmed_post_effect_exception_persists_uncertainty(
+    tmp_path: Path,
+    scheduled: bool,
+) -> None:
+    class _PostEffectExceptionHarness(_AtomicConfirmationHarness):
+        async def _execute_approved_action(self, **_kwargs: object) -> object:
+            self.effect_calls += 1
+            raise RuntimeError("provider failed after possible effect")
+
+    harness = _PostEffectExceptionHarness(tmp_path, allow_amendment=True)
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    scheduler: _SchedulerRecorder | None = None
+    if scheduled:
+        pending.task_id = "task-confirmed-post-effect-exception"
+        scheduler = _SchedulerRecorder()
+        scheduler.task = SimpleNamespace(
+            enabled=True,
+            max_runs=3,
+            success_count=0,
+            recovery_containment_token="",
+        )
+        harness._scheduler = scheduler
+        for method_name in (
+            "_record_pending_scheduler_state",
+            "_complete_pending_scheduler_accounting",
+            "_finalize_pending_scheduler_accounting",
+            "_recovery_task_cancel_reason",
+        ):
+            method = getattr(HandlerImplementation, method_name)
+            setattr(harness, method_name, method.__get__(harness, HandlerImplementation))
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    with pytest.raises(RuntimeError, match="possible effect"):
+        await harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+
+    assert harness.effect_calls == 1
+    assert pending.status == "outcome_unknown"
+    assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
+    assert pending.decision_nonce == ""
+    assert harness._control_plane.cancelled_correlations == [
+        pending.stage2_correlation_id
+    ]
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == "outcome_unknown"
+    assert durable["decision_nonce"] == ""
+    replay = await harness.do_action_confirm(
+        {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+    )
+    assert replay["confirmed"] is False
+    assert harness.effect_calls == 1
+    if scheduled:
+        assert scheduler is not None
+        assert scheduler.task is not None
+        assert scheduler.task.enabled is False
+        assert scheduler.run_outcomes == []
+        assert pending.scheduler_accounting_mode == "ambiguous"
+        assert pending.scheduler_accounting_pending is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fault_stage",
     [

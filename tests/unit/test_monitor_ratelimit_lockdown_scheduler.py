@@ -970,7 +970,7 @@ def test_f2_confirmation_outcome_deduplicates_after_tasks_only_crash(
         ("cancelled", False),
     ],
 )
-def test_f2_scheduler_identifies_unrecorded_terminal_confirmation_outcome(
+def test_f2_scheduler_identifies_terminal_confirmation_shadow(
     tmp_path: Path,
     status: str,
     expected: bool,
@@ -996,7 +996,7 @@ def test_f2_scheduler_identifies_unrecorded_terminal_confirmation_outcome(
     )
 
     assert (
-        scheduler.has_unrecorded_terminal_confirmation_outcome(
+        scheduler.has_terminal_confirmation_shadow(
             task.id,
             confirmation_id=confirmation_id,
         )
@@ -1008,7 +1008,7 @@ def test_f2_scheduler_identifies_unrecorded_terminal_confirmation_outcome(
             confirmation_id=confirmation_id,
             success=False,
         )
-        assert not scheduler.has_unrecorded_terminal_confirmation_outcome(
+        assert scheduler.has_terminal_confirmation_shadow(
             task.id,
             confirmation_id=confirmation_id,
         )
