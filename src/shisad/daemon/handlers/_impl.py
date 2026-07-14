@@ -4865,7 +4865,10 @@ class HandlerImplementation(
                     pending.scheduler_accounting_pending = False
                 _neutralize_untrusted_scheduler_accounting_intent(
                     pending,
-                    intent_present=raw_scheduler_accounting_intent_present,
+                    intent_present=(
+                        raw_scheduler_accounting_intent_present
+                        or pending.scheduler_accounting_pending
+                    ),
                 )
             if (
                 pending.status == "pending"

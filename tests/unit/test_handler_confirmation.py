@@ -1914,7 +1914,7 @@ def test_f2_invalid_recovery_mac_neutralizes_valid_scheduler_mode_substitution(
     assert len(scheduler.resolved_confirmations) == resolution_count
 
 
-@pytest.mark.parametrize("untrusted_mode", ["failure", "shadow_only"])
+@pytest.mark.parametrize("untrusted_mode", ["", "failure", "shadow_only"])
 def test_f2_runtime_authority_invalidation_neutralizes_scheduler_intent(
     tmp_path: Path,
     untrusted_mode: str,
@@ -2272,6 +2272,134 @@ async def test_f2_pending_purge_retry_completes_terminal_accounting_before_delet
     assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
     assert len(scheduler.run_outcomes) == 1
     assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "status",
+        "status_reason",
+        "accounting_mode",
+        "purge_status",
+        "cancel_reason",
+        "max_runs",
+        "success_count",
+        "expected_run_outcomes",
+        "purge_sibling",
+    ),
+    [
+        (
+            "outcome_unknown",
+            "uncertain_effect_requires_fresh_approval",
+            "ambiguous",
+            "outcome_unknown",
+            "outcome_unknown",
+            0,
+            0,
+            0,
+            False,
+        ),
+        (
+            "approved",
+            "recovered_structural_read",
+            "failure",
+            "executed",
+            "max_runs_reached",
+            1,
+            1,
+            1,
+            False,
+        ),
+        (
+            "outcome_unknown",
+            "uncertain_effect_requires_fresh_approval",
+            "ambiguous",
+            "all",
+            "outcome_unknown",
+            0,
+            0,
+            0,
+            True,
+        ),
+    ],
+)
+async def test_f2_pending_purge_completes_cancellation_required_accounting(
+    tmp_path: Path,
+    status: str,
+    status_reason: str,
+    accounting_mode: str,
+    purge_status: str,
+    cancel_reason: str,
+    max_runs: int,
+    success_count: int,
+    expected_run_outcomes: int,
+    purge_sibling: bool,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+    for method_name in (
+        "_record_pending_scheduler_state",
+        "_complete_pending_scheduler_accounting",
+        "_finalize_pending_scheduler_accounting",
+        "_recovery_task_cancel_reason",
+    ):
+        method = getattr(HandlerImplementation, method_name)
+        setattr(harness, method_name, method.__get__(harness, HandlerImplementation))
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(
+        enabled=True,
+        max_runs=max_runs,
+        success_count=success_count,
+        recovery_containment_token="",
+    )
+    harness._scheduler = scheduler
+    pending = _pending_action(nonce="")
+    pending.task_id = "task-f2-purge-cancellation"
+    pending.status = status
+    pending.status_reason = status_reason
+    pending.scheduler_accounting_pending = True
+    pending.scheduler_accounting_mode = accounting_mode
+    if purge_status == "all":
+        pending.created_at = datetime.now(UTC) - timedelta(days=10)
+    _bind_pending_action_identity(pending)
+    sibling = _pending_action(nonce="sibling-nonce")
+    sibling.confirmation_id = "c-sibling"
+    sibling.task_id = pending.task_id
+    if purge_status == "all":
+        sibling.created_at = datetime.now(UTC) - timedelta(days=10)
+    _bind_pending_action_identity(sibling)
+    harness._pending_actions = {
+        pending.confirmation_id: pending,
+        sibling.confirmation_id: sibling,
+    }
+    harness._pending_by_session[pending.session_id] = [
+        pending.confirmation_id,
+        sibling.confirmation_id,
+    ]
+    harness._persist_pending_actions()
+
+    purge_params: dict[str, object] = {"status": purge_status, "limit": 10}
+    if purge_status == "all":
+        purge_params["older_than_days"] = 7
+    purge_result = await asyncio.wait_for(
+        harness.do_action_purge(purge_params),
+        timeout=2,
+    )
+
+    assert purge_result["confirmation_ids"] == (
+        [pending.confirmation_id, sibling.confirmation_id]
+        if purge_sibling
+        else [pending.confirmation_id]
+    )
+    assert pending.scheduler_accounting_pending is False
+    assert sibling.status == "cancelled"
+    assert sibling.status_reason == cancel_reason
+    assert sibling.decision_nonce == ""
+    assert scheduler.task.enabled is False
+    assert len(scheduler.run_outcomes) == expected_run_outcomes
+    durable_rows = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))
+    assert [row["confirmation_id"] for row in durable_rows] == (
+        [] if purge_sibling else [sibling.confirmation_id]
+    )
 
 
 @pytest.mark.asyncio

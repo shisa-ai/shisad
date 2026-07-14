@@ -714,6 +714,8 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
     [
         "unrelated_metadata",
         "marker",
+        "marker_false",
+        "marker_missing",
         "marker_and_identity",
         "identity_missing",
         "identity_malformed",
@@ -866,6 +868,10 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
     durable = next(row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id)
     if corruption in {"marker", "marker_and_identity"}:
         durable["scheduler_accounting_pending"] = "not-a-boolean"
+    elif corruption == "marker_false":
+        durable["scheduler_accounting_pending"] = False
+    elif corruption == "marker_missing":
+        durable.pop("scheduler_accounting_pending")
     if corruption == "marker_and_identity":
         durable["execution_attempt_id"] = ["not", "text"]
         durable["result_id"] = ["not", "text"]
@@ -1674,8 +1680,9 @@ tools:
             contained_task = restarted.scheduler.get_task(scheduled_task.id)
             assert contained_task is not None
             assert contained_task.success_count == 0
-            assert contained_task.failure_count == 1
+            assert contained_task.failure_count == 0
             assert contained_task.enabled is False
+            assert recovered.scheduler_accounting_mode == "ambiguous"
     finally:
         await restarted.shutdown()
 
@@ -1924,7 +1931,11 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         recovered_task = restarted.scheduler.get_task(task.id)
         assert recovered_task is not None
         assert recovered_task.success_count == (1 if recovery_case == "exact-key" else 0)
-        assert recovered_task.failure_count == (0 if recovery_case == "exact-key" else 1)
+        assert recovered_task.failure_count == (
+            0 if recovery_case in {"exact-key", "changed-key", "fabricated-evidence"} else 1
+        )
+        if recovery_case in {"changed-key", "fabricated-evidence"}:
+            assert recovered.scheduler_accounting_mode == "ambiguous"
         assert recovered_task.enabled is expected_task_enabled
         recovery_events = [
             row

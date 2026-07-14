@@ -813,6 +813,41 @@ class ConfirmationImplMixin(HandlerMixinBase):
             pending.scheduler_accounting_pending = True
             raise
 
+    async def _complete_purge_candidate_scheduler_accounting(
+        self,
+        pending: Any,
+        *,
+        already_locked_confirmation_ids: frozenset[str] = frozenset(),
+    ) -> None:
+        """Finish scheduler accounting and required cancellation before deletion."""
+
+        if not bool(getattr(pending, "scheduler_accounting_pending", False)):
+            return
+        complete_accounting = getattr(
+            self,
+            "_complete_pending_scheduler_accounting",
+            None,
+        )
+        if not callable(complete_accounting):
+            self._complete_committed_terminal_scheduler_accounting(pending)
+            return
+        cancel_reason = str(complete_accounting(pending)).strip()
+        if not cancel_reason:
+            return
+        await self._cancel_pending_actions_for_task(
+            str(getattr(pending, "task_id", "")).strip(),
+            reason=cancel_reason,
+            already_locked_confirmation_ids=already_locked_confirmation_ids,
+        )
+        finalize_accounting = getattr(
+            self,
+            "_finalize_pending_scheduler_accounting",
+            None,
+        )
+        if not callable(finalize_accounting):
+            raise RuntimeError("terminal_scheduler_accounting_finalizer_unavailable")
+        finalize_accounting(pending)
+
     async def _commit_and_publish_pending_terminal(
         self,
         pending: Any,
@@ -899,6 +934,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         task_id: str,
         *,
         reason: str,
+        already_locked_confirmation_ids: frozenset[str] = frozenset(),
     ) -> list[str]:
         normalized_task_id = task_id.strip()
         if not normalized_task_id:
@@ -914,6 +950,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         cancelled: list[Any] = []
         try:
             for confirmation_id in candidate_ids:
+                if confirmation_id in already_locked_confirmation_ids:
+                    continue
                 lock = self._action_confirmation_lock(confirmation_id)
                 await lock.acquire()
                 locks.append((confirmation_id, lock))
@@ -1952,6 +1990,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     purge_items.append(item)
                 purge_ids = [item.confirmation_id for item in purge_items]
                 if purge_items:
+                    already_locked_confirmation_ids = frozenset(purge_ids)
+                    for item in purge_items:
+                        item_status = str(getattr(item, "status", "")).strip().lower()
+                        if item_status == "pending":
+                            continue
+                        await self._complete_purge_candidate_scheduler_accounting(
+                            item,
+                            already_locked_confirmation_ids=already_locked_confirmation_ids,
+                        )
                     pending_terminal_transitions: list[tuple[Any, str, str]] = []
                     for item in purge_items:
                         item_status = str(getattr(item, "status", "")).strip().lower()
@@ -1972,7 +2019,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     if pending_terminal_transitions:
                         self._commit_pending_terminal_states(pending_terminal_transitions)
                     for item in purge_items:
-                        self._complete_committed_terminal_scheduler_accounting(item)
+                        await self._complete_purge_candidate_scheduler_accounting(
+                            item,
+                            already_locked_confirmation_ids=already_locked_confirmation_ids,
+                        )
 
                     previous_actions = dict(self._pending_actions)
                     pending_by_session = getattr(self, "_pending_by_session", {})
