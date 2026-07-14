@@ -508,11 +508,15 @@ async def test_allowed_immediate_effect_has_durable_attempt_before_delivery_and_
         assert len(durable_before_effect) == 1
         durable_attempt = durable_before_effect[0]
         assert durable_attempt["status"] == "executing"
-        assert str(durable_attempt.get("execution_attempt_id", "")).startswith(
-            "attempt-"
-        )
+        assert durable_attempt["status_reason"] == f"{approval_actor}_execution_started"
+        assert durable_attempt["execution_authorization_kind"] == "policy_allow"
+        assert str(durable_attempt.get("execution_attempt_id", "")).startswith("attempt-")
         assert str(durable_attempt.get("result_id", "")).startswith("result-")
         pending = impl._pending_actions[str(durable_attempt["confirmation_id"])]
+        assert "execution_authorization_kind" not in impl._pending_to_dict(
+            pending,
+            public=True,
+        )
         assert pending.status == "outcome_unknown"
         assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
         assert pending.recovery_effect_invoked is True
@@ -521,6 +525,216 @@ async def test_allowed_immediate_effect_has_durable_attempt_before_delivery_and_
         assert durable_after_containment[0]["status"] == "outcome_unknown"
     finally:
         await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "approval_actor",
+    ["control_api", "policy_loop", "daemon_recovery"],
+)
+async def test_allowed_immediate_structural_read_recovers_authenticated_policy_allow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approval_actor: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    from shisad.daemon.handlers import _impl as impl_module
+
+    real_clock = impl_module.current_time_payload
+    clock_calls: list[dict[str, object]] = []
+
+    def _recording_clock(**kwargs: object) -> dict[str, object]:
+        result = real_clock(**kwargs)
+        clock_calls.append(dict(result))
+        return result
+
+    class _SimulatedProcessLoss(BaseException):
+        pass
+
+    monkeypatch.setattr(impl_module, "current_time_payload", _recording_clock)
+    monkeypatch.setattr(impl_module, "_sleep", lambda _seconds: None)
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        action = build_action(
+            tool_name="time.now",
+            arguments={"timezone": "UTC"},
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor=approval_actor,
+                channel="cli",
+            ),
+            workspace_roots=list(config.assistant_fs_roots),
+        )
+
+        def _lose_process_before_effect(**_kwargs: object) -> None:
+            raise _SimulatedProcessLoss
+
+        monkeypatch.setattr(impl._rate_limiter, "consume", _lose_process_before_effect)
+        with pytest.raises(_SimulatedProcessLoss):
+            await impl._execute_approved_action(
+                sid=session_id,
+                user_id=session.user_id,
+                workspace_id=session.workspace_id,
+                tool_name=ToolName("time.now"),
+                arguments={"timezone": "UTC"},
+                capabilities=set(),
+                approval_actor=approval_actor,
+                execution_action=action,
+                persist_attempt_before_effect=True,
+            )
+
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
+        confirmation_id = str(durable["confirmation_id"])
+        assert durable["status"] == "executing"
+        assert durable["status_reason"] == f"{approval_actor}_execution_started"
+        assert durable["execution_authorization_kind"] == "policy_allow"
+        assert "confirmation_evidence" not in durable
+        assert durable["approval_evidence_hash"] == ""
+        assert clock_calls == []
+    finally:
+        await services.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        recovered = restarted_handlers._impl._pending_actions[confirmation_id]
+        assert recovered.status == "approved"
+        assert recovered.status_reason == "recovered_structural_read"
+        assert recovered.execution_authorization_kind == "policy_allow"
+        assert recovered.retry_generation == 1
+        assert recovered.recovery_result["ok"] is True
+        assert clock_calls == [recovered.recovery_result]
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "erase_authorization_before_restart",
+    [False, True],
+    ids=["authenticated", "tampered"],
+)
+async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    erase_authorization_before_restart: bool,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    from shisad.daemon.handlers import _impl as impl_module
+
+    monkeypatch.setattr(impl_module, "_sleep", lambda _seconds: None)
+    tool_name = ToolName("test.allowed-stable-retry")
+    tool_definition = ToolDefinition(
+        name=tool_name,
+        description="Create one effect under a stable provider key.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    calls: list[str] = []
+
+    def _deduplicating_adapter(
+        arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        calls.append(stable_idempotency_key)
+        return {
+            "ok": True,
+            "provider_operation_id": "allowed-provider-operation-1",
+            "value": str(arguments.get("value", "")),
+        }
+
+    class _SimulatedProcessLoss(BaseException):
+        pass
+
+    services = await DaemonServices.build(config)
+    try:
+        services.registry.register(tool_definition)
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        action = build_action(
+            tool_name=str(tool_name),
+            arguments={"value": "create-once"},
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="policy_loop",
+                channel="cli",
+            ),
+            workspace_roots=list(config.assistant_fs_roots),
+        )
+
+        def _lose_process_before_effect(**_kwargs: object) -> None:
+            raise _SimulatedProcessLoss
+
+        monkeypatch.setattr(impl._rate_limiter, "consume", _lose_process_before_effect)
+        with pytest.raises(_SimulatedProcessLoss):
+            await impl._execute_approved_action(
+                sid=session_id,
+                user_id=session.user_id,
+                workspace_id=session.workspace_id,
+                tool_name=tool_name,
+                arguments={"value": "create-once"},
+                capabilities=set(),
+                approval_actor="policy_loop",
+                execution_action=action,
+                persist_attempt_before_effect=True,
+            )
+
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
+        confirmation_id = str(durable["confirmation_id"])
+        stable_key = str(durable["stable_idempotency_key"])
+        assert durable["status"] == "executing"
+        assert durable["execution_authorization_kind"] == "policy_allow"
+        assert stable_key.startswith("shisad-")
+        assert calls == []
+    finally:
+        await services.shutdown()
+
+    if erase_authorization_before_restart:
+        pending_path = config.data_dir / "pending_actions.json"
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+        durable_rows[0]["execution_authorization_kind"] = ""
+        pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted.registry.register(tool_definition)
+        restarted.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        recovered = restarted_handlers._impl._pending_actions[confirmation_id]
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        if erase_authorization_before_restart:
+            assert recovered.status == "outcome_unknown"
+            assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+            assert recovered.execution_authorization_kind == ""
+            assert recovered.retry_generation == 0
+            assert recovered.provider_operation_id == ""
+            assert calls == []
+        else:
+            assert recovered.status == "approved"
+            assert recovered.status_reason == "recovered_stable_idempotency_key"
+            assert recovered.execution_authorization_kind == "policy_allow"
+            assert recovered.retry_generation == 1
+            assert recovered.provider_operation_id == "allowed-provider-operation-1"
+            assert calls == [stable_key]
+    finally:
+        await restarted.shutdown()
 
 
 @pytest.mark.asyncio

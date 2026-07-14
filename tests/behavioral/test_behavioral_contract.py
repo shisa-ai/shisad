@@ -8212,13 +8212,20 @@ async def test_contract_action_pending_cli_defaults_and_purge_terminal_rows(
     contract_harness: ContractHarness,
 ) -> None:
     sid = await _create_session(contract_harness.client)
-    await contract_harness.client.call(
+    navigation = await contract_harness.client.call(
         "session.message",
         {
             "session_id": sid,
             "content": f"browser navigate {contract_harness.browser_base_url}/browser",
         },
     )
+    assert int(navigation.get("executed_actions", 0)) == 1
+    executed_rows = await contract_harness.client.call(
+        "action.pending",
+        {"session_id": sid, "status": "approved", "limit": 10},
+    )
+    assert executed_rows["count"] == 1
+    executed_id = str(executed_rows["actions"][0]["confirmation_id"])
     first = await contract_harness.client.call(
         "session.message",
         {"session_id": sid, "content": "browser click the continue button in the browser"},
@@ -8255,22 +8262,26 @@ async def test_contract_action_pending_cli_defaults_and_purge_terminal_rows(
     assert all_pending.returncode == 0, all_pending.stderr or all_pending.stdout
     assert pending_id in all_pending.stdout
     assert rejected_id in all_pending.stdout
+    assert executed_id in all_pending.stdout
 
     dry_run = await _run_contract_cli(contract_harness.config, "action", "purge", "--dry-run")
     assert dry_run.returncode == 0, dry_run.stderr or dry_run.stdout
-    assert "Would purge 1 pending action row(s)" in dry_run.stdout
+    assert "Would purge 2 pending action row(s)" in dry_run.stdout
     assert rejected_id in dry_run.stdout
+    assert executed_id in dry_run.stdout
 
-    after_dry_run = await contract_harness.client.call(
-        "action.pending",
-        {"confirmation_id": rejected_id},
-    )
-    assert after_dry_run["count"] == 1
+    for terminal_id in (rejected_id, executed_id):
+        after_dry_run = await contract_harness.client.call(
+            "action.pending",
+            {"confirmation_id": terminal_id},
+        )
+        assert after_dry_run["count"] == 1
 
     purged = await _run_contract_cli(contract_harness.config, "action", "purge")
     assert purged.returncode == 0, purged.stderr or purged.stdout
-    assert "Purged 1 pending action row(s)" in purged.stdout
+    assert "Purged 2 pending action row(s)" in purged.stdout
     assert rejected_id in purged.stdout
+    assert executed_id in purged.stdout
 
     after_purge = await _run_contract_cli(
         contract_harness.config,
@@ -8282,6 +8293,7 @@ async def test_contract_action_pending_cli_defaults_and_purge_terminal_rows(
     assert after_purge.returncode == 0, after_purge.stderr or after_purge.stdout
     assert pending_id in after_purge.stdout
     assert rejected_id not in after_purge.stdout
+    assert executed_id not in after_purge.stdout
 
 
 @pytest.mark.asyncio

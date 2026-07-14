@@ -234,6 +234,7 @@ _PENDING_ACTION_STORED_STATUSES = frozenset(
     }
 )
 _SCHEDULER_ACCOUNTING_MODES = frozenset({"", "failure", "shadow_only", "ambiguous"})
+_EXECUTION_AUTHORIZATION_KINDS = frozenset({"", "policy_allow"})
 _INTERNAL_PENDING_ARGUMENT_KEYS_BY_ACTION: dict[str, frozenset[str]] = {
     "shell.exec": frozenset({"command_intent"}),
     "reminder.create": frozenset({"reminder_intent"}),
@@ -1715,6 +1716,7 @@ class PendingAction:
     origin_turn_id: str = ""
     action_digest: str = ""
     approval_evidence_hash: str = ""
+    execution_authorization_kind: str = ""
     retry_descriptor: ToolRetryDescriptor | None = None
     retry_generation: int = 0
     recovery_started_at: datetime | None = None
@@ -1784,6 +1786,7 @@ def _pending_action_has_started_execution_authority(pending: PendingAction) -> b
         or pending.result_id.strip()
         or pending.provider_operation_id.strip()
         or pending.approval_evidence_hash.strip()
+        or pending.execution_authorization_kind.strip()
         or pending.confirmation_evidence is not None
         or pending.retry_generation > 0
         or pending.recovery_started_at is not None
@@ -1819,6 +1822,7 @@ def _loaded_pending_payload_has_started_execution_authority(
             "result_id",
             "provider_operation_id",
             "approval_evidence_hash",
+            "execution_authorization_kind",
             "recovery_started_at",
             "stage2_correlation_id",
             "stage2_previous_plan_hash",
@@ -1943,6 +1947,13 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "created_at": pending.created_at.isoformat(),
         "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
     }
+    if pending.execution_authorization_kind:
+        snapshot.update(
+            {
+                "schema_version": "shisad.pending_recovery_snapshot.v3",
+                "execution_authorization_kind": pending.execution_authorization_kind,
+            }
+        )
     if pending.recovery_scheduler_posture_captured or pending.recovery_scheduler_restore_enabled:
         snapshot.update(
             {
@@ -3393,6 +3404,7 @@ class HandlerImplementation(
             "origin_turn_id": state_view.identity.origin_turn_id,
             "action_digest": pending.action_digest,
             "approval_evidence_hash": pending.approval_evidence_hash,
+            "execution_authorization_kind": pending.execution_authorization_kind,
             "retry_descriptor": (
                 pending.retry_descriptor.model_dump(mode="json")
                 if pending.retry_descriptor is not None
@@ -3525,6 +3537,7 @@ class HandlerImplementation(
             payload.pop("stage2_previous_plan_hash", None)
             payload.pop("stage2_plan_hash", None)
             payload.pop("recovery_authority_mac", None)
+            payload.pop("execution_authorization_kind", None)
             payload.pop("stable_idempotency_key", None)
             payload["stable_idempotency_key_present"] = bool(pending.stable_idempotency_key)
             retry_descriptor_payload = payload.get("retry_descriptor")
@@ -3912,6 +3925,7 @@ class HandlerImplementation(
             action_id=action_id,
             origin_turn_id=str(origin_turn_id).strip(),
             action_digest=action_digest,
+            execution_authorization_kind=("policy_allow" if start_executing else ""),
             retry_descriptor=retry_descriptor,
             stable_idempotency_key=stable_idempotency_key,
             execution_attempt_id=execution_attempt_id,
@@ -4000,7 +4014,7 @@ class HandlerImplementation(
             continuation_user_goal=str(continuation_user_goal).strip(),
             continuation_mode=str(continuation_mode).strip(),
             status="executing" if start_executing else "pending",
-            status_reason=("scheduler_execution_started" if start_executing else ""),
+            status_reason=(str(reason).strip() if start_executing else ""),
         )
         approval_envelope = approval_envelope.model_copy(
             update={
@@ -4681,6 +4695,14 @@ class HandlerImplementation(
                 loaded_recovery_authority_mac, recovery_authority_mac_valid = _loaded_state_text(
                     item.get("recovery_authority_mac", "")
                 )
+                (
+                    loaded_execution_authorization_kind,
+                    execution_authorization_kind_valid,
+                ) = _loaded_state_text(item.get("execution_authorization_kind", ""))
+                execution_authorization_kind_valid = (
+                    execution_authorization_kind_valid
+                    and loaded_execution_authorization_kind in _EXECUTION_AUTHORIZATION_KINDS
+                )
                 loaded_stage2_correlation_id, stage2_correlation_id_valid = _loaded_state_text(
                     item.get("stage2_correlation_id", "")
                 )
@@ -4695,6 +4717,7 @@ class HandlerImplementation(
                         stage2_correlation_id_valid,
                         stage2_previous_plan_hash_valid,
                         stage2_plan_hash_valid,
+                        execution_authorization_kind_valid,
                     )
                 )
                 loaded_status, status_valid = _loaded_state_text(item.get("status", "pending"))
@@ -4797,6 +4820,7 @@ class HandlerImplementation(
                     origin_turn_id=origin_turn_id,
                     action_digest=loaded_action_digest,
                     approval_evidence_hash=loaded_approval_evidence_hash,
+                    execution_authorization_kind=loaded_execution_authorization_kind,
                     retry_descriptor=retry_descriptor,
                     retry_generation=retry_generation,
                     recovery_started_at=recovery_started_at,
@@ -5064,6 +5088,29 @@ class HandlerImplementation(
             self._complete_committed_terminal_scheduler_accounting(pending)
         self._recover_loaded_pending_attempts()
 
+    @staticmethod
+    def _policy_allow_execution_authority_is_current(pending: PendingAction) -> bool:
+        """Validate the distinct, non-human authority for an allowed execution."""
+
+        if pending.execution_authorization_kind != "policy_allow":
+            return False
+        if (
+            pending.confirmation_evidence is not None
+            or pending.approval_evidence_hash
+            or pending.decision_nonce
+        ):
+            return False
+        preflight_action = pending.preflight_action
+        if preflight_action is None or preflight_action.tool_name != str(pending.tool_name):
+            return False
+        origin = preflight_action.origin
+        return (
+            origin.session_id == str(pending.session_id)
+            and origin.user_id == str(pending.user_id)
+            and origin.workspace_id == str(pending.workspace_id)
+            and origin.task_id == pending.task_id
+        )
+
     def _recovery_descriptor_is_current(
         self,
         pending: PendingAction,
@@ -5074,9 +5121,12 @@ class HandlerImplementation(
             return False
         if str(getattr(pending, "stage2_correlation_id", "")).strip():
             return False
+        policy_allow_authority = self._policy_allow_execution_authority_is_current(pending)
+        if pending.execution_authorization_kind and not policy_allow_authority:
+            return False
         if self._pending_approval_contract_invalid_reason(
             pending,
-            require_evidence=True,
+            require_evidence=not policy_allow_authority,
         ):
             return False
         descriptor = pending.retry_descriptor
@@ -5133,17 +5183,18 @@ class HandlerImplementation(
             return False
         if expected_approval_envelope_hash != pending.approval_envelope_hash:
             return False
-        evidence = pending.confirmation_evidence
-        if evidence is None or not pending.approval_evidence_hash:
-            return False
-        if evidence.evidence_hash != pending.approval_evidence_hash:
-            return False
-        if evidence.action_digest != expected_action_digest:
-            return False
-        if evidence.approval_envelope_hash != pending.approval_envelope_hash:
-            return False
-        if evidence.decision_nonce != pending.decision_nonce:
-            return False
+        if not policy_allow_authority:
+            evidence = pending.confirmation_evidence
+            if evidence is None or not pending.approval_evidence_hash:
+                return False
+            if evidence.evidence_hash != pending.approval_evidence_hash:
+                return False
+            if evidence.action_digest != expected_action_digest:
+                return False
+            if evidence.approval_envelope_hash != pending.approval_envelope_hash:
+                return False
+            if evidence.decision_nonce != pending.decision_nonce:
+                return False
         session = self._session_manager.get(pending.session_id)
         if session is None:
             return False
@@ -5558,11 +5609,16 @@ class HandlerImplementation(
             )
         ):
             return "recovery_authority_mismatch"
+        policy_allow_authority = self._policy_allow_execution_authority_is_current(pending)
+        if pending.execution_authorization_kind and not policy_allow_authority:
+            return "recovery_authority_mismatch"
         evidence = pending.confirmation_evidence
-        require_evidence = evidence is not None or bool(pending.approval_evidence_hash.strip())
+        require_evidence = not policy_allow_authority and (
+            evidence is not None or bool(pending.approval_evidence_hash.strip())
+        )
         validation_pending = (
             replace(pending, decision_nonce=evidence.decision_nonce)
-            if evidence is not None
+            if evidence is not None and not policy_allow_authority
             else pending
         )
         return self._pending_approval_contract_invalid_reason(
@@ -5583,6 +5639,7 @@ class HandlerImplementation(
         pending.status_reason = "uncertain_effect_requires_fresh_approval"
         pending.decision_nonce = ""
         pending.approval_evidence_hash = ""
+        pending.execution_authorization_kind = ""
         pending.confirmation_evidence = None
         pending.preflight_action = None
         pending.merged_policy = None
