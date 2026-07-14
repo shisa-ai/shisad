@@ -1507,6 +1507,134 @@ async def test_f2_confirmed_exception_revokes_stage2_when_fallback_containment_f
 
 
 @pytest.mark.asyncio
+async def test_f2_cancelled_confirmed_effect_contains_uncertainty_and_authority(
+    tmp_path: Path,
+) -> None:
+    class _CancelledEffectHarness(_AtomicConfirmationHarness):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path, allow_amendment=True)
+            self.effect_started = asyncio.Event()
+
+        async def _execute_approved_action(self, **_kwargs: object) -> object:
+            self.effect_calls += 1
+            self.effect_started.set()
+            await asyncio.Future()
+            raise AssertionError("cancelled effect unexpectedly resumed")
+
+    harness = _CancelledEffectHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.task_id = "task-cancelled-confirmed-effect"
+    _bind_pending_action_identity(pending)
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(
+        enabled=True,
+        max_runs=3,
+        success_count=0,
+        recovery_containment_token="",
+    )
+    harness._scheduler = scheduler
+    for method_name in (
+        "_record_pending_scheduler_state",
+        "_complete_pending_scheduler_accounting",
+        "_finalize_pending_scheduler_accounting",
+        "_recovery_task_cancel_reason",
+    ):
+        method = getattr(HandlerImplementation, method_name)
+        setattr(harness, method_name, method.__get__(harness, HandlerImplementation))
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    confirmation_task = asyncio.create_task(
+        harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+    )
+    await asyncio.wait_for(harness.effect_started.wait(), timeout=1.0)
+    confirmation_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await confirmation_task
+
+    assert harness.effect_calls == 1
+    assert pending.status == "outcome_unknown"
+    assert pending.decision_nonce == ""
+    assert pending.recovery_effect_invoked is True
+    assert scheduler.task.enabled is False
+    assert scheduler.run_outcomes == []
+    assert pending.stage2_correlation_id
+    assert harness._control_plane.cancelled_correlations == [
+        pending.stage2_correlation_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_f2_cancelled_stage2_ready_transition_revokes_correlation(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path, allow_amendment=True)
+    stage2_publication_started = asyncio.Event()
+
+    async def _block_stage2_publication(event: object) -> None:
+        if isinstance(event, PlanAmended):
+            stage2_publication_started.set()
+            await asyncio.Future()
+        harness.published_events.append(event)
+
+    harness._event_bus = SimpleNamespace(publish=_block_stage2_publication)
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    confirmation_task = asyncio.create_task(
+        harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+    )
+    await asyncio.wait_for(stage2_publication_started.wait(), timeout=1.0)
+    confirmation_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await confirmation_task
+
+    assert harness.effect_calls == 0
+    assert pending.stage2_correlation_id
+    assert harness._control_plane.cancelled_correlations == [
+        pending.stage2_correlation_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_f2_cancelled_stage2_reconciliation_terminates_session(tmp_path: Path) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path)
+
+    async def _cancel_stage2(**_kwargs: object) -> bool:
+        raise asyncio.CancelledError
+
+    harness._control_plane = SimpleNamespace(cancel_stage2=_cancel_stage2)
+    terminated: list[tuple[SessionId, str]] = []
+
+    def _terminate_session(session_id: SessionId, *, reason: str = "") -> bool:
+        terminated.append((session_id, reason))
+        return True
+
+    harness._terminate_session = _terminate_session  # type: ignore[method-assign]
+    pending = _pending_action(nonce="expected")
+    pending.stage2_correlation_id = "stage2-cancelled-reconciliation"
+    pending.stage2_plan_hash = "plan-stage2"
+
+    cancelled = await harness._cancel_stage2_authority(
+        pending,
+        reason="cancelled_reconciliation_test",
+    )
+
+    assert cancelled is False
+    assert terminated == [
+        (pending.session_id, "stage2_authority_reconciliation_failed")
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fault_stage",
     [

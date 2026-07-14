@@ -918,7 +918,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     actor="human_confirmation",
                 )
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             self._terminate_session(
                 pending.session_id,
                 reason="stage2_authority_reconciliation_failed",
@@ -1200,7 +1200,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                             "terminal_scheduler_accounting_finalizer_unavailable"
                         )
                     finalize_accounting(pending)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             if task_id:
                 self._contain_confirmation_scheduler_attempt(pending)
             raise
@@ -2932,7 +2932,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                             }
                             raise rollback_error from write_error
                     raise
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 await self._cancel_stage2_authority(
                     pending,
                     reason="stage2_ready_transition_failed",
@@ -2969,7 +2969,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     pending.should_strip_direct_tool_execute_envelope_keys()
                 ),
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             await self._contain_confirmed_execution_exception(pending)
             raise
         pending.provider_operation_id = str(

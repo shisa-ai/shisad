@@ -97,9 +97,11 @@ automatically deliver or continue from a recovered result. Other operations
 also become `outcome_unknown`, with the old decision nonce cleared. A stable-key
 adapter result that contradicts the first durable control-plane outcome also
 becomes `outcome_unknown`; the first outcome remains authoritative for history
-and trace accounting. A scheduled task that reaches this state is disabled and
-records one contained failure without consuming a second logical run. This
-state does not mean the effect failed: inspect the action/attempt/result/provider
+and trace accounting. A scheduled task that reaches this state is disabled.
+Direct or otherwise known failure-accounting paths record one contained failure
+without consuming a second logical run; ambiguous scheduler accounting does not
+invent a run outcome. This state does not mean the effect failed: inspect the
+action/attempt/result/provider
 identifiers shown by `shisad action list --status outcome_unknown`, check
 provider or local evidence, and then
 re-request the action if you choose to retry. The re-request creates a new

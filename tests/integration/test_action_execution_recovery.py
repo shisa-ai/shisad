@@ -273,15 +273,22 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_execution",
+    [False, True],
+    ids=["ordinary-exception", "task-cancellation"],
+)
 async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_contains_crash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cancel_execution: bool,
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
     pending_path = config.data_dir / "pending_actions.json"
     durable_before_effect: list[dict[str, object]] = []
     effect_calls = 0
+    effect_started = asyncio.Event()
 
     class _CrashAfterEffect(RuntimeError):
         pass
@@ -314,15 +321,27 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
             if pending_path.exists():
                 durable_before_effect.extend(json.loads(pending_path.read_text(encoding="utf-8")))
             effect_calls += 1
+            effect_started.set()
+            if cancel_execution:
+                await asyncio.Future()
             raise _CrashAfterEffect("process stopped after provider accepted delivery")
 
         monkeypatch.setattr(impl, "_execute_approved_action", _crash_after_effect)
-        with pytest.raises(_CrashAfterEffect):
-            await impl._execute_task_run(
+        execution_task = asyncio.create_task(
+            impl._execute_task_run(
                 runs[0],
                 event_type="scheduler.due",
                 due_run=True,
             )
+        )
+        if cancel_execution:
+            await asyncio.wait_for(effect_started.wait(), timeout=1.0)
+            execution_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await execution_task
+        else:
+            with pytest.raises(_CrashAfterEffect):
+                await execution_task
 
         matching = [row for row in durable_before_effect if str(row.get("task_id", "")) == task.id]
         assert len(matching) == 1
@@ -1624,6 +1643,10 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
     from shisad.assistant.web import WebToolkit
 
     fetch_calls = 0
+    initial_effect_calls = 0
+
+    class _ProcessStopped(BaseException):
+        pass
 
     def _unexpected_fetch(
         _toolkit: WebToolkit,
@@ -1643,6 +1666,19 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
         impl = raw_impl
         session = services.session_manager.get(session_id)
         assert session is not None
+        await services.control_plane.begin_precontent_plan(
+            session_id=str(session_id),
+            goal="Account one uncertain no-auto web effect",
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="planner",
+                channel="cli",
+            ),
+            ttl_seconds=600,
+            max_actions=1,
+        )
         pending = impl._queue_pending_action(
             session_id=session_id,
             user_id=session.user_id,
@@ -1654,35 +1690,72 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
             confirmation_requirement=legacy_software_confirmation_requirement(),
             origin_turn_id="turn-web-fetch-recovery",
         )
-        pending.execution_attempt_id = f"attempt-web-fetch-{scenario}"
-        pending.result_id = f"result-web-fetch-{scenario}"
-        pending.status = "executing"
-        pending.status_reason = "confirmation_execution_started"
-        pending.approval_evidence_hash = "sha256:" + ("a" * 64)
-        impl._persist_pending_actions()
+
+        async def _stop_after_possible_effect(**_kwargs: object) -> object:
+            nonlocal initial_effect_calls
+            initial_effect_calls += 1
+            raise _ProcessStopped
+
+        monkeypatch.setattr(impl, "_execute_approved_action", _stop_after_possible_effect)
+        with pytest.raises(_ProcessStopped):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+        execution_attempt_id = pending.execution_attempt_id
+        assert execution_attempt_id.startswith("attempt-")
+        assert initial_effect_calls == 1
     finally:
         await services.shutdown()
 
     restarted = await DaemonServices.build(config)
     try:
         restarted_handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
         assert recovered.status == "outcome_unknown"
         assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
         assert recovered.decision_nonce == ""
+        assert recovered.recovery_effect_invoked is True
+        assert recovered.recovery_accounting_pending is False
         assert recovered.retry_generation == 0
         assert fetch_calls == 0
         public = restarted_handlers._impl._pending_to_dict(recovered, public=True)
-        assert public["uncertainty_evidence"]["execution_attempt_id"] == (
-            f"attempt-web-fetch-{scenario}"
-        )
+        assert public["uncertainty_evidence"]["execution_attempt_id"] == execution_attempt_id
         assert public["manual_retry"]["requires_fresh_approval"] is True
         assert public["manual_retry"]["reuse_confirmation_id"] is False
         durable = json.loads(
             (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
         )[0]
         assert durable["status"] == "outcome_unknown"
-        assert durable["execution_attempt_id"] == f"attempt-web-fetch-{scenario}"
+        assert durable["execution_attempt_id"] == execution_attempt_id
+        execution_rows = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == "web.fetch"
+        ]
+        assert len(execution_rows) == 1
+        assert execution_rows[0]["execution_status"] == "outcome_unknown"
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plans[str(session_id)]["executed_actions"] == 1
+        recovery_audits = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == pending.confirmation_id
+        ]
+        assert len(recovery_audits) == 1
+        assert recovery_audits[0].get("data", {}).get("details", {}).get(
+            "outcome_unknown"
+        ) is True
         if scenario == "mutating_get":
             fresh = restarted_handlers._impl._queue_pending_action(
                 session_id=recovered.session_id,
@@ -1702,6 +1775,138 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
             assert fresh.execution_attempt_id == ""
             assert recovered.status == "outcome_unknown"
             assert recovered.decision_nonce == ""
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.parametrize("recovery_drift", ["adapter-missing", "schema-hash"])
+@pytest.mark.asyncio
+async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_drift: str,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    tool_name = ToolName("test.stable-retry-drift")
+    tool_definition = ToolDefinition(
+        name=tool_name,
+        description="Create one effect under a stable provider key.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    drifted_definition = ToolDefinition(
+        name=tool_name,
+        description="Create one effect under a changed provider contract.",
+        parameters=[
+            ToolParameter(name="value", type="string"),
+            ToolParameter(name="revision", type="string", required=False),
+        ],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+
+    class _ProcessStopped(BaseException):
+        pass
+
+    services = await DaemonServices.build(config)
+    try:
+        services.registry.register(tool_definition)
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        await services.control_plane.begin_precontent_plan(
+            session_id=str(session_id),
+            goal="Account one uncertain stable-key effect after recovery drift",
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="planner",
+                channel="cli",
+            ),
+            ttl_seconds=600,
+            max_actions=1,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=tool_name,
+            arguments={"value": "create-once"},
+            reason="authenticated-stable-retry-drift-accounting",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-authenticated-stable-retry-drift-accounting",
+        )
+        assert pending.retry_descriptor is not None
+
+        async def _stop_after_possible_effect(**_kwargs: object) -> object:
+            raise _ProcessStopped
+
+        monkeypatch.setattr(impl, "_execute_approved_action", _stop_after_possible_effect)
+        with pytest.raises(_ProcessStopped):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+        assert pending.execution_attempt_id.startswith("attempt-")
+    finally:
+        await services.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted.registry.register(
+            drifted_definition if recovery_drift == "schema-hash" else tool_definition
+        )
+        adapter_calls = 0
+
+        def _unexpected_adapter(
+            _arguments: dict[str, object],
+            _stable_idempotency_key: str,
+        ) -> dict[str, object]:
+            nonlocal adapter_calls
+            adapter_calls += 1
+            return {"ok": True}
+
+        if recovery_drift == "schema-hash":
+            restarted.idempotent_recovery_adapters[str(tool_name)] = _unexpected_adapter
+        restarted_handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(restarted_handlers._impl)
+        recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
+        assert recovered.status == "outcome_unknown"
+        assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
+        assert recovered.recovery_effect_invoked is True
+        assert recovered.recovery_accounting_pending is False
+        assert recovered.retry_generation == 0
+        assert adapter_calls == 0
+        execution_rows = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == str(tool_name)
+        ]
+        assert len(execution_rows) == 1
+        assert execution_rows[0]["execution_status"] == "outcome_unknown"
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plans[str(session_id)]["executed_actions"] == 1
+        recovery_audits = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == pending.confirmation_id
+        ]
+        assert len(recovery_audits) == 1
+        assert recovery_audits[0].get("data", {}).get("details", {}).get(
+            "outcome_unknown"
+        ) is True
     finally:
         await restarted.shutdown()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping
 from typing import Any, cast
@@ -680,7 +681,7 @@ class TasksImplMixin(HandlerMixinBase):
                 approval_confirmation_id=pending.confirmation_id,
                 approval_timestamp=pending.created_at.isoformat(),
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             # The due-run pump survives ordinary execution exceptions. Treat
             # that boundary as uncertain immediately so it cannot redeliver
             # while waiting for a process restart to reconcile the attempt.
@@ -701,7 +702,7 @@ class TasksImplMixin(HandlerMixinBase):
                     )
                     self._finalize_pending_scheduler_accounting(pending)
                 self._schedule_recovery_accounting(pending)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 self._contain_unresolved_task_attempt(str(task.id))
                 raise
             raise

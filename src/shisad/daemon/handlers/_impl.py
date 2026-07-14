@@ -5558,7 +5558,15 @@ class HandlerImplementation(
             require_evidence=require_evidence,
         )
 
-    def _invalidate_recovered_authority(self, pending: PendingAction) -> None:
+    def _invalidate_recovered_authority(
+        self,
+        pending: PendingAction,
+        *,
+        preserve_authenticated_effect_posture: bool = False,
+    ) -> None:
+        authenticated_effect_invoked = bool(
+            preserve_authenticated_effect_posture and pending.recovery_effect_invoked
+        )
         pending.status = "outcome_unknown"
         pending.status_reason = "uncertain_effect_requires_fresh_approval"
         pending.decision_nonce = ""
@@ -5571,7 +5579,7 @@ class HandlerImplementation(
         pending.retry_descriptor = None
         pending.provider_operation_id = ""
         pending.recovery_result = {}
-        pending.recovery_effect_invoked = False
+        pending.recovery_effect_invoked = authenticated_effect_invoked
         _neutralize_untrusted_scheduler_accounting_intent(pending)
 
     def _recovery_control_plane_action(
@@ -5603,7 +5611,16 @@ class HandlerImplementation(
             return
 
         if self._recovered_authority_invalid_reason(pending):
-            self._invalidate_recovered_authority(pending)
+            recovery_authority_authenticated = bool(pending.recovery_authority_mac) and (
+                self._confirmation_evidence_authenticator.verify_recovery_snapshot(
+                    _pending_recovery_authority_snapshot(pending),
+                    pending.recovery_authority_mac,
+                )
+            )
+            self._invalidate_recovered_authority(
+                pending,
+                preserve_authenticated_effect_posture=recovery_authority_authenticated,
+            )
 
         execution_key = ""
         accounting_status = ""
@@ -5781,7 +5798,7 @@ class HandlerImplementation(
                 pending.status = "outcome_unknown"
                 pending.status_reason = "uncertain_effect_requires_fresh_approval"
                 pending.decision_nonce = ""
-                pending.recovery_effect_invoked = False
+                pending.recovery_effect_invoked = True
                 pending.recovery_accounting_pending = True
                 self._persist_pending_actions()
                 self._sync_task_confirmation_status(pending)
