@@ -614,6 +614,52 @@ async def test_invalid_recovery_identity_cannot_select_existing_audit_event_id(
 
 
 @pytest.mark.asyncio
+async def test_terminal_purge_waits_for_recovery_accounting_convergence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    confirmation_id, _task_id = await _seed_unresolved_scheduled_time_attempt(config)
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        impl = handlers._impl
+        accounting_tasks = list(impl._recovery_accounting_tasks)
+        assert len(accounting_tasks) == 1
+        for task in accounting_tasks:
+            task.cancel()
+        await asyncio.gather(*accounting_tasks, return_exceptions=True)
+        recovered = impl._pending_actions[confirmation_id]
+        assert recovered.recovery_accounting_pending is True
+
+        blocked_purge = await impl.do_action_purge(
+            {"status": "terminal", "limit": 20}
+        )
+
+        assert blocked_purge["purged"] == 0
+        assert blocked_purge["confirmation_ids"] == []
+        assert impl._pending_actions.get(confirmation_id) is recovered
+        durable_rows = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )
+        durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
+        assert durable["recovery_accounting_pending"] is True
+
+        await impl._account_recovered_attempt(confirmation_id)
+        assert recovered.recovery_accounting_pending is False
+        completed_purge = await impl.do_action_purge(
+            {"status": "terminal", "limit": 20}
+        )
+        assert completed_purge["purged"] == 1
+        assert completed_purge["confirmation_ids"] == [confirmation_id]
+        assert confirmation_id not in impl._pending_actions
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_unsigned_predecision_recovery_marker_cannot_be_trust_laundered(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

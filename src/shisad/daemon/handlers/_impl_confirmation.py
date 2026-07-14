@@ -2193,6 +2193,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
     ) -> bool:
         if session_filter and str(item.session_id) != session_filter:
             return False
+        if bool(getattr(item, "recovery_accounting_pending", False)):
+            return False
         lifecycle_state = pending_action_state_view(item).lifecycle_state
         if status_filter == "terminal":
             if lifecycle_state in {"pending", "executing"}:
