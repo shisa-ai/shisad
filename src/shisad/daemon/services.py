@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import logging
 import os
-from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -43,7 +42,12 @@ from shisad.core.soul import load_effective_persona_text
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import ToolDefinition, ToolParameter, ToolRetryClass
+from shisad.core.tools.schema import (
+    StableIdempotencyAdapter,
+    ToolDefinition,
+    ToolParameter,
+    ToolRetryClass,
+)
 from shisad.core.trace import TracePersistencePolicy, TraceRecorder
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, TaintLabel, ToolName
@@ -93,9 +97,6 @@ if TYPE_CHECKING:
     from shisad.executors.browser import BrowserSandbox
 
 logger = logging.getLogger(__name__)
-
-IdempotentOperationAdapter = Callable[[Mapping[str, Any], str], Mapping[str, Any]]
-
 
 def _wipe_dir_contents(directory: Path) -> None:
     """Remove all files and subdirectories inside *directory* without removing it."""
@@ -612,7 +613,7 @@ class DaemonServices:
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
     identity_allowlists_baseline: dict[str, frozenset[str]]
-    idempotent_recovery_adapters: dict[str, IdempotentOperationAdapter] = field(
+    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(
         default_factory=dict
     )
     active_rpc_calls: int = field(default=0)

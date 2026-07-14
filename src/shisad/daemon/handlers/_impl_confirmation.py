@@ -52,6 +52,7 @@ from shisad.core.events import (
 )
 from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.tools.names import canonical_tool_name
+from shisad.core.tools.schema import ToolRetryClass
 from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import (
     HandlerMixinBase,
@@ -559,6 +560,20 @@ class ConfirmationImplMixin(HandlerMixinBase):
         tool_definition = get_tool(pending.tool_name) if callable(get_tool) else None
         if tool_definition is None:
             return "approval_contract_mismatch"
+        stable_adapter_guarantee_id = ""
+        if tool_definition.retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            adapter_registration = self._stable_key_adapter_registration(pending.tool_name)
+            retry_descriptor = getattr(pending, "retry_descriptor", None)
+            if (
+                adapter_registration is None
+                or retry_descriptor is None
+                or str(
+                    getattr(retry_descriptor, "stable_adapter_guarantee_id", "")
+                ).strip()
+                != adapter_registration.guarantee_id
+            ):
+                return "approval_contract_mismatch"
+            stable_adapter_guarantee_id = adapter_registration.guarantee_id
         try:
             normalized_arguments = pep_arguments_for_policy_evaluation(
                 pending.tool_name,
@@ -572,6 +587,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     arguments=normalized_arguments,
                 ),
                 stable_idempotency_key=str(getattr(pending, "stable_idempotency_key", "")).strip(),
+                stable_adapter_guarantee_id=stable_adapter_guarantee_id,
             )
         except (TypeError, ValueError):
             return "approval_contract_mismatch"

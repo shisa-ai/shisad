@@ -1071,6 +1071,7 @@ def test_f2_public_pending_payload_never_exposes_stable_idempotency_key() -> Non
     pending.retry_descriptor = ToolRetryDescriptor.from_tool_definition(
         tool_definition,
         stable_idempotency_key=stable_key,
+        stable_adapter_guarantee_id="provider.private/v1",
     )
 
     durable = HandlerImplementation._pending_to_dict(pending)
@@ -1079,14 +1080,17 @@ def test_f2_public_pending_payload_never_exposes_stable_idempotency_key() -> Non
     assert durable["stable_idempotency_key"] == stable_key
     assert durable["recovery_authority_mac"] == pending.recovery_authority_mac
     assert durable["retry_descriptor"]["stable_idempotency_key"] == stable_key
+    assert durable["retry_descriptor"]["stable_adapter_guarantee_id"] == "provider.private/v1"
     assert durable["recovery_result"]["stable_idempotency_key"] == stable_key
     assert public["stable_idempotency_key_present"] is True
     assert public["recovery_result_available"] is True
     assert "stable_idempotency_key" not in public
     assert "recovery_authority_mac" not in public
     assert "stable_idempotency_key" not in public["retry_descriptor"]
+    assert "stable_adapter_guarantee_id" not in public["retry_descriptor"]
     assert "recovery_result" not in public
     assert stable_key not in json.dumps(public, sort_keys=True)
+    assert "provider.private/v1" not in json.dumps(public, sort_keys=True)
 
 
 def test_f2_pending_persist_rejects_empty_recovery_authenticator(tmp_path: Path) -> None:

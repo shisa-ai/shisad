@@ -55,6 +55,26 @@ def test_retry_class_changes_trusted_schema_and_action_hashes() -> None:
     )
 
 
+def test_stable_adapter_guarantee_identity_changes_action_digest() -> None:
+    tool = ToolDefinition(
+        name=ToolName("test.retry-adapter-hash"),
+        description="same trusted stable-key tool",
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+
+    assert compute_action_digest(
+        tool_definition=tool,
+        arguments={},
+        stable_idempotency_key="provider-key",
+        stable_adapter_guarantee_id="provider/v1",
+    ) != compute_action_digest(
+        tool_definition=tool,
+        arguments={},
+        stable_idempotency_key="provider-key",
+        stable_adapter_guarantee_id="provider/v2",
+    )
+
+
 def test_every_tool_definition_producer_has_trusted_retry_class() -> None:
     registry, _alarm = _build_tool_registry(EventBus())
     produced = [

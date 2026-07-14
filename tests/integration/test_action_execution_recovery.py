@@ -19,6 +19,7 @@ from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
 from shisad.core.request_context import RequestContext
 from shisad.core.tools.schema import (
+    StableIdempotencyAdapter,
     ToolDefinition,
     ToolParameter,
     ToolRetryClass,
@@ -179,6 +180,92 @@ async def _seed_unresolved_scheduled_time_attempt(
             )
             assert impl._lockdown_manager.should_block_all_actions(session_id)
         return pending.confirmation_id, task.id
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_initial_stable_key_execution_rejects_adapter_guarantee_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    tool_name = ToolName("test.keyed-initial-drift")
+    tool_definition = ToolDefinition(
+        name=tool_name,
+        description="Reject a stable-key execution after its provider guarantee changes.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    calls: list[str] = []
+
+    def _adapter(
+        _arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        calls.append(stable_idempotency_key)
+        return {"ok": True, "provider_operation_id": "must-not-run"}
+
+    services = await DaemonServices.build(config)
+    try:
+        services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-initial-drift/provider-v1",
+            operation=_adapter,
+        )
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        task = services.scheduler.create_task(
+            name="initial-adapter-guarantee-drift",
+            goal="Do not invoke a replacement stable-key adapter",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="adapter-guarantee-drift",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=1,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=tool_name,
+            arguments={"value": "create-once"},
+            reason="adapter-guarantee-drift",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-adapter-guarantee-drift",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
+        )
+        assert pending.retry_descriptor is not None
+        assert (
+            pending.retry_descriptor.stable_adapter_guarantee_id
+            == "test.keyed-initial-drift/provider-v1"
+        )
+
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-initial-drift/provider-v2",
+            operation=_adapter,
+        )
+        result = await impl.do_action_confirm(
+            {
+                "confirmation_id": pending.confirmation_id,
+                "decision_nonce": pending.decision_nonce,
+            }
+        )
+
+        assert result["confirmed"] is False
+        assert pending.status == "failed"
+        assert pending.status_reason == "approval_contract_mismatch"
+        assert pending.retry_generation == 0
+        assert calls == []
     finally:
         await services.shutdown()
 
@@ -675,6 +762,10 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
     services = await DaemonServices.build(config)
     try:
         services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.allowed-stable-retry/provider-v1",
+            operation=_deduplicating_adapter,
+        )
         session_id, raw_impl = await _session_and_impl(services)
         impl = raw_impl
         session = services.session_manager.get(session_id)
@@ -738,7 +829,10 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
     restarted = await DaemonServices.build(config)
     try:
         restarted.registry.register(tool_definition)
-        restarted.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+        restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.allowed-stable-retry/provider-v1",
+            operation=_deduplicating_adapter,
+        )
         restarted_handlers = DaemonControlHandlers(services=restarted)
         recovered = restarted_handlers._impl._pending_actions[confirmation_id]
         if restart_posture == "lockdown":
@@ -2246,9 +2340,23 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
     class _ProcessStopped(BaseException):
         pass
 
+    adapter_calls = 0
+
+    def _unexpected_adapter(
+        _arguments: dict[str, object],
+        _stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        nonlocal adapter_calls
+        adapter_calls += 1
+        return {"ok": True}
+
     services = await DaemonServices.build(config)
     try:
         services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.stable-retry-drift/provider-v1",
+            operation=_unexpected_adapter,
+        )
         session_id, raw_impl = await _session_and_impl(services)
         impl = raw_impl
         session = services.session_manager.get(session_id)
@@ -2299,18 +2407,13 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
         restarted.registry.register(
             drifted_definition if recovery_drift == "schema-hash" else tool_definition
         )
-        adapter_calls = 0
-
-        def _unexpected_adapter(
-            _arguments: dict[str, object],
-            _stable_idempotency_key: str,
-        ) -> dict[str, object]:
-            nonlocal adapter_calls
-            adapter_calls += 1
-            return {"ok": True}
-
         if recovery_drift == "schema-hash":
-            restarted.idempotent_recovery_adapters[str(tool_name)] = _unexpected_adapter
+            restarted.idempotent_recovery_adapters[str(tool_name)] = (
+                StableIdempotencyAdapter(
+                    guarantee_id="test.stable-retry-drift/provider-v1",
+                    operation=_unexpected_adapter,
+                )
+            )
         restarted_handlers = DaemonControlHandlers(services=restarted)
         await _wait_for_recovery_accounting(restarted_handlers._impl)
         recovered = restarted_handlers._impl._pending_actions[pending.confirmation_id]
@@ -2633,6 +2736,13 @@ tools:
     [
         pytest.param("exact-key", 1, False, False, id="exact-key-max-runs"),
         pytest.param("changed-key", 1, False, False, id="changed-key"),
+        pytest.param(
+            "changed-adapter-guarantee",
+            1,
+            False,
+            False,
+            id="changed-adapter-guarantee",
+        ),
         pytest.param("fabricated-evidence", 1, False, False, id="fabricated-evidence"),
         pytest.param("adapter-error", 1, False, False, id="adapter-error"),
         pytest.param("adapter-non-finite", 1, False, False, id="adapter-non-finite"),
@@ -2709,7 +2819,10 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     services = await DaemonServices.build(config)
     try:
         services.registry.register(tool_definition)
-        services.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-effect/provider-v1",
+            operation=_deduplicating_adapter,
+        )
         session_id, raw_impl = await _session_and_impl(services)
         impl = raw_impl
         session = services.session_manager.get(session_id)
@@ -2778,6 +2891,10 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         stable_key = str(durable["stable_idempotency_key"])
         assert durable["status"] == "executing"
         assert stable_key.startswith("shisad-")
+        assert (
+            durable["retry_descriptor"]["stable_adapter_guarantee_id"]
+            == "test.keyed-effect/provider-v1"
+        )
         assert calls == [stable_key]
         assert len(logical_effects) == 1
         if disable_before_restart:
@@ -2797,7 +2914,14 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
     restarted = await DaemonServices.build(config)
     try:
         restarted.registry.register(tool_definition)
-        restarted.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+        restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id=(
+                "test.keyed-effect/provider-v2"
+                if recovery_case == "changed-adapter-guarantee"
+                else "test.keyed-effect/provider-v1"
+            ),
+            operation=_deduplicating_adapter,
+        )
         loaded_task = restarted.scheduler.get_task(task.id)
         assert loaded_task is not None
         assert loaded_task.enabled is False
@@ -2821,7 +2945,11 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
                 not disable_before_restart
             )
         await _wait_for_recovery_accounting(restarted_handlers._impl)
-        if recovery_case in {"changed-key", "fabricated-evidence"}:
+        if recovery_case in {
+            "changed-key",
+            "changed-adapter-guarantee",
+            "fabricated-evidence",
+        }:
             assert recovered.status == "outcome_unknown"
             assert recovered.status_reason == "uncertain_effect_requires_fresh_approval"
             assert recovered.retry_generation == 0
@@ -2868,7 +2996,10 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert recovered_task is not None
         assert recovered_task.success_count == (1 if recovery_case == "exact-key" else 0)
         assert recovered_task.failure_count == (
-            0 if recovery_case in {"exact-key", "changed-key", "fabricated-evidence"} else 1
+            0
+            if recovery_case
+            in {"exact-key", "changed-key", "fabricated-evidence"}
+            else 1
         )
         if recovery_case in {"changed-key", "fabricated-evidence"}:
             assert recovered.scheduler_accounting_mode == "ambiguous"
@@ -2910,6 +3041,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             assert rejected_events == []
             assert recovery_execution_records == []
         elif recovery_case in {
+            "changed-adapter-guarantee",
             "adapter-error",
             "adapter-non-finite",
             "adapter-lone-surrogate",
@@ -2935,7 +3067,12 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         second_restart = await DaemonServices.build(config)
         try:
             second_restart.registry.register(tool_definition)
-            second_restart.idempotent_recovery_adapters[str(tool_name)] = _deduplicating_adapter
+            second_restart.idempotent_recovery_adapters[str(tool_name)] = (
+                StableIdempotencyAdapter(
+                    guarantee_id="test.keyed-effect/provider-v1",
+                    operation=_deduplicating_adapter,
+                )
+            )
             second_handlers = DaemonControlHandlers(services=second_restart)
             await _wait_for_recovery_accounting(second_handlers._impl)
             terminal = second_handlers._impl._pending_actions[pending.confirmation_id]
@@ -2987,7 +3124,10 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
     services = await DaemonServices.build(config)
     try:
         services.registry.register(tool_definition)
-        services.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-ambiguous/provider-v1",
+            operation=_ambiguous_adapter,
+        )
         session_id, raw_impl = await _session_and_impl(services)
         impl = raw_impl
         session = services.session_manager.get(session_id)
@@ -3116,7 +3256,10 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
     services = await DaemonServices.build(config)
     try:
         services.registry.register(tool_definition)
-        services.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        services.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-recovery-ambiguous/provider-v1",
+            operation=_ambiguous_adapter,
+        )
         session_id, raw_impl = await _session_and_impl(services)
         impl = raw_impl
         session = services.session_manager.get(session_id)
@@ -3186,7 +3329,10 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
     restarted = await DaemonServices.build(config)
     try:
         restarted.registry.register(tool_definition)
-        restarted.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        restarted.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-recovery-ambiguous/provider-v1",
+            operation=_ambiguous_adapter,
+        )
         handlers = DaemonControlHandlers(services=restarted)
         await _wait_for_recovery_accounting(handlers._impl)
         recovered = handlers._impl._pending_actions[pending.confirmation_id]
@@ -3229,7 +3375,10 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
     second_restart = await DaemonServices.build(config)
     try:
         second_restart.registry.register(tool_definition)
-        second_restart.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        second_restart.idempotent_recovery_adapters[str(tool_name)] = StableIdempotencyAdapter(
+            guarantee_id="test.keyed-recovery-ambiguous/provider-v1",
+            operation=_ambiguous_adapter,
+        )
         second_handlers = DaemonControlHandlers(services=second_restart)
         await _wait_for_recovery_accounting(second_handlers._impl)
         assert len(

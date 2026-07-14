@@ -104,6 +104,7 @@ from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.schema import (
+    StableIdempotencyAdapter,
     ToolDefinition,
     ToolRetryClass,
     ToolRetryDescriptor,
@@ -3543,6 +3544,7 @@ class HandlerImplementation(
             retry_descriptor_payload = payload.get("retry_descriptor")
             if isinstance(retry_descriptor_payload, dict):
                 retry_descriptor_payload.pop("stable_idempotency_key", None)
+                retry_descriptor_payload.pop("stable_adapter_guarantee_id", None)
             public_structural_clock_result = (
                 pending.retry_descriptor is not None
                 and pending.retry_descriptor.retry_class == ToolRetryClass.STRUCTURAL_READ
@@ -3848,19 +3850,25 @@ class HandlerImplementation(
             capabilities_required=[],
         )
         stable_idempotency_key = ""
+        stable_adapter_guarantee_id = ""
         if effective_tool_definition.retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            adapter_registration = self._stable_key_adapter_registration(tool_name)
+            if adapter_registration is not None:
+                stable_adapter_guarantee_id = adapter_registration.guarantee_id
             stable_idempotency_key = (
                 "shisad-"
                 + hashlib.sha256(
                     (
                         f"{action_id}\x00{effective_tool_definition.name}\x00"
-                        f"{effective_tool_definition.schema_hash()}"
+                        f"{effective_tool_definition.schema_hash()}\x00"
+                        f"{stable_adapter_guarantee_id}"
                     ).encode()
                 ).hexdigest()
             )
         retry_descriptor = ToolRetryDescriptor.from_tool_definition(
             effective_tool_definition,
             stable_idempotency_key=stable_idempotency_key,
+            stable_adapter_guarantee_id=stable_adapter_guarantee_id,
         )
         resolved_destinations = resolve_confirmation_destinations(
             tool_definition=effective_tool_definition,
@@ -3871,6 +3879,7 @@ class HandlerImplementation(
             arguments=normalized_arguments,
             destinations=resolved_destinations,
             stable_idempotency_key=stable_idempotency_key,
+            stable_adapter_guarantee_id=stable_adapter_guarantee_id,
         )
         action_summary = f"{summary.action}: " + ", ".join(
             f"{key}={value}" for key, value in summary.parameters[:6]
@@ -5111,6 +5120,13 @@ class HandlerImplementation(
             and origin.task_id == pending.task_id
         )
 
+    def _stable_key_adapter_registration(
+        self,
+        tool_name: ToolName,
+    ) -> StableIdempotencyAdapter | None:
+        registration = self._services.idempotent_recovery_adapters.get(str(tool_name))
+        return registration if isinstance(registration, StableIdempotencyAdapter) else None
+
     def _recovery_descriptor_is_current(
         self,
         pending: PendingAction,
@@ -5149,9 +5165,18 @@ class HandlerImplementation(
         tool_definition = self._registry.get_tool(pending.tool_name)
         if tool_definition is None or tool_definition.retry_class != retry_class:
             return False
+        stable_adapter_guarantee_id = ""
+        if retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            adapter_registration = self._stable_key_adapter_registration(pending.tool_name)
+            if adapter_registration is None:
+                return False
+            stable_adapter_guarantee_id = adapter_registration.guarantee_id
+            if descriptor.stable_adapter_guarantee_id != stable_adapter_guarantee_id:
+                return False
         expected_descriptor = ToolRetryDescriptor.from_tool_definition(
             tool_definition,
             stable_idempotency_key=stable_idempotency_key,
+            stable_adapter_guarantee_id=stable_adapter_guarantee_id,
         )
         if descriptor != expected_descriptor:
             return False
@@ -5169,6 +5194,7 @@ class HandlerImplementation(
                 arguments=normalized_arguments,
                 destinations=destinations,
                 stable_idempotency_key=stable_idempotency_key,
+                stable_adapter_guarantee_id=stable_adapter_guarantee_id,
             )
         except (TypeError, ValueError):
             return False
@@ -5296,8 +5322,7 @@ class HandlerImplementation(
             retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
         ):
             return None
-        adapter = self._services.idempotent_recovery_adapters.get(str(pending.tool_name))
-        return adapter if callable(adapter) else None
+        return self._stable_key_adapter_registration(pending.tool_name)
 
     @staticmethod
     def _recovery_accounting_key(pending: PendingAction, sink: str) -> str:
@@ -6299,7 +6324,14 @@ class HandlerImplementation(
                 and pending_attempt.execution_attempt_id == operation_identity.execution_attempt_id
             ):
                 stable_idempotency_key = pending_attempt.stable_idempotency_key
-            adapter = self._services.idempotent_recovery_adapters.get(str(tool_name))
+            adapter_registration = self._stable_key_adapter_registration(tool_name)
+            bound_adapter_guarantee_id = str(
+                getattr(
+                    getattr(pending_attempt, "retry_descriptor", None),
+                    "stable_adapter_guarantee_id",
+                    "",
+                )
+            ).strip()
             provider_payload: dict[str, Any]
             provider_operation_id = ""
             provider_outcome_unknown = False
@@ -6308,14 +6340,21 @@ class HandlerImplementation(
                     "ok": False,
                     "error": "stable_idempotency_key_missing",
                 }
-            elif not callable(adapter):
+            elif adapter_registration is None:
                 provider_payload = {
                     "ok": False,
                     "error": "idempotent_adapter_unavailable",
                 }
+            elif bound_adapter_guarantee_id != adapter_registration.guarantee_id:
+                provider_payload = {
+                    "ok": False,
+                    "error": "idempotent_adapter_identity_mismatch",
+                }
             else:
                 try:
-                    provider_payload = dict(adapter(dict(arguments), stable_idempotency_key))
+                    provider_payload = dict(
+                        adapter_registration(dict(arguments), stable_idempotency_key)
+                    )
                     _require_native_json_payload(provider_payload)
                 except Exception:
                     logger.warning(

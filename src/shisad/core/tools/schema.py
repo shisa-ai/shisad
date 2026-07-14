@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -41,10 +43,35 @@ class ToolRetryClass(StrEnum):
     STABLE_IDEMPOTENCY_KEY = "stable_idempotency_key"
 
 
+@dataclass(frozen=True, slots=True)
+class StableIdempotencyAdapter:
+    """A stable-key operation bound to one immutable deduplication guarantee."""
+
+    guarantee_id: str
+    operation: Callable[[Mapping[str, Any], str], Mapping[str, Any]]
+
+    def __post_init__(self) -> None:
+        normalized_guarantee_id = self.guarantee_id.strip()
+        if not normalized_guarantee_id:
+            raise ValueError("stable adapter guarantee_id is required")
+        if len(normalized_guarantee_id) > 256:
+            raise ValueError("stable adapter guarantee_id exceeds 256 characters")
+        if not callable(self.operation):
+            raise TypeError("stable adapter operation must be callable")
+        object.__setattr__(self, "guarantee_id", normalized_guarantee_id)
+
+    def __call__(
+        self,
+        arguments: Mapping[str, Any],
+        stable_idempotency_key: str,
+    ) -> Mapping[str, Any]:
+        return self.operation(arguments, stable_idempotency_key)
+
+
 class ToolRetryDescriptor(BaseModel):
     """Persisted recovery authority derived only from trusted registry metadata."""
 
-    schema_version: Literal["shisad.tool_retry.v1"] = "shisad.tool_retry.v1"
+    schema_version: Literal["shisad.tool_retry.v2"] = "shisad.tool_retry.v2"
     retry_class: ToolRetryClass
     tool_name: str
     tool_schema_hash: str
@@ -52,6 +79,7 @@ class ToolRetryDescriptor(BaseModel):
     registration_source_id: str = ""
     upstream_tool_name: str = ""
     stable_idempotency_key: str = ""
+    stable_adapter_guarantee_id: str = Field(default="", max_length=256)
     max_auto_attempts: int = Field(default=0, ge=0, le=1)
 
     model_config = {"frozen": True}
@@ -62,9 +90,19 @@ class ToolRetryDescriptor(BaseModel):
         tool: ToolDefinition,
         *,
         stable_idempotency_key: str = "",
+        stable_adapter_guarantee_id: str = "",
     ) -> ToolRetryDescriptor:
         retry_class = tool.retry_class
-        max_auto_attempts = 0 if retry_class == ToolRetryClass.UNKNOWN else 1
+        normalized_guarantee_id = stable_adapter_guarantee_id.strip()
+        if retry_class != ToolRetryClass.STABLE_IDEMPOTENCY_KEY:
+            normalized_guarantee_id = ""
+        max_auto_attempts = int(
+            retry_class == ToolRetryClass.STRUCTURAL_READ
+            or (
+                retry_class == ToolRetryClass.STABLE_IDEMPOTENCY_KEY
+                and bool(normalized_guarantee_id)
+            )
+        )
         return cls(
             retry_class=retry_class,
             tool_name=str(tool.name),
@@ -73,6 +111,7 @@ class ToolRetryDescriptor(BaseModel):
             registration_source_id=str(tool.registration_source_id),
             upstream_tool_name=str(tool.upstream_tool_name),
             stable_idempotency_key=stable_idempotency_key,
+            stable_adapter_guarantee_id=normalized_guarantee_id,
             max_auto_attempts=max_auto_attempts,
         )
 
