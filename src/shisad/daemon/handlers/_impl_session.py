@@ -12544,6 +12544,7 @@ class SessionImplMixin(HandlerMixinBase):
                 capabilities=planner_context.effective_caps,
                 approval_actor="daemon_recovery",
                 execution_action=read_cp_eval.action,
+                persist_attempt_before_effect=True,
                 **read_operation_identity.to_event_fields(),
             )
             if execution_result.checkpoint_id:
@@ -13473,6 +13474,7 @@ class SessionImplMixin(HandlerMixinBase):
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
                 user_confirmed="user_text:explicit_memory_intent" in proposal.data_sources,
+                persist_attempt_before_effect=True,
                 memory_ingress_context=(
                     _explicit_memory_ingress_context()
                     if (

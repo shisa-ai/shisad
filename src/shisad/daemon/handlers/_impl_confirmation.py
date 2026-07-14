@@ -2883,6 +2883,19 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         control_plane_execution_idempotency_key(pending.execution_attempt_id)
                     ),
                 )
+            except asyncio.CancelledError:
+                revoked = await self._cancel_stage2_authority(
+                    pending,
+                    reason="stage2_approval_response_uncertain",
+                )
+                if str(getattr(pending, "task_id", "")).strip() and not revoked:
+                    self._contain_confirmation_scheduler_attempt(pending)
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="failed",
+                    status_reason="stage2_approval_cancelled",
+                )
+                raise
             except (ControlPlaneRpcError, ControlPlaneUnavailableError) as exc:
                 reason = _confirmation_control_plane_reason(exc)
                 if _stage2_approval_outcome_is_uncertain(exc):
@@ -2933,9 +2946,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                             raise rollback_error from write_error
                     raise
             except (Exception, asyncio.CancelledError):
-                await self._cancel_stage2_authority(
+                revoked = await self._cancel_stage2_authority(
                     pending,
                     reason="stage2_ready_transition_failed",
+                )
+                if str(getattr(pending, "task_id", "")).strip() and not revoked:
+                    self._contain_confirmation_scheduler_attempt(pending)
+                await self._commit_and_publish_pending_terminal(
+                    pending,
+                    status="failed",
+                    status_reason="stage2_ready_transition_failed",
                 )
                 raise
             self._sync_task_confirmation_status(pending)

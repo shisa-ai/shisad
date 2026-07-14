@@ -421,6 +421,109 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "approval_actor",
+    ["control_api", "policy_loop", "daemon_recovery"],
+)
+@pytest.mark.parametrize(
+    "cancel_execution",
+    [False, True],
+    ids=["ordinary-exception", "task-cancellation"],
+)
+async def test_allowed_immediate_effect_has_durable_attempt_before_delivery_and_contains_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approval_actor: str,
+    cancel_execution: bool,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    pending_path = config.data_dir / "pending_actions.json"
+    durable_before_effect: list[dict[str, object]] = []
+    effect_started = asyncio.Event()
+
+    class _CrashAfterEffect(RuntimeError):
+        pass
+
+    class _EffectDelivery:
+        async def send(self, **_kwargs: object) -> object:
+            durable_before_effect.extend(
+                json.loads(pending_path.read_text(encoding="utf-8"))
+            )
+            effect_started.set()
+            if cancel_execution:
+                await asyncio.Future()
+            raise _CrashAfterEffect("provider accepted delivery before response loss")
+
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        impl._delivery = _EffectDelivery()
+        impl._schedule_recovery_accounting = lambda _pending: None
+        action = build_action(
+            tool_name="message.send",
+            arguments={
+                "channel": "discord",
+                "recipient": "ops-room",
+                "message": "one durable delivery",
+            },
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor=approval_actor,
+                channel="cli",
+            ),
+            workspace_roots=list(config.assistant_fs_roots),
+        )
+        execution_task = asyncio.create_task(
+            impl._execute_approved_action(
+                sid=session_id,
+                user_id=session.user_id,
+                workspace_id=session.workspace_id,
+                tool_name=ToolName("message.send"),
+                arguments={
+                    "channel": "discord",
+                    "recipient": "ops-room",
+                    "message": "one durable delivery",
+                },
+                capabilities={Capability.MESSAGE_SEND},
+                approval_actor=approval_actor,
+                execution_action=action,
+                persist_attempt_before_effect=True,
+            )
+        )
+        await asyncio.wait_for(effect_started.wait(), timeout=1.0)
+        if cancel_execution:
+            execution_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await execution_task
+        else:
+            with pytest.raises(_CrashAfterEffect):
+                await execution_task
+
+        assert len(durable_before_effect) == 1
+        durable_attempt = durable_before_effect[0]
+        assert durable_attempt["status"] == "executing"
+        assert str(durable_attempt.get("execution_attempt_id", "")).startswith(
+            "attempt-"
+        )
+        assert str(durable_attempt.get("result_id", "")).startswith("result-")
+        pending = impl._pending_actions[str(durable_attempt["confirmation_id"])]
+        assert pending.status == "outcome_unknown"
+        assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
+        assert pending.recovery_effect_invoked is True
+        assert pending.recovery_accounting_pending is True
+        durable_after_containment = json.loads(pending_path.read_text(encoding="utf-8"))
+        assert durable_after_containment[0]["status"] == "outcome_unknown"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_confirmed_post_effect_exception_accounts_uncertain_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

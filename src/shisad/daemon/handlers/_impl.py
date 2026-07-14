@@ -3672,6 +3672,10 @@ class HandlerImplementation(
         continuation_user_goal: str = "",
         continuation_mode: str = "",
         origin_turn_id: str = "",
+        action_id: str = "",
+        execution_attempt_id: str = "",
+        result_id: str = "",
+        followup_id: str = "",
         start_executing: bool = False,
     ) -> PendingAction:
         degradation = getattr(self, "_pending_state_degradation", None)
@@ -3685,10 +3689,18 @@ class HandlerImplementation(
         created_at = datetime.now(UTC)
         decision_nonce = "" if start_executing else uuid.uuid4().hex
         confirmation_id = uuid.uuid4().hex
-        action_id = f"act-{uuid.uuid4().hex}"
-        followup_id = f"followup-{uuid.uuid4().hex}"
-        execution_attempt_id = f"attempt-{uuid.uuid4().hex}" if start_executing else ""
-        result_id = f"result-{uuid.uuid4().hex}" if start_executing else ""
+        action_id = action_id.strip() or f"act-{uuid.uuid4().hex}"
+        followup_id = followup_id.strip() or f"followup-{uuid.uuid4().hex}"
+        execution_attempt_id = (
+            (execution_attempt_id.strip() or f"attempt-{uuid.uuid4().hex}")
+            if start_executing
+            else ""
+        )
+        result_id = (
+            result_id.strip() or f"result-{uuid.uuid4().hex}"
+            if start_executing
+            else ""
+        )
         requirement = (
             confirmation_requirement.model_copy(deep=True)
             if confirmation_requirement is not None
@@ -5992,10 +6004,91 @@ class HandlerImplementation(
         approval_evidence: ConfirmationEvidence | None = None,
         strip_direct_tool_execute_envelope_keys: bool = False,
         memory_ingress_context: IngressContext | None = None,
+        persist_attempt_before_effect: bool = False,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
             return ApprovedToolExecutionResult(success=False, error="session_missing")
+
+        if persist_attempt_before_effect:
+            pending = self._queue_pending_action(
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=(
+                    workspace_id
+                    if workspace_id is not None
+                    else WorkspaceId(str(getattr(session, "workspace_id", "")))
+                ),
+                tool_name=tool_name,
+                arguments=dict(arguments),
+                reason=f"{approval_actor}_execution_started",
+                capabilities=set(capabilities),
+                delivery_target=delivery_target,
+                task_id=task_id,
+                preflight_action=execution_action,
+                merged_policy=merged_policy,
+                strip_direct_tool_execute_envelope_keys=(
+                    strip_direct_tool_execute_envelope_keys
+                ),
+                origin_turn_id=origin_turn_id,
+                action_id=action_id,
+                execution_attempt_id=execution_attempt_id,
+                result_id=result_id,
+                followup_id=followup_id,
+                start_executing=True,
+            )
+            pending_identity = pending_action_state_view(pending).identity
+            try:
+                execution = await self._execute_approved_action(
+                    sid=sid,
+                    user_id=user_id,
+                    tool_name=tool_name,
+                    arguments=dict(arguments),
+                    capabilities=set(capabilities),
+                    approval_actor=approval_actor,
+                    execution_action=execution_action,
+                    merged_policy=merged_policy,
+                    user_confirmed=user_confirmed,
+                    action_id=pending_identity.action_id,
+                    origin_turn_id=pending_identity.origin_turn_id,
+                    execution_attempt_id=pending_identity.execution_attempt_id,
+                    result_id=pending_identity.result_id,
+                    followup_id=pending_identity.followup_id,
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    delivery_target=delivery_target,
+                    approval_confirmation_id=pending.confirmation_id,
+                    approval_decision_nonce=pending.decision_nonce,
+                    approval_task_envelope_id=pending.approval_task_envelope_id,
+                    approval_timestamp=pending.created_at.isoformat(),
+                    approval_evidence=approval_evidence,
+                    strip_direct_tool_execute_envelope_keys=(
+                        strip_direct_tool_execute_envelope_keys
+                    ),
+                    memory_ingress_context=memory_ingress_context,
+                )
+            except (Exception, asyncio.CancelledError):
+                await self._contain_confirmed_execution_exception(pending)
+                raise
+
+            pending.provider_operation_id = str(execution.provider_operation_id).strip()
+            pending.recovery_effect_invoked = True
+            if execution.success:
+                pending.status = "approved"
+                pending.status_reason = "allowed_execution_succeeded"
+            elif execution.outcome_unknown:
+                pending.status = "outcome_unknown"
+                pending.status_reason = execution.error or "allowed_execution_outcome_unknown"
+            else:
+                pending.status = "failed"
+                pending.status_reason = execution.error or "allowed_execution_failed"
+            try:
+                self._persist_pending_actions()
+                self._sync_task_confirmation_status(pending)
+            except (Exception, asyncio.CancelledError):
+                await self._contain_confirmed_execution_exception(pending)
+                raise
+            return execution
 
         tool_name = ToolName(canonical_tool_name(str(tool_name), warn_on_alias=False))
         origin = self._origin_for(

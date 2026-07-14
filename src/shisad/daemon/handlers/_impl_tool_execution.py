@@ -602,6 +602,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             merged_policy=merged_policy,
             user_confirmed=True,
             strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+            persist_attempt_before_effect=True,
             **operation_identity.to_event_fields(),
         )
         return cast(

@@ -220,6 +220,7 @@ class _McpHarness:
             safe_domains=list(output_firewall_safe_domains or []),
         )
         self.queued_pending_actions: list[dict[str, Any]] = []
+        self.approved_execution_calls: list[dict[str, Any]] = []
         self._skill_manager = SimpleNamespace(
             authorize_runtime=lambda **_kwargs: SimpleNamespace(
                 allowed=True,
@@ -315,6 +316,8 @@ class _McpHarness:
         return HandlerImplementation._operator_confirmation_requirement(self, **kwargs)  # type: ignore[arg-type]
 
     async def _execute_approved_action(self, **kwargs: Any) -> Any:
+        self.approved_execution_calls.append(dict(kwargs))
+        kwargs.pop("persist_attempt_before_effect", None)
         return await HandlerImplementation._execute_approved_action(self, **kwargs)  # type: ignore[arg-type]
 
     def _queue_pending_action(self, **kwargs: Any) -> Any:
@@ -1518,6 +1521,7 @@ async def test_i1_tool_execute_path_strips_reserved_keys_before_mcp_call() -> No
         "query": "roadmap",
     }
     assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap", "limit": 4})]
+    assert harness.approved_execution_calls[0]["persist_attempt_before_effect"] is True
 
 
 @pytest.mark.asyncio

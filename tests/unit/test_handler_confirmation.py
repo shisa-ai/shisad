@@ -1583,7 +1583,11 @@ async def test_f2_cancelled_stage2_ready_transition_revokes_correlation(
     harness._event_bus = SimpleNamespace(publish=_block_stage2_publication)
     pending = _pending_action(nonce="expected")
     pending.reason = "trace:stage2_upgrade_required"
+    pending.task_id = "task-stage2-ready-cancelled"
     _bind_pending_action_identity(pending)
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    harness._scheduler = scheduler
     harness._pending_actions[pending.confirmation_id] = pending
     harness._persist_pending_actions()
 
@@ -1602,6 +1606,14 @@ async def test_f2_cancelled_stage2_ready_transition_revokes_correlation(
     assert harness._control_plane.cancelled_correlations == [
         pending.stage2_correlation_id
     ]
+    assert pending.status in {"failed", "cancelled"}
+    assert pending.status_reason
+    assert scheduler.run_outcomes == [
+        {"task_id": pending.task_id, "success": False}
+    ]
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] in {"failed", "cancelled"}
+    assert durable["status_reason"]
 
 
 @pytest.mark.asyncio
@@ -2215,7 +2227,7 @@ async def test_f2_stage2_amendment_waits_for_durable_executing_attempt(
 
 
 @pytest.mark.asyncio
-async def test_f2_stage2_ready_write_fault_contains_recovery_before_effect(
+async def test_f2_stage2_ready_write_fault_resolves_durable_attempt_before_effect(
     tmp_path: Path,
 ) -> None:
     harness = _AtomicConfirmationHarness(tmp_path, allow_amendment=True)
@@ -2254,12 +2266,12 @@ async def test_f2_stage2_ready_write_fault_contains_recovery_before_effect(
         pending.stage2_correlation_id
     ]
     assert sum(isinstance(event, PlanAmended) for event in harness.published_events) == 1
-    assert pending.status == "executing"
-    assert pending.status_reason == "stage2_amendment_pending"
+    assert pending.status == "failed"
+    assert pending.status_reason == "stage2_ready_transition_failed"
     assert harness.effect_calls == 0
     durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
-    assert durable["status"] == "executing"
-    assert durable["status_reason"] == "stage2_amendment_pending"
+    assert durable["status"] == "failed"
+    assert durable["status_reason"] == "stage2_ready_transition_failed"
     assert (
         HandlerImplementation._recovery_descriptor_is_current(
             harness,  # type: ignore[arg-type]
@@ -2313,6 +2325,65 @@ async def test_f2_stage2_commit_then_response_loss_cancels_exact_correlation(
     assert result["confirmed"] is False
     assert pending.stage2_correlation_id
     assert control_plane.cancelled_correlations == [pending.stage2_correlation_id]
+    assert harness.effect_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_f2_stage2_post_commit_task_cancellation_resolves_durable_attempt(
+    tmp_path: Path,
+) -> None:
+    harness = _AtomicConfirmationHarness(tmp_path, allow_amendment=True)
+    stage2_committed = asyncio.Event()
+
+    class _CommitThenBlock(_ControlPlaneRecorder):
+        async def approve_stage2(
+            self,
+            *,
+            action: object,
+            approved_by: str,
+            correlation_id: str = "",
+            expected_previous_hash: str = "",
+            execution_idempotency_key: str = "",
+        ) -> str:
+            super().approve_stage2(
+                action=action,
+                approved_by=approved_by,
+                correlation_id=correlation_id,
+                expected_previous_hash=expected_previous_hash,
+                execution_idempotency_key=execution_idempotency_key,
+            )
+            stage2_committed.set()
+            await asyncio.Future()
+            raise AssertionError("cancelled stage-two approval unexpectedly resumed")
+
+    control_plane = _CommitThenBlock()
+    harness._control_plane = control_plane
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.preflight_action = None
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    confirmation_task = asyncio.create_task(
+        harness.do_action_confirm(
+            {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
+        )
+    )
+    await asyncio.wait_for(stage2_committed.wait(), timeout=1.0)
+    confirmation_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await confirmation_task
+
+    assert pending.stage2_correlation_id
+    assert control_plane.cancelled_correlations == [pending.stage2_correlation_id]
+    assert pending.status in {"failed", "cancelled"}
+    assert pending.status_reason
+    durable = json.loads(
+        (tmp_path / "pending_actions.json").read_text(encoding="utf-8")
+    )[0]
+    assert durable["status"] in {"failed", "cancelled"}
+    assert durable["status_reason"]
     assert harness.effect_calls == 0
 
 

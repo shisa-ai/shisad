@@ -2263,6 +2263,7 @@ async def test_gh34_browser_navigate_alias_uses_task_specific_url_selection() ->
     for execution_call in harness.execution_calls:
         assert execution_call["workspace_id"] == validated.workspace_id
         assert execution_call["delivery_target"] == delivery_target
+        assert execution_call["persist_attempt_before_effect"] is True
     navigate_call = harness.execution_calls[1]
     assert str(navigate_call["tool_name"]) == "browser.navigate"
     assert navigate_call["arguments"] == {
@@ -3855,6 +3856,7 @@ class _ExplicitMemoryExecutionHarness(_PendingPolicySnapshotHarness):
             )
         )
         self.captured_memory_ingress_context: Any = None
+        self.persist_attempt_before_effect = False
 
     async def _evaluate_action(self, **_kwargs: object) -> object:
         return SimpleNamespace(
@@ -3879,6 +3881,9 @@ class _ExplicitMemoryExecutionHarness(_PendingPolicySnapshotHarness):
 
     async def _execute_approved_action(self, **kwargs: object) -> object:
         self.captured_memory_ingress_context = kwargs.get("memory_ingress_context")
+        self.persist_attempt_before_effect = bool(
+            kwargs.get("persist_attempt_before_effect", False)
+        )
         return SimpleNamespace(success=True, checkpoint_id=None, tool_output=None)
 
 
@@ -4061,6 +4066,7 @@ async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explici
     assert context.channel_trust == "owner_observed"
     assert context.confirmation_status == "auto_accepted"
     assert context.source_id == "discord:msg-7"
+    assert harness.persist_attempt_before_effect is True
 
 
 def _finalize_execution_result(
