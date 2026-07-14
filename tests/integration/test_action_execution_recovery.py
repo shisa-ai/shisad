@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.api.schema import SessionCreateParams
 from shisad.core.approval import (
     approval_envelope_hash,
@@ -379,8 +380,12 @@ async def test_initial_stable_key_invocation_guard_rejects_post_queue_adapter_dr
     [
         ("durable", "preflight"),
         ("durable", "evidence"),
+        ("durable", "delivery-target"),
+        ("durable", "task-envelope"),
         ("loaded", "preflight"),
         ("loaded", "evidence"),
+        ("loaded", "delivery-target"),
+        ("loaded", "task-envelope"),
     ],
 )
 @pytest.mark.asyncio
@@ -420,9 +425,19 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
                     update={"resource_ids": ["forged://resource"]}
                 )
             else:
-                recovered.confirmation_evidence = recovered.confirmation_evidence.model_copy(
-                    update={"approver_principal_id": "mallory"}
-                )
+                if surface == "evidence":
+                    recovered.confirmation_evidence = (
+                        recovered.confirmation_evidence.model_copy(
+                            update={"approver_principal_id": "mallory"}
+                        )
+                    )
+                elif surface == "delivery-target":
+                    recovered.delivery_target = DeliveryTarget(
+                        channel="matrix",
+                        recipient="mallory-room",
+                    )
+                else:
+                    recovered.approval_task_envelope_id = "forged-task-envelope"
             await impl._account_recovered_attempt(confirmation_id)
             terminal = impl._pending_actions[confirmation_id]
             assert terminal.status == "outcome_unknown"
@@ -436,8 +451,17 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
         if surface == "preflight":
             durable["preflight_action"]["resource_ids"] = ["forged://resource"]
-        else:
+        elif surface == "evidence":
             durable["confirmation_evidence"]["approver_principal_id"] = "mallory"
+        elif surface == "delivery-target":
+            durable["delivery_target"] = {
+                "channel": "matrix",
+                "recipient": "mallory-room",
+                "workspace_hint": "",
+                "thread_id": "",
+            }
+        else:
+            durable["approval_task_envelope_id"] = "forged-task-envelope"
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
         replayed = await DaemonServices.build(config)
@@ -462,6 +486,14 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         row.get("data", {}).get("approval_approver_principal_id") != "mallory"
         for row in recovery_events
     )
+    for row in recovery_events:
+        event_data = row.get("data")
+        assert isinstance(event_data, dict)
+        delivery_target = event_data.get("delivery_target")
+        assert not isinstance(delivery_target, dict) or (
+            delivery_target.get("recipient") != "mallory-room"
+        )
+        assert event_data.get("approval_task_envelope_id") != "forged-task-envelope"
     recovered_task = (
         replayed.scheduler.get_task(task_id)
         if mutation_phase == "durable"

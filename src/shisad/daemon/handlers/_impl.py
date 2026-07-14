@@ -1893,7 +1893,7 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
 
     evidence = pending.confirmation_evidence
     snapshot = {
-        "schema_version": "shisad.pending_recovery_snapshot.v2",
+        "schema_version": "shisad.pending_recovery_snapshot.v4",
         "confirmation_id": pending.confirmation_id,
         "action_id": pending.action_id,
         "origin_turn_id": pending.origin_turn_id,
@@ -1901,6 +1901,12 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "user_id": str(pending.user_id),
         "workspace_id": str(pending.workspace_id),
         "task_id": pending.task_id,
+        "delivery_target": (
+            pending.delivery_target.model_dump(mode="json")
+            if pending.delivery_target is not None
+            else None
+        ),
+        "approval_task_envelope_id": pending.approval_task_envelope_id.strip(),
         "tool_name": str(pending.tool_name),
         "arguments": dict(pending.arguments),
         "action_digest": pending.action_digest,
@@ -1949,12 +1955,7 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
         "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
     }
     if pending.execution_authorization_kind:
-        snapshot.update(
-            {
-                "schema_version": "shisad.pending_recovery_snapshot.v3",
-                "execution_authorization_kind": pending.execution_authorization_kind,
-            }
-        )
+        snapshot["execution_authorization_kind"] = pending.execution_authorization_kind
     if pending.recovery_scheduler_posture_captured or pending.recovery_scheduler_restore_enabled:
         snapshot.update(
             {
@@ -1967,6 +1968,11 @@ def _pending_recovery_authority_snapshot(pending: PendingAction) -> dict[str, An
     if pending.scheduler_accounting_mode:
         snapshot["scheduler_accounting_mode"] = pending.scheduler_accounting_mode
     return snapshot
+
+
+def _neutralize_untrusted_recovery_event_identity(pending: PendingAction) -> None:
+    pending.delivery_target = None
+    pending.approval_task_envelope_id = ""
 
 
 def _neutralize_untrusted_scheduler_accounting_intent(
@@ -4941,6 +4947,7 @@ class HandlerImplementation(
                 pending.retry_descriptor = None
                 pending.recovery_effect_invoked = False
                 pending.recovery_accounting_pending = recovery_rejection_accounting_required
+                _neutralize_untrusted_recovery_event_identity(pending)
                 if started_recovery_authority or pending.status in {
                     "executing",
                     "outcome_unknown",
@@ -5686,6 +5693,7 @@ class HandlerImplementation(
         pending.execution_authorization_kind = ""
         pending.confirmation_evidence = None
         pending.preflight_action = None
+        _neutralize_untrusted_recovery_event_identity(pending)
         pending.merged_policy = None
         pending.pep_context = None
         pending.pep_elevation = None
