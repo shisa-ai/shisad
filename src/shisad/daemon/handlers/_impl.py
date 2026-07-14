@@ -4856,6 +4856,11 @@ class HandlerImplementation(
                     and bool(pending.execution_attempt_id.strip())
                     and bool(pending.result_id.strip())
                 )
+                scheduler_accounting_intent_present = (
+                    raw_scheduler_accounting_intent_present
+                    or pending.scheduler_accounting_pending
+                    or scheduled_terminal_attempt
+                )
                 if scheduled_terminal_attempt and not identity_binding_invalid:
                     pending.scheduler_accounting_pending = True
                 elif scheduled_terminal or pending.scheduler_accounting_pending:
@@ -4865,10 +4870,7 @@ class HandlerImplementation(
                     pending.scheduler_accounting_pending = False
                 _neutralize_untrusted_scheduler_accounting_intent(
                     pending,
-                    intent_present=(
-                        raw_scheduler_accounting_intent_present
-                        or pending.scheduler_accounting_pending
-                    ),
+                    intent_present=scheduler_accounting_intent_present,
                 )
             if (
                 pending.status == "pending"

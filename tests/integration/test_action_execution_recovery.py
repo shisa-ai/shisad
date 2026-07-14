@@ -716,6 +716,16 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
         "marker",
         "marker_false",
         "marker_missing",
+        "marker_false+identity_malformed",
+        "marker_missing+identity_malformed",
+        "marker_false+confirmation_mismatch",
+        "marker_missing+confirmation_mismatch",
+        "marker_false+task_mismatch",
+        "marker_missing+task_mismatch",
+        "marker_false+attempt_mismatch",
+        "marker_missing+attempt_mismatch",
+        "marker_false+result_mismatch",
+        "marker_missing+result_mismatch",
         "marker_and_identity",
         "identity_missing",
         "identity_malformed",
@@ -747,6 +757,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
 ) -> None:
     _configure_model_env(monkeypatch)
     config = _config(tmp_path)
+    corruption_parts = set(corruption.split("+"))
 
     class _ProcessStopped(BaseException):
         pass
@@ -772,7 +783,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             ),
             max_runs=1,
         )
-        if corruption == "task_mismatch":
+        if "task_mismatch" in corruption_parts:
             decoy = services.scheduler.create_task(
                 name=f"terminal-corruption-decoy-{producer}",
                 goal="Do not account the original effect here",
@@ -866,20 +877,20 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
     pending_path = config.data_dir / "pending_actions.json"
     durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
     durable = next(row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id)
-    if corruption in {"marker", "marker_and_identity"}:
+    if corruption_parts & {"marker", "marker_and_identity"}:
         durable["scheduler_accounting_pending"] = "not-a-boolean"
-    elif corruption == "marker_false":
+    elif "marker_false" in corruption_parts:
         durable["scheduler_accounting_pending"] = False
-    elif corruption == "marker_missing":
+    elif "marker_missing" in corruption_parts:
         durable.pop("scheduler_accounting_pending")
-    if corruption == "marker_and_identity":
+    if "marker_and_identity" in corruption_parts:
         durable["execution_attempt_id"] = ["not", "text"]
         durable["result_id"] = ["not", "text"]
         durable["identity"]["execution_attempt_id"] = ["not", "text"]
         durable["identity"]["result_id"] = ["not", "text"]
-    elif corruption == "identity_missing":
+    elif "identity_missing" in corruption_parts:
         durable.pop("identity")
-    elif corruption == "identity_malformed":
+    elif "identity_malformed" in corruption_parts:
         durable["identity"] = ["not", "a", "mapping"]
     elif corruption == "unrelated_metadata" and producer == "direct":
         durable["preflight_action"] = "not-a-mapping"
@@ -892,7 +903,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["identity"]["confirmation_id"] = ""
     elif corruption == "confirmation_malformed":
         durable["confirmation_id"] = ["not", "text"]
-    elif corruption == "confirmation_mismatch":
+    elif "confirmation_mismatch" in corruption_parts:
         durable["confirmation_id"] = "different-confirmation"
     elif corruption == "task_missing":
         durable["task_id"] = ""
@@ -901,7 +912,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["identity"]["task_id"] = ""
     elif corruption == "task_malformed":
         durable["task_id"] = ["not", "text"]
-    elif corruption == "task_mismatch":
+    elif "task_mismatch" in corruption_parts:
         durable["task_id"] = decoy_task_id
     elif corruption == "attempt_missing":
         durable["execution_attempt_id"] = ""
@@ -910,7 +921,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["identity"]["execution_attempt_id"] = ""
     elif corruption == "attempt_malformed":
         durable["execution_attempt_id"] = ["not", "text"]
-    elif corruption == "attempt_mismatch":
+    elif "attempt_mismatch" in corruption_parts:
         durable["execution_attempt_id"] = "attempt-mismatch"
     elif corruption == "result_missing":
         durable["result_id"] = ""
@@ -919,7 +930,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         durable["identity"]["result_id"] = ""
     elif corruption == "result_malformed":
         durable["result_id"] = ["not", "text"]
-    elif corruption == "result_mismatch":
+    elif "result_mismatch" in corruption_parts:
         durable["result_id"] = "result-mismatch"
     elif corruption == "status_pending":
         durable["status"] = "pending"
