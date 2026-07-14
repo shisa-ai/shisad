@@ -2048,6 +2048,19 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
         impl = raw_impl
         session = services.session_manager.get(session_id)
         assert session is not None
+        await services.control_plane.begin_precontent_plan(
+            session_id=str(session_id),
+            goal="Account one ambiguous keyed fixture effect",
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="planner",
+                channel="cli",
+            ),
+            ttl_seconds=600,
+            max_actions=1,
+        )
         task = services.scheduler.create_task(
             name="initial-keyed-ambiguity",
             goal="Do not repeat an uncertain keyed fixture effect",
@@ -2101,5 +2114,191 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
         assert uncertain_task.success_count == 0
         assert uncertain_task.failure_count == 1
         assert uncertain_task.enabled is False
+        execution_rows = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == str(tool_name)
+        ]
+        assert len(execution_rows) == 1
+        assert execution_rows[0]["execution_status"] == "outcome_unknown"
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
+        assert plans[str(session_id)]["executed_actions"] == 1
+        executed_audits = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("data", {}).get("tool_name") == str(tool_name)
+        ]
+        assert len(executed_audits) == 1
+        assert executed_audits[0].get("data", {}).get("details", {}).get(
+            "outcome_unknown"
+        ) is True
     finally:
         await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trace_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    tool_name = ToolName("test.keyed-recovery-ambiguous")
+    tool_definition = ToolDefinition(
+        name=tool_name,
+        description="Create one fixture effect across a simulated process crash.",
+        parameters=[ToolParameter(name="value", type="string")],
+        retry_class=ToolRetryClass.STABLE_IDEMPOTENCY_KEY,
+    )
+    calls: list[str] = []
+    logical_effects: set[str] = set()
+
+    class _SimulatedProcessCrash(BaseException):
+        pass
+
+    def _ambiguous_adapter(
+        _arguments: dict[str, object],
+        stable_idempotency_key: str,
+    ) -> dict[str, object]:
+        calls.append(stable_idempotency_key)
+        logical_effects.add(stable_idempotency_key)
+        if len(calls) == 1:
+            raise _SimulatedProcessCrash("process stopped after provider acceptance")
+        raise RuntimeError("provider deduplicated the retry but response was lost")
+
+    services = await DaemonServices.build(config)
+    try:
+        services.registry.register(tool_definition)
+        services.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        await services.control_plane.begin_precontent_plan(
+            session_id=str(session_id),
+            goal="Account one recovered ambiguous keyed effect",
+            origin=Origin(
+                session_id=str(session_id),
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                actor="planner",
+                channel="cli",
+            ),
+            ttl_seconds=600,
+            max_actions=1,
+        )
+        task = services.scheduler.create_task(
+            name="recovered-keyed-ambiguity",
+            goal="Do not repeat an ambiguous keyed fixture effect",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot=set(),
+            policy_snapshot_ref="keyed-recovery-ambiguity-test",
+            created_by=session.user_id,
+            workspace_id=session.workspace_id,
+            max_runs=3,
+        )
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=tool_name,
+            arguments={"value": "create-once"},
+            reason="keyed-recovery-ambiguous-test-confirmation",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-keyed-recovery-ambiguous",
+            task_id=task.id,
+        )
+        services.scheduler.queue_confirmation(
+            task.id,
+            impl._pending_to_dict(pending, public=True),
+        )
+
+        with pytest.raises(_SimulatedProcessCrash):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
+        assert durable["status"] == "executing"
+        assert _control_plane_history_rows(config) == []
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
+        assert plans[str(session_id)]["executed_actions"] == 0
+        assert len(calls) == 1
+        assert len(logical_effects) == 1
+    finally:
+        await services.shutdown()
+
+    restarted = await DaemonServices.build(config)
+    try:
+        restarted.registry.register(tool_definition)
+        restarted.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        handlers = DaemonControlHandlers(services=restarted)
+        await _wait_for_recovery_accounting(handlers._impl)
+        recovered = handlers._impl._pending_actions[pending.confirmation_id]
+        assert recovered.status == "outcome_unknown"
+        assert recovered.status_reason == "idempotent_adapter_outcome_unknown"
+        assert recovered.recovery_accounting_pending is False
+        execution_rows = [
+            row
+            for row in _control_plane_history_rows(config)
+            if row.get("tool_name") == str(tool_name)
+        ]
+        assert len(execution_rows) == 1
+        assert execution_rows[0]["execution_status"] == "outcome_unknown"
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
+        assert plans[str(recovered.session_id)]["executed_actions"] == 1
+        recovery_audits = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolExecuted"
+            and row.get("actor") == "recovery"
+            and row.get("data", {}).get("approval_confirmation_id")
+            == pending.confirmation_id
+        ]
+        assert len(recovery_audits) == 1
+        assert recovery_audits[0].get("data", {}).get("details", {}).get(
+            "outcome_unknown"
+        ) is True
+        recovered_task = restarted.scheduler.get_task(task.id)
+        assert recovered_task is not None
+        assert recovered_task.success_count == 0
+        assert recovered_task.failure_count == 1
+        assert recovered_task.enabled is False
+        assert calls == [calls[0], calls[0]]
+        assert len(logical_effects) == 1
+    finally:
+        await restarted.shutdown()
+
+    second_restart = await DaemonServices.build(config)
+    try:
+        second_restart.registry.register(tool_definition)
+        second_restart.idempotent_recovery_adapters[str(tool_name)] = _ambiguous_adapter
+        second_handlers = DaemonControlHandlers(services=second_restart)
+        await _wait_for_recovery_accounting(second_handlers._impl)
+        assert len(
+            [
+                row
+                for row in _control_plane_history_rows(config)
+                if row.get("tool_name") == str(tool_name)
+            ]
+        ) == 1
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
+        assert plans[str(pending.session_id)]["executed_actions"] == 1
+        assert len(calls) == 2
+    finally:
+        await second_restart.shutdown()

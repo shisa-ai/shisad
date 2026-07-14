@@ -682,18 +682,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 status="failed",
                 reason=reason,
             )
-            self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_failure(pending)
+            self._complete_committed_terminal_scheduler_accounting(pending)
             return
         pending.status = "failed"
         pending.status_reason = reason
         pending.decision_nonce = ""
+        pending.scheduler_accounting_pending = bool(
+            str(getattr(pending, "task_id", "")).strip()
+        )
 
     def _commit_pending_terminal_states(
         self,
         transitions: list[tuple[Any, str, str]],
         *,
         rollback_snapshots: list[_PendingAttemptSnapshot] | None = None,
+        record_scheduler_failure: bool = True,
     ) -> None:
         if not transitions:
             return
@@ -706,6 +709,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
             pending.status = status
             pending.status_reason = reason
             pending.decision_nonce = ""
+            pending.scheduler_accounting_pending = bool(
+                str(getattr(pending, "task_id", "")).strip()
+            )
+            if pending.scheduler_accounting_pending:
+                pending.recovery_scheduler_accounted = not record_scheduler_failure
         terminal = [
             _capture_pending_attempt_snapshot(pending) for pending, _status, _reason in transitions
         ]
@@ -749,6 +757,30 @@ class ConfirmationImplMixin(HandlerMixinBase):
             rollback_snapshots=[rollback_snapshot] if rollback_snapshot is not None else None,
         )
 
+    def _complete_committed_terminal_scheduler_accounting(self, pending: Any) -> None:
+        """Publish a committed scheduled terminal transition exactly once."""
+
+        if not bool(getattr(pending, "scheduler_accounting_pending", False)):
+            return
+        complete_accounting = getattr(
+            self,
+            "_complete_pending_scheduler_accounting",
+            None,
+        )
+        if callable(complete_accounting):
+            cancel_reason = str(complete_accounting(pending)).strip()
+            if cancel_reason:
+                raise RuntimeError("unexpected_terminal_scheduler_cancel_reason")
+            return
+        self._sync_task_confirmation_status(pending)
+        self._record_task_confirmation_failure(pending)
+        pending.scheduler_accounting_pending = False
+        try:
+            self._persist_pending_actions()
+        except AtomicWriteError:
+            pending.scheduler_accounting_pending = True
+            raise
+
     async def _commit_and_publish_pending_terminal(
         self,
         pending: Any,
@@ -776,8 +808,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         event_fields["approval_decision_nonce"] = decision_nonce
         event_fields.update(evidence_fields)
-        self._sync_task_confirmation_status(pending)
-        self._record_task_confirmation_failure(pending)
+        self._complete_committed_terminal_scheduler_accounting(pending)
         await self._event_bus.publish(
             ToolRejected(
                 session_id=pending.session_id,
@@ -865,10 +896,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 cancelled.append(pending)
             if cancelled:
                 self._commit_pending_terminal_states(
-                    [(pending, "cancelled", reason) for pending in cancelled]
+                    [(pending, "cancelled", reason) for pending in cancelled],
+                    record_scheduler_failure=False,
                 )
             for pending in cancelled:
-                self._sync_task_confirmation_status(pending)
+                self._complete_committed_terminal_scheduler_accounting(pending)
                 await self._event_bus.publish(
                     ToolRejected(
                         session_id=pending.session_id,

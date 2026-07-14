@@ -290,10 +290,18 @@ class _SchedulerRecorder:
     def __init__(self) -> None:
         self.resolved_confirmations: list[dict[str, object]] = []
         self.run_outcomes: list[dict[str, object]] = []
+        self.confirmation_outcomes: dict[tuple[str, str], bool] = {}
+        self.resolve_failures_remaining = 0
         self.task: object | None = None
 
     def get_task(self, _task_id: str) -> object | None:
         return self.task
+
+    def disable_task(self, _task_id: str) -> bool:
+        if self.task is None:
+            return False
+        self.task.enabled = False
+        return True
 
     def resolve_confirmation(
         self,
@@ -307,6 +315,9 @@ class _SchedulerRecorder:
         execution_attempt_id: str = "",
         result_id: str = "",
     ) -> bool:
+        if self.resolve_failures_remaining:
+            self.resolve_failures_remaining -= 1
+            raise RuntimeError("injected scheduler confirmation publication fault")
         self.resolved_confirmations.append(
             {
                 "task_id": task_id,
@@ -322,6 +333,29 @@ class _SchedulerRecorder:
         return True
 
     def record_run_outcome(self, task_id: str, *, success: bool) -> bool:
+        self.run_outcomes.append({"task_id": task_id, "success": success})
+        return True
+
+    def confirmation_outcome(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+    ) -> bool | None:
+        return self.confirmation_outcomes.get((task_id, confirmation_id))
+
+    def record_confirmation_outcome(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+        success: bool,
+    ) -> bool:
+        key = (task_id, confirmation_id)
+        existing = self.confirmation_outcomes.get(key)
+        if existing is not None:
+            return existing == success
+        self.confirmation_outcomes[key] = success
         self.run_outcomes.append({"task_id": task_id, "success": success})
         return True
 
@@ -1589,6 +1623,169 @@ async def test_f2_neighbor_terminal_families_commit_before_side_effects(
     assert harness.published_events == []
     assert scheduler.resolved_confirmations == []
     assert scheduler.run_outcomes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "terminal_family",
+        "expected_status",
+        "expected_reason",
+        "expected_failure_accounting",
+    ),
+    [
+        pytest.param("reject", "rejected", "user_rejected", True, id="explicit-rejection"),
+        pytest.param("expired", "failed", "approval_expired", True, id="expiry"),
+        pytest.param("disabled", "cancelled", "task_disabled", True, id="task-disabled"),
+        pytest.param(
+            "task_cancel",
+            "cancelled",
+            "task_cancelled",
+            False,
+            id="task-cancel",
+        ),
+        pytest.param("lockdown", "rejected", "session_in_lockdown", True, id="lockdown"),
+        pytest.param(
+            "backend",
+            "failed",
+            "approval_contract_mismatch",
+            True,
+            id="backend-contract-invalid",
+        ),
+        pytest.param(
+            "pep",
+            "rejected",
+            "pep:schema_validation_failed",
+            True,
+            id="pep-reject",
+        ),
+    ],
+)
+async def test_f2_scheduled_terminal_postcommit_fault_replays_after_restart(
+    tmp_path: Path,
+    terminal_family: str,
+    expected_status: str,
+    expected_reason: str,
+    expected_failure_accounting: bool,
+) -> None:
+    harness = _AtomicConfirmationHarness(
+        tmp_path,
+        allow_amendment=terminal_family == "pep",
+    )
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=terminal_family != "disabled")
+    scheduler.resolve_failures_remaining = 1
+    harness._scheduler = scheduler
+    pending = _pending_action(nonce="expected")
+    pending.task_id = "task-f2-terminal-replay"
+    if terminal_family == "expired":
+        pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    elif terminal_family == "backend":
+        pending.selected_backend_id = "missing.backend"
+    if terminal_family == "lockdown":
+        harness._lockdown_manager = SimpleNamespace(
+            should_block_all_actions=lambda _sid: True
+        )
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+
+    with pytest.raises(RuntimeError, match="scheduler confirmation publication fault"):
+        if terminal_family == "task_cancel":
+            await harness._cancel_pending_actions_for_task(
+                pending.task_id,
+                reason=expected_reason,
+            )
+        elif terminal_family == "reject":
+            await harness.do_action_reject(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                    "reason": expected_reason,
+                }
+            )
+        elif terminal_family == "pep":
+            await harness._commit_and_publish_pending_terminal(
+                pending,
+                status=expected_status,
+                status_reason=expected_reason,
+            )
+        else:
+            await harness.do_action_confirm(
+                {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                }
+            )
+
+    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    assert durable["status"] == expected_status
+    assert durable["status_reason"] == expected_reason
+    assert durable["scheduler_accounting_pending"] is True
+    assert scheduler.run_outcomes == []
+
+    restarted = _load_pending_actions_harness(
+        pending_actions_file=harness._pending_actions_file,
+    )
+    restarted._scheduler = scheduler
+    restarted._load_pending_actions()
+
+    recovered = restarted._pending_actions[pending.confirmation_id]
+    assert recovered.status == expected_status
+    assert recovered.status_reason == expected_reason
+    assert recovered.scheduler_accounting_pending is False
+    assert scheduler.resolved_confirmations[-1]["status"] == expected_status
+    if expected_failure_accounting:
+        assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
+        assert len(scheduler.run_outcomes) == 1
+    else:
+        assert (pending.task_id, pending.confirmation_id) not in scheduler.confirmation_outcomes
+        assert scheduler.run_outcomes == []
+
+    second_restart = _load_pending_actions_harness(
+        pending_actions_file=harness._pending_actions_file,
+    )
+    second_restart._scheduler = scheduler
+    second_restart._load_pending_actions()
+    assert len(scheduler.run_outcomes) == int(expected_failure_accounting)
+
+
+def test_f2_canonical_scheduled_terminal_without_marker_reconciles_once(
+    tmp_path: Path,
+) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.task_id = "task-f2-legacy-terminal-replay"
+    pending.status = "rejected"
+    pending.status_reason = "user_rejected"
+    pending.decision_nonce = ""
+    pending_actions_file = tmp_path / "pending_actions.json"
+    harness = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._persist_pending_actions()
+    scheduler = _SchedulerRecorder()
+    scheduler.task = SimpleNamespace(enabled=True)
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._scheduler = scheduler
+
+    harness._load_pending_actions()
+
+    recovered = harness._pending_actions[pending.confirmation_id]
+    assert recovered.status == "rejected"
+    assert recovered.status_reason == "user_rejected"
+    assert recovered.scheduler_accounting_pending is False
+    assert scheduler.resolved_confirmations[-1]["status"] == "rejected"
+    assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
+    assert len(scheduler.run_outcomes) == 1
+
+    second_restart = _load_pending_actions_harness(
+        pending_actions_file=pending_actions_file,
+    )
+    second_restart._scheduler = scheduler
+    second_restart._load_pending_actions()
+    assert len(scheduler.run_outcomes) == 1
 
 
 @pytest.mark.asyncio

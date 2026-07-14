@@ -399,8 +399,11 @@ class ControlPlaneEngine:
         *,
         action: ControlPlaneAction,
         success: bool,
+        outcome_unknown: bool = False,
         idempotency_key: str = "",
     ) -> None:
+        if success and outcome_unknown:
+            raise ValueError("control_plane_execution_status_conflict")
         normalized_key = idempotency_key.strip()
         existing_record = self._history_store.idempotent_record(normalized_key)
         if existing_record is not None:
@@ -426,14 +429,20 @@ class ControlPlaneEngine:
             self._history_store.append_action(
                 action,
                 decision_status=ControlDecision.ALLOW.value,
-                execution_status="success" if success else "failed",
+                execution_status=(
+                    "outcome_unknown"
+                    if outcome_unknown
+                    else "success"
+                    if success
+                    else "failed"
+                ),
                 idempotency_key=idempotency_key,
                 trace_plan_hash=trace_plan_hash,
             )
         effective_success = (
-            existing_record.execution_status == "success"
+            existing_record.execution_status in {"success", "outcome_unknown"}
             if existing_record is not None
-            else success
+            else success or outcome_unknown
         )
         if effective_success and existing_record is not None and not trace_plan_hash:
             if active_plan is not None and self._trace_verifier.cancel(

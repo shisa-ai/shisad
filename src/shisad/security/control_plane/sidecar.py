@@ -102,6 +102,7 @@ class ControlPlaneGateway(Protocol):
         *,
         action: ControlPlaneAction,
         success: bool,
+        outcome_unknown: bool = False,
         idempotency_key: str = "",
     ) -> None: ...
 
@@ -208,6 +209,7 @@ class _EvaluateActionResult(BaseModel):
 class _RecordExecutionParams(BaseModel):
     action: ControlPlaneAction
     success: bool
+    outcome_unknown: bool = False
     idempotency_key: str = ""
 
 
@@ -381,6 +383,7 @@ class _ControlPlaneSidecarHandlers:
         self._engine.record_execution(
             action=params.action,
             success=params.success,
+            outcome_unknown=params.outcome_unknown,
             idempotency_key=params.idempotency_key,
         )
         return _AckResult()
@@ -569,6 +572,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         *,
         action: ControlPlaneAction,
         success: bool,
+        outcome_unknown: bool = False,
         idempotency_key: str = "",
     ) -> None:
         await self._call(
@@ -576,6 +580,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             _RecordExecutionParams(
                 action=action,
                 success=success,
+                outcome_unknown=outcome_unknown,
                 idempotency_key=idempotency_key,
             ).model_dump(mode="json"),
             _AckResult,

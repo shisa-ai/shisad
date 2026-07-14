@@ -4923,8 +4923,7 @@ class HandlerImplementation(
         ):
             self._persist_pending_actions()
         for pending in loaded_terminal_side_effects:
-            self._sync_task_confirmation_status(pending)
-            self._record_task_confirmation_failure(pending)
+            self._complete_committed_terminal_scheduler_accounting(pending)
         self._recover_loaded_pending_attempts()
 
     def _recovery_descriptor_is_current(
@@ -5196,6 +5195,9 @@ class HandlerImplementation(
         scheduler = self._scheduler
         confirmation_id = pending.confirmation_id.strip()
         success = pending.status == "approved"
+        if pending.status == "cancelled" and pending.recovery_scheduler_accounted:
+            self._sync_task_confirmation_status(pending)
+            return False
         outcome_reader = getattr(scheduler, "confirmation_outcome", None)
         recorded_outcome = (
             outcome_reader(task_id, confirmation_id=confirmation_id)
@@ -5477,19 +5479,22 @@ class HandlerImplementation(
                 if pending.status == "approved"
                 else "failed"
                 if pending.status == "failed"
+                else "outcome_unknown"
+                if pending.status == "outcome_unknown"
                 else ""
             )
             if (
-                durable_status in {"success", "failed"}
+                durable_status in {"success", "failed", "outcome_unknown"}
                 and recovered_status
                 and recovered_status != durable_status
+                and recovered_status != "outcome_unknown"
             ):
                 pending.status = "outcome_unknown"
                 pending.status_reason = "idempotent_adapter_outcome_conflict"
                 pending.decision_nonce = ""
                 self._persist_pending_actions()
                 self._sync_task_confirmation_status(pending)
-            if durable_status in {"success", "failed"}:
+            if durable_status in {"success", "failed", "outcome_unknown"}:
                 accounting_status = durable_status
             elif recovered_status:
                 accounting_status = recovered_status
@@ -5537,6 +5542,7 @@ class HandlerImplementation(
                         session=recovery_session,
                     ),
                     success=accounting_status == "success",
+                    outcome_unknown=accounting_status == "outcome_unknown",
                     idempotency_key=execution_key,
                 )
         else:
@@ -5574,6 +5580,34 @@ class HandlerImplementation(
         self._sync_task_confirmation_status(pending)
 
     def _recover_loaded_pending_attempts(self) -> None:
+        legacy_scheduler_accounting_marked = False
+        scheduler = getattr(self, "_scheduler", None)
+        outcome_reader = getattr(scheduler, "confirmation_outcome", None)
+        for pending in self._pending_actions.values():
+            terminal_status = str(pending.status).strip().lower()
+            task_id = pending.task_id.strip()
+            confirmation_id = pending.confirmation_id.strip()
+            if (
+                pending.scheduler_accounting_pending
+                or not task_id
+                or not confirmation_id
+                or terminal_status
+                not in {"failed", "rejected", "cancelled", "superseded"}
+            ):
+                continue
+            recorded_outcome = (
+                outcome_reader(task_id, confirmation_id=confirmation_id)
+                if callable(outcome_reader)
+                else None
+            )
+            if recorded_outcome is None:
+                if terminal_status == "cancelled":
+                    pending.recovery_scheduler_accounted = True
+                pending.scheduler_accounting_pending = True
+                legacy_scheduler_accounting_marked = True
+        if legacy_scheduler_accounting_marked:
+            self._persist_pending_actions()
+
         recovery_not_before = _monotonic() + _AUTO_RECOVERY_STARTUP_BACKOFF_SECONDS
         recovery_backoff_applied = False
         executing = [
@@ -5981,6 +6015,9 @@ class HandlerImplementation(
                     tool_name=tool_name,
                     success=success,
                     error=error,
+                    details=(
+                        {"outcome_unknown": True} if provider_outcome_unknown else {}
+                    ),
                     **approval_event_fields,
                 )
             )
@@ -5989,6 +6026,7 @@ class HandlerImplementation(
                 "record_execution",
                 action=executed_action,
                 success=success,
+                outcome_unknown=provider_outcome_unknown,
                 idempotency_key=control_plane_execution_key,
             )
             return ApprovedToolExecutionResult(
