@@ -18,6 +18,7 @@ from shisad.core.approval import (
 )
 from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
+from shisad.core.events import ToolRejected
 from shisad.core.request_context import RequestContext
 from shisad.core.tools.schema import (
     StableIdempotencyAdapter,
@@ -25,7 +26,7 @@ from shisad.core.tools.schema import (
     ToolParameter,
     ToolRetryClass,
 )
-from shisad.core.types import Capability, SessionId, ToolName
+from shisad.core.types import Capability, EventId, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.handlers._impl import ApprovedToolExecutionResult
 from shisad.daemon.services import DaemonServices
@@ -541,6 +542,160 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
     assert recovered_task.success_count == 1
     assert recovered_task.failure_count == 0
     assert recovered_task.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_invalid_recovery_identity_cannot_select_existing_audit_event_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    confirmation_id, _task_id = await _seed_unresolved_scheduled_time_attempt(config)
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        impl = handlers._impl
+        accounting_tasks = list(impl._recovery_accounting_tasks)
+        assert len(accounting_tasks) == 1
+        for task in accounting_tasks:
+            task.cancel()
+        await asyncio.gather(*accounting_tasks, return_exceptions=True)
+        recovered = impl._pending_actions[confirmation_id]
+        recovered.origin_turn_id = "forged-origin-turn"
+        recovered.recovery_effect_invoked = False
+        forged_identity_event_id = EventId(
+            impl._recovery_accounting_key(recovered, "audit:ToolRejected")
+        )
+        await impl._event_bus.publish(
+            ToolRejected(
+                event_id=forged_identity_event_id,
+                timestamp=datetime(2000, 1, 1, tzinfo=UTC),
+                session_id=None,
+                actor="recovery",
+                tool_name=ToolName(""),
+                reason="preexisting-forged-identity-correlation",
+            )
+        )
+
+        await impl._account_recovered_attempt(confirmation_id)
+
+        terminal = impl._pending_actions[confirmation_id]
+        assert terminal.recovery_accounting_pending is False
+        recovery_rejections = [
+            row
+            for row in _audit_rows(config)
+            if row.get("event_type") == "ToolRejected"
+            and row.get("actor") == "recovery"
+        ]
+        assert len(recovery_rejections) == 2
+        assert len({row.get("event_id") for row in recovery_rejections}) == 2
+
+        terminal.recovery_event_identity_untrusted_at = datetime.fromisoformat(
+            "2001-01-01T00:00:00+00:00"
+        )
+        terminal.recovery_anonymous_accounting_id = "forged-after-anonymous-accounting"
+        impl._persist_pending_actions()
+        assert terminal.recovery_event_identity_untrusted is True
+        assert (
+            terminal.recovery_event_identity_untrusted_at
+            != datetime.fromisoformat("2001-01-01T00:00:00+00:00")
+        )
+        assert (
+            terminal.recovery_anonymous_accounting_id
+            != "forged-after-anonymous-accounting"
+        )
+        terminal.recovery_event_identity_untrusted = False
+        impl._persist_pending_actions()
+        assert terminal.recovery_event_identity_untrusted is True
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unsigned_predecision_recovery_marker_cannot_be_trust_laundered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_model_env(monkeypatch)
+    config = _config(tmp_path)
+    services = await DaemonServices.build(config)
+    try:
+        session_id, raw_impl = await _session_and_impl(services)
+        impl = raw_impl
+        session = services.session_manager.get(session_id)
+        assert session is not None
+        pending = impl._queue_pending_action(
+            session_id=session_id,
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            tool_name=ToolName("time.now"),
+            arguments={"timezone": "UTC"},
+            reason="unsigned-predecision-recovery-marker",
+            capabilities=set(),
+            confirmation_requirement=legacy_software_confirmation_requirement(),
+            origin_turn_id="turn-unsigned-predecision-recovery-marker",
+        )
+        confirmation_id = pending.confirmation_id
+    finally:
+        await services.shutdown()
+
+    pending_path = config.data_dir / "pending_actions.json"
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
+    durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
+    durable["recovery_event_identity_untrusted"] = True
+    durable["recovery_event_identity_untrusted_at"] = "2000-01-01T00:00:00+00:00"
+    durable["recovery_anonymous_accounting_id"] = "forged-anonymous-accounting-id"
+    pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
+
+    restarted = await DaemonServices.build(config)
+    try:
+        handlers = DaemonControlHandlers(services=restarted)
+        impl = handlers._impl
+        recovered = impl._pending_actions[confirmation_id]
+        assert recovered.status == "pending"
+        assert recovered.recovery_event_identity_untrusted is False
+        assert recovered.recovery_event_identity_untrusted_at is None
+        assert recovered.recovery_anonymous_accounting_id == ""
+
+        publication = 0
+
+        def _fail_terminal_write(stage: AtomicWriteStage) -> None:
+            nonlocal publication
+            if stage == AtomicWriteStage.TEMP_OPEN:
+                publication += 1
+            if publication == 2 and stage == AtomicWriteStage.FILE_FSYNC:
+                raise OSError("crash after sanitized-marker effect invocation")
+
+        impl._pending_state_fault_injector = _fail_terminal_write
+        with pytest.raises(AtomicWriteError):
+            await impl.do_action_confirm(
+                {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": recovered.decision_nonce,
+                }
+            )
+    finally:
+        await restarted.shutdown()
+
+    replayed = await DaemonServices.build(config)
+    try:
+        replayed_handlers = DaemonControlHandlers(services=replayed)
+        await _wait_for_recovery_accounting(replayed_handlers._impl)
+        recovery_events = [
+            row
+            for row in _audit_rows(config)
+            if row.get("actor") == "recovery"
+        ]
+        assert [row.get("event_type") for row in recovery_events] == ["ToolExecuted"]
+        assert recovery_events[0].get("timestamp") != "2000-01-01T00:00:00+00:00"
+        assert (
+            recovery_events[0].get("data", {}).get("approval_confirmation_id")
+            == confirmation_id
+        )
+    finally:
+        await replayed.shutdown()
 
 
 @pytest.mark.parametrize(
