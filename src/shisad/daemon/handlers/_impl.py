@@ -5799,11 +5799,12 @@ class HandlerImplementation(
                 pending.task_id,
                 reason=cancel_reason,
             )
-        self._confirmation_analytics.record(
-            user_id=str(pending.user_id),
-            decision="approve",
-            created_at=pending.created_at,
-        )
+        if pending.confirmation_evidence is not None:
+            self._confirmation_analytics.record(
+                user_id=str(pending.user_id),
+                decision="approve",
+                created_at=pending.created_at,
+            )
 
         pending.recovery_accounting_pending = False
         try:

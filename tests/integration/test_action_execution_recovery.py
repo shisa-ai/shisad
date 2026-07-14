@@ -614,6 +614,12 @@ async def test_allowed_immediate_structural_read_recovers_authenticated_policy_a
         assert recovered.recovery_result["ok"] is True
         assert clock_calls == [recovered.recovery_result]
         await _wait_for_recovery_accounting(restarted_handlers._impl)
+        policy_metrics = restarted_handlers._impl._confirmation_analytics.metrics(
+            user_id=str(recovered.user_id),
+            window_seconds=3600,
+        )
+        assert policy_metrics["decisions"] == 0
+        assert policy_metrics["approve_rate"] == 0.0
     finally:
         await restarted.shutdown()
 
@@ -1752,6 +1758,12 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
         assert len(recovery_backoffs) == 1
         assert 0 < recovery_backoffs[0] <= 0.1
         await _wait_for_recovery_accounting(restarted_handlers._impl)
+        confirmation_metrics = restarted_handlers._impl._confirmation_analytics.metrics(
+            user_id=str(recovered.user_id),
+            window_seconds=3600,
+        )
+        assert confirmation_metrics["decisions"] == 1
+        assert confirmation_metrics["approve_rate"] == 1.0
         recovered_task = restarted.scheduler.get_task(task.id)
         assert recovered_task is not None
         assert recovered_task.success_count == 1
