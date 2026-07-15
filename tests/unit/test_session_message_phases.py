@@ -8568,7 +8568,7 @@ async def test_finalize_response_targets_new_totp_when_older_totp_is_visible() -
 
 
 @pytest.mark.asyncio
-async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evidence_pep_check(
+async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
     tmp_path,
 ) -> None:
     sid = SessionId("sess-g1")
@@ -8607,9 +8607,34 @@ async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evi
         harness = _PendingPolicySnapshotHarness()
         harness._registry = registry
         harness._pep = pep
+        lock_held = Event()
+        release_writer = Event()
+        holder_timed_out = Event()
+        heartbeat_tasks: list[asyncio.Task[None]] = []
 
-        async def _slow_evaluate_action(**_kwargs: object) -> object:
-            await asyncio.sleep(0.25)
+        def _hold_writer() -> None:
+            with store._lock:
+                lock_held.set()
+                if not release_writer.wait(timeout=3.0):
+                    holder_timed_out.set()
+
+        holder = Thread(target=_hold_writer)
+
+        async def _heartbeat() -> None:
+            for _ in range(5):
+                await asyncio.sleep(0)
+            release_writer.set()
+
+        async def _barrier_before_session_pep(**_kwargs: object) -> None:
+            holder.start()
+            assert await asyncio.to_thread(lock_held.wait, 1.0)
+            heartbeat_tasks.append(asyncio.create_task(_heartbeat()))
+
+        harness._publish_control_plane_evaluation = (  # type: ignore[method-assign]
+            _barrier_before_session_pep
+        )
+
+        async def _evaluate_action(**_kwargs: object) -> object:
             return SimpleNamespace(
                 decision=ControlDecision.ALLOW,
                 reason_codes=[],
@@ -8627,7 +8652,7 @@ async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evi
                 ),
             )
 
-        harness._control_plane = SimpleNamespace(evaluate_action=_slow_evaluate_action)
+        harness._control_plane = SimpleNamespace(evaluate_action=_evaluate_action)
 
         planner_context = SessionMessagePlannerContextResult(
             validated=_validation_result(params={"session_id": str(sid), "content": "promote"}),
@@ -8687,21 +8712,11 @@ async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evi
             trace_tool_calls=[],
         )
 
-        sleep_task = asyncio.create_task(asyncio.sleep(0.05))
-        execute_task = asyncio.create_task(
-            SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
-        )
-
-        done, pending = await asyncio.wait(
-            {sleep_task, execute_task},
-            timeout=0.15,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-
-        assert sleep_task in done
-        assert execute_task in pending
-
-        result = await execute_task
+        result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+        assert len(heartbeat_tasks) == 1
+        await heartbeat_tasks[0]
+        await asyncio.to_thread(holder.join, 1.0)
 
     assert result.pending_confirmation == 1
+    assert holder_timed_out.is_set() is False
     assert len(service.requests) == request_count
