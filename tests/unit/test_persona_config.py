@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import stat
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner
 from shisad.core.providers.base import Message, ProviderResponse
@@ -199,6 +201,57 @@ def test_s9_soul_write_rejects_fifo_without_blocking(tmp_path) -> None:  # type:
 
     with pytest.raises(SoulFileError, match="regular file"):
         write_soul_text(soul_path, "Prefer concise answers.", max_bytes=4096)
+
+
+@pytest.mark.parametrize(
+    ("fault_stage", "published_new"),
+    [
+        (AtomicWriteStage.TEMP_OPEN, False),
+        (AtomicWriteStage.WRITE, False),
+        (AtomicWriteStage.FILE_FSYNC, False),
+        (AtomicWriteStage.REPLACE, False),
+        (AtomicWriteStage.PARENT_FSYNC, True),
+    ],
+)
+def test_f3_soul_write_fault_is_old_or_new_and_typed(
+    tmp_path,
+    fault_stage: AtomicWriteStage,
+    published_new: bool,
+) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "persona" / "SOUL.md"
+    soul_path.parent.mkdir()
+    soul_path.write_bytes(b"old persona")
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    with pytest.raises(SoulFileError) as raised:
+        write_soul_text(
+            soul_path,
+            "new persona",
+            max_bytes=4096,
+            fault_injector=_inject,
+        )
+
+    cause = raised.value.__cause__
+    assert isinstance(cause, AtomicWriteError)
+    assert cause.stage == fault_stage
+    assert cause.publication_may_have_committed is published_new
+    assert soul_path.read_bytes() == (b"new persona" if published_new else b"old persona")
+    assert list(soul_path.parent.glob(f".{soul_path.name}.*.tmp")) == []
+
+
+def test_f3_soul_write_uses_owner_only_modes_under_permissive_umask(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "persona" / "SOUL.md"
+    previous_umask = os.umask(0)
+    try:
+        write_soul_text(soul_path, "owner only", max_bytes=4096)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(soul_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(soul_path.stat().st_mode) == 0o600
 
 
 def test_s9_effective_persona_text_combines_inline_config_and_soul_file(tmp_path) -> None:  # type: ignore[no-untyped-def]

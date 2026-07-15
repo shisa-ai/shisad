@@ -6,10 +6,15 @@ import hashlib
 import os
 import re
 import stat
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteFaultInjector,
+    atomic_write_bytes,
+)
 
 DEFAULT_SOUL_MAX_BYTES = 64 * 1024
 SOUL_FILENAME = "SOUL.md"
@@ -112,6 +117,7 @@ def write_soul_text(
     content: str,
     *,
     max_bytes: int = DEFAULT_SOUL_MAX_BYTES,
+    fault_injector: AtomicWriteFaultInjector | None = None,
 ) -> SoulWriteResult:
     """Write trusted SOUL.md text to the configured operator path."""
     path = validate_soul_path(raw_path)
@@ -120,24 +126,12 @@ def write_soul_text(
     data = normalized.encode("utf-8")
     if len(data) > max_bytes:
         raise SoulFileError(f"SOUL.md exceeds configured size limit ({max_bytes} bytes)")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _reject_symlink_components(path)
     _existing_regular_soul_stat(path)
-    flags = _soul_open_flags(os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
     try:
-        fd = os.open(path, flags, 0o600)
-    except OSError as exc:
+        atomic_write_bytes(path, data, fault_injector=fault_injector)
+    except AtomicWriteError as exc:
         raise SoulFileError(f"SOUL.md write failed: {exc}") from exc
-    try:
-        _validate_open_soul_regular_file(fd)
-        with os.fdopen(fd, "wb") as handle:
-            fd = -1
-            handle.write(data)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    with suppress(PermissionError):
-        path.chmod(0o600)
     return SoulWriteResult(
         path=path,
         sha256=_sha256_text(normalized),
