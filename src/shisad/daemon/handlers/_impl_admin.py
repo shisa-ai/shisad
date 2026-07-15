@@ -75,6 +75,7 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "skills",
     "selfmod",
     "dashboard",
+    "evidence",
     "control_plane",
     "provider",
     "policy",

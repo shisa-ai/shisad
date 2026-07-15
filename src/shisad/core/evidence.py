@@ -55,6 +55,7 @@ _DEFAULT_ORPHAN_RETENTION_SECONDS = 7 * 24 * 3600
 _EVIDENCE_METADATA_FILENAME = "refs_index.json"
 _EVIDENCE_INDEX_VERSION = 1
 _CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_DOMAIN_PROBE_KEY = ("__evidence_domain__", "__evidence_domain__")
 _QUARANTINE_NAME_RE = re.compile(
     r"^v1\.(?P<timestamp_ns>[0-9]+)\.(?P<nonce>[0-9a-f]{32})\."
     r"(?P<content_hash>[0-9a-f]{64})\.txt$"
@@ -706,28 +707,51 @@ class ArtifactLedger:
             destroyed_ref_count = self.committed_ref_count()
             parent = self._root_dir.parent
             parent.mkdir(parents=True, exist_ok=True)
-            tombstone = parent / f".{self._root_dir.name}.reset-{uuid4().hex}"
-            detached = False
-            if self._root_dir.exists():
-                os.replace(self._root_dir, tombstone)
-                detached = True
-                self._fsync_directory(parent)
-            previous_fault_injector = self._atomic_fault_injector
-            self._atomic_fault_injector = None
+            prior_tombstones = list(parent.glob(f".{self._root_dir.name}.reset-*"))
+            detached_tombstone: Path | None = None
+            previous_salt = self._salt
+            new_salt = os.urandom(32)
             try:
-                self._salt = os.urandom(32)
-                self._create_domain_files(self._salt)
+                if self._path_exists(self._root_dir):
+                    detached_tombstone = parent / (
+                        f".{self._root_dir.name}.reset-{uuid4().hex}"
+                    )
+                    os.replace(self._root_dir, detached_tombstone)
+                    self._fsync_directory(parent)
+                self._create_domain_files(new_salt)
             except Exception:
-                with contextlib.suppress(OSError):
-                    if self._root_dir.exists():
-                        shutil.rmtree(self._root_dir)
-                    if detached:
-                        os.replace(tombstone, self._root_dir)
+                rollback_ok = True
+                try:
+                    self._remove_path(self._root_dir)
+                    if detached_tombstone is not None and self._path_exists(
+                        detached_tombstone
+                    ):
+                        os.replace(detached_tombstone, self._root_dir)
                         self._fsync_directory(parent)
-                self._mark_runtime_degraded("reset_failed")
+                except OSError:
+                    rollback_ok = False
+                self._salt = previous_salt
+                if not rollback_ok:
+                    self._mark_runtime_degraded("reset_rollback_failed")
                 raise
-            finally:
-                self._atomic_fault_injector = previous_fault_injector
+
+            tombstones = [*prior_tombstones]
+            if detached_tombstone is not None:
+                tombstones.append(detached_tombstone)
+            try:
+                for tombstone in tombstones:
+                    self._remove_path(tombstone)
+                if tombstones:
+                    self._fsync_directory(parent)
+            except OSError:
+                self._salt = new_salt
+                self._refs = {}
+                self._temporarily_unreadable_refs = {}
+                self._publish_committed({})
+                self._mark_runtime_degraded("reset_cleanup_failed")
+                raise
+
+            self._salt = new_salt
             self._refs = {}
             self._temporarily_unreadable_refs = {}
             self._publish_committed({})
@@ -737,9 +761,6 @@ class ArtifactLedger:
                 schema_version=_EVIDENCE_INDEX_VERSION,
             )
             self._cleanup_allowed = True
-            if detached and tombstone.exists():
-                shutil.rmtree(tombstone)
-                self._fsync_directory(parent)
             return {
                 "status": "ok",
                 "destroyed_ref_count": destroyed_ref_count,
@@ -753,8 +774,13 @@ class ArtifactLedger:
         reset_siblings = list(
             self._root_dir.parent.glob(f".{self._root_dir.name}.reset-*")
         )
-        if root_status == "missing" and reset_siblings:
-            self._set_load_failure(StateLoadStatus.CORRUPT, "reset_recovery_required")
+        if reset_siblings:
+            reason = (
+                "reset_recovery_required"
+                if root_status == "missing"
+                else "reset_cleanup_required"
+            )
+            self._set_load_failure(StateLoadStatus.CORRUPT, reason)
             return
         if root_status in {"missing", "empty"}:
             chosen_salt = configured_salt if configured_salt is not None else os.urandom(32)
@@ -775,6 +801,11 @@ class ArtifactLedger:
                 schema_version=_EVIDENCE_INDEX_VERSION,
             )
             self._cleanup_allowed = True
+            return
+
+        directory_reason = self._validate_existing_domain_directories()
+        if directory_reason:
+            self._set_load_failure(StateLoadStatus.CORRUPT, directory_reason)
             return
 
         salt_result = self._load_existing_salt(configured_salt)
@@ -806,7 +837,15 @@ class ArtifactLedger:
             self._temporarily_unreadable_refs = unreadable
             self._set_load_failure(StateLoadStatus.CORRUPT, validation_reason)
             return
-        self._ensure_domain_directories()
+        try:
+            self._ensure_domain_directories()
+        except OSError:
+            self._refs = refs
+            self._set_load_failure(
+                StateLoadStatus.CORRUPT,
+                "domain_directory_prepare_failed",
+            )
+            return
         if load_result.legacy:
             try:
                 self._persist_refs_index(refs)
@@ -846,13 +885,40 @@ class ArtifactLedger:
 
     def _create_domain_files(self, salt: bytes) -> None:
         self._ensure_domain_directories()
+        self._fsync_directory(self._root_dir.parent)
         self._atomic_write(self._salt_path, salt)
         self._persist_refs_index({})
 
     def _ensure_domain_directories(self) -> None:
-        for path in (self._root_dir, self._blob_dir, self._quarantine_dir):
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
-            path.chmod(0o700)
+        self._ensure_owned_directory(self._root_dir, parents=True)
+        self._ensure_owned_directory(self._blob_dir, parents=False)
+        self._ensure_owned_directory(self._quarantine_dir, parents=False)
+
+    def _validate_existing_domain_directories(self) -> str:
+        for name, path in (
+            ("blobs", self._blob_dir),
+            ("quarantine", self._quarantine_dir),
+        ):
+            try:
+                path_stat = path.lstat()
+            except FileNotFoundError:
+                return f"missing_{name}_directory"
+            except OSError:
+                return f"unreadable_{name}_directory"
+            if not stat.S_ISDIR(path_stat.st_mode):
+                return f"invalid_{name}_directory"
+        return ""
+
+    @staticmethod
+    def _ensure_owned_directory(path: Path, *, parents: bool) -> None:
+        try:
+            path_stat = path.lstat()
+        except FileNotFoundError:
+            path.mkdir(parents=parents, exist_ok=False, mode=0o700)
+        else:
+            if not stat.S_ISDIR(path_stat.st_mode):
+                raise OSError(f"evidence directory target is not a directory: {path}")
+        path.chmod(0o700)
 
     def _load_existing_salt(self, configured_salt: bytes | None) -> str | None:
         if not self._salt_path.exists():
@@ -1212,21 +1278,20 @@ class ArtifactLedger:
         with self._lock:
             if not self._is_temporarily_unreadable(session_key, ref_id):
                 return
-            probe_key = (session_key, ref_id)
-            if probe_key in self._unreadable_probe_in_flight:
+            if self._unreadable_probe_in_flight:
                 return
-            self._unreadable_probe_in_flight.add(probe_key)
+            self._unreadable_probe_in_flight.add(_DOMAIN_PROBE_KEY)
 
         def _probe() -> None:
             try:
                 self._probe_temporarily_unreadable_domain()
             finally:
                 with self._lock:
-                    self._unreadable_probe_in_flight.discard(probe_key)
+                    self._unreadable_probe_in_flight.discard(_DOMAIN_PROBE_KEY)
 
         Thread(
             target=_probe,
-            name=f"evidence-unreadable-probe-{session_key}-{ref_id}",
+            name="evidence-unreadable-domain-probe",
             daemon=True,
         ).start()
 
@@ -1336,6 +1401,25 @@ class ArtifactLedger:
         except OSError:
             return False
         return stat.S_ISREG(path_stat.st_mode)
+
+    @staticmethod
+    def _path_exists(path: Path) -> bool:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        return True
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        try:
+            path_stat = path.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(path_stat.st_mode):
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:

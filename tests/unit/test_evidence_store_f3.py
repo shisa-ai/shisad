@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from stat import S_IMODE
+from threading import Event
 from uuid import uuid4
 
 import pytest
@@ -14,9 +16,10 @@ from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
     StateLoadStatus,
+    StatePersistenceDegradedError,
     encode_versioned_json_snapshot,
 )
-from shisad.core.evidence import ArtifactLedger, EvidenceRef
+from shisad.core.evidence import ArtifactBlobCodecError, ArtifactLedger, EvidenceRef
 from shisad.core.types import SessionId, TaintLabel
 
 
@@ -74,6 +77,84 @@ def test_f3_evidence_domain_new_root_is_durable_versioned_and_owner_only(tmp_pat
     assert S_IMODE((evidence_root / "quarantine").stat().st_mode) == 0o700
     assert S_IMODE((evidence_root / "evidence_salt").stat().st_mode) == 0o600
     assert S_IMODE((evidence_root / "refs_index.json").stat().st_mode) == 0o600
+
+
+def test_f3_evidence_domain_first_create_fsyncs_root_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fsynced: list[Path] = []
+    original = ArtifactLedger._fsync_directory
+
+    def _record(path: Path) -> None:
+        fsynced.append(path)
+        original(path)
+
+    monkeypatch.setattr(ArtifactLedger, "_fsync_directory", staticmethod(_record))
+
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+
+    assert ledger.state_degraded is False
+    assert tmp_path in fsynced
+
+
+def test_f3_evidence_domain_first_create_parent_fsync_failure_degrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = ArtifactLedger._fsync_directory
+
+    def _fault(path: Path) -> None:
+        if path == tmp_path:
+            raise OSError("parent fsync failed")
+        original(path)
+
+    monkeypatch.setattr(ArtifactLedger, "_fsync_directory", staticmethod(_fault))
+
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+
+    _assert_degraded(ledger, reason="new_domain_publication_failed")
+    with pytest.raises(StatePersistenceDegradedError):
+        _store(ledger)
+
+
+@pytest.mark.parametrize("child_name", ["blobs", "quarantine"])
+def test_f3_evidence_domain_file_child_degrades_without_startup_exception(
+    tmp_path: Path,
+    child_name: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    child = evidence_root / child_name
+    child.rmdir()
+    child.write_bytes(b"retained invalid child")
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason=f"invalid_{child_name}_directory")
+    assert child.read_bytes() == b"retained invalid child"
+
+
+@pytest.mark.parametrize("child_name", ["blobs", "quarantine"])
+def test_f3_evidence_domain_symlink_child_never_touches_external_directory(
+    tmp_path: Path,
+    child_name: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    child = evidence_root / child_name
+    child.rmdir()
+    external = tmp_path / f"external-{child_name}"
+    external.mkdir()
+    external_file = external / "opaque.txt"
+    external_file.write_bytes(b"must remain external")
+    child.symlink_to(external, target_is_directory=True)
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason=f"invalid_{child_name}_directory")
+    assert child.is_symlink() is True
+    assert external_file.read_bytes() == b"must remain external"
 
 
 def test_f3_evidence_domain_missing_salt_retains_index_and_blob_without_rotation(
@@ -424,6 +505,208 @@ def test_f3_evidence_explicit_reset_is_only_destructive_domain_recovery(tmp_path
     assert degraded.state_load_result().status is StateLoadStatus.OK
     assert degraded.state_load_result().reason == "explicit_reset"
     assert _index_payload(evidence_root / "refs_index.json") == {}
+
+
+def test_f3_evidence_reset_detach_fsync_failure_restores_old_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+    original = ArtifactLedger._fsync_directory
+    parent_calls = 0
+
+    def _fail_first_parent(path: Path) -> None:
+        nonlocal parent_calls
+        if path == tmp_path:
+            parent_calls += 1
+            if parent_calls == 1:
+                raise OSError("detach parent fsync failed")
+        original(path)
+
+    monkeypatch.setattr(
+        ArtifactLedger,
+        "_fsync_directory",
+        staticmethod(_fail_first_parent),
+    )
+
+    with pytest.raises(OSError, match="detach parent fsync failed"):
+        ledger.reset_domain()
+
+    assert ledger.state_degraded is False
+    assert ledger.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    assert restarted.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+
+
+def test_f3_evidence_reset_create_failure_restores_old_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+
+    def _fail_create(_salt: bytes) -> None:
+        raise OSError("replacement create failed")
+
+    monkeypatch.setattr(ledger, "_create_domain_files", _fail_create)
+
+    with pytest.raises(OSError, match="replacement create failed"):
+        ledger.reset_domain()
+
+    assert ledger.state_degraded is False
+    assert ledger.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    assert restarted.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+
+
+@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+def test_f3_evidence_reset_atomic_create_fault_restores_old_domain(
+    tmp_path: Path,
+    stage: AtomicWriteStage,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+
+    def _fault(observed: AtomicWriteStage) -> None:
+        if observed is stage:
+            raise OSError(f"reset fault at {stage.value}")
+
+    ledger._atomic_fault_injector = _fault
+
+    with pytest.raises(AtomicWriteError):
+        ledger.reset_domain()
+
+    assert ledger.state_degraded is False
+    assert ledger.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    assert restarted.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+
+
+def test_f3_evidence_reset_cleanup_failure_is_typed_and_restart_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+    original_remove = ledger._remove_path
+
+    def _fail_tombstone_cleanup(path: Path) -> None:
+        if ".reset-" in path.name:
+            raise OSError("tombstone cleanup failed")
+        original_remove(path)
+
+    monkeypatch.setattr(ledger, "_remove_path", _fail_tombstone_cleanup)
+
+    with pytest.raises(OSError, match="tombstone cleanup failed"):
+        ledger.reset_domain()
+
+    _assert_degraded(ledger, reason="reset_cleanup_failed")
+    tombstones = list(tmp_path.glob(".evidence.reset-*"))
+    assert len(tombstones) == 1
+    assert list(tombstones[0].glob(f"blobs/{ref.content_hash}.txt"))
+    restarted = ArtifactLedger(evidence_root)
+    _assert_degraded(restarted, reason="reset_cleanup_required")
+    recovered = restarted.reset_domain()
+    assert recovered["status"] == "ok"
+    assert restarted.is_empty_domain() is True
+    assert list(tmp_path.glob(".evidence.reset-*")) == []
+
+
+@pytest.mark.parametrize("invalid_kind", ["file", "symlink"])
+def test_f3_evidence_reset_recovers_invalid_root_without_touching_external_target(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    external = tmp_path / "external-root"
+    external.mkdir()
+    external_file = external / "retained.txt"
+    external_file.write_bytes(b"external bytes")
+    if invalid_kind == "file":
+        evidence_root.write_bytes(b"invalid root bytes")
+    else:
+        evidence_root.symlink_to(external, target_is_directory=True)
+    ledger = ArtifactLedger(evidence_root)
+    _assert_degraded(ledger, reason="invalid_evidence_root")
+
+    result = ledger.reset_domain()
+
+    assert result["status"] == "ok"
+    assert ledger.is_empty_domain() is True
+    assert evidence_root.is_dir() is True
+    assert evidence_root.is_symlink() is False
+    assert external_file.read_bytes() == b"external bytes"
+
+
+class _RecoverableGateCodec:
+    name = "recoverable_gate"
+
+    def __init__(self) -> None:
+        self.available = True
+        self.decode_calls = 0
+
+    def encode(self, content: str) -> bytes:
+        return content.encode("utf-8")
+
+    def decode(self, payload: bytes) -> str:
+        self.decode_calls += 1
+        if not self.available:
+            raise ArtifactBlobCodecError("kms_unavailable")
+        return payload.decode("utf-8")
+
+
+def test_f3_evidence_kms_recovery_is_one_domain_wide_single_flight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    codec = _RecoverableGateCodec()
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32, blob_codec=codec)
+    first_ref = _store(first, sid="sess-a", content="first")
+    second_ref = _store(first, sid="sess-b", content="second")
+    codec.available = False
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32, blob_codec=codec)
+    _assert_degraded(restarted, reason="blob_unreadable")
+    baseline_calls = codec.decode_calls
+    codec.available = True
+    original_probe = restarted._probe_temporarily_unreadable_domain
+    probe_entered = Event()
+    probe_release = Event()
+    probe_calls = 0
+
+    def _blocking_probe() -> None:
+        nonlocal probe_calls
+        probe_calls += 1
+        probe_entered.set()
+        assert probe_release.wait(timeout=5.0)
+        original_probe()
+
+    monkeypatch.setattr(
+        restarted,
+        "_probe_temporarily_unreadable_domain",
+        _blocking_probe,
+    )
+
+    assert restarted.validate_ref_metadata(SessionId("sess-a"), first_ref.ref_id) is False
+    assert probe_entered.wait(timeout=5.0)
+    assert restarted.validate_ref_metadata(SessionId("sess-b"), second_ref.ref_id) is False
+    assert len(restarted._unreadable_probe_in_flight) == 1
+    assert probe_calls == 1
+    probe_release.set()
+    deadline = time.time() + 5.0
+    while restarted._unreadable_probe_in_flight and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert restarted._unreadable_probe_in_flight == set()
+    assert codec.decode_calls - baseline_calls == 2
+    assert restarted.state_degraded is False
+    assert restarted.get_ref_metadata(SessionId("sess-a"), first_ref.ref_id) == first_ref
+    assert restarted.get_ref_metadata(SessionId("sess-b"), second_ref.ref_id) == second_ref
 
 
 def test_f3_evidence_status_is_actionable_without_claiming_whole_daemon_failure(

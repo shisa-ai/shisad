@@ -263,6 +263,7 @@ async def test_f3_corrupt_evidence_domain_is_visible_while_daemon_stays_up(
         assert await services.control_plane.ping() is True
         status = await impl.do_daemon_status({})
         doctor = await impl.do_doctor_check({"component": "evidence"})
+        doctor_all = await impl.do_doctor_check({"component": "all"})
 
         assert status["status"] == "running"
         assert status["evidence"]["status"] == "degraded"
@@ -272,6 +273,7 @@ async def test_f3_corrupt_evidence_domain_is_visible_while_daemon_stays_up(
         assert status["evidence"]["reason"] == "invalid_json"
         assert doctor["status"] == "degraded"
         assert doctor["checks"]["evidence"]["problems"] == ["invalid_json"]
+        assert doctor_all["checks"]["evidence"]["problems"] == ["invalid_json"]
         assert index_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
