@@ -486,6 +486,79 @@ class TestApprovalFactorStore:
             store.list_approval_factors()
         assert store_path.read_bytes() == invalid_bytes
 
+    @pytest.mark.parametrize(
+        ("missing_key", "reason"),
+        [
+            ("approval_factors", "missing_approval_factors"),
+            ("signer_keys", "missing_signer_keys"),
+        ],
+    )
+    def test_f3_v3_approval_store_requires_both_authority_collections(
+        self,
+        tmp_path,
+        missing_key: str,
+        reason: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        payload = {"approval_factors": [], "signer_keys": []}
+        payload.pop(missing_key)
+        invalid_bytes = encode_versioned_json_snapshot(payload, version=3)
+        store_path.write_bytes(invalid_bytes)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == reason
+        with pytest.raises(StatePersistenceDegradedError, match=reason):
+            store.list_approval_factors()
+        assert store_path.read_bytes() == invalid_bytes
+
+    @pytest.mark.parametrize("envelope_marker", ["checksum", "payload"])
+    def test_f3_legacy_envelope_marker_collision_is_retained_and_fail_closed(
+        self,
+        tmp_path,
+        envelope_marker: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        ambiguous = {
+            "schema_version": "shisad.approval_factor_store.v2",
+            "approval_factors": [],
+            "signer_keys": [],
+            envelope_marker: {} if envelope_marker == "payload" else "unchecked",
+        }
+        ambiguous_bytes = json.dumps(ambiguous).encode("utf-8")
+        store_path.write_bytes(ambiguous_bytes)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "ambiguous_snapshot_format"
+        with pytest.raises(StatePersistenceDegradedError, match="ambiguous_snapshot_format"):
+            store.list_signer_keys()
+        assert store_path.read_bytes() == ambiguous_bytes
+
+    def test_f3_legacy_v2_requires_signer_collection(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        invalid_bytes = json.dumps(
+            {
+                "schema_version": "shisad.approval_factor_store.v2",
+                "approval_factors": [],
+            }
+        ).encode("utf-8")
+        store_path.write_bytes(invalid_bytes)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "missing_signer_keys"
+        assert store_path.read_bytes() == invalid_bytes
+
     def test_f3_missing_primary_with_corrupt_artifact_is_not_new_authority(
         self,
         tmp_path,

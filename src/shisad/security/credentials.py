@@ -607,6 +607,8 @@ class InMemoryCredentialStore:
     @staticmethod
     def _decode_approval_payload(
         payload: Any,
+        *,
+        allow_missing_signer_keys: bool = False,
     ) -> tuple[
         dict[str, ApprovalFactorRecord],
         dict[str, SignerKeyRecord],
@@ -614,7 +616,9 @@ class InMemoryCredentialStore:
     ]:
         if not isinstance(payload, dict):
             raise _ApprovalStorePayloadError("invalid_payload")
-        factors = payload.get("approval_factors", [])
+        if "approval_factors" not in payload:
+            raise _ApprovalStorePayloadError("missing_approval_factors")
+        factors = payload["approval_factors"]
         if not isinstance(factors, list):
             raise _ApprovalStorePayloadError("invalid_approval_factors")
         loaded: dict[str, ApprovalFactorRecord] = {}
@@ -629,6 +633,8 @@ class InMemoryCredentialStore:
         except ValidationError as exc:
             raise _ApprovalStorePayloadError("invalid_approval_factors") from exc
 
+        if "signer_keys" not in payload and not allow_missing_signer_keys:
+            raise _ApprovalStorePayloadError("missing_signer_keys")
         signer_payload = payload.get("signer_keys", [])
         if not isinstance(signer_payload, list):
             raise _ApprovalStorePayloadError("invalid_signer_keys")
@@ -712,11 +718,22 @@ class InMemoryCredentialStore:
             )
             return
 
-        legacy = (
-            isinstance(raw_payload, dict)
-            and "schema_version" in raw_payload
-            and "version" not in raw_payload
+        has_legacy_marker = isinstance(raw_payload, dict) and "schema_version" in raw_payload
+        envelope_markers = (
+            {"version", "checksum", "payload"}.intersection(raw_payload)
+            if isinstance(raw_payload, dict)
+            else set()
         )
+        if has_legacy_marker and envelope_markers:
+            self._set_approval_load_failure(
+                StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="ambiguous_snapshot_format",
+                )
+            )
+            return
+        legacy = has_legacy_marker
+        allow_missing_signer_keys = False
         if legacy:
             schema = str(raw_payload.get("schema_version", "")).strip()
             if schema not in _LEGACY_APPROVAL_STORE_SCHEMAS:
@@ -734,6 +751,7 @@ class InMemoryCredentialStore:
                 return
             payload = raw_payload
             result = StateLoadResult(StateLoadStatus.OK, legacy=True)
+            allow_missing_signer_keys = schema == "shisad.approval_factor_store.v1"
         else:
             result, payload = decode_versioned_json_snapshot(
                 raw_bytes,
@@ -744,7 +762,10 @@ class InMemoryCredentialStore:
                 return
 
         try:
-            loaded, signer_keys, realm_id = self._decode_approval_payload(payload)
+            loaded, signer_keys, realm_id = self._decode_approval_payload(
+                payload,
+                allow_missing_signer_keys=allow_missing_signer_keys,
+            )
         except _ApprovalStorePayloadError as exc:
             self._set_approval_load_failure(
                 StateLoadResult(
