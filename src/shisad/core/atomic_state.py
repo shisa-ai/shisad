@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
+import json
 import os
 import stat
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 
 class AtomicWriteStage(StrEnum):
@@ -24,6 +29,25 @@ class AtomicWriteStage(StrEnum):
 
 
 AtomicWriteFaultInjector = Callable[[AtomicWriteStage], None]
+
+
+class StateLoadStatus(StrEnum):
+    """Finite load outcomes for security-relevant state snapshots."""
+
+    OK = "ok"
+    MISSING = "missing"
+    CORRUPT = "corrupt"
+    UNSUPPORTED_SCHEMA = "unsupported_schema"
+
+
+@dataclass(frozen=True, slots=True)
+class StateLoadResult:
+    """Typed snapshot load status without discarding the original bytes."""
+
+    status: StateLoadStatus
+    reason: str = ""
+    schema_version: int | None = None
+    legacy: bool = False
 
 
 class AtomicWriteError(RuntimeError):
@@ -83,6 +107,111 @@ def _validate_existing_target(path: Path) -> None:
             stage=AtomicWriteStage.TARGET_VALIDATE,
             publication_may_have_committed=False,
         )
+
+
+def _canonical_json_bytes(payload: Any) -> bytes:
+    return json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def encode_versioned_json_snapshot(payload: Any, *, version: int = 1) -> bytes:
+    """Encode a deterministic checksum-bound JSON snapshot envelope."""
+
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError("snapshot version must be a positive integer")
+    checksum = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+    envelope = {
+        "version": version,
+        "checksum": checksum,
+        "payload": payload,
+    }
+    return (
+        json.dumps(
+            envelope,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def decode_versioned_json_snapshot(
+    raw_bytes: bytes,
+    *,
+    supported_version: int = 1,
+) -> tuple[StateLoadResult, Any | None]:
+    """Decode a checksum-bound envelope into a typed non-throwing load result."""
+
+    try:
+        raw = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
+    if not isinstance(raw, dict):
+        return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_envelope"), None
+    version = raw.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_schema_version"), None
+    if version != supported_version:
+        return (
+            StateLoadResult(
+                StateLoadStatus.UNSUPPORTED_SCHEMA,
+                reason="unsupported_schema",
+                schema_version=version,
+            ),
+            None,
+        )
+    checksum = raw.get("checksum")
+    if not isinstance(checksum, str) or not checksum:
+        return (
+            StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="missing_checksum",
+                schema_version=version,
+            ),
+            None,
+        )
+    if "payload" not in raw:
+        return (
+            StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="missing_payload",
+                schema_version=version,
+            ),
+            None,
+        )
+    payload = raw["payload"]
+    try:
+        canonical_payload = _canonical_json_bytes(payload)
+    except (TypeError, ValueError):
+        return (
+            StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_payload",
+                schema_version=version,
+            ),
+            None,
+        )
+    actual_checksum = hashlib.sha256(canonical_payload).hexdigest()
+    if not hmac.compare_digest(checksum, actual_checksum):
+        return (
+            StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="checksum_mismatch",
+                schema_version=version,
+            ),
+            None,
+        )
+    return (
+        StateLoadResult(StateLoadStatus.OK, schema_version=version),
+        payload,
+    )
 
 
 def atomic_write_bytes(

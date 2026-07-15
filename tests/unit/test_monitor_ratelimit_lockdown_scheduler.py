@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from shisad.core.action_state import reminder_status_view_for_task
+from shisad.core.atomic_state import StateLoadStatus, StatePersistenceDegradedError
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
@@ -1202,15 +1203,25 @@ def test_g3_scheduler_prunes_resolved_confirmation_backlog(tmp_path: Path) -> No
     assert "confirm-39" in remaining_ids
 
 
-def test_m2_scheduler_skips_corrupt_utf8_persisted_files(tmp_path: Path) -> None:
+def test_f3_scheduler_surfaces_corrupt_utf8_persisted_files(tmp_path: Path) -> None:
     storage = tmp_path / "tasks"
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "tasks.json").write_bytes(b"\xff")
     (storage / "pending_confirmations.json").write_bytes(b"\xff")
 
     restarted = SchedulerManager(storage_dir=storage)
-    assert restarted.list_tasks() == []
-    assert restarted.pending_confirmations("missing-task") == []
+    assert restarted.state_load_result("tasks").status == StateLoadStatus.CORRUPT
+    assert (
+        restarted.state_load_result("pending_confirmations").status
+        == StateLoadStatus.CORRUPT
+    )
+    with pytest.raises(StatePersistenceDegradedError, match=r"scheduler\.tasks"):
+        restarted.list_tasks()
+    with pytest.raises(
+        StatePersistenceDegradedError,
+        match=r"scheduler\.pending_confirmations",
+    ):
+        restarted.pending_confirmations("missing-task")
 
 
 def test_m2_scheduler_interval_due_runs_once_per_interval() -> None:

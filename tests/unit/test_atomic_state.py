@@ -13,7 +13,10 @@ from shisad.core import atomic_state
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
+    StateLoadStatus,
     atomic_write_bytes,
+    decode_versioned_json_snapshot,
+    encode_versioned_json_snapshot,
 )
 from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
@@ -96,6 +99,39 @@ def test_atomic_write_rejects_non_regular_existing_target(tmp_path: Path) -> Non
 
     assert raised.value.stage == AtomicWriteStage.TARGET_VALIDATE
     assert raised.value.publication_may_have_committed is False
+
+
+def test_versioned_json_snapshot_round_trips_with_checksum() -> None:
+    encoded = encode_versioned_json_snapshot({"rows": [{"id": "one"}]})
+
+    result, payload = decode_versioned_json_snapshot(encoded)
+
+    assert result.status == StateLoadStatus.OK
+    assert result.schema_version == 1
+    assert payload == {"rows": [{"id": "one"}]}
+
+
+def test_versioned_json_snapshot_reports_unsupported_schema_before_payload_use() -> None:
+    result, payload = decode_versioned_json_snapshot(
+        b'{"version":2,"checksum":"unused","payload":{"unsafe":true}}'
+    )
+
+    assert result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
+    assert result.schema_version == 2
+    assert payload is None
+
+
+@pytest.mark.parametrize("non_finite", [b"NaN", b"Infinity", b"-Infinity"])
+def test_versioned_json_snapshot_reports_non_finite_payload_as_corrupt(
+    non_finite: bytes,
+) -> None:
+    result, payload = decode_versioned_json_snapshot(
+        b'{"version":1,"checksum":"unused","payload":' + non_finite + b"}"
+    )
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_payload"
+    assert payload is None
 
 
 def test_pending_actions_snapshot_uses_atomic_writer_fault_boundary(tmp_path: Path) -> None:
