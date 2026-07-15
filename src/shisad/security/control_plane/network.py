@@ -47,8 +47,8 @@ class NetworkMetadata(BaseModel, frozen=True):
 class BaselineEntry(BaseModel):
     first_seen: datetime
     last_seen: datetime
-    count: int = 0
-    average_request_size: float = 0.0
+    count: int = Field(default=0, ge=0, strict=True)
+    average_request_size: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
 
 
 class NetworkMonitorDecisionKind(StrEnum):

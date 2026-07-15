@@ -155,7 +155,7 @@ class CommittedPlan(BaseModel):
     declared_resource_roots: set[str] = Field(default_factory=set)
     reachable_resources: set[str] = Field(default_factory=set)
     forbidden_actions: set[ActionKind] = Field(default_factory=set)
-    max_actions: int = 10
+    max_actions: int = Field(default=10, gt=0, strict=True)
     committed_at: datetime
     expires_at: datetime
     stage: str = PlanStage.STAGE1_PRECONTENT
@@ -164,7 +164,7 @@ class CommittedPlan(BaseModel):
     amendment_execution_idempotency_key: str = ""
     cancelled: bool = False
     cancelled_reason: str = ""
-    executed_actions: int = 0
+    executed_actions: int = Field(default=0, ge=0, strict=True)
     recorded_dependency_keys: set[str] = Field(default_factory=set)
     recorded_action_keys: set[str] = Field(default_factory=set)
 

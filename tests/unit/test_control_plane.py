@@ -3422,6 +3422,38 @@ def test_f3_control_plane_trace_legacy_migrates_and_fault_retains_live_view(
     assert trace.state_status()["stage"] == "parent_fsync"
 
 
+@pytest.mark.parametrize("field", ["max_actions", "executed_actions"])
+@pytest.mark.parametrize("versioned", [False, True])
+def test_f3_control_plane_trace_rejects_negative_persisted_counters(
+    tmp_path: Path,
+    field: str,
+    versioned: bool,
+) -> None:
+    source = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    plan = source.begin_precontent_plan(
+        session_id="s-negative-trace",
+        goal="read a file",
+        origin=_origin("s-negative-trace"),
+    )
+    plan_payload = plan.model_dump(mode="json")
+    plan_payload[field] = -1
+    payload = {"s-negative-trace": plan_payload}
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    raw_bytes = (
+        encode_versioned_json_snapshot(payload)
+        if versioned
+        else (json.dumps(payload) + "\n").encode()
+    )
+    path.write_bytes(raw_bytes)
+
+    trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+
+    assert trace.state_load_result.status == StateLoadStatus.CORRUPT
+    assert trace.active_plan("s-negative-trace") is None
+    assert path.read_bytes() == raw_bytes
+
+
 def test_f3_control_plane_network_corruption_disables_learning_without_authority(
     tmp_path: Path,
 ) -> None:
@@ -3517,6 +3549,66 @@ def test_f3_control_plane_network_legacy_migrates_and_future_schema_is_retained(
     assert future.state_load_result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
     assert future.state_status()["learning_enabled"] is False
     assert path.read_bytes() == future_bytes
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("count", -1), ("average_request_size", -1.0)],
+)
+def test_f3_control_plane_network_rejects_negative_persisted_counters(
+    tmp_path: Path,
+    field: str,
+    value: int | float,
+) -> None:
+    now = datetime.now(UTC).isoformat()
+    entry = {
+        "first_seen": now,
+        "last_seen": now,
+        "count": 1,
+        "average_request_size": 128.0,
+    }
+    entry[field] = value
+    raw_bytes = encode_versioned_json_snapshot({"ws:user:none:api.example.com": entry})
+    path = tmp_path / "control_plane" / "network_baseline.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw_bytes)
+
+    baseline = BaselineDatabase(str(path))
+
+    assert baseline.state_load_result.status == StateLoadStatus.CORRUPT
+    assert baseline.state_status()["learning_enabled"] is False
+    assert path.read_bytes() == raw_bytes
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("observation_kind", "unknown"),
+        ("decision_status", "unknown"),
+        ("execution_status", "unknown"),
+    ],
+)
+def test_f3_control_plane_history_rejects_unknown_protocol_values(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    record = ActionHistoryRecord(
+        session_id="s-protocol",
+        action_kind=ActionKind.FS_READ,
+        tool_name="file.read",
+    ).model_dump(mode="json")
+    record[field] = value
+    raw_bytes = (json.dumps(record) + "\n").encode()
+    path = tmp_path / "control_plane" / "history.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw_bytes)
+
+    history = SessionActionHistoryStore(path)
+
+    assert history.state_load_result.status == StateLoadStatus.CORRUPT
+    assert history.all_for_session("s-protocol") == []
+    assert path.read_bytes() == raw_bytes
 
 
 def test_f3_control_plane_engine_state_status_aggregates_domain_failures(

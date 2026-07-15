@@ -8,7 +8,7 @@ import logging
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -64,9 +64,9 @@ class ActionHistoryRecord(BaseModel, frozen=True):
     action_kind: ActionKind
     resource_id: str = ""
     tool_name: str
-    observation_kind: str = "action"
-    decision_status: str = ""
-    execution_status: str = ""
+    observation_kind: Literal["action", "denied_action"] = "action"
+    decision_status: Literal["", "allow", "block", "require_confirmation", "deny"] = ""
+    execution_status: Literal["", "success", "failed", "outcome_unknown"] = ""
     reason_code: str = ""
     source: str = ""
     idempotency_key: str = ""

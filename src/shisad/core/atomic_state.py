@@ -194,7 +194,7 @@ def decode_versioned_json_snapshot(
 
     try:
         raw = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
     if not isinstance(raw, dict):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_envelope"), None
@@ -232,11 +232,20 @@ def decode_versioned_json_snapshot(
     payload = raw["payload"]
     try:
         integrity_input = _snapshot_integrity_bytes(version=version, payload=payload)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return (
             StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="invalid_payload",
+                schema_version=version,
+            ),
+            None,
+        )
+    if not checksum.isascii():
+        return (
+            StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_checksum",
                 schema_version=version,
             ),
             None,

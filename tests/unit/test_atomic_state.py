@@ -263,6 +263,30 @@ def test_versioned_json_snapshot_reports_non_finite_payload_as_corrupt(
     assert payload is None
 
 
+@pytest.mark.parametrize(
+    ("raw_bytes", "reason"),
+    [
+        (
+            b'{"version":1,"checksum":"\\u00e9","payload":{}}',
+            "invalid_checksum",
+        ),
+        (
+            b'{"version":1,"checksum":"unused","payload":{"text":"\\ud800"}}',
+            "invalid_payload",
+        ),
+    ],
+)
+def test_versioned_json_snapshot_malformed_unicode_is_typed_corrupt(
+    raw_bytes: bytes,
+    reason: str,
+) -> None:
+    result, payload = decode_versioned_json_snapshot(raw_bytes)
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == reason
+    assert payload is None
+
+
 def test_pending_actions_snapshot_uses_atomic_writer_fault_boundary(tmp_path: Path) -> None:
     created_at = datetime.now(UTC)
     pending = PendingAction(

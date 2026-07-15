@@ -190,15 +190,23 @@ async def test_daemon_services_builds_with_local_provider(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt_bytes",
+    [
+        b'{"version":1,"payload":',
+        b'{"version":1,"checksum":"\\u00e9","payload":{}}',
+        b'{"version":1,"checksum":"unused","payload":{"text":"\\ud800"}}',
+    ],
+)
 async def test_f3_corrupt_control_plane_state_is_visible_while_daemon_stays_up(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    corrupt_bytes: bytes,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     data_dir = tmp_path / "data"
     plans_path = data_dir / "control_plane" / "plans.json"
     plans_path.parent.mkdir(parents=True)
-    corrupt_bytes = b'{"version":1,"payload":'
     plans_path.write_bytes(corrupt_bytes)
     config = DaemonConfig(
         data_dir=data_dir,
