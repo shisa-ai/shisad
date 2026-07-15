@@ -2303,6 +2303,7 @@ class DaemonStatusResult(BaseModel):
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
+    approvals: dict[str, Any] = Field(default_factory=dict)
     executors: dict[str, Any] = Field(default_factory=dict)
     selfmod: dict[str, Any] = Field(default_factory=dict)
     realitycheck: dict[str, Any] = Field(default_factory=dict)

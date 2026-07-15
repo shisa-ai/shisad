@@ -294,7 +294,16 @@ class TestApiSchemaValidation:
         dashboard_marked = DashboardMarkFalsePositiveResult.model_validate(
             {"marked": True, "event_id": "evt", "reason": "manual"}
         )
-        daemon_status = DaemonStatusResult.model_validate({"status": "running"})
+        daemon_status = DaemonStatusResult.model_validate(
+            {
+                "status": "running",
+                "approvals": {
+                    "status": "degraded",
+                    "load_status": "corrupt",
+                    "fail_closed": True,
+                },
+            }
+        )
         realitycheck_search = RealityCheckSearchResult.model_validate(
             {
                 "ok": True,
@@ -394,6 +403,7 @@ class TestApiSchemaValidation:
         assert dashboard_marked.marked is True
         assert daemon_status.status == "running"
         assert daemon_status.delivery == {}
+        assert daemon_status.approvals["load_status"] == "corrupt"
         assert daemon_status.realitycheck == {}
         assert realitycheck_search.mode == "local"
         assert realitycheck_read.path == "/tmp/source.md"

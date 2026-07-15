@@ -13,7 +13,9 @@ import pytest
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
+    StateLoadStatus,
     StatePersistenceDegradedError,
+    encode_versioned_json_snapshot,
 )
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -255,10 +257,18 @@ class TestApprovalFactorStore:
 
         store.register_approval_factor(factor)
 
+        envelope = json.loads(store_path.read_text(encoding="utf-8"))
+        assert envelope["version"] == 3
+        assert isinstance(envelope["checksum"], str)
+        assert envelope["payload"]["approval_factors"][0]["credential_id"] == "totp-1"
+
         reloaded = InMemoryCredentialStore()
         reloaded.set_approval_store_path(store_path)
         entries = reloaded.list_approval_factors(user_id="alice", method="totp")
 
+        result = reloaded.approval_state_load_result()
+        assert result.status == StateLoadStatus.OK
+        assert result.schema_version == 3
         assert len(entries) == 1
         assert entries[0].credential_id == "totp-1"
         assert entries[0].principal_id == "ops-laptop"
@@ -291,17 +301,22 @@ class TestApprovalFactorStore:
         assert removed == 1
         assert [item.credential_id for item in store.list_approval_factors()] == ["totp-b"]
 
-    def test_approval_factor_store_quarantines_malformed_json(self, tmp_path) -> None:
+    def test_approval_factor_store_retains_and_blocks_malformed_json(self, tmp_path) -> None:
         store_path = tmp_path / "approval-factors.json"
-        store_path.write_text("{not-json", encoding="utf-8")
+        corrupt_bytes = b"{not-json"
+        store_path.write_bytes(corrupt_bytes)
 
         store = InMemoryCredentialStore()
         store.set_approval_store_path(store_path)
 
-        assert store.list_approval_factors() == []
-        assert not store_path.exists()
-        quarantined = list(tmp_path.glob("approval-factors.json.corrupt.*"))
-        assert len(quarantined) == 1
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "invalid_json"
+        assert store.approval_state_degraded is True
+        with pytest.raises(StatePersistenceDegradedError, match="invalid_json"):
+            store.list_approval_factors()
+        assert store_path.read_bytes() == corrupt_bytes
+        assert list(tmp_path.glob("approval-factors.json.corrupt.*")) == []
 
     def test_local_fido2_realm_id_persists_with_factor_store(self, tmp_path) -> None:
         store_path = tmp_path / "approval-factors.json"
@@ -319,8 +334,8 @@ class TestApprovalFactorStore:
             )
         )
 
-        payload = json.loads(store_path.read_text(encoding="utf-8"))
-        assert payload["local_fido2_realm_id"] == realm_id
+        envelope = json.loads(store_path.read_text(encoding="utf-8"))
+        assert envelope["payload"]["local_fido2_realm_id"] == realm_id
 
         reloaded = InMemoryCredentialStore()
         reloaded.set_approval_store_path(store_path)
@@ -352,7 +367,165 @@ class TestApprovalFactorStore:
         store = InMemoryCredentialStore()
         store.set_approval_store_path(store_path)
 
+        assert store.approval_state_load_result().legacy is True
         assert store.get_or_create_local_fido2_realm_id() == "deadbeefcafebabe"
+
+    @pytest.mark.parametrize(
+        "schema_version",
+        [
+            "shisad.approval_factor_store.v1",
+            "shisad.approval_factor_store.v2",
+        ],
+    )
+    def test_f3_legacy_approval_store_loads_and_migrates_on_mutation(
+        self,
+        tmp_path,
+        schema_version: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        legacy_payload = {
+            "schema_version": schema_version,
+            "approval_factors": [],
+            "signer_keys": [],
+        }
+        store_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.OK
+        assert result.legacy is True
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-migrated",
+                user_id="alice",
+                method="totp",
+                principal_id="device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        envelope = json.loads(store_path.read_text(encoding="utf-8"))
+        assert envelope["version"] == 3
+        assert "checksum" in envelope
+        assert envelope["payload"]["approval_factors"][0]["credential_id"] == (
+            "factor-migrated"
+        )
+
+    def test_f3_approval_store_checksum_tamper_is_retained_and_fail_closed(
+        self,
+        tmp_path,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-1",
+                user_id="alice",
+                method="totp",
+                principal_id="device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        envelope = json.loads(store_path.read_text(encoding="utf-8"))
+        envelope["payload"]["approval_factors"][0]["principal_id"] = "tampered"
+        store_path.write_text(json.dumps(envelope), encoding="utf-8")
+        tampered_bytes = store_path.read_bytes()
+
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+
+        result = restarted.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "checksum_mismatch"
+        with pytest.raises(StatePersistenceDegradedError, match="checksum_mismatch"):
+            restarted.get_approval_factor("factor-1")
+        with pytest.raises(StatePersistenceDegradedError, match="checksum_mismatch"):
+            restarted.get_signer_key("signer-1")
+        with pytest.raises(StatePersistenceDegradedError, match="checksum_mismatch"):
+            restarted.get_or_create_local_fido2_realm_id()
+        assert store_path.read_bytes() == tampered_bytes
+
+    def test_f3_approval_store_future_schema_is_typed_and_retained(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        unsupported_bytes = encode_versioned_json_snapshot(
+            {"approval_factors": [], "signer_keys": []},
+            version=99,
+        )
+        store_path.write_bytes(unsupported_bytes)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
+        assert result.schema_version == 99
+        with pytest.raises(StatePersistenceDegradedError, match="unsupported_schema"):
+            store.list_signer_keys()
+        assert store_path.read_bytes() == unsupported_bytes
+
+    def test_f3_checksum_valid_invalid_approval_payload_is_corrupt(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        invalid_bytes = encode_versioned_json_snapshot(
+            {
+                "approval_factors": [{"credential_id": "incomplete"}],
+                "signer_keys": [],
+            },
+            version=3,
+        )
+        store_path.write_bytes(invalid_bytes)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "invalid_approval_factors"
+        with pytest.raises(StatePersistenceDegradedError, match="invalid_approval_factors"):
+            store.list_approval_factors()
+        assert store_path.read_bytes() == invalid_bytes
+
+    def test_f3_missing_primary_with_corrupt_artifact_is_not_new_authority(
+        self,
+        tmp_path,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        artifact = tmp_path / "approval-factors.json.corrupt.20260715T000000Z"
+        artifact.write_bytes(b"retained-corrupt-state")
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "prior_corrupt_artifact_present"
+        with pytest.raises(StatePersistenceDegradedError, match="prior_corrupt_artifact"):
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="must-not-create",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="device",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+        assert not store_path.exists()
+        assert artifact.read_bytes() == b"retained-corrupt-state"
+
+    def test_f3_broken_approval_store_link_is_not_treated_as_missing(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store_path.symlink_to(tmp_path / "missing-target.json")
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "read_error"
+        with pytest.raises(StatePersistenceDegradedError, match="read_error"):
+            store.list_approval_factors()
+        assert store_path.is_symlink()
 
     @pytest.mark.parametrize(
         "fault_stage",

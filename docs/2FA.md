@@ -651,9 +651,17 @@ See [ENV-VARS.md](ENV-VARS.md) for the complete reference.
 ### Credential storage
 
 - Approval factors (TOTP secrets, passkey public keys, helper credentials) and
-  signer public keys are stored in a daemon-owned JSON file.
+  signer public keys are stored in a daemon-owned, checksum-bound v3 JSON
+  snapshot. Publication is owner-only and file/parent-fsynced before an update
+  is acknowledged. Valid legacy v1/v2 snapshots are read and migrate on their
+  next acknowledged mutation.
 - Default location: `SHISAD_DATA_DIR/approval-factors.json`
 - Override with: `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH`
+- Malformed, checksum-mismatched, semantically invalid, or newer-schema bytes
+  are retained rather than interpreted as an empty factor set. The affected
+  factor/signer surface fails closed until the complete authority is restored
+  or explicitly reset and shisad is restarted. Inspect the bounded posture with
+  `shisad status` or `shisad doctor check --component approvals`.
 - **Not encrypted at rest** in the current shipped line. Protect with
   filesystem permissions.
 
@@ -694,6 +702,8 @@ For L3+ signed approvals, the audit trail also includes:
 | `confirmation_method_mismatch` | The proof you submitted does not match the pending action's required backend | Check `shisad action list` for the required method |
 | `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire, then re-queue the action and approve the new pending confirmation |
 | `signer_backend_invalid_response` | The KMS endpoint returned a malformed or invalid response | Check KMS endpoint logs; the daemon fails closed on invalid responses |
+| `approval_store_corrupt` | The retained approval snapshot is malformed, checksum-mismatched, or semantically invalid | Run `shisad doctor check --component approvals`, restore the complete store from a trusted backup or perform an audited whole-authority reset, then restart shisad |
+| `approval_store_unsupported_schema` | The retained approval snapshot was written by a newer unsupported schema | Upgrade shisad to a compatible version or restore a supported complete store; do not replace it with an empty file |
 
 ---
 

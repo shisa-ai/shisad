@@ -2205,44 +2205,50 @@ class HandlerImplementation(
         )
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
-        self._confirmation_backend_registry.register(
-            TOTPBackend(credential_store=services.credential_store)
-        )
-        if self._approval_web.enabled:
-            self._confirmation_backend_registry.register(
-                WebAuthnBackend(
-                    credential_store=services.credential_store,
-                    approval_origin=self._config.approval_origin,
-                    rp_id=self._config.approval_rp_id,
-                )
+        if services.credential_store.approval_state_degraded:
+            logger.warning(
+                "Approval-factor state is degraded; store-backed confirmation and signer "
+                "backends remain disabled until retained state is restored and shisad restarts"
             )
         else:
             self._confirmation_backend_registry.register(
-                LocalFido2Backend(
-                    credential_store=services.credential_store,
-                    daemon_id=self._daemon_id,
-                )
+                TOTPBackend(credential_store=services.credential_store)
             )
-        if self._config.signer_kms_url.strip():
-            self._confirmation_backend_registry.register(
-                SignerConfirmationAdapter(
-                    EnterpriseKmsSignerBackend(
+            if self._approval_web.enabled:
+                self._confirmation_backend_registry.register(
+                    WebAuthnBackend(
                         credential_store=services.credential_store,
-                        endpoint_url=self._config.signer_kms_url,
-                        bearer_token=self._config.signer_kms_bearer_token,
+                        approval_origin=self._config.approval_origin,
+                        rp_id=self._config.approval_rp_id,
                     )
                 )
-            )
-        if self._config.signer_ledger_url.strip():
-            self._confirmation_backend_registry.register(
-                SignerConfirmationAdapter(
-                    LedgerSignerBackend(
+            else:
+                self._confirmation_backend_registry.register(
+                    LocalFido2Backend(
                         credential_store=services.credential_store,
-                        endpoint_url=self._config.signer_ledger_url,
-                        bearer_token=self._config.signer_ledger_bearer_token,
+                        daemon_id=self._daemon_id,
                     )
                 )
-            )
+            if self._config.signer_kms_url.strip():
+                self._confirmation_backend_registry.register(
+                    SignerConfirmationAdapter(
+                        EnterpriseKmsSignerBackend(
+                            credential_store=services.credential_store,
+                            endpoint_url=self._config.signer_kms_url,
+                            bearer_token=self._config.signer_kms_bearer_token,
+                        )
+                    )
+                )
+            if self._config.signer_ledger_url.strip():
+                self._confirmation_backend_registry.register(
+                    SignerConfirmationAdapter(
+                        LedgerSignerBackend(
+                            credential_store=services.credential_store,
+                            endpoint_url=self._config.signer_ledger_url,
+                            bearer_token=self._config.signer_ledger_bearer_token,
+                        )
+                    )
+                )
         self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker(
             state_path=self._config.data_dir / "confirmation_lockouts.json"
         )
@@ -3148,6 +3154,9 @@ class HandlerImplementation(
 
     def _doctor_storage_status(self) -> dict[str, Any]:
         return sqlite_runtime_status()
+
+    def _doctor_approval_status(self) -> dict[str, Any]:
+        return self._credential_store.approval_state_status()
 
     def _doctor_provider_status(self) -> dict[str, Any]:
         payload = self._provider_diagnostics

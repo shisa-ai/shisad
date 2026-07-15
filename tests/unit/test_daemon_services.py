@@ -144,10 +144,58 @@ async def test_daemon_services_builds_with_local_provider(
     )
     services = await DaemonServices.build(config)
     try:
+        impl = HandlerImplementation(services=services)
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "approvals"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
         assert services.internal_ingress_marker is not None
+        assert status["approvals"]["status"] == "ok"
+        assert status["approvals"]["load_status"] == "missing"
+        assert doctor["status"] == "ok"
+        assert doctor["checks"]["approvals"]["load_status"] == "missing"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_approval_store_starts_bounded_degraded_and_is_actionable(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    approval_path = data_dir / "approval-factors.json"
+    corrupt_bytes = b'{"version":3,"payload":'
+    approval_path.write_bytes(corrupt_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "approvals"})
+
+        assert status["status"] == "running"
+        assert status["approvals"]["status"] == "degraded"
+        assert status["approvals"]["load_status"] == "corrupt"
+        assert status["approvals"]["fail_closed"] is True
+        assert str(approval_path) == status["approvals"]["path"]
+        assert "restore" in status["approvals"]["remediation"].lower()
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["approvals"]["problems"] == [
+            "approval_store_corrupt"
+        ]
+        assert impl._confirmation_backend_registry.get_backend("software.default") is not None
+        assert impl._confirmation_backend_registry.get_backend("totp.default") is None
+        assert impl._confirmation_backend_registry.get_backend("approver.local_fido2") is None
+        assert approval_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
 
