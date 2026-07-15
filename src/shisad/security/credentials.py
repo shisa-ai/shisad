@@ -577,19 +577,20 @@ class InMemoryCredentialStore:
         if path is None:
             return
         self._require_approval_state_available(transition="persist")
-        payload = {
-            "schema_version": "shisad.approval_factor_store.v2",
-            "approval_factors": [
-                factor.model_dump(mode="json") for factor in self.list_approval_factors()
-            ],
-            "signer_keys": [
-                record.model_dump(mode="json")
-                for record in self.list_signer_keys(include_revoked=True)
-            ],
-        }
-        if self._local_fido2_realm_id:
-            payload["local_fido2_realm_id"] = self._local_fido2_realm_id
         try:
+            payload = {
+                "schema_version": "shisad.approval_factor_store.v2",
+                "approval_factors": [
+                    factor.model_dump(mode="json")
+                    for factor in self.list_approval_factors()
+                ],
+                "signer_keys": [
+                    record.model_dump(mode="json")
+                    for record in self.list_signer_keys(include_revoked=True)
+                ],
+            }
+            if self._local_fido2_realm_id:
+                payload["local_fido2_realm_id"] = self._local_fido2_realm_id
             encoded = (json.dumps(payload, allow_nan=False, indent=2) + "\n").encode("utf-8")
         except (TypeError, ValueError):
             self._restore_durable_approval_state()

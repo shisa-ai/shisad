@@ -101,6 +101,12 @@ def _validate_existing_target(path: Path) -> None:
         target_stat = path.lstat()
     except FileNotFoundError:
         return
+    except OSError as exc:
+        raise AtomicWriteError(
+            path=path,
+            stage=AtomicWriteStage.TARGET_VALIDATE,
+            publication_may_have_committed=False,
+        ) from exc
     if not stat.S_ISREG(target_stat.st_mode):
         raise AtomicWriteError(
             path=path,

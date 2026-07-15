@@ -6,6 +6,7 @@ import json
 import os
 import stat
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -491,3 +492,116 @@ class TestApprovalFactorStore:
 
         assert stat.S_IMODE(store_path.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(store_path.stat().st_mode) == 0o600
+
+    def test_f3_factor_serialization_failure_restores_durable_view(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "state" / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-old",
+                user_id="alice",
+                method="totp",
+                principal_id="old-device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+
+        def _fail_dump(*args: object, **kwargs: object) -> dict[str, object]:
+            raise TypeError("injected factor serialization failure")
+
+        monkeypatch.setattr(ApprovalFactorRecord, "model_dump", _fail_dump)
+
+        with pytest.raises(TypeError, match="factor serialization"):
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="factor-new",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="new-device",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+
+        assert [
+            item.credential_id for item in store.list_approval_factors()
+        ] == ["factor-old"]
+
+    def test_f3_signer_serialization_failure_restores_durable_view(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "state" / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_signer_key(
+            SignerKeyRecord(
+                credential_id="kms:primary",
+                user_id="alice",
+                backend="kms",
+                principal_id="finance-owner",
+                algorithm="ed25519",
+                device_type="enterprise",
+                public_key_pem="test-public-key",
+            )
+        )
+
+        def _fail_dump(*args: object, **kwargs: object) -> dict[str, object]:
+            raise TypeError("injected signer serialization failure")
+
+        monkeypatch.setattr(SignerKeyRecord, "model_dump", _fail_dump)
+
+        with pytest.raises(TypeError, match="signer serialization"):
+            store.revoke_signer_key(credential_id="kms:primary")
+
+        current = store.get_signer_key("kms:primary")
+        assert current is not None
+        assert current.revoked_at is None
+
+    def test_f3_target_validation_error_restores_approval_mutation(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "state" / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-old",
+                user_id="alice",
+                method="totp",
+                principal_id="old-device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        real_lstat = Path.lstat
+
+        def _deny_target(path: Path) -> os.stat_result:
+            if path == store_path:
+                raise PermissionError("injected approval target lstat denial")
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", _deny_target)
+
+        with pytest.raises(AtomicWriteError) as raised:
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="factor-new",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="new-device",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+
+        assert raised.value.stage == AtomicWriteStage.TARGET_VALIDATE
+        assert raised.value.publication_may_have_committed is False
+        assert [
+            item.credential_id for item in store.list_approval_factors()
+        ] == ["factor-old"]

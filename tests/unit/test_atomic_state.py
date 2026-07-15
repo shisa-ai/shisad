@@ -102,6 +102,28 @@ def test_atomic_write_rejects_non_regular_existing_target(tmp_path: Path) -> Non
     assert raised.value.publication_may_have_committed is False
 
 
+def test_atomic_write_types_target_lstat_errors_as_uncommitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "pending_actions.json"
+    real_lstat = Path.lstat
+
+    def _deny_target(path: Path) -> os.stat_result:
+        if path == target:
+            raise PermissionError("injected target lstat denial")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", _deny_target)
+
+    with pytest.raises(AtomicWriteError) as raised:
+        atomic_write_bytes(target, b"payload")
+
+    assert raised.value.stage == AtomicWriteStage.TARGET_VALIDATE
+    assert raised.value.publication_may_have_committed is False
+    assert not target.exists()
+
+
 def test_versioned_json_snapshot_round_trips_with_checksum() -> None:
     encoded = encode_versioned_json_snapshot({"rows": [{"id": "one"}]})
 
