@@ -353,9 +353,10 @@ def durable_append_bytes(
 ) -> None:
     """Append owner-only bytes and fsync before acknowledging publication.
 
-    A newly created file is also published through a containing-directory fsync.
-    Append failures after any byte is written are typed as commit-uncertain; the
-    caller must not assume it is safe to retry an effect-bearing record.
+    The containing directory is fsynced before every acknowledgement, including
+    retries that may be recovering a first publication. Append failures after
+    any byte is written are typed as commit-uncertain; the caller must not assume
+    it is safe to retry an effect-bearing record.
     """
 
     target = Path(path)
@@ -431,14 +432,13 @@ def durable_append_bytes(
             fault_injector(stage)
         os.fsync(file_fd)
 
-        if not target_existed:
-            stage = DurableAppendStage.PARENT_FSYNC
-            if fault_injector is not None:
-                fault_injector(stage)
-            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            directory_flags |= getattr(os, "O_CLOEXEC", 0)
-            parent_fd = os.open(parent, directory_flags)
-            os.fsync(parent_fd)
+        stage = DurableAppendStage.PARENT_FSYNC
+        if fault_injector is not None:
+            fault_injector(stage)
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        parent_fd = os.open(parent, directory_flags)
+        os.fsync(parent_fd)
         completed = True
     except DurableAppendError:
         raise

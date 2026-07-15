@@ -199,6 +199,22 @@ def test_durable_append_can_durably_create_an_empty_log(tmp_path: Path) -> None:
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
+def test_durable_append_fsyncs_parent_for_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "control" / "pairing_requests.jsonl"
+    durable_append_bytes(target, b'{"id":"one"}\n')
+
+    def _inject(stage: DurableAppendStage) -> None:
+        if stage == DurableAppendStage.PARENT_FSYNC:
+            raise OSError("fault:parent_fsync")
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"two"}\n', fault_injector=_inject)
+
+    assert raised.value.stage == DurableAppendStage.PARENT_FSYNC
+    assert raised.value.publication_may_have_committed is True
+    assert target.read_bytes() == b'{"id":"one"}\n{"id":"two"}\n'
+
+
 def test_versioned_json_snapshot_round_trips_with_checksum() -> None:
     encoded = encode_versioned_json_snapshot({"rows": [{"id": "one"}]})
 

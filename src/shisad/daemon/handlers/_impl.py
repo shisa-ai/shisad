@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import re
+import stat
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -73,6 +74,7 @@ from shisad.core.approval import (
 )
 from shisad.core.atomic_state import (
     AtomicWriteError,
+    DurableAppendError,
     StatePersistenceDegradedError,
     atomic_write_bytes,
     durable_append_bytes,
@@ -2187,6 +2189,9 @@ class HandlerImplementation(
         self._classifier_mode = services.firewall.classifier_mode
         self._internal_ingress_marker = services.internal_ingress_marker
         self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
+        self._pairing_publication_degradation = (
+            self._inspect_pairing_request_publication_state()
+        )
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
@@ -2398,6 +2403,7 @@ class HandlerImplementation(
                     len(self._plan_violation_counts),
                     len(self._confirmation_alerted_at),
                     len(self._identity_map._pairing_requests),
+                    bool(self._pairing_publication_degradation),
                     len(self._confirmation_failure_tracker._state),
                 )
             )
@@ -2440,6 +2446,7 @@ class HandlerImplementation(
         self._confirmation_failure_tracker._state.clear()
         self._pending_actions_file.unlink(missing_ok=True)
         self._pairing_requests_file.unlink(missing_ok=True)
+        self._pairing_publication_degradation = None
         lockout_state_path = self._confirmation_failure_tracker._state_path
         if lockout_state_path is not None:
             lockout_state_path.unlink(missing_ok=True)
@@ -2531,6 +2538,7 @@ class HandlerImplementation(
                 or self._monitor_reject_counts
                 or self._plan_violation_counts
                 or self._confirmation_alerted_at
+                or self._pairing_publication_degradation
                 or self._confirmation_failure_tracker._state
             )
             and not self._pending_actions_file.exists()
@@ -3241,11 +3249,17 @@ class HandlerImplementation(
             overall = "degraded"
         elif any(item == "ok" for item in active_statuses):
             overall = "ok"
+        pairing_status = self._pairing_request_publication_status()
+        if pairing_status["status"] == "degraded":
+            problems.append("pairing_request_persistence_degraded")
+            if overall != "misconfigured":
+                overall = "degraded"
         return {
             "status": overall,
             "problems": sorted(set(problems)),
             "channels": rows,
             "delivery": self._delivery.health_status(),
+            "pairing_requests": pairing_status,
         }
 
     def _doctor_sandbox_status(self) -> dict[str, Any]:
@@ -6309,6 +6323,83 @@ class HandlerImplementation(
         durable_append_bytes(
             self._pairing_requests_file,
             (json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n").encode("utf-8"),
+        )
+
+    def _inspect_pairing_request_publication_state(self) -> dict[str, str] | None:
+        path = self._pairing_requests_file
+        try:
+            target_stat = path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return {
+                "stage": "startup_inspect",
+                "reason": f"artifact_stat_failed:{exc.__class__.__name__}",
+                "path": str(path),
+            }
+        if not stat.S_ISREG(target_stat.st_mode):
+            return {
+                "stage": "startup_inspect",
+                "reason": "artifact_target_invalid",
+                "path": str(path),
+            }
+        try:
+            with path.open("rb") as handle:
+                if target_stat.st_size == 0:
+                    return None
+                handle.seek(-1, os.SEEK_END)
+                final_byte = handle.read(1)
+        except OSError as exc:
+            return {
+                "stage": "startup_inspect",
+                "reason": f"artifact_read_failed:{exc.__class__.__name__}",
+                "path": str(path),
+            }
+        if final_byte != b"\n":
+            return {
+                "stage": "startup_inspect",
+                "reason": "artifact_unterminated_row",
+                "path": str(path),
+            }
+        return None
+
+    def _mark_pairing_publication_uncertain(self, error: DurableAppendError) -> None:
+        self._pairing_publication_degradation = {
+            "stage": error.stage.value,
+            "reason": "publication_commit_uncertain",
+            "path": str(error.path),
+        }
+
+    def _pairing_request_publication_status(self) -> dict[str, Any]:
+        degradation = self._pairing_publication_degradation
+        return {
+            "status": "degraded" if degradation is not None else "ok",
+            "problems": (
+                ["pairing_request_persistence_degraded"]
+                if degradation is not None
+                else []
+            ),
+            "path": str(self._pairing_requests_file),
+            "stage": str((degradation or {}).get("stage", "")),
+            "reason": str((degradation or {}).get("reason", "")),
+            "fail_closed": degradation is not None,
+            "remediation": (
+                "Inspect and reconcile the retained pairing request artifact, then restart "
+                "shisad before accepting more pairing requests."
+                if degradation is not None
+                else ""
+            ),
+        }
+
+    def _require_pairing_request_publication(self) -> None:
+        degradation = self._pairing_publication_degradation
+        if degradation is None:
+            return
+        raise StatePersistenceDegradedError(
+            authority="pairing_requests",
+            transition="record_pairing_request",
+            stage=str(degradation.get("stage", "")),
+            reason=str(degradation.get("reason", "pairing_request_persistence_degraded")),
         )
 
     async def _record_monitor_reject(self, sid: SessionId, reason: str) -> None:

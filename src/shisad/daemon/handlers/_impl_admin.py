@@ -20,7 +20,7 @@ from shisad.channels.discord_components import (
     discord_approval_custom_id,
 )
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
-from shisad.core.atomic_state import atomic_write_bytes
+from shisad.core.atomic_state import DurableAppendError, atomic_write_bytes
 from shisad.core.events import (
     AnomalyReported,
     ChannelDeliveryAttempted,
@@ -1581,6 +1581,7 @@ class AdminImplMixin(HandlerMixinBase):
                     "available": self._slack_channel.available if self._slack_channel else False,
                     "connected": self._slack_channel.connected if self._slack_channel else False,
                 },
+                "pairing_requests": self._pairing_request_publication_status(),
             },
             "delivery": self._delivery.health_status(),
             "approvals": self._credential_store.approval_state_status(),
@@ -2329,6 +2330,7 @@ class AdminImplMixin(HandlerMixinBase):
             and discord_decision.reason in {"public_grant", "trusted_guest_grant"}
         )
         if not allowed_by_identity and not public_policy_access:
+            self._require_pairing_request_publication()
             pairing, is_new = self._identity_map.record_pairing_request(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
@@ -2343,6 +2345,12 @@ class AdminImplMixin(HandlerMixinBase):
                         workspace_hint=pairing.workspace_hint,
                         reason=pairing.reason,
                     )
+                except DurableAppendError as exc:
+                    if exc.publication_may_have_committed:
+                        self._mark_pairing_publication_uncertain(exc)
+                    else:
+                        self._identity_map.discard_pairing_request(pairing)
+                    raise
                 except Exception:
                     self._identity_map.discard_pairing_request(pairing)
                     raise

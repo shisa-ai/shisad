@@ -191,7 +191,7 @@ async def test_f3_pairing_request_append_rejects_symlink_target(
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
-        with pytest.raises(RuntimeError, match="Internal error"):
+        with pytest.raises(RuntimeError, match="State authority unavailable"):
             await client.call(
                 "channel.ingest",
                 {
@@ -271,6 +271,130 @@ async def test_f3_pairing_append_failure_allows_same_process_retry(
         assert len(rows) == 1
         assert json.loads(rows[0])["external_user_id"] == "retry-user"
         assert attempts == 2
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault_stage",
+    [DurableAppendStage.FILE_FSYNC, DurableAppendStage.PARENT_FSYNC],
+)
+async def test_f3_pairing_commit_uncertainty_fails_closed_without_retry(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault_stage: DurableAppendStage,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    real_append = impl_module.durable_append_bytes
+    attempts = 0
+
+    def _uncertain_append(path: Path, payload: bytes) -> None:
+        nonlocal attempts
+        attempts += 1
+
+        def _inject(stage: DurableAppendStage) -> None:
+            if stage == fault_stage:
+                raise OSError(f"fault:{stage.value}")
+
+        real_append(path, payload, fault_injector=_inject)
+
+    monkeypatch.setattr(impl_module, "durable_append_bytes", _uncertain_append)
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    message = {
+        "channel": "discord",
+        "external_user_id": "uncertain-user",
+        "workspace_hint": "guild-1",
+        "content": "hello",
+        "reply_target": "chan-1",
+    }
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        with pytest.raises(RuntimeError, match="Internal error"):
+            await client.call(
+                "channel.ingest",
+                {"message": {**message, "message_id": "m-first"}},
+            )
+        uncertain_bytes = artifact_file.read_bytes()
+        assert uncertain_bytes.endswith(b"\n")
+
+        with pytest.raises(RuntimeError, match="State authority unavailable"):
+            await client.call(
+                "channel.ingest",
+                {"message": {**message, "message_id": "m-retry"}},
+            )
+
+        doctor = await client.call("doctor.check", {"component": "channels"})
+        status = await client.call("daemon.status")
+        pairing_status = doctor["checks"]["channels"]["pairing_requests"]
+        assert doctor["status"] == "degraded"
+        assert pairing_status["status"] == "degraded"
+        assert pairing_status["stage"] == fault_stage.value
+        assert pairing_status["fail_closed"] is True
+        assert status["channels"]["pairing_requests"] == pairing_status
+        assert artifact_file.read_bytes() == uncertain_bytes
+        assert attempts == 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_f3_pairing_unterminated_startup_artifact_fails_closed(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    artifact_file.parent.mkdir(parents=True)
+    partial_bytes = b'{"channel":"discord"'
+    artifact_file.write_bytes(partial_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        doctor = await client.call("doctor.check", {"component": "channels"})
+        pairing_status = doctor["checks"]["channels"]["pairing_requests"]
+        assert doctor["status"] == "degraded"
+        assert pairing_status["reason"] == "artifact_unterminated_row"
+
+        with pytest.raises(RuntimeError, match="State authority unavailable"):
+            await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": "blocked-user",
+                        "workspace_hint": "guild-1",
+                        "content": "hello",
+                        "message_id": "m-partial",
+                        "reply_target": "chan-1",
+                    }
+                },
+            )
+        assert artifact_file.read_bytes() == partial_bytes
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
