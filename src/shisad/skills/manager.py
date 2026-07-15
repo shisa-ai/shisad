@@ -66,6 +66,7 @@ class InstalledSkill(BaseModel):
     state: ArtifactState
     author: str
     tool_schema_hashes: dict[str, str] = Field(default_factory=dict)
+    tool_schema_hashes_legacy: bool = False
 
 
 class SkillManager:
@@ -470,6 +471,8 @@ class SkillManager:
             return {}
 
         inventory: dict[str, InstalledSkill] = {}
+        missing_binding_map = False
+        invalid_binding_map = False
         for item in payload:
             if not isinstance(item, dict):
                 self._state_load_result = StateLoadResult(
@@ -479,8 +482,11 @@ class SkillManager:
                     legacy=legacy,
                 )
                 return {}
+            candidate_item = dict(item)
+            if legacy:
+                candidate_item["tool_schema_hashes_legacy"] = True
             try:
-                entry = InstalledSkill.model_validate(item)
+                entry = InstalledSkill.model_validate(candidate_item)
             except (TypeError, ValueError, ValidationError):
                 self._state_load_result = StateLoadResult(
                     StateLoadStatus.CORRUPT,
@@ -515,7 +521,34 @@ class SkillManager:
                 )
                 return {}
             inventory[entry.name] = entry
-        self._state_load_result = load_result
+            if not legacy and "tool_schema_hashes" not in item:
+                missing_binding_map = True
+            if (
+                not entry.tool_schema_hashes_legacy
+                and any(not value.strip() for value in entry.tool_schema_hashes.values())
+            ):
+                invalid_binding_map = True
+        if missing_binding_map:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="missing_tool_schema_bindings",
+                schema_version=load_result.schema_version,
+            )
+            return {}
+        if invalid_binding_map:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_tool_schema_bindings",
+                schema_version=load_result.schema_version,
+            )
+            return {}
+        self._state_load_result = StateLoadResult(
+            load_result.status,
+            reason=load_result.reason,
+            schema_version=load_result.schema_version,
+            legacy=legacy
+            or any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
+        )
         return inventory
 
     def _persist_inventory_snapshot(self, inventory: dict[str, InstalledSkill]) -> None:
@@ -541,6 +574,7 @@ class SkillManager:
         self._state_load_result = StateLoadResult(
             StateLoadStatus.OK,
             schema_version=_SKILL_INVENTORY_VERSION,
+            legacy=any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
         )
 
     def _installed_bundles(self) -> list[SkillBundle]:
@@ -561,7 +595,7 @@ class SkillManager:
         return bundles
 
     def _register_inventory_tools(self) -> None:
-        if self._tool_registry is None or self.state_degraded:
+        if self.state_degraded:
             return
         inventory_migrated = False
         candidate = dict(self._inventory)
@@ -579,14 +613,39 @@ class SkillManager:
                 )
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
+            if not _tool_schema_bindings_complete(
+                bundle.manifest,
+                expected_hashes=installed.tool_schema_hashes,
+            ):
+                if installed.tool_schema_hashes_legacy:
+                    logger.warning(
+                        "Skipping unbound legacy skill tools until the skill is reviewed "
+                        "again: skill=%s version=%s",
+                        installed.name,
+                        installed.version,
+                    )
+                    continue
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="invalid_tool_schema_bindings",
+                    schema_version=_SKILL_INVENTORY_VERSION,
+                )
+                self._unregister_all_skill_tools()
+                return
             registration_bundles.append((installed, bundle))
             migrated_hashes = _migrated_tool_schema_hashes(
                 bundle.manifest,
                 expected_hashes=installed.tool_schema_hashes,
             )
-            if migrated_hashes != installed.tool_schema_hashes:
+            if (
+                migrated_hashes != installed.tool_schema_hashes
+                or installed.tool_schema_hashes_legacy
+            ):
                 candidate[installed.name] = installed.model_copy(
-                    update={"tool_schema_hashes": migrated_hashes}
+                    update={
+                        "tool_schema_hashes": migrated_hashes,
+                        "tool_schema_hashes_legacy": False,
+                    }
                 )
                 inventory_migrated = True
         if inventory_migrated:
@@ -635,6 +694,15 @@ class SkillManager:
             )
             expected_hash = str((expected_hashes or {}).get(declared_tool.name, "")).strip()
             actual_hash = tool_def.schema_hash()
+            if registration_source == "inventory_reload" and not expected_hash:
+                self._record_registration_drop(
+                    manifest=manifest,
+                    tool_name=tool_name,
+                    registration_source=registration_source,
+                    expected_hash=expected_hash,
+                    actual_hash=actual_hash,
+                )
+                continue
             if expected_hash and expected_hash != actual_hash:
                 legacy_hash = tool_def.legacy_schema_hash_without_retry_metadata()
                 if (
@@ -795,6 +863,19 @@ def _migrated_tool_schema_hashes(
         ):
             migrated[declared_tool.name] = tool_def.schema_hash()
     return migrated
+
+
+def _tool_schema_bindings_complete(
+    manifest: Any,
+    *,
+    expected_hashes: dict[str, str],
+) -> bool:
+    declared_names = {
+        str(declared_tool.name) for declared_tool in getattr(manifest, "tools", [])
+    }
+    if set(expected_hashes) != declared_names:
+        return False
+    return all(str(value).strip() for value in expected_hashes.values())
 
 
 def _hash_prefix(value: str) -> str:

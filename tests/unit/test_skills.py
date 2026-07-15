@@ -766,6 +766,71 @@ def test_f3_skill_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> 
     assert target.read_bytes() == encode_versioned_json_snapshot([], version=1)
 
 
+def test_f3_current_skill_inventory_requires_explicit_tool_binding_map(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    inventory_path = storage / "inventory.json"
+    snapshot = encode_versioned_json_snapshot(
+        [
+            {
+                "name": "current-skill",
+                "version": "1.0.0",
+                "path": "/tmp/current-skill",
+                "manifest_hash": "reviewed-hash",
+                "state": "published",
+                "author": "trusted-dev",
+            }
+        ],
+        version=1,
+    )
+    inventory_path.write_bytes(snapshot)
+
+    manager = SkillManager(storage_dir=storage)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "missing_tool_schema_bindings"
+    assert inventory_path.read_bytes() == snapshot
+
+
+@pytest.mark.parametrize("binding_case", ["missing", "blank", "extra"])
+def test_f3_current_skill_inventory_requires_exact_nonblank_declared_tool_bindings(
+    tmp_path: Path,
+    binding_case: str,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    SkillManager(storage_dir=storage).activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    valid_hash = payload[0]["tool_schema_hashes"]["lookup"]
+    if binding_case == "missing":
+        payload[0]["tool_schema_hashes"] = {}
+    elif binding_case == "blank":
+        payload[0]["tool_schema_hashes"] = {"lookup": ""}
+    else:
+        payload[0]["tool_schema_hashes"] = {
+            "lookup": valid_hash,
+            "removed-tool": "stale-binding",
+        }
+    snapshot = encode_versioned_json_snapshot(payload, version=1)
+    inventory_path.write_bytes(snapshot)
+
+    manager = SkillManager(storage_dir=storage)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_tool_schema_bindings"
+    assert manager.state_degraded is True
+    registry = ToolRegistry()
+    SkillManager(storage_dir=storage, tool_registry=registry)
+    assert registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+    assert inventory_path.read_bytes() == snapshot
+
+
 @pytest.mark.parametrize(
     ("snapshot", "status", "reason"),
     [
@@ -884,6 +949,45 @@ def test_f3_legacy_skill_inventory_loads_and_migrates_on_revoke(tmp_path: Path) 
     assert envelope["version"] == 1
     assert "checksum" in envelope
     assert envelope["payload"][0]["state"] == "revoked"
+
+
+def test_f3_unrelated_mutation_preserves_hashless_legacy_tool_binding_marker(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    first_skill = _f3_skill_with_tool(tmp_path, name="legacy-first")
+    second_skill = _f3_skill_with_tool(tmp_path, name="legacy-second")
+    legacy_entries = [
+        InstalledSkill(
+            name=name,
+            version="1.0.0",
+            path=str(path),
+            manifest_hash="legacy-hash",
+            state=ArtifactState.PUBLISHED,
+            author="trusted-dev",
+        ).model_dump(mode="json")
+        for name, path in (
+            ("legacy-first", first_skill),
+            ("legacy-second", second_skill),
+        )
+    ]
+    inventory_path = storage / "inventory.json"
+    inventory_path.write_text(json.dumps(legacy_entries), encoding="utf-8")
+    manager = SkillManager(storage_dir=storage)
+
+    manager.revoke(skill_name="legacy-first", reason="unrelated")
+
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    second_row = next(
+        row for row in envelope["payload"] if row["name"] == "legacy-second"
+    )
+    assert second_row["tool_schema_hashes_legacy"] is True
+    registry = ToolRegistry()
+    restarted = SkillManager(storage_dir=storage, tool_registry=registry)
+    assert restarted.inventory_load_result().legacy is True
+    assert restarted.state_degraded is False
+    assert registry.get_tool(ToolName("skill.legacy-second.lookup")) is None
 
 
 @pytest.mark.parametrize(
