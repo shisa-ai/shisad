@@ -236,15 +236,14 @@ class SecurityDashboard:
             raw_payload = json.loads(raw_bytes.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError):
             raw_payload = None
-        envelope_candidate = isinstance(raw_payload, dict) and (
-            "checksum" in raw_payload
-            or "payload" in raw_payload
-            or (
-                isinstance(raw_payload.get("version"), int)
-                and not isinstance(raw_payload.get("version"), bool)
-            )
+        legacy_candidate = isinstance(raw_payload, dict) and all(
+            isinstance(key, str)
+            and bool(key.strip())
+            and isinstance(value, str)
+            and bool(value.strip())
+            for key, value in raw_payload.items()
         )
-        if isinstance(raw_payload, dict) and not envelope_candidate:
+        if legacy_candidate:
             load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
             payload: Any = raw_payload
         else:

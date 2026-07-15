@@ -204,6 +204,24 @@ def test_f3_dashboard_legacy_marks_migrate_on_next_mutation(tmp_path: Path) -> N
     assert envelope["payload"] == {"evt-1": "legacy", "evt-2": "reviewed"}
 
 
+@pytest.mark.parametrize("legacy_event_id", ["payload", "checksum"])
+def test_f3_dashboard_reserved_event_ids_remain_valid_legacy_marks(
+    tmp_path: Path,
+    legacy_event_id: str,
+) -> None:
+    path = tmp_path / "dashboard" / "false_positives.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({legacy_event_id: "legacy"}), encoding="utf-8")
+
+    dashboard = SecurityDashboard(audit_log=AuditLog(tmp_path / "audit.jsonl"), marks_path=path)
+
+    assert dashboard.state_load_result.status == StateLoadStatus.OK
+    assert dashboard.state_load_result.legacy is True
+    dashboard.mark_false_positive(event_id="evt-new", reason="reviewed")
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert envelope["payload"] == {legacy_event_id: "legacy", "evt-new": "reviewed"}
+
+
 @pytest.mark.parametrize(
     ("fault_stage", "durable_new_mark"),
     [

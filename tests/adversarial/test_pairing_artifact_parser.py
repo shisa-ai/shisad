@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
+import shisad.daemon.handlers._impl as impl_module
 from shisad.core.api.transport import ControlClient
+from shisad.core.atomic_state import DurableAppendError, DurableAppendStage
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
@@ -204,6 +206,71 @@ async def test_f3_pairing_request_append_rejects_symlink_target(
                 },
             )
         assert outside.read_text(encoding="utf-8") == "outside\n"
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_f3_pairing_append_failure_allows_same_process_retry(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    real_append = impl_module.durable_append_bytes
+    attempts = 0
+
+    def _fail_first_append(path: Path, payload: bytes) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise DurableAppendError(
+                path=path,
+                stage=DurableAppendStage.FILE_OPEN,
+                publication_may_have_committed=False,
+            )
+        real_append(path, payload)
+
+    monkeypatch.setattr(impl_module, "durable_append_bytes", _fail_first_append)
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    message = {
+        "channel": "discord",
+        "external_user_id": "retry-user",
+        "workspace_hint": "guild-1",
+        "content": "hello",
+        "reply_target": "chan-1",
+    }
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        with pytest.raises(RuntimeError, match="Internal error"):
+            await client.call(
+                "channel.ingest",
+                {"message": {**message, "message_id": "m-first"}},
+            )
+        assert not artifact_file.exists()
+
+        retry = await client.call(
+            "channel.ingest",
+            {"message": {**message, "message_id": "m-retry"}},
+        )
+
+        assert "Pairing request recorded" in retry["response"]
+        rows = artifact_file.read_text(encoding="utf-8").splitlines()
+        assert len(rows) == 1
+        assert json.loads(rows[0])["external_user_id"] == "retry-user"
+        assert attempts == 2
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

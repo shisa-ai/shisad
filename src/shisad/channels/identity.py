@@ -107,3 +107,10 @@ class ChannelIdentityMap:
         items = list(self._pairing_requests.values())
         items.sort(key=lambda item: item.requested_at, reverse=True)
         return items[: max(limit, 1)]
+
+    def discard_pairing_request(self, request: ChannelPairingRequest) -> None:
+        """Remove only the exact pending request after failed publication."""
+
+        key = (request.channel, request.external_user_id)
+        if self._pairing_requests.get(key) is request:
+            self._pairing_requests.pop(key, None)

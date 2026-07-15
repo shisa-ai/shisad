@@ -2336,12 +2336,16 @@ class AdminImplMixin(HandlerMixinBase):
                 reason="identity_not_allowlisted",
             )
             if is_new:
-                self._record_pairing_request_artifact(
-                    channel=pairing.channel,
-                    external_user_id=pairing.external_user_id,
-                    workspace_hint=pairing.workspace_hint,
-                    reason=pairing.reason,
-                )
+                try:
+                    self._record_pairing_request_artifact(
+                        channel=pairing.channel,
+                        external_user_id=pairing.external_user_id,
+                        workspace_hint=pairing.workspace_hint,
+                        reason=pairing.reason,
+                    )
+                except Exception:
+                    self._identity_map.discard_pairing_request(pairing)
+                    raise
                 await self._event_bus.publish(
                     ChannelPairingRequested(
                         actor="channel_ingest",
