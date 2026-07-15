@@ -1024,7 +1024,7 @@ def doctor(ctx: click.Context) -> None:
     default="all",
     help=(
         "Component to check (all, dependencies, storage, approvals, skills, selfmod, "
-        "provider, policy, channels, sandbox, browser, realitycheck)"
+        "dashboard, provider, policy, channels, sandbox, browser, realitycheck)"
     ),
 )
 def doctor_check(component: str) -> None:

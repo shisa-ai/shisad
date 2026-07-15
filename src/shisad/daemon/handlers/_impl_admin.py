@@ -20,6 +20,7 @@ from shisad.channels.discord_components import (
     discord_approval_custom_id,
 )
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
+from shisad.core.atomic_state import atomic_write_bytes
 from shisad.core.events import (
     AnomalyReported,
     ChannelDeliveryAttempted,
@@ -73,6 +74,7 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "approvals",
     "skills",
     "selfmod",
+    "dashboard",
     "provider",
     "policy",
     "channels",
@@ -1583,6 +1585,7 @@ class AdminImplMixin(HandlerMixinBase):
             "delivery": self._delivery.health_status(),
             "approvals": self._credential_store.approval_state_status(),
             "skills": self._skill_manager.state_status(),
+            "dashboard": self._dashboard.state_status(),
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
                 "connect_path": self._sandbox.connect_path_status(),
@@ -1852,6 +1855,7 @@ class AdminImplMixin(HandlerMixinBase):
             "approvals": self._doctor_approval_status,
             "skills": self._skill_manager.state_status,
             "selfmod": self._selfmod_manager.doctor_status,
+            "dashboard": self._dashboard.state_status,
             "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,
@@ -2044,7 +2048,6 @@ class AdminImplMixin(HandlerMixinBase):
         proposal_id = uuid.uuid4().hex
         generated_at = datetime.now(UTC).isoformat()
         proposal_dir = self._config.data_dir / "proposals" / "channel_pairing"
-        proposal_dir.mkdir(parents=True, exist_ok=True)
         proposal_path = proposal_dir / f"{proposal_id}.json"
         proposal_payload = {
             "proposal_id": proposal_id,
@@ -2060,9 +2063,17 @@ class AdminImplMixin(HandlerMixinBase):
             "config_patch": {"channel_identity_allowlist": config_patch},
             "applied": False,
         }
-        proposal_path.write_text(
-            json.dumps(proposal_payload, ensure_ascii=True, indent=2),
-            encoding="utf-8",
+        atomic_write_bytes(
+            proposal_path,
+            (
+                json.dumps(
+                    proposal_payload,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8"),
         )
         await self._event_bus.publish(
             ChannelPairingProposalGenerated(

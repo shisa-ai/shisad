@@ -14,9 +14,12 @@ from shisad.core import atomic_state
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
+    DurableAppendError,
+    DurableAppendStage,
     StateLoadStatus,
     atomic_write_bytes,
     decode_versioned_json_snapshot,
+    durable_append_bytes,
     encode_versioned_json_snapshot,
 )
 from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
@@ -122,6 +125,78 @@ def test_atomic_write_types_target_lstat_errors_as_uncommitted(
     assert raised.value.stage == AtomicWriteStage.TARGET_VALIDATE
     assert raised.value.publication_may_have_committed is False
     assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    ("fault_stage", "payload_may_exist", "target_exists"),
+    [
+        (DurableAppendStage.FILE_OPEN, False, False),
+        (DurableAppendStage.WRITE, False, False),
+        (DurableAppendStage.FILE_FSYNC, True, True),
+        (DurableAppendStage.PARENT_FSYNC, True, True),
+    ],
+)
+def test_durable_append_fault_reports_commit_uncertainty(
+    tmp_path: Path,
+    fault_stage: DurableAppendStage,
+    payload_may_exist: bool,
+    target_exists: bool,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+
+    def _inject(stage: DurableAppendStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"one"}\n', fault_injector=_inject)
+
+    assert raised.value.stage == fault_stage
+    assert raised.value.publication_may_have_committed is payload_may_exist
+    assert target.exists() is target_exists
+    if payload_may_exist:
+        assert target.read_bytes() == b'{"id":"one"}\n'
+
+
+def test_durable_append_is_owner_only_and_preserves_complete_rows(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    previous_umask = os.umask(0)
+    try:
+        durable_append_bytes(target, b'{"id":"one"}\n')
+        durable_append_bytes(target, b'{"id":"two"}\n')
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_bytes() == b'{"id":"one"}\n{"id":"two"}\n'
+
+
+def test_durable_append_rejects_symlink_target(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(b"outside\n")
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    target.parent.mkdir()
+    target.symlink_to(outside)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"one"}\n')
+
+    assert raised.value.stage == DurableAppendStage.TARGET_VALIDATE
+    assert raised.value.publication_may_have_committed is False
+    assert outside.read_bytes() == b"outside\n"
+
+
+def test_durable_append_can_durably_create_an_empty_log(tmp_path: Path) -> None:
+    target = tmp_path / "control" / "empty.jsonl"
+
+    durable_append_bytes(target, b"")
+
+    assert target.exists()
+    assert target.read_bytes() == b""
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
 def test_versioned_json_snapshot_round_trips_with_checksum() -> None:

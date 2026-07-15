@@ -149,6 +149,7 @@ async def test_daemon_services_builds_with_local_provider(
         doctor = await impl.do_doctor_check({"component": "approvals"})
         skill_doctor = await impl.do_doctor_check({"component": "skills"})
         selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
+        dashboard_doctor = await impl.do_doctor_check({"component": "dashboard"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
@@ -157,12 +158,50 @@ async def test_daemon_services_builds_with_local_provider(
         assert status["approvals"]["load_status"] == "missing"
         assert status["skills"]["status"] == "ok"
         assert status["skills"]["load_status"] == "missing"
+        assert status["dashboard"]["status"] == "ok"
+        assert status["dashboard"]["load_status"] == "missing"
         assert doctor["status"] == "ok"
         assert doctor["checks"]["approvals"]["load_status"] == "missing"
         assert skill_doctor["status"] == "ok"
         assert skill_doctor["checks"]["skills"]["load_status"] == "missing"
         assert selfmod_doctor["status"] == "ok"
         assert selfmod_doctor["checks"]["selfmod"]["load_status"] == "missing"
+        assert dashboard_doctor["status"] == "ok"
+        assert dashboard_doctor["checks"]["dashboard"]["load_status"] == "missing"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_dashboard_marks_start_visible_bounded_degraded(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    marks_path = data_dir / "dashboard" / "false_positives.json"
+    marks_path.parent.mkdir(parents=True)
+    corrupt_bytes = b'{"version":1,"payload":'
+    marks_path.write_bytes(corrupt_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "dashboard"})
+
+        assert status["dashboard"]["status"] == "degraded"
+        assert status["dashboard"]["load_status"] == "corrupt"
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["dashboard"]["problems"] == [
+            "dashboard_marks_corrupt"
+        ]
+        assert marks_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
 

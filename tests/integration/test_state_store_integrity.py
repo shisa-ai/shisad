@@ -15,9 +15,11 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     encode_versioned_json_snapshot,
 )
+from shisad.core.audit import AuditLog
 from shisad.core.types import Capability, UserId
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
+from shisad.ui.dashboard import SecurityDashboard
 
 
 def _create_scheduler_task(scheduler: SchedulerManager, *, name: str = "digest") -> str:
@@ -395,3 +397,21 @@ def test_expiry_task_fault_restores_pending_transition_for_retry(tmp_path: Path)
         )
         is False
     )
+
+
+def test_auxiliary_state_corruption_is_visible_and_retained(tmp_path: Path) -> None:
+    marks_path = tmp_path / "dashboard" / "false_positives.json"
+    marks_path.parent.mkdir(parents=True)
+    corrupt_bytes = b'{"version":1,"checksum":"bad","payload":{"evt":"known"}}\n'
+    marks_path.write_bytes(corrupt_bytes)
+
+    dashboard = SecurityDashboard(
+        audit_log=AuditLog(tmp_path / "audit.jsonl"),
+        marks_path=marks_path,
+    )
+
+    assert dashboard.state_load_result.status == StateLoadStatus.CORRUPT
+    assert dashboard.state_status()["status"] == "degraded"
+    with pytest.raises(StatePersistenceDegradedError, match="dashboard_marks"):
+        dashboard.mark_false_positive(event_id="evt-2", reason="reviewed")
+    assert marks_path.read_bytes() == corrupt_bytes

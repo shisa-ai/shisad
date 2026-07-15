@@ -75,6 +75,7 @@ from shisad.core.atomic_state import (
     AtomicWriteError,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    durable_append_bytes,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.clock import current_time_payload
@@ -6305,9 +6306,10 @@ class HandlerImplementation(
             "reason": reason,
             "requested_at": datetime.now(UTC).isoformat(),
         }
-        self._pairing_requests_file.parent.mkdir(parents=True, exist_ok=True)
-        with self._pairing_requests_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
+        durable_append_bytes(
+            self._pairing_requests_file,
+            (json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n").encode("utf-8"),
+        )
 
     async def _record_monitor_reject(self, sid: SessionId, reason: str) -> None:
         count = self._monitor_reject_counts.get(sid, 0) + 1

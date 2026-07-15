@@ -160,6 +160,17 @@ reported as corrupt or unsupported rather than missing. Inspect `shisad status`,
 selfmod` before restoring a trusted snapshot or explicitly resetting a state
 domain.
 
+Auxiliary security-control artifacts use narrower contracts based on their
+role. Pairing requests are owner-only, file-fsynced append records; generated
+pairing proposals and delegated-task artifacts are owner-only old-or-new files
+published before their paths are returned. Dashboard false-positive marks are
+a checksum-bound atomic snapshot. Corrupt or newer marks are retained and mark
+mutation is blocked, while the underlying audit alerts remain available;
+inspect `shisad status` or `shisad doctor check --component dashboard` before
+restoring or explicitly resetting that marks file. These artifacts are not
+startup authority and do not create a universal recovery or exactly-once
+guarantee.
+
 **8. Context control is a first-class security primitive.** Because we construct the LLM's context each turn, we can choose exactly what the model sees — and more importantly, what it *doesn't* see. This is unique to LLM-based systems and has no equivalent in traditional software. Evidence references are the primary application: large untrusted content (web pages, email bodies, tool output) is stored out-of-band in a content-addressed evidence store, and the LLM receives only an opaque reference stub with metadata. The raw tainted content never enters the conversation history, so it cannot persist as an injection surface across turns. When the model needs to re-examine content, it makes an explicit `evidence.read` tool call — which goes through PEP enforcement and returns content into a single-turn isolated context, not the persistent transcript. This turns the usual LLM limitation (no persistent memory) into a security advantage: we can quarantine, exclude, or replace any piece of context at any time, and the model cannot tell the difference.
 
 ---

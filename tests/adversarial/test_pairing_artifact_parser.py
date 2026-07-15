@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import stat
 from contextlib import suppress
 from pathlib import Path
 
@@ -61,6 +63,11 @@ async def test_m3_pairing_artifact_parser_skips_control_chars_and_malformed_line
         assert "invalid_json" in errors
         assert "invalid_shape" in errors
         assert "missing_required_fields" in errors
+        proposal_path = Path(str(proposal["proposal_path"]))
+        proposal_payload = json.loads(proposal_path.read_text(encoding="utf-8"))
+        assert proposal_payload["proposal_id"] == proposal["proposal_id"]
+        assert stat.S_IMODE(proposal_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(proposal_path.stat().st_mode) == 0o600
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
@@ -153,6 +160,50 @@ async def test_m3_pairing_artifact_parser_rejects_json_escaped_control_chars(
         assert any(
             item.get("error") == "missing_required_fields" for item in proposal["invalid_entries"]
         )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_f3_pairing_request_append_rejects_symlink_target(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("outside\n", encoding="utf-8")
+    artifact_file.symlink_to(outside)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        with pytest.raises(RuntimeError, match="Internal error"):
+            await client.call(
+                "channel.ingest",
+                {
+                    "message": {
+                        "channel": "discord",
+                        "external_user_id": "unpaired-user",
+                        "workspace_hint": "guild-1",
+                        "content": "hello",
+                        "message_id": "m-symlink",
+                        "reply_target": "chan-1",
+                    }
+                },
+            )
+        assert outside.read_text(encoding="utf-8") == "outside\n"
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

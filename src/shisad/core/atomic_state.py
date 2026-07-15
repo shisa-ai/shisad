@@ -31,6 +31,20 @@ class AtomicWriteStage(StrEnum):
 AtomicWriteFaultInjector = Callable[[AtomicWriteStage], None]
 
 
+class DurableAppendStage(StrEnum):
+    """Observable boundaries for owner-only append publication."""
+
+    TARGET_VALIDATE = "target_validate"
+    DIRECTORY_PREPARE = "directory_prepare"
+    FILE_OPEN = "file_open"
+    WRITE = "write"
+    FILE_FSYNC = "file_fsync"
+    PARENT_FSYNC = "parent_fsync"
+
+
+DurableAppendFaultInjector = Callable[[DurableAppendStage], None]
+
+
 class StateLoadStatus(StrEnum):
     """Finite load outcomes for security-relevant state snapshots."""
 
@@ -65,6 +79,23 @@ class AtomicWriteError(RuntimeError):
         self.publication_may_have_committed = publication_may_have_committed
         commitment = "commit uncertain" if publication_may_have_committed else "not committed"
         super().__init__(f"atomic state write failed at {stage.value} ({commitment}): {path}")
+
+
+class DurableAppendError(RuntimeError):
+    """Append publication failed at a known durability boundary."""
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        stage: DurableAppendStage,
+        publication_may_have_committed: bool,
+    ) -> None:
+        self.path = path
+        self.stage = stage
+        self.publication_may_have_committed = publication_may_have_committed
+        commitment = "commit uncertain" if publication_may_have_committed else "not committed"
+        super().__init__(f"durable append failed at {stage.value} ({commitment}): {path}")
 
 
 class StatePersistenceDegradedError(RuntimeError):
@@ -312,3 +343,139 @@ def atomic_write_bytes(
         if not replaced:
             with contextlib.suppress(OSError):
                 temp_path.unlink()
+
+
+def durable_append_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    fault_injector: DurableAppendFaultInjector | None = None,
+) -> None:
+    """Append owner-only bytes and fsync before acknowledging publication.
+
+    A newly created file is also published through a containing-directory fsync.
+    Append failures after any byte is written are typed as commit-uncertain; the
+    caller must not assume it is safe to retry an effect-bearing record.
+    """
+
+    target = Path(path)
+    target_existed = False
+    try:
+        target_stat = target.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise DurableAppendError(
+            path=target,
+            stage=DurableAppendStage.TARGET_VALIDATE,
+            publication_may_have_committed=False,
+        ) from exc
+    else:
+        if not stat.S_ISREG(target_stat.st_mode):
+            raise DurableAppendError(
+                path=target,
+                stage=DurableAppendStage.TARGET_VALIDATE,
+                publication_may_have_committed=False,
+            )
+        target_existed = True
+
+    parent = target.parent
+    try:
+        if fault_injector is not None:
+            fault_injector(DurableAppendStage.DIRECTORY_PREPARE)
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent.chmod(0o700)
+    except OSError as exc:
+        raise DurableAppendError(
+            path=target,
+            stage=DurableAppendStage.DIRECTORY_PREPARE,
+            publication_may_have_committed=False,
+        ) from exc
+
+    file_fd = -1
+    parent_fd = -1
+    created_file = False
+    wrote_payload = False
+    completed = False
+    opened_identity: tuple[int, int] | None = None
+    stage = DurableAppendStage.FILE_OPEN
+    try:
+        if fault_injector is not None:
+            fault_injector(stage)
+        flags = os.O_WRONLY | os.O_APPEND
+        if not target_existed:
+            flags |= os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        file_fd = os.open(target, flags, 0o600)
+        created_file = not target_existed
+        opened_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise OSError("durable append target is not a regular file")
+        opened_identity = (opened_stat.st_dev, opened_stat.st_ino)
+        os.fchmod(file_fd, 0o600)
+
+        stage = DurableAppendStage.WRITE
+        if fault_injector is not None:
+            fault_injector(stage)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(file_fd, remaining)
+            if written <= 0:
+                raise OSError("durable append made no progress")
+            wrote_payload = True
+            remaining = remaining[written:]
+
+        stage = DurableAppendStage.FILE_FSYNC
+        if fault_injector is not None:
+            fault_injector(stage)
+        os.fsync(file_fd)
+
+        if not target_existed:
+            stage = DurableAppendStage.PARENT_FSYNC
+            if fault_injector is not None:
+                fault_injector(stage)
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_flags |= getattr(os, "O_CLOEXEC", 0)
+            parent_fd = os.open(parent, directory_flags)
+            os.fsync(parent_fd)
+        completed = True
+    except DurableAppendError:
+        raise
+    except OSError as exc:
+        raise DurableAppendError(
+            path=target,
+            stage=stage,
+            publication_may_have_committed=wrote_payload,
+        ) from exc
+    finally:
+        if file_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(file_fd)
+        if parent_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(parent_fd)
+        if created_file and not wrote_payload and not completed:
+            current_stat: os.stat_result | None
+            try:
+                current_stat = target.lstat()
+            except OSError:
+                current_stat = None
+            if current_stat is not None and opened_identity == (
+                current_stat.st_dev,
+                current_stat.st_ino,
+            ):
+                with contextlib.suppress(OSError):
+                    target.unlink()
+            cleanup_parent_fd = -1
+            try:
+                directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                directory_flags |= getattr(os, "O_CLOEXEC", 0)
+                cleanup_parent_fd = os.open(parent, directory_flags)
+                os.fsync(cleanup_parent_fd)
+            except OSError:
+                pass
+            finally:
+                if cleanup_parent_fd >= 0:
+                    with contextlib.suppress(OSError):
+                        os.close(cleanup_parent_fd)

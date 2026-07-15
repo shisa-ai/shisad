@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 from contextlib import suppress
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,6 +22,7 @@ from shisad.coding.registry import (
     AgentSelectionResult,
 )
 from shisad.core.api.transport import ControlClient
+from shisad.core.atomic_state import AtomicWriteError
 from shisad.core.config import DaemonConfig
 from shisad.core.events import EventBus, TaskSessionCompleted
 from shisad.core.planner import (
@@ -64,6 +68,46 @@ async def _shutdown_daemon(daemon_task: asyncio.Task[None], client: ControlClien
         await client.call("daemon.shutdown")
     await client.close()
     await asyncio.wait_for(daemon_task, timeout=5)
+
+
+def test_f3_task_artifact_is_atomically_owner_only_under_permissive_umask(
+    tmp_path: Path,
+) -> None:
+    impl = object.__new__(session_impl.SessionImplMixin)
+    impl._config = SimpleNamespace(data_dir=tmp_path / "data")
+    previous_umask = os.umask(0)
+    try:
+        artifact_ref = impl._write_task_artifact(
+            task_session_id=session_impl.SessionId("task-owner-only"),
+            filename="raw_log.txt",
+            payload="delegated output",
+        )
+    finally:
+        os.umask(previous_umask)
+
+    artifact_path = Path(artifact_ref)
+    assert artifact_path.read_text(encoding="utf-8") == "delegated output"
+    assert stat.S_IMODE(artifact_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(artifact_path.stat().st_mode) == 0o600
+
+
+def test_f3_task_artifact_rejects_symlink_target_without_overwrite(tmp_path: Path) -> None:
+    impl = object.__new__(session_impl.SessionImplMixin)
+    impl._config = SimpleNamespace(data_dir=tmp_path / "data")
+    artifact_root = tmp_path / "data" / "task_artifacts" / "task-symlink"
+    artifact_root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    (artifact_root / "raw_log.txt").symlink_to(outside)
+
+    with pytest.raises(AtomicWriteError):
+        impl._write_task_artifact(
+            task_session_id=session_impl.SessionId("task-symlink"),
+            filename="raw_log.txt",
+            payload="must not escape",
+        )
+
+    assert outside.read_text(encoding="utf-8") == "outside"
 
 
 async def _wait_for_event(
@@ -976,6 +1020,7 @@ async def test_m4_task_approval_nonce_and_provenance_stay_bound_to_origin_task(
             predicate=lambda item: (
                 str(item.get("session_id", "")).strip()
                 == str(first_task_result["task_session_id"]).strip()
+                and str(item.get("actor", "")).strip() == "tool_runtime"
                 and str(item.get("data", {}).get("approval_confirmation_id", "")).strip()
                 == str(first_pending["confirmation_id"]).strip()
             ),
