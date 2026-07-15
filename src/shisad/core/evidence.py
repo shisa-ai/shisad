@@ -11,19 +11,34 @@ import json
 import logging
 import os
 import re
+import shutil
+import stat
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from html.parser import HTMLParser
 from http.client import InvalidURL
 from pathlib import Path
-from threading import Thread
+from threading import RLock, Thread
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteFaultInjector,
+    AtomicWriteStage,
+    StateLoadResult,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    atomic_write_bytes,
+    decode_versioned_json_snapshot,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall, SanitizationMode
 
@@ -38,6 +53,12 @@ _SEMANTIC_TAGS = {"article", "main", "p"}
 _DEFAULT_EVIDENCE_MAX_AGE_SECONDS = 3600
 _DEFAULT_ORPHAN_RETENTION_SECONDS = 7 * 24 * 3600
 _EVIDENCE_METADATA_FILENAME = "refs_index.json"
+_EVIDENCE_INDEX_VERSION = 1
+_CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_QUARANTINE_NAME_RE = re.compile(
+    r"^v1\.(?P<timestamp_ns>[0-9]+)\.(?P<nonce>[0-9a-f]{32})\."
+    r"(?P<content_hash>[0-9a-f]{64})\.txt$"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -188,14 +209,6 @@ class EvidenceRef(BaseModel):
     endorsed_by: str = ""
     storage_codec: str = "plaintext"
     metadata_mac: str = ""
-
-
-@dataclass(frozen=True)
-class _MetadataLoadResult:
-    refs: dict[str, dict[str, EvidenceRef]]
-    loaded_ok: bool
-    dirty: bool = False
-    temporarily_unreadable: dict[str, dict[str, _UnreadableRefState]] | None = None
 
 
 @dataclass(frozen=True)
@@ -351,7 +364,7 @@ def format_evidence_stub(ref: EvidenceRef) -> str:
 
 
 class ArtifactLedger:
-    """Structured artifact ledger for persisted evidence refs."""
+    """Durable evidence domain with retained corruption and bounded degradation."""
 
     def __init__(
         self,
@@ -362,34 +375,92 @@ class ArtifactLedger:
         orphan_retention_seconds: int = _DEFAULT_ORPHAN_RETENTION_SECONDS,
         blob_codec: ArtifactBlobCodec | None = None,
     ) -> None:
-        self._root_dir = root_dir
-        self._blob_dir = root_dir / "blobs"
-        self._quarantine_dir = root_dir / "quarantine"
-        self._metadata_path = root_dir / _EVIDENCE_METADATA_FILENAME
-        self._salt_path = root_dir / "evidence_salt"
+        self._root_dir = Path(root_dir)
+        self._blob_dir = self._root_dir / "blobs"
+        self._quarantine_dir = self._root_dir / "quarantine"
+        self._metadata_path = self._root_dir / _EVIDENCE_METADATA_FILENAME
+        self._salt_path = self._root_dir / "evidence_salt"
         self._default_max_age_seconds = max(1, int(default_max_age_seconds))
         self._orphan_retention_seconds = max(1, int(orphan_retention_seconds))
         self._blob_codec = blob_codec or PlaintextArtifactBlobCodec()
+        self._lock = RLock()
+        self._atomic_fault_injector: AtomicWriteFaultInjector | None = None
+        self._salt = b"\x00" * 32
+        self._refs: dict[str, dict[str, EvidenceRef]] = {}
+        self._committed_refs: dict[str, dict[str, EvidenceRef]] = {}
         self._temporarily_unreadable_refs: dict[str, dict[str, _UnreadableRefState]] = {}
         self._unreadable_probe_in_flight: set[tuple[str, str]] = set()
-        self._root_dir.mkdir(parents=True, exist_ok=True)
-        self._blob_dir.mkdir(parents=True, exist_ok=True)
-        self._quarantine_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_dir_permissions(self._root_dir)
-        self._ensure_dir_permissions(self._blob_dir)
-        self._ensure_dir_permissions(self._quarantine_dir)
-        self._salt = self._load_or_create_salt(salt)
-        metadata_load = self._load_metadata_index()
-        self._refs = metadata_load.refs
-        self._temporarily_unreadable_refs = metadata_load.temporarily_unreadable or {}
-        metadata_ready_for_cleanup = metadata_load.loaded_ok
-        if metadata_load.dirty:
-            metadata_ready_for_cleanup = metadata_ready_for_cleanup and (
-                self._try_persist_metadata_index("sanitizing persisted evidence metadata index")
-            )
-        if metadata_ready_for_cleanup:
-            self._quarantine_orphaned_blobs()
-            self._prune_quarantine()
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.CORRUPT,
+            reason="uninitialized",
+        )
+        self._cleanup_allowed = False
+        with self._lock:
+            self._initialize_domain(configured_salt=salt)
+
+    @property
+    def state_degraded(self) -> bool:
+        return self._state_load_result.status is not StateLoadStatus.OK
+
+    @property
+    def cleanup_allowed(self) -> bool:
+        return self._cleanup_allowed
+
+    def state_load_result(self) -> StateLoadResult:
+        return self._state_load_result
+
+    def state_status(self) -> dict[str, object]:
+        result = self._state_load_result
+        degraded = result.status is not StateLoadStatus.OK
+        problems = [result.reason or result.status.value] if degraded else []
+        return {
+            "status": "degraded" if degraded else "ok",
+            "scope": "evidence_only",
+            "problems": problems,
+            "fail_closed": degraded,
+            "cleanup_allowed": self._cleanup_allowed,
+            "load_status": result.status.value,
+            "reason": result.reason,
+            "schema_version": result.schema_version,
+            "legacy": result.legacy,
+            "committed_ref_count": self.committed_ref_count(),
+            "remediation": (
+                "Restore the exact evidence_salt, refs_index.json, and referenced blobs, "
+                "or use an explicitly authorized evidence-domain reset boundary."
+                if degraded
+                else ""
+            ),
+        }
+
+    def committed_ref_count(self) -> int:
+        with self._lock:
+            return sum(len(refs) for refs in self._committed_refs.values())
+
+    def domain_file_count(self) -> int:
+        """Return the number of regular files in the evidence domain."""
+
+        with self._lock:
+            if not self._root_dir.exists() or not self._root_dir.is_dir():
+                return 0
+            try:
+                return sum(1 for path in self._root_dir.rglob("*") if path.is_file())
+            except OSError:
+                return 0
+
+    def is_empty_domain(self) -> bool:
+        """Return whether the durable evidence domain is healthy and empty."""
+
+        with self._lock:
+            if self.state_degraded or self.committed_ref_count() != 0:
+                return False
+            if not self._metadata_path.is_file() or not self._salt_path.is_file():
+                return False
+            try:
+                return not any(self._blob_dir.iterdir()) and not any(
+                    self._quarantine_dir.iterdir()
+                )
+            except OSError:
+                return False
 
     def store(
         self,
@@ -403,54 +474,57 @@ class ArtifactLedger:
         artifact_kind: str = "evidence",
         lifecycle_state: ArtifactLifecycleState = ArtifactLifecycleState.ACTIVE,
     ) -> EvidenceRef:
-        self._evict_for_session(session_id)
-        raw = content.encode("utf-8")
-        content_hash = hashlib.sha256(raw).hexdigest()
-        ref_id = self._make_ref_id(session_id=session_id, content_hash=content_hash)
-        session_key = self._session_key(session_id)
-        blob_path = self._blob_path(content_hash)
-        existing = self._refs.setdefault(session_key, {}).get(ref_id)
-        if existing is not None:
-            blob_load = self._load_validated_blob_content(existing)
-            rewrote_blob = blob_load.content is None and blob_load.drop_ref
-            if rewrote_blob:
-                self._write_blob(blob_path, content)
-                self._ensure_file_permissions(blob_path)
-            merged = self._merge_existing_ref(
-                session_key=session_key,
-                ref_id=ref_id,
-                existing=existing,
-                taint_labels=set(taint_labels),
-                source=source,
-                summary=summary,
-                ttl_seconds=ttl_seconds,
-                artifact_kind=artifact_kind,
-                lifecycle_state=lifecycle_state,
-                storage_codec=self._blob_codec.name if rewrote_blob else None,
-            )
-            self._persist_metadata_index()
-            return merged
+        with self._lock:
+            self._require_writable("store")
+            raw = content.encode("utf-8")
+            content_hash = hashlib.sha256(raw).hexdigest()
+            ref_id = self._make_ref_id(session_id=session_id, content_hash=content_hash)
+            session_key = self._session_key(session_id)
+            blob_path = self._blob_path(content_hash)
+            existing = self._refs.get(session_key, {}).get(ref_id)
+            rewrote_blob = False
+            if existing is not None:
+                blob_load = self._load_validated_blob_content(existing)
+                rewrote_blob = blob_load.content is None and blob_load.drop_ref
+            if not blob_path.exists() or rewrote_blob:
+                try:
+                    self._atomic_write(blob_path, self._blob_codec.encode(content))
+                except (ArtifactBlobCodecError, AtomicWriteError):
+                    self._mark_runtime_degraded("blob_publication_failed")
+                    raise
 
-        if not blob_path.exists():
-            self._write_blob(blob_path, content)
-        self._ensure_file_permissions(blob_path)
-        ref = EvidenceRef(
-            ref_id=ref_id,
-            content_hash=content_hash,
-            taint_labels=sorted(set(taint_labels)),
-            source=source,
-            summary=summary,
-            byte_size=len(raw),
-            ttl_seconds=ttl_seconds,
-            artifact_kind=artifact_kind,
-            lifecycle_state=lifecycle_state,
-            endorsement_state=ArtifactEndorsementState.UNENDORSED,
-            storage_codec=self._blob_codec.name,
-        )
-        ref = self._stamp_metadata_mac(session_key, ref)
-        self._refs[session_key][ref_id] = ref
-        self._persist_metadata_index()
-        return ref
+            candidate = self._copy_refs(self._refs)
+            session_refs = candidate.setdefault(session_key, {})
+            if existing is not None:
+                ref = self._merged_ref(
+                    session_key=session_key,
+                    existing=existing,
+                    taint_labels=set(taint_labels),
+                    source=source,
+                    summary=summary,
+                    ttl_seconds=ttl_seconds,
+                    artifact_kind=artifact_kind,
+                    lifecycle_state=lifecycle_state,
+                    storage_codec=self._blob_codec.name if rewrote_blob else None,
+                )
+            else:
+                ref = EvidenceRef(
+                    ref_id=ref_id,
+                    content_hash=content_hash,
+                    taint_labels=sorted(set(taint_labels)),
+                    source=source,
+                    summary=summary,
+                    byte_size=len(raw),
+                    ttl_seconds=ttl_seconds,
+                    artifact_kind=artifact_kind,
+                    lifecycle_state=lifecycle_state,
+                    endorsement_state=ArtifactEndorsementState.UNENDORSED,
+                    storage_codec=self._blob_codec.name,
+                )
+                ref = self._stamp_metadata_mac(session_key, ref)
+            session_refs[ref_id] = ref
+            self._commit_candidate(candidate, transition="store")
+            return ref
 
     def read(self, session_id: SessionId, ref_id: str) -> str | None:
         ref, content = self.resolve_ref_content(session_id, ref_id)
@@ -463,27 +537,33 @@ class ArtifactLedger:
         return ref
 
     def get_ref_metadata(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
-        self._evict_for_session(session_id)
         session_key = self._session_key(session_id)
-        return self._refs.get(session_key, {}).get(ref_id)
+        return self._committed_refs.get(session_key, {}).get(ref_id)
 
     def resolve_ref_content(
         self,
         session_id: SessionId,
         ref_id: str,
     ) -> tuple[EvidenceRef | None, str | None]:
-        return self._resolve_valid_ref(session_id, ref_id)
+        with self._lock:
+            return self._resolve_valid_ref(session_id, ref_id)
 
     def _resolve_valid_ref(
         self,
         session_id: SessionId,
         ref_id: str,
     ) -> tuple[EvidenceRef | None, str | None]:
-        self._evict_for_session(session_id)
+        if self.state_degraded:
+            if self._state_load_result.reason == "blob_unreadable":
+                self._maybe_probe_temporarily_unreadable(session_id, ref_id)
+            return None, None
         session_key = self._session_key(session_id)
         ref = self._refs.get(session_key, {}).get(ref_id)
         if ref is None:
             self._clear_temporarily_unreadable(session_key, ref_id)
+            return None, None
+        if self._is_expired(ref, max_age_seconds=self._default_max_age_seconds):
+            self._drop_ref(session_key, ref_id)
             return None, None
         if ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
             return None, None
@@ -496,20 +576,9 @@ class ArtifactLedger:
                     session_key,
                     blob_load.failure_reason,
                 )
-                self._clear_temporarily_unreadable(session_key, ref_id)
                 self._drop_ref(session_key, ref_id)
             else:
-                logger.warning(
-                    "Evidence ref %s for session %s is temporarily unreadable because %s",
-                    ref_id,
-                    session_key,
-                    blob_load.failure_reason,
-                )
-                self._mark_temporarily_unreadable(
-                    session_key,
-                    ref_id,
-                    blob_load.failure_reason,
-                )
+                self._mark_temporarily_unreadable(session_key, ref_id, blob_load.failure_reason)
             return None, None
         self._clear_temporarily_unreadable(session_key, ref_id)
         return ref, blob_load.content
@@ -524,12 +593,16 @@ class ArtifactLedger:
         )
 
     def validate_ref_metadata(self, session_id: SessionId, ref_id: str) -> bool:
+        if self.state_degraded:
+            if self._state_load_result.reason == "blob_unreadable":
+                self._maybe_probe_temporarily_unreadable(session_id, ref_id)
+            return False
         ref = self.get_ref_metadata(session_id, ref_id)
-        if ref is None:
+        if ref is None or ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
+            return False
+        if self._is_expired(ref, max_age_seconds=self._default_max_age_seconds):
             return False
         session_key = self._session_key(session_id)
-        if ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
-            return False
         if self._is_temporarily_unreadable(session_key, ref_id):
             self._maybe_probe_temporarily_unreadable(session_id, ref_id)
             return False
@@ -545,56 +618,55 @@ class ArtifactLedger:
         max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
         best_effort_persist: bool = False,
     ) -> list[str]:
-        session_key = self._session_key(session_id)
-        refs = self._refs.get(session_key)
-        if not refs:
-            return []
+        with self._lock:
+            if self.state_degraded:
+                return []
+            session_key = self._session_key(session_id)
+            session_refs = self._refs.get(session_key, {})
+            evicted = [
+                ref_id
+                for ref_id, ref in session_refs.items()
+                if self._is_expired(ref, max_age_seconds=max_age_seconds)
+            ]
+            if not evicted:
+                return []
+            candidate = self._copy_refs(self._refs)
+            candidate_session = candidate.get(session_key, {})
+            removed_refs = [candidate_session.pop(ref_id) for ref_id in evicted]
+            if not candidate_session:
+                candidate.pop(session_key, None)
+            try:
+                self._commit_candidate(candidate, transition="evict_expired")
+            except (AtomicWriteError, StatePersistenceDegradedError):
+                if best_effort_persist:
+                    return []
+                raise
+            for ref in removed_refs:
+                self._delete_blob_if_unreferenced(ref.content_hash)
+            return evicted
 
-        now = datetime.now(UTC)
-        evicted: list[str] = []
-        for ref_id, ref in list(refs.items()):
-            age_seconds = max(0.0, (now - ref.created_at).total_seconds())
-            effective_max_age = self._effective_max_age_seconds(
-                max_age_seconds=max_age_seconds,
-                ttl_seconds=ref.ttl_seconds,
+    def collect_garbage(self, *, max_age_seconds: int | None = None) -> list[str]:
+        with self._lock:
+            if not self._cleanup_allowed:
+                return []
+            effective_max_age = (
+                self._default_max_age_seconds
+                if max_age_seconds is None
+                else max(1, int(max_age_seconds))
             )
-            if age_seconds <= float(effective_max_age):
-                continue
-            refs.pop(ref_id, None)
-            self._clear_temporarily_unreadable(session_key, ref_id)
-            evicted.append(ref_id)
-            self._delete_blob_if_unreferenced(ref.content_hash)
-        if not refs:
-            self._refs.pop(session_key, None)
-        if evicted:
-            if best_effort_persist:
-                self._try_persist_metadata_index("persisting implicit evidence eviction")
-            else:
-                self._persist_metadata_index()
-        return evicted
-
-    def collect_garbage(
-        self,
-        *,
-        max_age_seconds: int | None = None,
-    ) -> list[str]:
-        evicted: list[str] = []
-        effective_max_age = (
-            self._default_max_age_seconds
-            if max_age_seconds is None
-            else max(1, int(max_age_seconds))
-        )
-        for session_key in list(self._refs.keys()):
-            evicted.extend(
-                self.evict_expired(
-                    SessionId(session_key),
-                    max_age_seconds=effective_max_age,
-                    best_effort_persist=True,
+            evicted: list[str] = []
+            for session_key in list(self._refs):
+                evicted.extend(
+                    self.evict_expired(
+                        SessionId(session_key),
+                        max_age_seconds=effective_max_age,
+                    )
                 )
-            )
-        self._quarantine_orphaned_blobs()
-        self._prune_quarantine()
-        return evicted
+            if self._cleanup_allowed:
+                self._quarantine_orphaned_blobs()
+                self._migrate_legacy_quarantine_entries()
+                self._prune_quarantine()
+            return evicted
 
     def endorse(
         self,
@@ -605,24 +677,359 @@ class ArtifactLedger:
         actor: str,
         endorsed_at: datetime | None = None,
     ) -> EvidenceRef | None:
-        session_key = self._session_key(session_id)
-        ref = self._refs.get(session_key, {}).get(ref_id)
-        if ref is None:
-            return None
-        normalized_actor = actor.strip()
-        if not normalized_actor:
-            raise ValueError("actor is required to endorse an artifact")
-        updated = ref.model_copy(
-            update={
-                "endorsement_state": endorsement_state,
-                "endorsed_at": endorsed_at or datetime.now(UTC),
-                "endorsed_by": normalized_actor,
+        with self._lock:
+            self._require_writable("endorse")
+            session_key = self._session_key(session_id)
+            ref = self._refs.get(session_key, {}).get(ref_id)
+            if ref is None:
+                return None
+            normalized_actor = actor.strip()
+            if not normalized_actor:
+                raise ValueError("actor is required to endorse an artifact")
+            updated = ref.model_copy(
+                update={
+                    "endorsement_state": endorsement_state,
+                    "endorsed_at": endorsed_at or datetime.now(UTC),
+                    "endorsed_by": normalized_actor,
+                }
+            )
+            updated = self._stamp_metadata_mac(session_key, updated)
+            candidate = self._copy_refs(self._refs)
+            candidate[session_key][ref_id] = updated
+            self._commit_candidate(candidate, transition="endorse")
+            return updated
+
+    def reset_domain(self) -> dict[str, object]:
+        """Explicitly detach and destroy an evidence domain after durable replacement."""
+
+        with self._lock:
+            destroyed_ref_count = self.committed_ref_count()
+            parent = self._root_dir.parent
+            parent.mkdir(parents=True, exist_ok=True)
+            tombstone = parent / f".{self._root_dir.name}.reset-{uuid4().hex}"
+            detached = False
+            if self._root_dir.exists():
+                os.replace(self._root_dir, tombstone)
+                detached = True
+                self._fsync_directory(parent)
+            previous_fault_injector = self._atomic_fault_injector
+            self._atomic_fault_injector = None
+            try:
+                self._salt = os.urandom(32)
+                self._create_domain_files(self._salt)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    if self._root_dir.exists():
+                        shutil.rmtree(self._root_dir)
+                    if detached:
+                        os.replace(tombstone, self._root_dir)
+                        self._fsync_directory(parent)
+                self._mark_runtime_degraded("reset_failed")
+                raise
+            finally:
+                self._atomic_fault_injector = previous_fault_injector
+            self._refs = {}
+            self._temporarily_unreadable_refs = {}
+            self._publish_committed({})
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.OK,
+                reason="explicit_reset",
+                schema_version=_EVIDENCE_INDEX_VERSION,
+            )
+            self._cleanup_allowed = True
+            if detached and tombstone.exists():
+                shutil.rmtree(tombstone)
+                self._fsync_directory(parent)
+            return {
+                "status": "ok",
+                "destroyed_ref_count": destroyed_ref_count,
             }
+
+    def _initialize_domain(self, *, configured_salt: bytes | None) -> None:
+        root_status = self._probe_root()
+        if root_status == "invalid":
+            self._set_load_failure(StateLoadStatus.CORRUPT, "invalid_evidence_root")
+            return
+        reset_siblings = list(
+            self._root_dir.parent.glob(f".{self._root_dir.name}.reset-*")
         )
-        updated = self._stamp_metadata_mac(session_key, updated)
-        self._refs[session_key][ref_id] = updated
-        self._persist_metadata_index()
-        return updated
+        if root_status == "missing" and reset_siblings:
+            self._set_load_failure(StateLoadStatus.CORRUPT, "reset_recovery_required")
+            return
+        if root_status in {"missing", "empty"}:
+            chosen_salt = configured_salt if configured_salt is not None else os.urandom(32)
+            if len(chosen_salt) != 32:
+                self._set_load_failure(StateLoadStatus.CORRUPT, "invalid_salt")
+                return
+            self._salt = bytes(chosen_salt)
+            try:
+                self._create_domain_files(self._salt)
+            except (AtomicWriteError, OSError):
+                self._set_load_failure(StateLoadStatus.CORRUPT, "new_domain_publication_failed")
+                return
+            self._refs = {}
+            self._publish_committed({})
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.OK,
+                reason="new_domain",
+                schema_version=_EVIDENCE_INDEX_VERSION,
+            )
+            self._cleanup_allowed = True
+            return
+
+        salt_result = self._load_existing_salt(configured_salt)
+        if salt_result is not None:
+            self._set_load_failure(StateLoadStatus.CORRUPT, salt_result)
+            return
+        if not self._metadata_path.exists():
+            self._set_load_failure(StateLoadStatus.CORRUPT, "missing_index_existing_domain")
+            return
+        if not self._is_regular_file(self._metadata_path):
+            self._set_load_failure(StateLoadStatus.CORRUPT, "invalid_index_target")
+            return
+        try:
+            raw_index = self._metadata_path.read_bytes()
+        except OSError:
+            self._set_load_failure(StateLoadStatus.CORRUPT, "index_read_failed")
+            return
+        load_result, payload = self._decode_index(raw_index)
+        if load_result.status is not StateLoadStatus.OK:
+            self._set_load_failure(
+                load_result.status,
+                load_result.reason,
+                schema_version=load_result.schema_version,
+            )
+            return
+        refs, unreadable, validation_reason = self._validate_complete_payload(payload)
+        if validation_reason:
+            self._refs = refs
+            self._temporarily_unreadable_refs = unreadable
+            self._set_load_failure(StateLoadStatus.CORRUPT, validation_reason)
+            return
+        self._ensure_domain_directories()
+        if load_result.legacy:
+            try:
+                self._persist_refs_index(refs)
+            except AtomicWriteError:
+                self._refs = refs
+                self._set_load_failure(StateLoadStatus.CORRUPT, "legacy_migration_failed")
+                return
+        self._refs = refs
+        self._temporarily_unreadable_refs = unreadable
+        self._publish_committed(refs)
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            reason="loaded",
+            schema_version=_EVIDENCE_INDEX_VERSION,
+            legacy=load_result.legacy,
+        )
+        self._cleanup_allowed = True
+        self._quarantine_orphaned_blobs()
+        if self._cleanup_allowed:
+            self._migrate_legacy_quarantine_entries()
+        if self._cleanup_allowed:
+            self._prune_quarantine()
+
+    def _probe_root(self) -> str:
+        try:
+            root_stat = self._root_dir.lstat()
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "invalid"
+        if not stat.S_ISDIR(root_stat.st_mode) or self._root_dir.is_symlink():
+            return "invalid"
+        try:
+            return "empty" if not any(self._root_dir.iterdir()) else "existing"
+        except OSError:
+            return "invalid"
+
+    def _create_domain_files(self, salt: bytes) -> None:
+        self._ensure_domain_directories()
+        self._atomic_write(self._salt_path, salt)
+        self._persist_refs_index({})
+
+    def _ensure_domain_directories(self) -> None:
+        for path in (self._root_dir, self._blob_dir, self._quarantine_dir):
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.chmod(0o700)
+
+    def _load_existing_salt(self, configured_salt: bytes | None) -> str | None:
+        if not self._salt_path.exists():
+            return "missing_salt_existing_domain"
+        if not self._is_regular_file(self._salt_path):
+            return "invalid_salt_target"
+        try:
+            persisted_salt = self._salt_path.read_bytes()
+        except OSError:
+            return "salt_read_failed"
+        if len(persisted_salt) != 32:
+            return "invalid_salt"
+        if configured_salt is not None and not hmac.compare_digest(
+            persisted_salt,
+            configured_salt,
+        ):
+            return "salt_mismatch"
+        self._salt = persisted_salt
+        return None
+
+    def _decode_index(self, raw_bytes: bytes) -> tuple[StateLoadResult, object | None]:
+        try:
+            raw = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
+            return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
+        envelope_candidate = isinstance(raw, dict) and bool(
+            {"version", "checksum", "payload"}.intersection(raw)
+        )
+        if envelope_candidate:
+            return decode_versioned_json_snapshot(
+                raw_bytes,
+                supported_version=_EVIDENCE_INDEX_VERSION,
+            )
+        return StateLoadResult(StateLoadStatus.OK, legacy=True), raw
+
+    def _validate_complete_payload(
+        self,
+        payload: object,
+    ) -> tuple[
+        dict[str, dict[str, EvidenceRef]],
+        dict[str, dict[str, _UnreadableRefState]],
+        str,
+    ]:
+        if not isinstance(payload, dict):
+            return {}, {}, "invalid_index_payload"
+        loaded: dict[str, dict[str, EvidenceRef]] = {}
+        unreadable: dict[str, dict[str, _UnreadableRefState]] = {}
+        validation_reason = ""
+        for session_key, session_refs_raw in payload.items():
+            if not isinstance(session_key, str) or not session_key.strip():
+                return {}, {}, "invalid_session_key"
+            if not isinstance(session_refs_raw, dict):
+                return {}, {}, "invalid_session_refs"
+            session_refs: dict[str, EvidenceRef] = {}
+            for ref_id, ref_raw in session_refs_raw.items():
+                if not isinstance(ref_id, str):
+                    return {}, {}, "invalid_ref_id"
+                try:
+                    ref = EvidenceRef.model_validate(ref_raw)
+                except (TypeError, ValidationError):
+                    return {}, {}, "invalid_ref_payload"
+                if ref.ref_id != ref_id:
+                    return {}, {}, "ref_id_mismatch"
+                if _CONTENT_HASH_RE.fullmatch(ref.content_hash) is None:
+                    return {}, {}, "invalid_content_hash"
+                expected_ref_id = self._make_ref_id(
+                    session_id=SessionId(session_key),
+                    content_hash=ref.content_hash,
+                )
+                if not hmac.compare_digest(ref.ref_id, expected_ref_id):
+                    return {}, {}, "ref_id_auth_mismatch"
+                if not ref.metadata_mac:
+                    return {}, {}, "metadata_mac_missing"
+                if not hmac.compare_digest(
+                    ref.metadata_mac,
+                    self._make_metadata_mac(session_key, ref),
+                ):
+                    return {}, {}, "metadata_mac_mismatch"
+                session_refs[ref_id] = ref
+                blob_load = self._load_validated_blob_content(ref)
+                if blob_load.content is None:
+                    if not blob_load.drop_ref:
+                        unreadable.setdefault(session_key, {})[ref_id] = _UnreadableRefState(
+                            reason=blob_load.failure_reason
+                        )
+                    validation_reason = validation_reason or self._blob_domain_failure_reason(
+                        blob_load
+                    )
+            if session_refs:
+                loaded[session_key] = session_refs
+        return loaded, unreadable, validation_reason
+
+    def _set_load_failure(
+        self,
+        status: StateLoadStatus,
+        reason: str,
+        *,
+        schema_version: int | None = None,
+    ) -> None:
+        self._state_load_result = StateLoadResult(
+            status,
+            reason=reason,
+            schema_version=schema_version,
+        )
+        self._cleanup_allowed = False
+        self._publish_committed({})
+
+    def _mark_runtime_degraded(self, reason: str) -> None:
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.CORRUPT,
+            reason=reason,
+            schema_version=_EVIDENCE_INDEX_VERSION,
+        )
+        self._cleanup_allowed = False
+
+    def _require_writable(self, transition: str) -> None:
+        if not self.state_degraded:
+            return
+        raise StatePersistenceDegradedError(
+            authority="evidence_domain",
+            transition=transition,
+            stage="load",
+            reason=self._state_load_result.reason or self._state_load_result.status.value,
+        )
+
+    def _commit_candidate(
+        self,
+        candidate: dict[str, dict[str, EvidenceRef]],
+        *,
+        transition: str,
+    ) -> None:
+        try:
+            self._persist_refs_index(candidate)
+        except AtomicWriteError:
+            self._mark_runtime_degraded(f"{transition}_index_publication_failed")
+            raise
+        self._refs = candidate
+        self._publish_committed(candidate)
+
+    def _publish_committed(self, refs: dict[str, dict[str, EvidenceRef]]) -> None:
+        self._committed_refs = self._copy_refs(refs)
+
+    @staticmethod
+    def _copy_refs(
+        refs: dict[str, dict[str, EvidenceRef]],
+    ) -> dict[str, dict[str, EvidenceRef]]:
+        return {session_key: dict(session_refs) for session_key, session_refs in refs.items()}
+
+    def _persist_refs_index(self, refs: dict[str, dict[str, EvidenceRef]]) -> None:
+        payload = {
+            session_key: {
+                ref_id: ref.model_dump(mode="json") for ref_id, ref in session_refs.items()
+            }
+            for session_key, session_refs in refs.items()
+            if session_refs
+        }
+        self._atomic_write(
+            self._metadata_path,
+            encode_versioned_json_snapshot(payload, version=_EVIDENCE_INDEX_VERSION),
+        )
+
+    def _atomic_write(self, path: Path, payload: bytes) -> None:
+        for stage in (AtomicWriteStage.TARGET_VALIDATE, AtomicWriteStage.DIRECTORY_PREPARE):
+            try:
+                if self._atomic_fault_injector is not None:
+                    self._atomic_fault_injector(stage)
+            except OSError as exc:
+                raise AtomicWriteError(
+                    path=path,
+                    stage=stage,
+                    publication_may_have_committed=False,
+                ) from exc
+        atomic_write_bytes(
+            path,
+            payload,
+            fault_injector=self._atomic_fault_injector,
+        )
 
     def _stamp_metadata_mac(self, session_key: str, ref: EvidenceRef) -> EvidenceRef:
         mac = self._make_metadata_mac(session_key, ref)
@@ -634,35 +1041,6 @@ class ArtifactLedger:
         payload = f"{self._session_key(session_id)}:{content_hash}".encode()
         digest = hmac.new(self._salt, payload, hashlib.sha256).hexdigest()[:16]
         return f"{_EVIDENCE_REF_PREFIX}{digest}"
-
-    def _load_or_create_salt(self, salt: bytes | None) -> bytes:
-        if salt is not None:
-            if not self._salt_path.exists():
-                self._salt_path.write_bytes(salt)
-            self._ensure_file_permissions(self._salt_path)
-            return salt
-        if self._salt_path.exists():
-            self._ensure_file_permissions(self._salt_path)
-            data = self._salt_path.read_bytes()
-            if len(data) == 32:
-                return data
-        generated = os.urandom(32)
-        self._salt_path.write_bytes(generated)
-        self._ensure_file_permissions(self._salt_path)
-        return generated
-
-    def _delete_blob_if_unreferenced(self, content_hash: str) -> None:
-        for session_refs in self._refs.values():
-            for ref in session_refs.values():
-                if ref.content_hash == content_hash:
-                    return
-        path = self._blob_path(content_hash)
-        if path.exists():
-            with contextlib.suppress(OSError):
-                path.unlink()
-
-    def _blob_path(self, content_hash: str) -> Path:
-        return self._blob_dir / f"{content_hash}.txt"
 
     def _make_metadata_mac(self, session_key: str, ref: EvidenceRef) -> str:
         payload = {
@@ -701,26 +1079,14 @@ class ArtifactLedger:
                 drop_ref=False,
             )
         path = self._blob_path(ref.content_hash)
-        if not path.exists():
-            return _BlobLoadResult(
-                None,
-                f"blob {ref.content_hash} is missing",
-                drop_ref=True,
-            )
+        if not self._is_regular_file(path):
+            return _BlobLoadResult(None, f"blob {ref.content_hash} is missing", drop_ref=True)
         try:
             content = self._read_blob(path)
         except ArtifactBlobCodecError as exc:
-            return _BlobLoadResult(
-                None,
-                str(exc) or "blob codec unavailable",
-                drop_ref=False,
-            )
+            return _BlobLoadResult(None, str(exc) or "blob codec unavailable", drop_ref=False)
         except (OSError, UnicodeDecodeError, ValueError):
-            return _BlobLoadResult(
-                None,
-                f"blob {ref.content_hash} is unreadable",
-                drop_ref=True,
-            )
+            return _BlobLoadResult(None, f"blob {ref.content_hash} is unreadable", drop_ref=True)
         actual_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(actual_hash, ref.content_hash):
             return _BlobLoadResult(
@@ -730,141 +1096,28 @@ class ArtifactLedger:
             )
         return _BlobLoadResult(content)
 
-    def _normalize_loaded_ref(
-        self,
-        *,
-        session_key: str,
-        ref: EvidenceRef,
-    ) -> tuple[EvidenceRef | None, bool, str | None]:
-        if not ref.metadata_mac:
-            logger.warning(
-                "Dropping persisted evidence ref %s for session %s because metadata MAC is missing",
-                ref.ref_id,
-                session_key,
-            )
-            return None, True, None
-
-        expected_mac = self._make_metadata_mac(session_key, ref)
-        if not hmac.compare_digest(ref.metadata_mac, expected_mac):
-            logger.warning(
-                (
-                    "Dropping persisted evidence ref %s for session %s because "
-                    "metadata MAC verification failed"
-                ),
-                ref.ref_id,
-                session_key,
-            )
-            return None, True, None
-
-        blob_load = self._load_validated_blob_content(ref)
-        if blob_load.content is None:
-            if not blob_load.drop_ref:
-                return ref, False, blob_load.failure_reason
-            logger.warning(
-                "Dropping persisted evidence ref %s for session %s because %s",
-                ref.ref_id,
-                session_key,
-                blob_load.failure_reason,
-            )
-            return None, True, None
-        return ref, False, None
-
-    def _write_blob(self, path: Path, content: str) -> None:
-        path.write_bytes(self._blob_codec.encode(content))
-
     def _read_blob(self, path: Path) -> str:
         return self._blob_codec.decode(path.read_bytes())
 
-    def _load_metadata_index(self) -> _MetadataLoadResult:
-        if not self._metadata_path.exists():
-            return _MetadataLoadResult(refs={}, loaded_ok=True)
+    def _blob_path(self, content_hash: str) -> Path:
+        return self._blob_dir / f"{content_hash}.txt"
+
+    def _delete_blob_if_unreferenced(self, content_hash: str) -> None:
+        for session_refs in self._refs.values():
+            if any(ref.content_hash == content_hash for ref in session_refs.values()):
+                return
+        path = self._blob_path(content_hash)
+        if not path.exists():
+            return
         try:
-            raw = json.loads(self._metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("Failed to load persisted evidence metadata index", exc_info=True)
-            return _MetadataLoadResult(refs={}, loaded_ok=False)
-        if not isinstance(raw, dict):
-            logger.warning("Ignoring malformed evidence metadata index")
-            return _MetadataLoadResult(refs={}, loaded_ok=False)
-
-        loaded_ok = True
-        dirty = False
-        loaded: dict[str, dict[str, EvidenceRef]] = {}
-        temporarily_unreadable: dict[str, dict[str, _UnreadableRefState]] = {}
-        for session_key, session_refs_raw in raw.items():
-            if not isinstance(session_key, str) or not isinstance(session_refs_raw, dict):
-                dirty = True
-                continue
-            session_refs: dict[str, EvidenceRef] = {}
-            for ref_id, ref_raw in session_refs_raw.items():
-                if not isinstance(ref_id, str):
-                    dirty = True
-                    continue
-                try:
-                    ref = EvidenceRef.model_validate(ref_raw)
-                except ValidationError:
-                    dirty = True
-                    logger.warning(
-                        "Ignoring malformed persisted evidence ref %s for session %s",
-                        ref_id,
-                        session_key,
-                        exc_info=True,
-                    )
-                    continue
-                if ref.ref_id != ref_id:
-                    dirty = True
-                    logger.warning(
-                        "Ignoring persisted evidence ref with mismatched id %s for session %s",
-                        ref_id,
-                        session_key,
-                    )
-                    continue
-                normalized_ref, normalized_dirty, unreadable_reason = self._normalize_loaded_ref(
-                    session_key=session_key,
-                    ref=ref,
-                )
-                dirty = dirty or normalized_dirty
-                if normalized_ref is None:
-                    continue
-                session_refs[ref_id] = normalized_ref
-                if unreadable_reason:
-                    session_unreadable = temporarily_unreadable.setdefault(session_key, {})
-                    session_unreadable[ref_id] = _UnreadableRefState(reason=unreadable_reason)
-            if session_refs:
-                loaded[session_key] = session_refs
-        return _MetadataLoadResult(
-            refs=loaded,
-            loaded_ok=loaded_ok,
-            dirty=dirty,
-            temporarily_unreadable=temporarily_unreadable,
-        )
-
-    def _persist_metadata_index(self) -> None:
-        serialized = {
-            session_key: {
-                ref_id: ref.model_dump(mode="json") for ref_id, ref in session_refs.items()
-            }
-            for session_key, session_refs in self._refs.items()
-            if session_refs
-        }
-        temp_path = self._metadata_path.with_suffix(".json.tmp")
-        temp_path.write_text(
-            json.dumps(serialized, ensure_ascii=True, sort_keys=True),
-            encoding="utf-8",
-        )
-        self._ensure_file_permissions(temp_path)
-        temp_path.replace(self._metadata_path)
-        self._ensure_file_permissions(self._metadata_path)
-
-    def _try_persist_metadata_index(self, reason: str) -> bool:
-        try:
-            self._persist_metadata_index()
+            path.unlink()
+            self._fsync_directory(self._blob_dir)
         except OSError:
-            logger.warning("Failed to persist evidence metadata while %s", reason, exc_info=True)
-            return False
-        return True
+            self._mark_runtime_degraded("blob_delete_failed")
 
     def _quarantine_orphaned_blobs(self) -> None:
+        if not self._cleanup_allowed:
+            return
         referenced_hashes = {
             ref.content_hash
             for session_refs in self._refs.values()
@@ -873,47 +1126,70 @@ class ArtifactLedger:
         for blob_path in self._blob_dir.glob("*.txt"):
             if blob_path.stem in referenced_hashes:
                 continue
-            self._quarantine_blob(blob_path)
+            if not self._quarantine_blob(blob_path):
+                break
 
-    def _quarantine_blob(self, blob_path: Path) -> None:
-        destination = self._quarantine_dir / blob_path.name
-        if destination.exists():
-            with contextlib.suppress(OSError):
-                destination.unlink()
+    def _quarantine_blob(self, source: Path) -> bool:
+        content_hash = source.stem if len(source.stem) == 64 else hashlib.sha256(
+            source.name.encode("utf-8")
+        ).hexdigest()
+        destination = self._quarantine_dir / (
+            f"v1.{time.time_ns()}.{uuid4().hex}.{content_hash}.txt"
+        )
         try:
-            blob_path.replace(destination)
-            os.utime(destination, None)
-        except OSError:
-            logger.warning(
-                "Failed to quarantine orphaned evidence blob %s",
-                blob_path,
-                exc_info=True,
-            )
+            payload = source.read_bytes()
+            self._atomic_write(destination, payload)
+            source.unlink()
+            self._fsync_directory(source.parent)
+        except (AtomicWriteError, OSError):
+            logger.warning("Failed to quarantine evidence blob %s", source, exc_info=True)
+            self._mark_runtime_degraded("quarantine_publication_failed")
+            return False
+        return True
+
+    def _migrate_legacy_quarantine_entries(self) -> None:
+        if not self._cleanup_allowed:
             return
-        self._ensure_file_permissions(destination)
+        for path in self._quarantine_dir.glob("*.txt"):
+            if _QUARANTINE_NAME_RE.fullmatch(path.name):
+                continue
+            if not self._quarantine_blob(path):
+                break
 
     def _prune_quarantine(self) -> None:
-        now = datetime.now(UTC).timestamp()
-        for blob_path in self._quarantine_dir.glob("*.txt"):
-            try:
-                age_seconds = max(0.0, now - blob_path.stat().st_mtime)
-            except OSError:
+        if not self._cleanup_allowed:
+            return
+        now_ns = time.time_ns()
+        for path in self._quarantine_dir.glob("*.txt"):
+            match = _QUARANTINE_NAME_RE.fullmatch(path.name)
+            if match is None:
                 continue
+            timestamp_ns = int(match.group("timestamp_ns"))
+            age_seconds = max(0.0, (now_ns - timestamp_ns) / 1_000_000_000)
             if age_seconds <= float(self._orphan_retention_seconds):
                 continue
-            with contextlib.suppress(OSError):
-                blob_path.unlink()
+            try:
+                path.unlink()
+                self._fsync_directory(self._quarantine_dir)
+            except OSError:
+                self._mark_runtime_degraded("quarantine_prune_failed")
+                return
 
     def _drop_ref(self, session_key: str, ref_id: str) -> None:
         refs = self._refs.get(session_key)
         if not refs or ref_id not in refs:
             self._clear_temporarily_unreadable(session_key, ref_id)
             return
-        refs.pop(ref_id, None)
+        candidate = self._copy_refs(self._refs)
+        candidate_refs = candidate[session_key]
+        candidate_refs.pop(ref_id, None)
+        if not candidate_refs:
+            candidate.pop(session_key, None)
+        try:
+            self._commit_candidate(candidate, transition="drop_ref")
+        except (AtomicWriteError, StatePersistenceDegradedError):
+            return
         self._clear_temporarily_unreadable(session_key, ref_id)
-        if not refs:
-            self._refs.pop(session_key, None)
-        self._try_persist_metadata_index("dropping missing-blob evidence ref")
 
     def _mark_temporarily_unreadable(self, session_key: str, ref_id: str, reason: str) -> None:
         self._temporarily_unreadable_refs.setdefault(session_key, {})[ref_id] = _UnreadableRefState(
@@ -933,18 +1209,20 @@ class ArtifactLedger:
 
     def _maybe_probe_temporarily_unreadable(self, session_id: SessionId, ref_id: str) -> None:
         session_key = self._session_key(session_id)
-        if not self._is_temporarily_unreadable(session_key, ref_id):
-            return
-        probe_key = (session_key, ref_id)
-        if probe_key in self._unreadable_probe_in_flight:
-            return
-        self._unreadable_probe_in_flight.add(probe_key)
+        with self._lock:
+            if not self._is_temporarily_unreadable(session_key, ref_id):
+                return
+            probe_key = (session_key, ref_id)
+            if probe_key in self._unreadable_probe_in_flight:
+                return
+            self._unreadable_probe_in_flight.add(probe_key)
 
         def _probe() -> None:
             try:
-                self.resolve_ref_content(session_id, ref_id)
+                self._probe_temporarily_unreadable_domain()
             finally:
-                self._unreadable_probe_in_flight.discard(probe_key)
+                with self._lock:
+                    self._unreadable_probe_in_flight.discard(probe_key)
 
         Thread(
             target=_probe,
@@ -952,18 +1230,54 @@ class ArtifactLedger:
             daemon=True,
         ).start()
 
-    def _evict_for_session(self, session_id: SessionId) -> None:
-        self.evict_expired(
-            session_id,
-            max_age_seconds=self._default_max_age_seconds,
-            best_effort_persist=True,
-        )
+    def _probe_temporarily_unreadable_domain(self) -> None:
+        with self._lock:
+            if self._state_load_result.reason != "blob_unreadable":
+                return
+            unreadable: dict[str, dict[str, _UnreadableRefState]] = {}
+            validation_reason = ""
+            for session_key, session_refs in self._refs.items():
+                for ref_id, ref in session_refs.items():
+                    blob_load = self._load_validated_blob_content(ref)
+                    if blob_load.content is not None:
+                        continue
+                    if not blob_load.drop_ref:
+                        unreadable.setdefault(session_key, {})[ref_id] = _UnreadableRefState(
+                            reason=blob_load.failure_reason
+                        )
+                    validation_reason = validation_reason or self._blob_domain_failure_reason(
+                        blob_load
+                    )
+            self._temporarily_unreadable_refs = unreadable
+            if validation_reason:
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason=validation_reason,
+                    schema_version=_EVIDENCE_INDEX_VERSION,
+                )
+                return
+            self._publish_committed(self._refs)
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.OK,
+                reason="blob_access_recovered",
+                schema_version=_EVIDENCE_INDEX_VERSION,
+            )
+            self._cleanup_allowed = True
 
-    def _merge_existing_ref(
+    @staticmethod
+    def _blob_domain_failure_reason(blob_load: _BlobLoadResult) -> str:
+        if not blob_load.drop_ref:
+            return "blob_unreadable"
+        if "missing" in blob_load.failure_reason:
+            return "blob_missing"
+        if "hash" in blob_load.failure_reason:
+            return "blob_hash_mismatch"
+        return "blob_unreadable"
+
+    def _merged_ref(
         self,
         *,
         session_key: str,
-        ref_id: str,
         existing: EvidenceRef,
         taint_labels: set[TaintLabel],
         source: str,
@@ -989,9 +1303,16 @@ class ArtifactLedger:
                 "storage_codec": storage_codec or existing.storage_codec or self._blob_codec.name,
             }
         )
-        merged = self._stamp_metadata_mac(session_key, merged)
-        self._refs[session_key][ref_id] = merged
-        return merged
+        return self._stamp_metadata_mac(session_key, merged)
+
+    @staticmethod
+    def _is_expired(ref: EvidenceRef, *, max_age_seconds: int) -> bool:
+        age_seconds = max(0.0, (datetime.now(UTC) - ref.created_at).total_seconds())
+        effective = ArtifactLedger._effective_max_age_seconds(
+            max_age_seconds=max_age_seconds,
+            ttl_seconds=ref.ttl_seconds,
+        )
+        return age_seconds > float(effective)
 
     @staticmethod
     def _effective_max_age_seconds(*, max_age_seconds: int, ttl_seconds: int | None) -> int:
@@ -1009,14 +1330,21 @@ class ArtifactLedger:
         return min(existing, new)
 
     @staticmethod
-    def _ensure_dir_permissions(path: Path) -> None:
-        with contextlib.suppress(OSError):
-            os.chmod(path, 0o700)
+    def _is_regular_file(path: Path) -> bool:
+        try:
+            path_stat = path.lstat()
+        except OSError:
+            return False
+        return stat.S_ISREG(path_stat.st_mode)
 
     @staticmethod
-    def _ensure_file_permissions(path: Path) -> None:
-        with contextlib.suppress(OSError):
-            os.chmod(path, 0o600)
+    def _fsync_directory(path: Path) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+        directory_fd = os.open(path, flags)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     @staticmethod
     def _session_key(session_id: SessionId) -> str:

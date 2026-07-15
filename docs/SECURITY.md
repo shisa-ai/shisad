@@ -315,6 +315,17 @@ artifact may pass the `evidence.promote` confirmation seam on later reuse, but
 endorsement does not strip taint, upgrade provenance, or make the artifact
 globally trusted.
 
+The ledger treats its salt, versioned reference index, referenced blobs, and
+quarantine records as one evidence domain. On restart it publishes references
+only after validating that complete domain. Missing, malformed, mismatched, or
+unsupported companion state therefore degrades evidence operations only:
+ordinary daemon operation remains available, while evidence validation, reads,
+promotion, and cleanup fail closed and retained bytes are left untouched.
+Operators can inspect the typed reason with `shisad status` or
+`shisad doctor check --component evidence`; recovery requires restoring the
+matching domain state or performing an explicit whole-domain reset through an
+approved administrative/test workflow.
+
 Structured cross-boundary fields are also constrained by semantic tool-schema
 types. Sink-critical arguments such as URLs, command tokens, workspace paths,
 evidence refs, and thread ids are validated as atoms or opaque handles instead

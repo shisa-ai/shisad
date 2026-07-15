@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from shisad.channels.base import DeliveryTarget
+from shisad.core.atomic_state import encode_versioned_json_snapshot
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -1026,10 +1027,11 @@ def test_pep_rejects_promote_when_endorsement_metadata_is_tampered_offline(tmp_p
         summary="hello",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    envelope = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = envelope["payload"]
     raw_index[str(sid)][ref.ref_id]["endorsement_state"] = "user_endorsed"
     raw_index[str(sid)][ref.ref_id]["endorsed_by"] = "forged-offline"
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    index_path.write_bytes(encode_versioned_json_snapshot(raw_index, version=1))
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
     pep = PEP(
         PolicyBundle(default_require_confirmation=False),
@@ -1061,10 +1063,11 @@ def test_pep_rejects_promote_when_metadata_mac_is_stripped_and_summary_tampered(
         summary="hello",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    envelope = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index = envelope["payload"]
     raw_index[str(sid)][ref.ref_id]["metadata_mac"] = ""
     raw_index[str(sid)][ref.ref_id]["summary"] = "tampered summary from disk"
-    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    index_path.write_bytes(encode_versioned_json_snapshot(raw_index, version=1))
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
     pep = PEP(
         PolicyBundle(default_require_confirmation=False),

@@ -1,0 +1,445 @@
+"""F3B evidence-domain durability and retained-corruption regressions."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from stat import S_IMODE
+from uuid import uuid4
+
+import pytest
+
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StateLoadStatus,
+    encode_versioned_json_snapshot,
+)
+from shisad.core.evidence import ArtifactLedger, EvidenceRef
+from shisad.core.types import SessionId, TaintLabel
+
+
+def _store(
+    ledger: ArtifactLedger,
+    *,
+    sid: str = "sess-a",
+    content: str = "evidence",
+) -> EvidenceRef:
+    return ledger.store(
+        SessionId(sid),
+        content,
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary=content,
+    )
+
+
+def _index_payload(index_path: Path) -> dict[str, object]:
+    raw = json.loads(index_path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and set(raw) == {"version", "checksum", "payload"}:
+        payload = raw["payload"]
+        assert isinstance(payload, dict)
+        return payload
+    assert isinstance(raw, dict)
+    return raw
+
+
+def _assert_degraded(ledger: ArtifactLedger, *, reason: str) -> None:
+    result = ledger.state_load_result()
+    assert result.status is StateLoadStatus.CORRUPT
+    assert result.reason == reason
+    assert ledger.state_degraded is True
+    status = ledger.state_status()
+    assert status["status"] == "degraded"
+    assert status["fail_closed"] is True
+    assert status["cleanup_allowed"] is False
+    assert reason in status["problems"]
+
+
+def test_f3_evidence_domain_new_root_is_durable_versioned_and_owner_only(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+
+    assert ledger.state_load_result().status is StateLoadStatus.OK
+    assert ledger.state_load_result().reason == "new_domain"
+    index = json.loads((evidence_root / "refs_index.json").read_text(encoding="utf-8"))
+    assert set(index) == {"version", "checksum", "payload"}
+    assert index["version"] == 1
+    assert index["payload"] == {}
+    assert (evidence_root / "evidence_salt").read_bytes() == b"a" * 32
+    assert S_IMODE(evidence_root.stat().st_mode) == 0o700
+    assert S_IMODE((evidence_root / "blobs").stat().st_mode) == 0o700
+    assert S_IMODE((evidence_root / "quarantine").stat().st_mode) == 0o700
+    assert S_IMODE((evidence_root / "evidence_salt").stat().st_mode) == 0o600
+    assert S_IMODE((evidence_root / "refs_index.json").stat().st_mode) == 0o600
+
+
+def test_f3_evidence_domain_missing_salt_retains_index_and_blob_without_rotation(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    index_path = evidence_root / "refs_index.json"
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    index_bytes = index_path.read_bytes()
+    blob_bytes = blob_path.read_bytes()
+    (evidence_root / "evidence_salt").unlink()
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason="missing_salt_existing_domain")
+    assert (evidence_root / "evidence_salt").exists() is False
+    assert index_path.read_bytes() == index_bytes
+    assert blob_path.read_bytes() == blob_bytes
+    assert restarted.get_ref_metadata(SessionId("sess-a"), ref.ref_id) is None
+
+
+@pytest.mark.parametrize(
+    ("salt_bytes", "reason"),
+    [
+        pytest.param(b"short", "invalid_salt", id="truncated"),
+        pytest.param(b"b" * 32, "salt_mismatch", id="configured-mismatch"),
+    ],
+)
+def test_f3_evidence_domain_invalid_salt_retains_complete_domain(
+    tmp_path: Path,
+    salt_bytes: bytes,
+    reason: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    blob_bytes = blob_path.read_bytes()
+    salt_path = evidence_root / "evidence_salt"
+    if reason == "invalid_salt":
+        salt_path.write_bytes(salt_bytes)
+
+    restarted = ArtifactLedger(
+        evidence_root,
+        salt=(salt_bytes if reason == "salt_mismatch" else None),
+    )
+
+    _assert_degraded(restarted, reason=reason)
+    assert salt_path.read_bytes() == (b"a" * 32 if reason == "salt_mismatch" else salt_bytes)
+    assert blob_path.read_bytes() == blob_bytes
+
+
+def test_f3_evidence_domain_missing_index_with_blob_retains_every_byte(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    salt_bytes = (evidence_root / "evidence_salt").read_bytes()
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    blob_bytes = blob_path.read_bytes()
+    (evidence_root / "refs_index.json").unlink()
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason="missing_index_existing_domain")
+    assert (evidence_root / "refs_index.json").exists() is False
+    assert (evidence_root / "evidence_salt").read_bytes() == salt_bytes
+    assert blob_path.read_bytes() == blob_bytes
+    assert list((evidence_root / "quarantine").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("index_bytes", "reason"),
+    [
+        pytest.param(b"{not-json", "invalid_json", id="invalid-json"),
+        pytest.param(
+            encode_versioned_json_snapshot({}, version=2),
+            "unsupported_schema",
+            id="newer-schema",
+        ),
+    ],
+)
+def test_f3_evidence_domain_bad_index_retains_orphan_and_blocks_cleanup(
+    tmp_path: Path,
+    index_bytes: bytes,
+    reason: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    referenced_blob = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    orphan_blob = evidence_root / "blobs" / f"{'d' * 64}.txt"
+    orphan_blob.write_bytes(b"retained orphan")
+    index_path = evidence_root / "refs_index.json"
+    index_path.write_bytes(index_bytes)
+
+    restarted = ArtifactLedger(evidence_root)
+
+    result = restarted.state_load_result()
+    expected_status = (
+        StateLoadStatus.UNSUPPORTED_SCHEMA
+        if reason == "unsupported_schema"
+        else StateLoadStatus.CORRUPT
+    )
+    assert result.status is expected_status
+    assert result.reason == reason
+    assert restarted.state_degraded is True
+    assert index_path.read_bytes() == index_bytes
+    assert referenced_blob.exists() is True
+    assert orphan_blob.read_bytes() == b"retained orphan"
+    assert list((evidence_root / "quarantine").iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "hash_mismatch"])
+def test_f3_evidence_domain_blob_companion_failure_retains_index_and_degrades(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    index_path = evidence_root / "refs_index.json"
+    index_bytes = index_path.read_bytes()
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    if failure == "missing":
+        blob_path.unlink()
+    else:
+        blob_path.write_bytes(b"tampered-but-retained")
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason=f"blob_{failure}")
+    assert restarted.read(SessionId("sess-a"), ref.ref_id) is None
+    assert restarted.get_ref(SessionId("sess-a"), ref.ref_id) is None
+    assert restarted.resolve_ref_content(SessionId("sess-a"), ref.ref_id) == (None, None)
+    assert index_path.read_bytes() == index_bytes
+    if failure == "missing":
+        assert blob_path.exists() is False
+    else:
+        assert blob_path.read_bytes() == b"tampered-but-retained"
+
+
+def test_f3_evidence_domain_valid_legacy_index_migrates_only_after_full_validation(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    index_path = evidence_root / "refs_index.json"
+    legacy_payload = _index_payload(index_path)
+    index_path.write_text(
+        json.dumps(legacy_payload, ensure_ascii=True, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    restarted = ArtifactLedger(evidence_root)
+
+    result = restarted.state_load_result()
+    assert result.status is StateLoadStatus.OK
+    assert result.legacy is True
+    assert restarted.read(SessionId("sess-a"), ref.ref_id) == "evidence"
+    migrated = json.loads(index_path.read_text(encoding="utf-8"))
+    assert set(migrated) == {"version", "checksum", "payload"}
+    assert migrated["version"] == 1
+    assert migrated["payload"] == legacy_payload
+
+
+def test_f3_evidence_domain_rejects_content_hash_path_before_blob_access(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    payload = _index_payload(evidence_root / "refs_index.json")
+    session_payload = payload["sess-a"]
+    assert isinstance(session_payload, dict)
+    raw_ref = session_payload[ref.ref_id]
+    assert isinstance(raw_ref, dict)
+    escaped = EvidenceRef.model_validate(
+        {**raw_ref, "content_hash": str(tmp_path / "outside")}
+    )
+    escaped = escaped.model_copy(
+        update={"metadata_mac": first._make_metadata_mac("sess-a", escaped)}
+    )
+    session_payload[ref.ref_id] = escaped.model_dump(mode="json")
+    (evidence_root / "refs_index.json").write_bytes(
+        encode_versioned_json_snapshot(payload, version=1)
+    )
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"must not be read")
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason="invalid_content_hash")
+    assert outside.read_bytes() == b"must not be read"
+
+
+def test_f3_evidence_domain_rejects_authenticated_but_forged_ref_id(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    forged_id = "ev-forged"
+    forged = ref.model_copy(update={"ref_id": forged_id, "metadata_mac": ""})
+    forged = forged.model_copy(
+        update={"metadata_mac": first._make_metadata_mac("sess-a", forged)}
+    )
+    payload = {"sess-a": {forged_id: forged.model_dump(mode="json")}}
+    (evidence_root / "refs_index.json").write_bytes(
+        encode_versioned_json_snapshot(payload, version=1)
+    )
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason="ref_id_auth_mismatch")
+
+
+@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+def test_f3_evidence_blob_publication_fault_never_publishes_dangling_ref(
+    tmp_path: Path,
+    stage: AtomicWriteStage,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+
+    def _fault(observed: AtomicWriteStage) -> None:
+        if observed is stage:
+            raise OSError(f"fault at {stage.value}")
+
+    ledger._atomic_fault_injector = _fault
+
+    with pytest.raises(AtomicWriteError):
+        _store(ledger)
+
+    assert ledger.committed_ref_count() == 0
+    assert ledger.get_ref_metadata(SessionId("sess-a"), "ev-any") is None
+    assert ledger.state_degraded is True
+    assert ledger.cleanup_allowed is False
+
+
+@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+def test_f3_evidence_index_publication_fault_keeps_prior_committed_view(
+    tmp_path: Path,
+    stage: AtomicWriteStage,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    original = _store(ledger, sid="sess-a", content="shared")
+    committed_index = (tmp_path / "evidence" / "refs_index.json").read_bytes()
+
+    def _fault(observed: AtomicWriteStage) -> None:
+        if observed is stage:
+            raise OSError(f"fault at {stage.value}")
+
+    ledger._atomic_fault_injector = _fault
+
+    with pytest.raises(AtomicWriteError):
+        _store(ledger, sid="sess-b", content="shared")
+
+    assert ledger.get_ref_metadata(SessionId("sess-a"), original.ref_id) == original
+    assert ledger.committed_ref_count() == 1
+    assert ledger.state_degraded is True
+    assert ledger.cleanup_allowed is False
+    if stage is not AtomicWriteStage.PARENT_FSYNC:
+        assert (tmp_path / "evidence" / "refs_index.json").read_bytes() == committed_index
+
+
+def test_f3_evidence_quarantine_is_collision_safe_and_uses_durable_timestamp(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    orphan_hash = "d" * 64
+    orphan_blob = evidence_root / "blobs" / f"{orphan_hash}.txt"
+    orphan_blob.write_bytes(b"first orphan")
+
+    ArtifactLedger(evidence_root)
+    first_entries = sorted((evidence_root / "quarantine").iterdir())
+    assert len(first_entries) == 1
+    assert first_entries[0].name.startswith("v1.")
+    assert first_entries[0].read_bytes() == b"first orphan"
+
+    orphan_blob.write_bytes(b"second orphan")
+    ArtifactLedger(evidence_root)
+    entries = sorted((evidence_root / "quarantine").iterdir())
+    assert len(entries) == 2
+    assert {path.read_bytes() for path in entries} == {b"first orphan", b"second orphan"}
+    assert len({path.name for path in entries}) == 2
+
+
+def test_f3_evidence_legacy_quarantine_migration_uses_new_time_not_mtime(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    legacy = evidence_root / "quarantine" / f"{'e' * 64}.txt"
+    legacy.write_bytes(b"legacy quarantine")
+    os.utime(legacy, (1, 1))
+
+    ArtifactLedger(evidence_root, orphan_retention_seconds=1)
+
+    entries = list((evidence_root / "quarantine").iterdir())
+    assert len(entries) == 1
+    assert entries[0].name.startswith("v1.")
+    assert entries[0].read_bytes() == b"legacy quarantine"
+
+
+def test_f3_evidence_prune_uses_parseable_quarantine_time_and_fsyncs_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    quarantine = evidence_root / "quarantine"
+    old_entry = quarantine / f"v1.1.{uuid4().hex}.{'f' * 64}.txt"
+    old_entry.write_bytes(b"expired quarantine")
+    fsynced_paths: list[Path] = []
+
+    original_fsync_directory = ArtifactLedger._fsync_directory
+
+    def _record_fsync(path: Path) -> None:
+        fsynced_paths.append(path)
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(ArtifactLedger, "_fsync_directory", staticmethod(_record_fsync))
+
+    ArtifactLedger(evidence_root, orphan_retention_seconds=1)
+
+    assert old_entry.exists() is False
+    assert quarantine in fsynced_paths
+
+
+def test_f3_evidence_explicit_reset_is_only_destructive_domain_recovery(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    (evidence_root / "evidence_salt").unlink()
+    degraded = ArtifactLedger(evidence_root)
+    assert blob_path.exists() is True
+
+    reset = degraded.reset_domain()
+
+    assert reset["status"] == "ok"
+    assert reset["destroyed_ref_count"] == 0
+    assert degraded.state_degraded is False
+    assert degraded.cleanup_allowed is True
+    assert degraded.committed_ref_count() == 0
+    assert degraded.is_empty_domain() is True
+    assert degraded.domain_file_count() == 2
+    assert blob_path.exists() is False
+    assert degraded.state_load_result().status is StateLoadStatus.OK
+    assert degraded.state_load_result().reason == "explicit_reset"
+    assert _index_payload(evidence_root / "refs_index.json") == {}
+
+
+def test_f3_evidence_status_is_actionable_without_claiming_whole_daemon_failure(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    _store(first)
+    (evidence_root / "refs_index.json").write_bytes(b"{not-json")
+
+    degraded = ArtifactLedger(evidence_root)
+    status = degraded.state_status()
+
+    assert status["status"] == "degraded"
+    assert status["scope"] == "evidence_only"
+    assert status["fail_closed"] is True
+    assert "restore" in status["remediation"].lower()
+    assert "explicit" in status["remediation"].lower()
+    assert "reset" in status["remediation"].lower()

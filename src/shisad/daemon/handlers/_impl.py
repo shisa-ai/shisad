@@ -2489,10 +2489,8 @@ class HandlerImplementation(
             "channel_state_disk_empty": _dir_empty(channel_state_root),
             "transcripts_empty": _dir_empty(self._transcript_store._transcript_dir),
             "transcript_blobs_empty": _dir_empty(self._transcript_store._blob_dir),
-            "evidence_empty": not self._evidence_store._refs,
-            "evidence_disk_empty": _dir_empty(self._evidence_store._blob_dir)
-            and not self._evidence_store._metadata_path.exists()
-            and _dir_empty(self._evidence_store._quarantine_dir),
+            "evidence_empty": self._evidence_store.is_empty_domain(),
+            "evidence_disk_empty": self._evidence_store.is_empty_domain(),
             "ingestion_empty": self._ingestion.artifacts_empty(),
             "ingestion_artifacts_empty": self._ingestion.artifacts_empty(),
             "selfmod_empty": not self._selfmod_manager._inventory.skills

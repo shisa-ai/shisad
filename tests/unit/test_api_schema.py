@@ -307,6 +307,12 @@ class TestApiSchemaValidation:
                     "load_status": "corrupt",
                     "fail_closed": True,
                 },
+                "evidence": {
+                    "status": "degraded",
+                    "scope": "evidence_only",
+                    "load_status": "corrupt",
+                    "fail_closed": True,
+                },
             }
         )
         realitycheck_search = RealityCheckSearchResult.model_validate(
@@ -410,6 +416,7 @@ class TestApiSchemaValidation:
         assert daemon_status.delivery == {}
         assert daemon_status.approvals["load_status"] == "corrupt"
         assert daemon_status.skills["load_status"] == "corrupt"
+        assert daemon_status.evidence["scope"] == "evidence_only"
         assert daemon_status.realitycheck == {}
         assert realitycheck_search.mode == "local"
         assert realitycheck_read.path == "/tmp/source.md"

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus, SessionCreated
+from shisad.core.evidence import ArtifactLedger
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelRouter
@@ -234,6 +235,44 @@ async def test_f3_corrupt_control_plane_state_is_visible_while_daemon_stays_up(
         assert doctor["status"] == "degraded"
         assert doctor["checks"]["control_plane"]["status"] == "degraded"
         assert plans_path.read_bytes() == corrupt_bytes
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_evidence_domain_is_visible_while_daemon_stays_up(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    evidence_root = data_dir / "sessions" / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    index_path = evidence_root / "refs_index.json"
+    corrupt_bytes = b'{"version":1,"payload":'
+    index_path.write_bytes(corrupt_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        assert await services.control_plane.ping() is True
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "evidence"})
+
+        assert status["status"] == "running"
+        assert status["evidence"]["status"] == "degraded"
+        assert status["evidence"]["scope"] == "evidence_only"
+        assert status["evidence"]["fail_closed"] is True
+        assert status["evidence"]["load_status"] == "corrupt"
+        assert status["evidence"]["reason"] == "invalid_json"
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["evidence"]["problems"] == ["invalid_json"]
+        assert index_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
 
@@ -978,7 +1017,13 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             ).results
             == []
         )
-        assert services.evidence_store._refs == {}
+        assert services.evidence_store.is_empty_domain() is True
+        assert services.evidence_store.state_load_result().status.value == "ok"
+        reset_restarted_evidence = ArtifactLedger(
+            config.data_dir / "sessions" / "evidence"
+        )
+        assert reset_restarted_evidence.state_load_result().status.value == "ok"
+        assert reset_restarted_evidence.committed_ref_count() == 0
         assert services.ingestion.artifacts_empty()
         assert services.ingestion.search_index_count() == 0
         assert services.ingestion._active_key_id

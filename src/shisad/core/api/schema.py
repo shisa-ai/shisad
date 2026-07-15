@@ -2307,6 +2307,7 @@ class DaemonStatusResult(BaseModel):
     approvals: dict[str, Any] = Field(default_factory=dict)
     skills: dict[str, Any] = Field(default_factory=dict)
     dashboard: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
     control_plane: dict[str, Any] = Field(default_factory=dict)
     executors: dict[str, Any] = Field(default_factory=dict)
     selfmod: dict[str, Any] = Field(default_factory=dict)

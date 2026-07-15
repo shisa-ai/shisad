@@ -1614,6 +1614,7 @@ class AdminImplMixin(HandlerMixinBase):
             "approvals": self._credential_store.approval_state_status(),
             "skills": self._skill_manager.state_status(),
             "dashboard": self._dashboard.state_status(),
+            "evidence": self._evidence_store.state_status(),
             "control_plane": control_plane_status,
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
@@ -1885,6 +1886,7 @@ class AdminImplMixin(HandlerMixinBase):
             "skills": self._skill_manager.state_status,
             "selfmod": self._selfmod_manager.doctor_status,
             "dashboard": self._dashboard.state_status,
+            "evidence": self._evidence_store.state_status,
             "control_plane": self._control_plane_state_status,
             "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,

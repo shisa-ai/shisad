@@ -1222,13 +1222,9 @@ class DaemonServices:
         self.rate_limiter._by_tool_burst.clear()
 
         # -- Audit log --
+        # Capture the pre-reset count now, but clear after the evidence reset's
+        # thread yield so queued pre-reset event handlers cannot repopulate it.
         cleared["audit_entries"] = self.audit_log.entry_count
-        from shisad.core.audit import _GENESIS_HASH
-
-        self.audit_log._previous_hash = _GENESIS_HASH
-        self.audit_log._entry_count = 0
-        if self.audit_log._log_path.exists():
-            self.audit_log._log_path.write_text("", encoding="utf-8")
 
         # -- Checkpoints --
         cleared["checkpoints"] = _count_files_recursive(self.checkpoint_store._dir)
@@ -1254,15 +1250,9 @@ class DaemonServices:
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
         # -- Evidence --
-        cleared["evidence_refs"] = len(self.evidence_store._refs)
-        cleared["evidence_files"] = _count_files_recursive(self.evidence_store._blob_dir) + int(
-            self.evidence_store._metadata_path.exists()
-        )
-        self.evidence_store._refs.clear()
-        self.evidence_store._temporarily_unreadable_refs.clear()
-        _wipe_dir_contents(self.evidence_store._blob_dir)
-        _wipe_dir_contents(self.evidence_store._quarantine_dir)
-        _unlink_if_exists(self.evidence_store._metadata_path)
+        cleared["evidence_refs"] = self.evidence_store.committed_ref_count()
+        cleared["evidence_files"] = self.evidence_store.domain_file_count()
+        await asyncio.to_thread(self.evidence_store.reset_domain)
 
         # -- Self-modification --
         cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
@@ -1355,6 +1345,13 @@ class DaemonServices:
         self.policy_loader.policy.risk_policy.block_threshold = (
             default_risk_policy.thresholds.block_threshold
         )
+
+        from shisad.core.audit import _GENESIS_HASH
+
+        self.audit_log._previous_hash = _GENESIS_HASH
+        self.audit_log._entry_count = 0
+        if self.audit_log._log_path.exists():
+            self.audit_log._log_path.write_text("", encoding="utf-8")
 
         logger.info("Test state reset: %s", cleared)
         return {"status": "reset", "cleared": cleared}
