@@ -1033,7 +1033,13 @@ class SelfModificationManager:
         legacy = False
         try:
             json_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
+        except RecursionError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_json",
+            )
+            return _Inventory()
+        except (UnicodeError, json.JSONDecodeError):
             json_payload = None
         envelope_candidate = (
             isinstance(json_payload, dict)
@@ -1050,7 +1056,7 @@ class SelfModificationManager:
         else:
             try:
                 payload = yaml.safe_load(raw_bytes.decode("utf-8"))
-            except (UnicodeError, yaml.YAMLError):
+            except (UnicodeError, yaml.YAMLError, RecursionError):
                 self._state_load_result = StateLoadResult(
                     StateLoadStatus.CORRUPT,
                     reason="invalid_yaml",

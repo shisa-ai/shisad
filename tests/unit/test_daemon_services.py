@@ -356,16 +356,27 @@ async def test_f3_corrupt_skill_inventory_starts_bounded_degraded_and_is_actiona
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt_bytes",
+    [
+        pytest.param(b'{"version":1,"payload":', id="invalid-json"),
+        pytest.param(
+            (b"[" * 10000) + b"0" + (b"]" * 10000),
+            id="recursive-json",
+        ),
+        pytest.param((b"- " * 10000) + b"0\n", id="recursive-yaml"),
+    ],
+)
 async def test_f3_corrupt_selfmod_inventory_starts_bounded_degraded_and_is_actionable(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    corrupt_bytes: bytes,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     data_dir = tmp_path / "data"
     selfmod_dir = data_dir / "selfmod"
     selfmod_dir.mkdir(parents=True)
     inventory_path = selfmod_dir / "inventory.yaml"
-    corrupt_bytes = b'{"version":1,"payload":'
     inventory_path.write_bytes(corrupt_bytes)
     config = DaemonConfig(
         data_dir=data_dir,

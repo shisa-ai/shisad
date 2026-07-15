@@ -370,6 +370,40 @@ def test_f3_selfmod_corrupt_inventory_is_retained_and_blocks_runtime(
 
 
 @pytest.mark.parametrize(
+    ("recursive_bytes", "expected_reason"),
+    [
+        pytest.param(
+            (b"[" * 10000) + b"0" + (b"]" * 10000),
+            "invalid_json",
+            id="json",
+        ),
+        pytest.param((b"- " * 10000) + b"0\n", "invalid_yaml", id="yaml"),
+    ],
+)
+def test_f3_selfmod_recursive_inventory_is_typed_and_retained(
+    tmp_path: Path,
+    recursive_bytes: bytes,
+    expected_reason: str,
+) -> None:
+    selfmod_root = tmp_path / "selfmod"
+    selfmod_root.mkdir()
+    inventory_path = selfmod_root / "inventory.yaml"
+    inventory_path.write_bytes(recursive_bytes)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == expected_reason
+    assert manager.state_degraded is True
+    assert planner.defaults == []
+    assert inventory_path.read_bytes() == recursive_bytes
+
+
+@pytest.mark.parametrize(
     ("snapshot", "status", "reason"),
     [
         (
