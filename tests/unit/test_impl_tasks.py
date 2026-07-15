@@ -4,15 +4,31 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
 
 from shisad.core.events import ToolRejected
-from shisad.core.types import SessionId, SessionMode, SessionRole, SessionState, UserId, WorkspaceId
+from shisad.core.evidence import ArtifactLedger
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    SessionRole,
+    SessionState,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
+from shisad.security.control_plane.schema import ControlDecision
+from shisad.security.pep import PEP
+from shisad.security.policy import PolicyBundle
 
 
 class _EventCollector:
@@ -286,6 +302,138 @@ async def test_f1_task_disable_serializes_after_inflight_task_run() -> None:
         "disable:task-1",
         "cancel:task-1:task_disabled",
     ]
+
+
+@pytest.mark.asyncio
+async def test_f3_actual_task_pep_route_keeps_event_loop_live_behind_evidence_writer(
+    tmp_path: Path,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("message.send"),
+            description="send a message",
+            parameters=[
+                ToolParameter(name="channel", type="string", required=True),
+                ToolParameter(name="recipient", type="string", required=True),
+                ToolParameter(name="message", type="string", required=True),
+            ],
+            capabilities_required=[Capability.MESSAGE_SEND],
+        )
+    )
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        registry,
+        evidence_store=ledger,
+    )
+    task = SimpleNamespace(
+        id="task-1",
+        enabled=True,
+        goal="send the scheduled update",
+        delivery_target={"channel": "discord", "recipient": "ops-room"},
+        capability_snapshot={Capability.MESSAGE_SEND},
+        workspace_id=WorkspaceId("ws-1"),
+        created_by=UserId("user-1"),
+        task_envelope=None,
+        allowed_recipients=[],
+        allowed_domains=[],
+        commitment_hash=lambda: "commitment-1",
+    )
+    run = SimpleNamespace(
+        task_id="task-1",
+        plan_commitment="commitment-1",
+        payload_taint="trusted_scheduler",
+        trigger_payload="scheduled update",
+    )
+    control_evaluation = SimpleNamespace(
+        trace_result=SimpleNamespace(reason_code=""),
+        consensus=SimpleNamespace(votes=[]),
+        decision=ControlDecision.ALLOW,
+        reason_codes=[],
+        action=SimpleNamespace(),
+    )
+
+    class _ControlPlane:
+        def active_plan_hash(self, _session_id: str) -> str:
+            return ""
+
+        def begin_precontent_plan(self, **_kwargs: object) -> str:
+            return "plan-task-1"
+
+        def evaluate_action(self, **_kwargs: object) -> object:
+            return control_evaluation
+
+    class _ActualTaskPepHarness(TasksImplMixin):
+        def __init__(self) -> None:
+            self._scheduler = SimpleNamespace(get_task=lambda _task_id: task)
+            self._event_bus = _EventCollector()
+            self._control_plane = _ControlPlane()
+            self._pep = pep
+            self._policy_loader = SimpleNamespace(
+                policy=SimpleNamespace(
+                    control_plane=SimpleNamespace(
+                        trace=SimpleNamespace(
+                            ttl_seconds=1800,
+                            max_actions=10,
+                            allow_amendment=True,
+                        )
+                    )
+                )
+            )
+            self._lockdown_manager = SimpleNamespace(
+                apply_capability_restrictions=lambda _sid, capabilities: set(capabilities),
+                should_block_all_actions=lambda _sid: True,
+            )
+
+        def _ensure_task_execution_session(self, _task: object) -> object:
+            return SimpleNamespace(id=SessionId("task-session-1"), channel="scheduler")
+
+        async def _publish_control_plane_evaluation(self, **_kwargs: object) -> None:
+            return None
+
+        async def _observe_pep_reject_signal(self, **_kwargs: object) -> None:
+            return None
+
+        async def _reject_task_run(self, **_kwargs: object) -> dict[str, bool]:
+            return {"accepted": False, "queued_confirmation": False, "executed": False}
+
+    harness = _ActualTaskPepHarness()
+    lock_held = Event()
+    release_writer = Event()
+    holder_timed_out = Event()
+
+    def _hold_writer() -> None:
+        with ledger._lock:
+            lock_held.set()
+            if not release_writer.wait(timeout=3.0):
+                holder_timed_out.set()
+
+    holder = Thread(target=_hold_writer)
+    holder.start()
+    assert await asyncio.to_thread(lock_held.wait, 1.0)
+    heartbeat_ticks = 0
+
+    async def _heartbeat() -> None:
+        nonlocal heartbeat_ticks
+        for _ in range(5):
+            heartbeat_ticks += 1
+            await asyncio.sleep(0)
+        release_writer.set()
+
+    heartbeat = asyncio.create_task(_heartbeat())
+    result = await TasksImplMixin._execute_task_run_locked(
+        harness,
+        run,
+        event_type="schedule.due",
+        due_run=True,
+    )
+    await heartbeat
+    await asyncio.to_thread(holder.join, 1.0)
+
+    assert holder_timed_out.is_set() is False
+    assert heartbeat_ticks == 5
+    assert result == {"accepted": False, "queued_confirmation": False, "executed": False}
 
 
 @pytest.mark.asyncio

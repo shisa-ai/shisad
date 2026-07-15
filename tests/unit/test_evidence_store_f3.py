@@ -1095,6 +1095,26 @@ def test_f3_evidence_ref_and_collection_are_deeply_immutable() -> None:
         copied.taint_labels.append(TaintLabel.SENSITIVE_FILE)  # type: ignore[attr-defined]
 
 
+def test_f3_evidence_ref_id_uses_canonical_session_key_across_restart(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = ledger.store(
+        SessionId(" sess-a "),
+        "canonical session evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="unit-test",
+        summary="canonical session evidence",
+    )
+
+    assert ledger.validate_ref_metadata(SessionId("sess-a"), ref.ref_id) is True
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    assert restarted.state_degraded is False
+    assert restarted.validate_ref_metadata(SessionId("sess-a"), ref.ref_id) is True
+    assert restarted.read(SessionId("sess-a"), ref.ref_id) == "canonical session evidence"
+
+
 def test_f3_evidence_committed_snapshot_is_nested_frozen_and_returned_ref_cannot_mutate(
     tmp_path: Path,
 ) -> None:

@@ -1232,7 +1232,8 @@ class ArtifactLedger:
         content_hash: str,
         salt: bytes,
     ) -> str:
-        payload = f"{session_id!s}:{content_hash}".encode()
+        session_key = ArtifactLedger._session_key(session_id)
+        payload = f"{session_key}:{content_hash}".encode()
         digest = hmac.new(salt, payload, hashlib.sha256).hexdigest()[:16]
         return f"{_EVIDENCE_REF_PREFIX}{digest}"
 
