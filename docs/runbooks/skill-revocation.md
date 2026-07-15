@@ -11,12 +11,21 @@ Revoke a skill when:
 ## 2. Review current state
 
 ```bash
+shisad status
+shisad doctor check --component skills
 shisad skill list
 shisad dashboard skill-provenance --limit 200
 shisad dashboard alerts --limit 200
 ```
 
-Collect skill name, current version, and recent security findings.
+Confirm that the `skills` status is `ok`, then collect the skill name, current
+version, and recent security findings. A `corrupt` or `unsupported_schema`
+inventory is retained in place and skill activation, revocation, listing, and
+runtime authorization fail closed; static skill review remains available.
+
+Restore `skills/inventory.json` from a trusted backup, or remove it only after
+verifying that no skills should remain active, then restart shisad. Do not edit
+the checksum envelope by hand.
 
 ## 3. Revoke
 
@@ -26,6 +35,7 @@ shisad skill revoke <skill_name> --reason security_revoke
 
 Expected outcome:
 - skill state transitions to `revoked`
+- the owner-only inventory snapshot is durably published before the runtime tool is unregistered
 - `SkillRevoked` audit event emitted
 
 ## 4. Contain and clean up
@@ -44,6 +54,7 @@ Notify affected operators/users:
 ## 6. Verify
 
 ```bash
+shisad doctor check --component skills
 shisad skill list
 shisad dashboard audit --search "SkillRevoked" --limit 100
 ```

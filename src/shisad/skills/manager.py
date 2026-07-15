@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import stat
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteFaultInjector,
+    StateLoadResult,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    atomic_write_bytes,
+    decode_versioned_json_snapshot,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolRetryClass
@@ -34,6 +45,8 @@ from shisad.skills.sandbox import SkillExecutionRequest, SkillRuntimeSandbox, Sk
 from shisad.skills.signatures import KeyRing, SignatureStatus, verify_manifest_signature
 
 logger = logging.getLogger(__name__)
+
+_SKILL_INVENTORY_VERSION = 1
 
 
 class SkillInstallDecision(BaseModel):
@@ -74,6 +87,9 @@ class SkillManager:
         self._keyring = keyring or KeyRing()
         self._llm_analyzer = llm_analyzer
         self._tool_registry = tool_registry
+        self._state_fault_injector: AtomicWriteFaultInjector | None = None
+        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+        self._persistence_degradation: AtomicWriteError | None = None
         self._dangerous = DangerousPatternAnalyzer()
         self._tool_surface = ToolSurfaceAnalyzer()
         self._capability = CapabilityInferenceAnalyzer()
@@ -125,6 +141,7 @@ class SkillManager:
         *,
         approve_untrusted: bool = False,
     ) -> SkillInstallDecision:
+        self._require_state_available(transition="install")
         bundle = load_skill_bundle(
             skill_path,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
@@ -236,17 +253,21 @@ class SkillManager:
         return profiler
 
     def list_installed(self) -> list[InstalledSkill]:
+        self._require_state_available(transition="list")
         return sorted(self._inventory.values(), key=lambda item: item.name)
 
     def revoke(self, *, skill_name: str, reason: str = "") -> InstalledSkill | None:
+        self._require_state_available(transition="revoke")
         installed = self._inventory.get(skill_name)
         if installed is None:
             return None
         if installed.state == ArtifactState.REVOKED:
             return installed
         updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
-        self._inventory[skill_name] = updated
-        self._persist_inventory()
+        candidate = dict(self._inventory)
+        candidate[skill_name] = updated
+        self._persist_inventory_snapshot(candidate)
+        self._inventory = candidate
         self._unregister_skill_tools(skill_name)
         _ = reason
         return updated
@@ -257,11 +278,11 @@ class SkillManager:
         *,
         state: ArtifactState = ArtifactState.PUBLISHED,
     ) -> InstalledSkill | None:
+        self._require_state_available(transition="activate")
         bundle = load_skill_bundle(
             skill_path,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
-        self._unregister_skill_tools(bundle.manifest.name)
         installed = InstalledSkill(
             name=bundle.manifest.name,
             version=bundle.manifest.version,
@@ -271,8 +292,11 @@ class SkillManager:
             author=bundle.manifest.author,
             tool_schema_hashes=_declared_tool_schema_hashes(bundle.manifest),
         )
-        self._inventory[bundle.manifest.name] = installed
-        self._persist_inventory()
+        candidate = dict(self._inventory)
+        candidate[bundle.manifest.name] = installed
+        self._persist_inventory_snapshot(candidate)
+        self._inventory = candidate
+        self._unregister_skill_tools(bundle.manifest.name)
         if state == ArtifactState.PUBLISHED:
             self._register_skill_tools(
                 bundle.manifest,
@@ -295,6 +319,7 @@ class SkillManager:
         skill_name: str,
         request: SkillExecutionRequest,
     ) -> SkillSandboxDecision:
+        self._require_state_available(transition="authorize_runtime")
         installed = self._inventory.get(skill_name)
         if installed is None:
             return SkillSandboxDecision(allowed=False, reason="unknown_skill")
@@ -326,20 +351,197 @@ class SkillManager:
         findings.extend(self._capability.analyze(bundle))
         return findings
 
-    def _load_inventory(self) -> dict[str, InstalledSkill]:
-        if not self._inventory_path.exists():
-            return {}
-        payload = json.loads(self._inventory_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, list):
-            return {}
-        entries = [
-            InstalledSkill.model_validate(item) for item in payload if isinstance(item, dict)
-        ]
-        return {entry.name: entry for entry in entries}
+    @property
+    def state_degraded(self) -> bool:
+        return self._persistence_degradation is not None or self._state_load_result.status in {
+            StateLoadStatus.CORRUPT,
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+        }
 
-    def _persist_inventory(self) -> None:
-        payload = [entry.model_dump(mode="json") for entry in self.list_installed()]
-        self._inventory_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    def inventory_load_result(self) -> StateLoadResult:
+        return self._state_load_result
+
+    def state_status(self) -> dict[str, Any]:
+        load_result = self._state_load_result
+        problems: list[str] = []
+        if self._persistence_degradation is not None:
+            problems.append("skill_inventory_persistence_degraded")
+        elif load_result.status in {
+            StateLoadStatus.CORRUPT,
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+        }:
+            problems.append(f"skill_inventory_{load_result.status.value}")
+        remediation = ""
+        if self.state_degraded:
+            remediation = (
+                "Restore the skill inventory from a trusted backup, or remove it only after "
+                "verifying that no skills should remain active, then restart shisad."
+            )
+        persistence = self._persistence_degradation
+        return {
+            "status": "degraded" if self.state_degraded else "ok",
+            "problems": problems,
+            "path": str(self._inventory_path),
+            "load_status": load_result.status.value,
+            "reason": load_result.reason,
+            "schema_version": load_result.schema_version,
+            "legacy": load_result.legacy,
+            "fail_closed": self.state_degraded,
+            "stage": persistence.stage.value if persistence is not None else "",
+            "remediation": remediation,
+        }
+
+    def _require_state_available(self, *, transition: str) -> None:
+        persistence = self._persistence_degradation
+        if persistence is not None:
+            raise StatePersistenceDegradedError(
+                authority="skill_inventory",
+                transition=transition,
+                stage=persistence.stage.value,
+                reason=(
+                    "commit_uncertain"
+                    if persistence.publication_may_have_committed
+                    else "publication_failed"
+                ),
+            )
+        load_result = self._state_load_result
+        if load_result.status in {
+            StateLoadStatus.CORRUPT,
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+        }:
+            raise StatePersistenceDegradedError(
+                authority="skill_inventory",
+                transition=transition,
+                stage="load",
+                reason=load_result.reason or load_result.status.value,
+            )
+
+    def _load_inventory(self) -> dict[str, InstalledSkill]:
+        try:
+            target_stat = self._inventory_path.lstat()
+        except FileNotFoundError:
+            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+            return {}
+        except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="inventory_stat_failed",
+            )
+            return {}
+        if not stat.S_ISREG(target_stat.st_mode):
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_inventory_target",
+            )
+            return {}
+        try:
+            raw_bytes = self._inventory_path.read_bytes()
+        except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="inventory_read_failed",
+            )
+            return {}
+
+        legacy = False
+        try:
+            raw_payload = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            raw_payload = None
+        if isinstance(raw_payload, list):
+            payload: Any = raw_payload
+            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
+            legacy = True
+        else:
+            load_result, payload = decode_versioned_json_snapshot(
+                raw_bytes,
+                supported_version=_SKILL_INVENTORY_VERSION,
+            )
+            if load_result.status is not StateLoadStatus.OK:
+                self._state_load_result = load_result
+                return {}
+        if not isinstance(payload, list):
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_inventory_payload",
+                schema_version=load_result.schema_version,
+                legacy=legacy,
+            )
+            return {}
+
+        inventory: dict[str, InstalledSkill] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="invalid_inventory_entry",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return {}
+            try:
+                entry = InstalledSkill.model_validate(item)
+            except (TypeError, ValueError, ValidationError):
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="invalid_inventory_entry",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return {}
+            if not all(
+                value.strip()
+                for value in (
+                    entry.name,
+                    entry.version,
+                    entry.path,
+                    entry.manifest_hash,
+                    entry.author,
+                )
+            ):
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="invalid_inventory_entry",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return {}
+            if entry.name in inventory:
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="duplicate_skill_name",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return {}
+            inventory[entry.name] = entry
+        self._state_load_result = load_result
+        return inventory
+
+    def _persist_inventory_snapshot(self, inventory: dict[str, InstalledSkill]) -> None:
+        payload = [
+            entry.model_dump(mode="json")
+            for entry in sorted(inventory.values(), key=lambda item: item.name)
+        ]
+        encoded = encode_versioned_json_snapshot(
+            payload,
+            version=_SKILL_INVENTORY_VERSION,
+        )
+        try:
+            atomic_write_bytes(
+                self._inventory_path,
+                encoded,
+                fault_injector=self._state_fault_injector,
+            )
+        except AtomicWriteError as exc:
+            if exc.publication_may_have_committed:
+                self._persistence_degradation = exc
+                self._unregister_all_skill_tools()
+            raise
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_SKILL_INVENTORY_VERSION,
+        )
 
     def _installed_bundles(self) -> list[SkillBundle]:
         bundles: list[SkillBundle] = []
@@ -359,9 +561,11 @@ class SkillManager:
         return bundles
 
     def _register_inventory_tools(self) -> None:
-        if self._tool_registry is None:
+        if self._tool_registry is None or self.state_degraded:
             return
         inventory_migrated = False
+        candidate = dict(self._inventory)
+        registration_bundles: list[tuple[InstalledSkill, SkillBundle]] = []
         for installed in self._inventory.values():
             if installed.state != ArtifactState.PUBLISHED:
                 continue
@@ -375,16 +579,35 @@ class SkillManager:
                 )
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
-            expected_hashes = getattr(installed, "tool_schema_hashes", {})
-            previous_hashes = dict(expected_hashes)
+            registration_bundles.append((installed, bundle))
+            migrated_hashes = _migrated_tool_schema_hashes(
+                bundle.manifest,
+                expected_hashes=installed.tool_schema_hashes,
+            )
+            if migrated_hashes != installed.tool_schema_hashes:
+                candidate[installed.name] = installed.model_copy(
+                    update={"tool_schema_hashes": migrated_hashes}
+                )
+                inventory_migrated = True
+        if inventory_migrated:
+            try:
+                self._persist_inventory_snapshot(candidate)
+            except AtomicWriteError as exc:
+                if exc.publication_may_have_committed:
+                    return
+                logger.warning(
+                    "Could not durably migrate legacy skill tool metadata; using the "
+                    "compatible durable metadata for this process",
+                )
+            else:
+                self._inventory = candidate
+        for original, bundle in registration_bundles:
+            installed = self._inventory.get(original.name, original)
             self._register_skill_tools(
                 bundle.manifest,
-                expected_hashes=expected_hashes,
+                expected_hashes=installed.tool_schema_hashes,
                 registration_source="inventory_reload",
             )
-            inventory_migrated = inventory_migrated or expected_hashes != previous_hashes
-        if inventory_migrated:
-            self._persist_inventory()
 
     def _register_skill_tools(
         self,
@@ -418,9 +641,7 @@ class SkillManager:
                     registration_source == "inventory_reload"
                     and tool_def.retry_class is ToolRetryClass.UNKNOWN
                     and expected_hash == legacy_hash
-                    and expected_hashes is not None
                 ):
-                    expected_hashes[declared_tool.name] = actual_hash
                     expected_hash = actual_hash
                 else:
                     self._record_registration_drop(
@@ -448,6 +669,10 @@ class SkillManager:
         for tool_name in self._skill_tool_map.get(skill_name, []):
             self._tool_registry.unregister(tool_name)
         self._skill_tool_map.pop(skill_name, None)
+
+    def _unregister_all_skill_tools(self) -> None:
+        for skill_name in list(self._skill_tool_map):
+            self._unregister_skill_tools(skill_name)
 
     def _record_registration_drop(
         self,
@@ -538,6 +763,38 @@ def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
         )
         hashes[declared_tool.name] = tool_def.schema_hash()
     return hashes
+
+
+def _migrated_tool_schema_hashes(
+    manifest: Any,
+    *,
+    expected_hashes: dict[str, str],
+) -> dict[str, str]:
+    """Upgrade only the bounded pre-retry-metadata schema representation."""
+
+    migrated = dict(expected_hashes)
+    required_caps = _skill_tool_capabilities(manifest)
+    for declared_tool in getattr(manifest, "tools", []):
+        expected_hash = str(expected_hashes.get(declared_tool.name, "")).strip()
+        if not expected_hash:
+            continue
+        tool_def = ToolDefinition(
+            name=ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
+            description=declared_tool.description,
+            parameters=list(declared_tool.parameters),
+            capabilities_required=sorted(required_caps, key=str),
+            destinations=list(declared_tool.destinations),
+            require_confirmation=bool(declared_tool.require_confirmation),
+            registration_source="skill",
+            registration_source_id=str(manifest.name),
+            upstream_tool_name=str(declared_tool.name),
+        )
+        if (
+            tool_def.retry_class is ToolRetryClass.UNKNOWN
+            and expected_hash == tool_def.legacy_schema_hash_without_retry_metadata()
+        ):
+            migrated[declared_tool.name] = tool_def.schema_hash()
+    return migrated
 
 
 def _hash_prefix(value: str) -> str:

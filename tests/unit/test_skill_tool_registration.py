@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 import yaml
 
+from shisad.core.atomic_state import encode_versioned_json_snapshot
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolRetryClass, tool_definitions_to_openai
@@ -183,9 +184,10 @@ async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
     legacy_hash = hashlib.sha256(legacy_canonical.encode()).hexdigest()
     assert legacy_hash != current_hash
     inventory_path = state_dir / "inventory.json"
-    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory_envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory = inventory_envelope["payload"]
     inventory[0]["tool_schema_hashes"]["lookup"] = legacy_hash
-    inventory_path.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+    inventory_path.write_bytes(encode_versioned_json_snapshot(inventory, version=1))
 
     restarted_registry = ToolRegistry()
     SkillManager(
@@ -200,7 +202,7 @@ async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
     restored = restarted_registry.get_tool(tool_name)
     assert restored is not None
     assert restored.retry_class == ToolRetryClass.UNKNOWN
-    migrated_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    migrated_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))["payload"]
     assert migrated_inventory[0]["tool_schema_hashes"]["lookup"] == current_hash
 
 

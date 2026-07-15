@@ -148,3 +148,10 @@ def test_f3_doctor_check_help_lists_approvals_component() -> None:
 
     assert result.exit_code == 0
     assert "approvals" in result.output
+
+
+def test_f3_doctor_check_help_lists_skills_component() -> None:
+    result = CliRunner().invoke(cli_main.cli, ["doctor", "check", "--help"])
+
+    assert result.exit_code == 0
+    assert "skills" in result.output

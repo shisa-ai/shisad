@@ -147,14 +147,19 @@ async def test_daemon_services_builds_with_local_provider(
         impl = HandlerImplementation(services=services)
         status = await impl.do_daemon_status({})
         doctor = await impl.do_doctor_check({"component": "approvals"})
+        skill_doctor = await impl.do_doctor_check({"component": "skills"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
         assert services.internal_ingress_marker is not None
         assert status["approvals"]["status"] == "ok"
         assert status["approvals"]["load_status"] == "missing"
+        assert status["skills"]["status"] == "ok"
+        assert status["skills"]["load_status"] == "missing"
         assert doctor["status"] == "ok"
         assert doctor["checks"]["approvals"]["load_status"] == "missing"
+        assert skill_doctor["status"] == "ok"
+        assert skill_doctor["checks"]["skills"]["load_status"] == "missing"
     finally:
         await services.shutdown()
 
@@ -196,6 +201,48 @@ async def test_f3_corrupt_approval_store_starts_bounded_degraded_and_is_actionab
         assert impl._confirmation_backend_registry.get_backend("totp.default") is None
         assert impl._confirmation_backend_registry.get_backend("approver.local_fido2") is None
         assert approval_path.read_bytes() == corrupt_bytes
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_skill_inventory_starts_bounded_degraded_and_is_actionable(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    skill_dir = data_dir / "skills"
+    skill_dir.mkdir(parents=True)
+    inventory_path = skill_dir / "inventory.json"
+    corrupt_bytes = b'{"version":1,"payload":'
+    inventory_path.write_bytes(corrupt_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "skills"})
+
+        assert status["status"] == "running"
+        assert status["skills"]["status"] == "degraded"
+        assert status["skills"]["load_status"] == "corrupt"
+        assert status["skills"]["fail_closed"] is True
+        assert str(inventory_path) == status["skills"]["path"]
+        assert "restore" in status["skills"]["remediation"].lower()
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["skills"]["problems"] == [
+            "skill_inventory_corrupt"
+        ]
+        assert not any(
+            str(tool.name).startswith("skill.") for tool in services.registry.list_tools()
+        )
+        assert inventory_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
 
@@ -634,7 +681,9 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         )
         services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
         services.skill_manager._pending_registration_events.append(object())  # type: ignore[arg-type]
-        services.skill_manager._persist_inventory()
+        services.skill_manager._persist_inventory_snapshot(
+            services.skill_manager._inventory
+        )
 
         services.credential_store.register_approval_factor(
             ApprovalFactorRecord(

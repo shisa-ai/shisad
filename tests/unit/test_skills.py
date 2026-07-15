@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,7 +14,16 @@ import pytest
 import yaml
 from textguard import Finding as TextGuardFinding
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.types import ToolName
 from shisad.security.firewall import classifier as classifier_module
 from shisad.security.policy import SkillPolicy
 from shisad.skills import (
@@ -33,7 +44,8 @@ from shisad.skills import (
     verify_manifest_signature,
 )
 from shisad.skills.analyzer import ToolSurfaceAnalyzer
-from shisad.skills.manager import SkillManager
+from shisad.skills.artifacts import ArtifactState
+from shisad.skills.manager import InstalledSkill, SkillManager
 from shisad.skills.signatures import KeyRing, SigningKey
 
 
@@ -694,3 +706,283 @@ async def test_m4_rr8_signature_required_policy_blocks_auto_install(tmp_path: Pa
     assert decision.allowed is False
     assert decision.status == "review"
     assert decision.reason == "signature_required_policy"
+
+
+def _f3_skill_with_tool(tmp_path: Path, *, name: str = "durable-skill") -> Path:
+    manifest = _manifest_payload(name=name)
+    manifest["tools"] = [
+        {
+            "name": "lookup",
+            "description": "Look up a durable test value.",
+            "parameters": [],
+            "destinations": [],
+        }
+    ]
+    return _write_skill(
+        tmp_path / name,
+        manifest=manifest,
+        files={"SKILL.md": "safe durable helper"},
+    )
+
+
+def test_f3_skill_inventory_corruption_is_retained_and_blocks_registration(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    inventory_path = storage / "inventory.json"
+    corrupt_bytes = b'{"version":1,"payload":'
+    inventory_path.write_bytes(corrupt_bytes)
+    registry = ToolRegistry()
+    skill = _f3_skill_with_tool(tmp_path)
+
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    assert manager.state_degraded is True
+    with pytest.raises(StatePersistenceDegradedError, match="invalid_json"):
+        manager.list_installed()
+    assert manager.review(skill)["manifest"]["name"] == "durable-skill"
+    assert registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+    assert inventory_path.read_bytes() == corrupt_bytes
+
+
+def test_f3_skill_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    target = tmp_path / "outside.json"
+    target.write_bytes(encode_versioned_json_snapshot([], version=1))
+    inventory_path = storage / "inventory.json"
+    inventory_path.symlink_to(target)
+
+    manager = SkillManager(storage_dir=storage)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_inventory_target"
+    assert inventory_path.is_symlink()
+    assert target.read_bytes() == encode_versioned_json_snapshot([], version=1)
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "status", "reason"),
+    [
+        (
+            encode_versioned_json_snapshot({}, version=1),
+            StateLoadStatus.CORRUPT,
+            "invalid_inventory_payload",
+        ),
+        (
+            encode_versioned_json_snapshot([{"name": "incomplete"}], version=1),
+            StateLoadStatus.CORRUPT,
+            "invalid_inventory_entry",
+        ),
+        (
+            encode_versioned_json_snapshot(
+                [
+                    {
+                        "name": "duplicate",
+                        "version": "1.0.0",
+                        "path": "/tmp/one",
+                        "manifest_hash": "hash-1",
+                        "state": "published",
+                        "author": "author",
+                    },
+                    {
+                        "name": "duplicate",
+                        "version": "2.0.0",
+                        "path": "/tmp/two",
+                        "manifest_hash": "hash-2",
+                        "state": "revoked",
+                        "author": "author",
+                    },
+                ],
+                version=1,
+            ),
+            StateLoadStatus.CORRUPT,
+            "duplicate_skill_name",
+        ),
+        (
+            encode_versioned_json_snapshot([], version=99),
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+            "unsupported_schema",
+        ),
+    ],
+)
+def test_f3_skill_inventory_shape_failures_are_typed_and_retained(
+    tmp_path: Path,
+    snapshot: bytes,
+    status: StateLoadStatus,
+    reason: str,
+) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    inventory_path = storage / "inventory.json"
+    inventory_path.write_bytes(snapshot)
+
+    manager = SkillManager(storage_dir=storage)
+
+    result = manager.inventory_load_result()
+    assert result.status == status
+    assert result.reason == reason
+    assert inventory_path.read_bytes() == snapshot
+    with pytest.raises(StatePersistenceDegradedError, match=reason):
+        manager.authorize_runtime(
+            skill_name="anything",
+            request=SkillExecutionRequest(skill_name="anything"),
+        )
+
+
+def test_f3_skill_inventory_checksum_tamper_is_retained(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    manager = SkillManager(storage_dir=storage)
+    manager.activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    envelope["payload"][0]["state"] = "revoked"
+    inventory_path.write_text(json.dumps(envelope), encoding="utf-8")
+    tampered_bytes = inventory_path.read_bytes()
+
+    registry = ToolRegistry()
+    restarted = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    result = restarted.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "checksum_mismatch"
+    assert registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+    assert inventory_path.read_bytes() == tampered_bytes
+
+
+def test_f3_legacy_skill_inventory_loads_and_migrates_on_revoke(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    skill = _f3_skill_with_tool(tmp_path)
+    legacy = InstalledSkill(
+        name="durable-skill",
+        version="1.0.0",
+        path=str(skill),
+        manifest_hash="legacy-hash",
+        state=ArtifactState.PUBLISHED,
+        author="trusted-dev",
+    )
+    inventory_path = storage / "inventory.json"
+    inventory_path.write_text(
+        json.dumps([legacy.model_dump(mode="json")]),
+        encoding="utf-8",
+    )
+    manager = SkillManager(storage_dir=storage)
+
+    assert manager.inventory_load_result().legacy is True
+    revoked = manager.revoke(skill_name="durable-skill", reason="test")
+
+    assert revoked is not None
+    assert revoked.state == ArtifactState.REVOKED
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    assert envelope["version"] == 1
+    assert "checksum" in envelope
+    assert envelope["payload"][0]["state"] == "revoked"
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f3_skill_activation_fault_is_old_or_new_and_runtime_fail_closed(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    registry = ToolRegistry()
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    manager._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        manager.activate_bundle(skill)
+
+    tool_name = ToolName("skill.durable-skill.lookup")
+    assert manager.state_degraded is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
+    assert registry.get_tool(tool_name) is None
+    if fault_stage == AtomicWriteStage.PARENT_FSYNC:
+        with pytest.raises(StatePersistenceDegradedError):
+            manager.list_installed()
+    else:
+        assert manager.list_installed() == []
+    restarted = SkillManager(storage_dir=storage)
+    assert bool(restarted.list_installed()) is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f3_skill_revoke_fault_preserves_or_blocks_runtime(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    registry = ToolRegistry()
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+    manager.activate_bundle(skill)
+    tool_name = ToolName("skill.durable-skill.lookup")
+    assert registry.get_tool(tool_name) is not None
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    manager._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        manager.revoke(skill_name="durable-skill", reason="test")
+
+    assert manager.state_degraded is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
+    if fault_stage == AtomicWriteStage.PARENT_FSYNC:
+        assert registry.get_tool(tool_name) is None
+        with pytest.raises(StatePersistenceDegradedError):
+            manager.list_installed()
+    else:
+        assert registry.get_tool(tool_name) is not None
+        assert manager.list_installed()[0].state == ArtifactState.PUBLISHED
+    restarted = SkillManager(storage_dir=storage)
+    expected_state = (
+        ArtifactState.REVOKED
+        if fault_stage == AtomicWriteStage.PARENT_FSYNC
+        else ArtifactState.PUBLISHED
+    )
+    assert restarted.list_installed()[0].state == expected_state
+
+
+def test_f3_skill_inventory_uses_owner_only_modes_under_permissive_umask(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    previous_umask = os.umask(0)
+    try:
+        manager = SkillManager(storage_dir=storage)
+        manager.activate_bundle(skill)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(storage.stat().st_mode) == 0o700
+    assert stat.S_IMODE((storage / "inventory.json").stat().st_mode) == 0o600

@@ -71,6 +71,7 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "dependencies",
     "storage",
     "approvals",
+    "skills",
     "provider",
     "policy",
     "channels",
@@ -1580,6 +1581,7 @@ class AdminImplMixin(HandlerMixinBase):
             },
             "delivery": self._delivery.health_status(),
             "approvals": self._credential_store.approval_state_status(),
+            "skills": self._skill_manager.state_status(),
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
                 "connect_path": self._sandbox.connect_path_status(),
@@ -1847,6 +1849,7 @@ class AdminImplMixin(HandlerMixinBase):
             "dependencies": self._doctor_dependencies_status,
             "storage": self._doctor_storage_status,
             "approvals": self._doctor_approval_status,
+            "skills": self._skill_manager.state_status,
             "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,
