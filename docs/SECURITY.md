@@ -144,6 +144,22 @@ per-confirmation lock while that daemon process is running. That lock is a
 local concurrency guard, not durable exactly-once evidence; the persisted
 attempt/result lifecycle above is the restart authority.
 
+Skill and self-modification activation state is also durable authority. The
+skill inventory and self-modification inventory use checksum-bound, owner-only
+atomic snapshots, and publish candidate activation or rollback truth before the
+live tool registry or persona overlay changes. Malformed, semantically invalid,
+or newer snapshots are retained in place and fail closed; they are not treated
+as an empty inventory. If self-modification activation truth is uncertain,
+dynamic skill registrations are withdrawn because the two authorities cannot
+be safely reconciled in that process.
+
+Self-modification proposal, change, and incident records use the same
+old-or-new publication boundary. A broken requested proposal or change is
+reported as corrupt or unsupported rather than missing. Inspect `shisad status`,
+`shisad doctor check --component skills`, and `shisad doctor check --component
+selfmod` before restoring a trusted snapshot or explicitly resetting a state
+domain.
+
 **8. Context control is a first-class security primitive.** Because we construct the LLM's context each turn, we can choose exactly what the model sees — and more importantly, what it *doesn't* see. This is unique to LLM-based systems and has no equivalent in traditional software. Evidence references are the primary application: large untrusted content (web pages, email bodies, tool output) is stored out-of-band in a content-addressed evidence store, and the LLM receives only an opaque reference stub with metadata. The raw tainted content never enters the conversation history, so it cannot persist as an injection surface across turns. When the model needs to re-examine content, it makes an explicit `evidence.read` tool call — which goes through PEP enforcement and returns content into a single-turn isolated context, not the persistent transcript. This turns the usual LLM limitation (no persistent memory) into a security advantage: we can quarantine, exclude, or replace any piece of context at any time, and the model cannot tell the difference.
 
 ---

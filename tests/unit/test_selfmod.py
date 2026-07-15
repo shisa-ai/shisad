@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -13,7 +15,15 @@ import pytest
 import yaml
 
 import shisad.selfmod.manager as selfmod_manager_module
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.tools.registry import ToolRegistry
+from shisad.core.types import ToolName
 from shisad.security.policy import SkillPolicy
 from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
@@ -227,6 +237,567 @@ def _rewrite_manifest(
     if signature_path.exists():
         signature_path.unlink()
     _sign_manifest(manifest_path, key_path=key_path)
+
+
+def test_f3_selfmod_missing_inventory_is_healthy_and_applies_defaults(tmp_path: Path) -> None:
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    result = manager.inventory_load_result()
+
+    assert result.status == StateLoadStatus.MISSING
+    assert manager.state_degraded is False
+    assert planner.defaults == [("neutral", "")]
+    assert manager.status()["inventory"]["status"] == "ok"
+
+
+def test_f3_selfmod_corrupt_inventory_is_retained_and_blocks_runtime(
+    tmp_path: Path,
+) -> None:
+    selfmod_root = tmp_path / "selfmod"
+    selfmod_root.mkdir()
+    inventory_path = selfmod_root / "inventory.yaml"
+    corrupt_bytes = b'{"version":1,"payload":'
+    inventory_path.write_bytes(corrupt_bytes)
+    registry = ToolRegistry()
+    skill_manager = SkillManager(
+        storage_dir=tmp_path / "skills-state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=registry,
+    )
+    skill_root = tmp_path / "active-skill"
+    payload = skill_root / "payload"
+    payload.mkdir(parents=True)
+    (payload / "skill.manifest.yaml").write_text(
+        yaml.safe_dump(_skill_manifest_payload(), sort_keys=False),
+        encoding="utf-8",
+    )
+    (payload / "SKILL.md").write_text("safe helper\n", encoding="utf-8")
+    skill_manager.activate_bundle(payload)
+    tool_name = ToolName("skill.calendar-helper.lookup")
+    assert registry.get_tool(tool_name) is not None
+    planner = _PlannerStub()
+
+    manager = SelfModificationManager(
+        root=selfmod_root,
+        allowed_signers_path=tmp_path / "allowed_signers",
+        skill_manager=skill_manager,
+        planner=planner,
+        default_persona_tone="neutral",
+        default_persona_text="",
+    )
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    assert manager.state_degraded is True
+    assert planner.defaults == []
+    assert registry.get_tool(tool_name) is None
+    assert skill_manager.state_degraded is True
+    with pytest.raises(StatePersistenceDegradedError, match="invalid_json"):
+        manager.rollback("a" * 32)
+    assert inventory_path.read_bytes() == corrupt_bytes
+    status_payload = manager.status()["inventory"]
+    assert status_payload["status"] == "degraded"
+    assert status_payload["load_status"] == "corrupt"
+    assert status_payload["fail_closed"] is True
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "status", "reason"),
+    [
+        (
+            encode_versioned_json_snapshot([], version=1),
+            StateLoadStatus.CORRUPT,
+            "invalid_inventory_payload",
+        ),
+        (
+            encode_versioned_json_snapshot(
+                {"skills": {"broken": {"enabled": True}}, "behavior_packs": {}},
+                version=1,
+            ),
+            StateLoadStatus.CORRUPT,
+            "invalid_inventory_entry",
+        ),
+        (
+            encode_versioned_json_snapshot(
+                {"skills": {}, "behavior_packs": {}},
+                version=99,
+            ),
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+            "unsupported_schema",
+        ),
+    ],
+)
+def test_f3_selfmod_inventory_shape_failures_are_typed_and_retained(
+    tmp_path: Path,
+    snapshot: bytes,
+    status: StateLoadStatus,
+    reason: str,
+) -> None:
+    root = tmp_path / "selfmod"
+    root.mkdir()
+    inventory_path = root / "inventory.yaml"
+    inventory_path.write_bytes(snapshot)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    result = manager.inventory_load_result()
+    assert result.status == status
+    assert result.reason == reason
+    assert planner.defaults == []
+    assert inventory_path.read_bytes() == snapshot
+
+
+def test_f3_selfmod_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "selfmod"
+    root.mkdir()
+    target = tmp_path / "outside.yaml"
+    target.write_text("skills: {}\nbehavior_packs: {}\n", encoding="utf-8")
+    inventory_path = root / "inventory.yaml"
+    inventory_path.symlink_to(target)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_inventory_target"
+    assert planner.defaults == []
+    assert inventory_path.is_symlink()
+
+
+def test_f3_selfmod_legacy_inventory_migrates_with_owner_only_modes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "selfmod"
+    root.mkdir()
+    inventory_path = root / "inventory.yaml"
+    inventory_path.write_text("skills: {}\nbehavior_packs: {}\n", encoding="utf-8")
+    previous_umask = os.umask(0)
+    try:
+        manager, _planner = _build_manager(
+            tmp_path,
+            allowed_signers_path=tmp_path / "allowed_signers",
+        )
+        assert manager.inventory_load_result().legacy is True
+        manager._persist_inventory()
+    finally:
+        os.umask(previous_umask)
+
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    assert envelope["version"] == 1
+    assert "checksum" in envelope
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(inventory_path.stat().st_mode) == 0o600
+
+
+def test_f3_selfmod_proposal_is_checksum_bound_and_owner_only(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    previous_umask = os.umask(0)
+    try:
+        proposal = manager.propose(artifact)
+    finally:
+        os.umask(previous_umask)
+
+    proposal_path = manager._proposal_path(proposal.proposal_id)
+    envelope = json.loads(proposal_path.read_text(encoding="utf-8"))
+    assert envelope["version"] == 1
+    assert envelope["payload"]["proposal_id"] == proposal.proposal_id
+    assert "checksum" in envelope
+    assert stat.S_IMODE(proposal_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(proposal_path.parent.stat().st_mode) == 0o700
+
+
+def test_f3_selfmod_change_and_incident_records_are_owner_only(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    previous_umask = os.umask(0)
+    try:
+        applied = manager.apply(manager.propose(artifact).proposal_id, confirm=True)
+        manager._record_incident(
+            proposal_id="a" * 32,
+            artifact_path=str(artifact),
+            reason="test_incident",
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert applied.applied is True
+    change_path = manager._change_path(applied.change_id)
+    assert stat.S_IMODE(change_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(change_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(manager._incident_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(manager._incident_path.parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize(
+    ("record_kind", "expected_reason"),
+    [("proposal", "proposal_corrupt"), ("change", "change_corrupt")],
+)
+def test_f3_selfmod_corrupt_control_record_is_retained_and_not_missing(
+    tmp_path: Path,
+    record_kind: str,
+    expected_reason: str,
+) -> None:
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+    record_id = "a" * 32
+    path = (
+        manager._proposal_path(record_id)
+        if record_kind == "proposal"
+        else manager._change_path(record_id)
+    )
+    corrupt_bytes = b'{"version":1,"payload":'
+    path.write_bytes(corrupt_bytes)
+
+    result = (
+        manager.apply(record_id, confirm=True)
+        if record_kind == "proposal"
+        else manager.rollback(record_id)
+    )
+
+    assert result.reason == expected_reason
+    assert path.read_bytes() == corrupt_bytes
+    record_status = manager.status()["records"][record_kind]
+    assert record_status["load_status"] == "corrupt"
+    assert record_status["reason"] == "invalid_json"
+
+
+def test_f3_selfmod_corrupt_incident_is_retained_and_actionable(tmp_path: Path) -> None:
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+    corrupt_bytes = b'{"version":1,"payload":'
+    manager._incident_path.write_bytes(corrupt_bytes)
+
+    status_payload = manager.status()
+
+    assert status_payload["incident"] == {}
+    assert status_payload["records"]["incident"]["load_status"] == "corrupt"
+    assert status_payload["records"]["incident"]["reason"] == "invalid_json"
+    assert manager._incident_path.read_bytes() == corrupt_bytes
+
+
+def test_f3_selfmod_future_proposal_is_retained_and_not_missing(tmp_path: Path) -> None:
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+    proposal_id = "b" * 32
+    path = manager._proposal_path(proposal_id)
+    snapshot = encode_versioned_json_snapshot({}, version=99)
+    path.write_bytes(snapshot)
+
+    result = manager.apply(proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "proposal_unsupported_schema"
+    assert path.read_bytes() == snapshot
+    assert manager.status()["records"]["proposal"]["load_status"] == (
+        "unsupported_schema"
+    )
+
+
+def test_f3_selfmod_legacy_raw_proposal_with_artifact_version_remains_readable(
+    tmp_path: Path,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+    proposal_path = manager._proposal_path(proposal.proposal_id)
+    envelope = json.loads(proposal_path.read_text(encoding="utf-8"))
+    proposal_path.write_text(json.dumps(envelope["payload"]), encoding="utf-8")
+
+    preview = manager.apply(proposal.proposal_id, confirm=False)
+
+    assert preview.requires_confirmation is True
+    assert manager.status()["records"]["proposal"]["legacy"] is True
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f3_selfmod_proposal_record_atomic_fault_is_old_or_new(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    manager._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError) as exc_info:
+        manager.propose(artifact)
+
+    assert exc_info.value.publication_may_have_committed is (
+        fault_stage == AtomicWriteStage.PARENT_FSYNC
+    )
+    proposal_files = list(manager._proposal_dir.glob("*.json"))
+    assert bool(proposal_files) is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f3_selfmod_apply_inventory_fault_precedes_behavior_runtime(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    proposal = manager.propose(artifact)
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    manager._state_fault_injector = _inject
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == (
+        "inventory_persistence_uncertain"
+        if fault_stage == AtomicWriteStage.PARENT_FSYNC
+        else "inventory_persist_failed"
+    )
+    assert planner.defaults == [("neutral", "")]
+    assert manager.state_degraded is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    if fault_stage == AtomicWriteStage.PARENT_FSYNC:
+        assert restarted.state_degraded is False
+        assert restarted_planner.defaults[-1] == ("strict", "Stay strict.")
+    else:
+        assert restarted.inventory_load_result().status == StateLoadStatus.MISSING
+        assert restarted_planner.defaults[-1] == ("neutral", "")
+
+
+def test_f3_selfmod_parent_fsync_restart_reconciles_signed_skill_activation(
+    tmp_path: Path,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.PARENT_FSYNC:
+            raise OSError("fault:parent_fsync")
+
+    manager._state_fault_injector = _inject
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    tool_name = ToolName("skill.calendar-helper.lookup")
+    assert result.applied is False
+    assert result.reason == "inventory_persistence_uncertain"
+    assert manager._skill_manager._tool_registry.get_tool(tool_name) is None
+
+    restarted, _restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert restarted.state_degraded is False
+    assert restarted._skill_manager._tool_registry.get_tool(tool_name) is not None
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f3_selfmod_rollback_inventory_fault_precedes_behavior_runtime(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    applied = manager.apply(manager.propose(artifact).proposal_id, confirm=True)
+    assert applied.applied is True
+    assert planner.defaults[-1] == ("strict", "Stay strict.")
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    manager._state_fault_injector = _inject
+    result = manager.rollback(applied.change_id)
+
+    assert result.rolled_back is False
+    assert result.reason == (
+        "inventory_persistence_uncertain"
+        if fault_stage == AtomicWriteStage.PARENT_FSYNC
+        else "inventory_persist_failed"
+    )
+    assert planner.defaults[-1] == ("strict", "Stay strict.")
+    assert manager.state_degraded is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
+    _restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    if fault_stage == AtomicWriteStage.PARENT_FSYNC:
+        assert restarted_planner.defaults[-1] == ("neutral", "")
+    else:
+        assert restarted_planner.defaults[-1] == ("strict", "Stay strict.")
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+def test_f3_selfmod_change_record_fault_restores_inventory_and_runtime(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    proposal = manager.propose(artifact)
+    occurrences = 0
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        nonlocal occurrences
+        if stage == fault_stage:
+            occurrences += 1
+            if occurrences == 2:
+                raise OSError(f"fault:{stage.value}")
+
+    manager._state_fault_injector = _inject
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "change_record_persist_failed"
+    assert planner.defaults[-1] == ("neutral", "")
+    assert manager.status()["behavior_packs"] == {}
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert restarted.state_degraded is False
+    assert restarted_planner.defaults[-1] == ("neutral", "")
 
 
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:

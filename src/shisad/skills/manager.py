@@ -91,6 +91,7 @@ class SkillManager:
         self._state_fault_injector: AtomicWriteFaultInjector | None = None
         self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
         self._persistence_degradation: AtomicWriteError | None = None
+        self._external_degradation: tuple[str, str] | None = None
         self._dangerous = DangerousPatternAnalyzer()
         self._tool_surface = ToolSurfaceAnalyzer()
         self._capability = CapabilityInferenceAnalyzer()
@@ -354,10 +355,21 @@ class SkillManager:
 
     @property
     def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None or self._state_load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }
+        return (
+            self._persistence_degradation is not None
+            or self._external_degradation is not None
+            or self._state_load_result.status
+            in {
+                StateLoadStatus.CORRUPT,
+                StateLoadStatus.UNSUPPORTED_SCHEMA,
+            }
+        )
+
+    def degrade_from_external_authority(self, *, authority: str, reason: str) -> None:
+        """Withdraw dynamic tools when a coupled activation authority is uncertain."""
+
+        self._external_degradation = (authority, reason)
+        self._unregister_all_skill_tools()
 
     def inventory_load_result(self) -> StateLoadResult:
         return self._state_load_result
@@ -367,6 +379,8 @@ class SkillManager:
         problems: list[str] = []
         if self._persistence_degradation is not None:
             problems.append("skill_inventory_persistence_degraded")
+        elif self._external_degradation is not None:
+            problems.append("skill_inventory_external_authority_degraded")
         elif load_result.status in {
             StateLoadStatus.CORRUPT,
             StateLoadStatus.UNSUPPORTED_SCHEMA,
@@ -379,20 +393,35 @@ class SkillManager:
                 "verifying that no skills should remain active, then restart shisad."
             )
         persistence = self._persistence_degradation
+        external = self._external_degradation
         return {
             "status": "degraded" if self.state_degraded else "ok",
             "problems": problems,
             "path": str(self._inventory_path),
             "load_status": load_result.status.value,
-            "reason": load_result.reason,
+            "reason": load_result.reason or (external[1] if external is not None else ""),
             "schema_version": load_result.schema_version,
             "legacy": load_result.legacy,
             "fail_closed": self.state_degraded,
-            "stage": persistence.stage.value if persistence is not None else "",
+            "stage": (
+                persistence.stage.value
+                if persistence is not None
+                else "external"
+                if external is not None
+                else ""
+            ),
             "remediation": remediation,
         }
 
     def _require_state_available(self, *, transition: str) -> None:
+        external = self._external_degradation
+        if external is not None:
+            raise StatePersistenceDegradedError(
+                authority=external[0],
+                transition=transition,
+                stage="external",
+                reason=external[1],
+            )
         persistence = self._persistence_degradation
         if persistence is not None:
             raise StatePersistenceDegradedError(

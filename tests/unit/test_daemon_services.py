@@ -148,6 +148,7 @@ async def test_daemon_services_builds_with_local_provider(
         status = await impl.do_daemon_status({})
         doctor = await impl.do_doctor_check({"component": "approvals"})
         skill_doctor = await impl.do_doctor_check({"component": "skills"})
+        selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
@@ -160,6 +161,8 @@ async def test_daemon_services_builds_with_local_provider(
         assert doctor["checks"]["approvals"]["load_status"] == "missing"
         assert skill_doctor["status"] == "ok"
         assert skill_doctor["checks"]["skills"]["load_status"] == "missing"
+        assert selfmod_doctor["status"] == "ok"
+        assert selfmod_doctor["checks"]["selfmod"]["load_status"] == "missing"
     finally:
         await services.shutdown()
 
@@ -242,6 +245,45 @@ async def test_f3_corrupt_skill_inventory_starts_bounded_degraded_and_is_actiona
         assert not any(
             str(tool.name).startswith("skill.") for tool in services.registry.list_tools()
         )
+        assert inventory_path.read_bytes() == corrupt_bytes
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_selfmod_inventory_starts_bounded_degraded_and_is_actionable(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    selfmod_dir = data_dir / "selfmod"
+    selfmod_dir.mkdir(parents=True)
+    inventory_path = selfmod_dir / "inventory.yaml"
+    corrupt_bytes = b'{"version":1,"payload":'
+    inventory_path.write_bytes(corrupt_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "selfmod"})
+
+        inventory_status = status["selfmod"]["inventory"]
+        assert inventory_status["status"] == "degraded"
+        assert inventory_status["load_status"] == "corrupt"
+        assert inventory_status["fail_closed"] is True
+        assert str(inventory_path) == inventory_status["path"]
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["selfmod"]["problems"] == [
+            "selfmod_inventory_corrupt"
+        ]
+        assert services.skill_manager.state_degraded is True
         assert inventory_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
