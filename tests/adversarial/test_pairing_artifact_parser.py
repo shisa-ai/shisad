@@ -344,7 +344,8 @@ async def test_f3_pairing_commit_uncertainty_fails_closed_without_retry(
         assert pairing_status["status"] == "degraded"
         assert pairing_status["stage"] == fault_stage.value
         assert pairing_status["fail_closed"] is True
-        assert status["channels"]["pairing_requests"] == pairing_status
+        assert status["pairing_requests"] == pairing_status
+        assert "pairing_requests" not in status["channels"]
         assert artifact_file.read_bytes() == uncertain_bytes
         assert attempts == 1
     finally:

@@ -49,6 +49,7 @@ from shisad.security.lockdown import LockdownLevel
 from shisad.security.risk import RiskObservation, RiskPolicyVersion
 from shisad.skills.artifacts import ArtifactState
 from shisad.skills.manager import InstalledSkill
+from shisad.ui.tui import TuiSnapshot, _safe_channel_rows, render_plain
 
 
 def _write_browser_wrapper(path) -> None:
@@ -160,6 +161,18 @@ async def test_daemon_services_builds_with_local_provider(
         assert status["skills"]["load_status"] == "missing"
         assert status["dashboard"]["status"] == "ok"
         assert status["dashboard"]["load_status"] == "missing"
+        assert status["pairing_requests"]["status"] == "ok"
+        assert "pairing_requests" not in status["channels"]
+        channel_health = _safe_channel_rows(status["channels"])
+        assert {row["channel"] for row in channel_health} == {
+            "discord",
+            "matrix",
+            "slack",
+            "telegram",
+        }
+        assert "channels=0 connected_channels=0" in render_plain(
+            TuiSnapshot(channel_health=channel_health)
+        )
         assert doctor["status"] == "ok"
         assert doctor["checks"]["approvals"]["load_status"] == "missing"
         assert skill_doctor["status"] == "ok"

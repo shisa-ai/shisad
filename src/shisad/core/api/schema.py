@@ -2302,6 +2302,7 @@ class DaemonStatusResult(BaseModel):
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)
+    pairing_requests: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
     approvals: dict[str, Any] = Field(default_factory=dict)
     skills: dict[str, Any] = Field(default_factory=dict)
