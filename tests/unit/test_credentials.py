@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from datetime import UTC, datetime
 
 import pytest
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StatePersistenceDegradedError,
+)
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
@@ -16,6 +23,7 @@ from shisad.security.credentials import (
     CredentialRef,
     InMemoryCredentialStore,
     RecoveryCodeRecord,
+    SignerKeyRecord,
     generate_placeholder,
     is_placeholder,
 )
@@ -344,3 +352,142 @@ class TestApprovalFactorStore:
         store.set_approval_store_path(store_path)
 
         assert store.get_or_create_local_fido2_realm_id() == "deadbeefcafebabe"
+
+    @pytest.mark.parametrize(
+        "fault_stage",
+        [
+            AtomicWriteStage.TEMP_OPEN,
+            AtomicWriteStage.WRITE,
+            AtomicWriteStage.FILE_FSYNC,
+            AtomicWriteStage.REPLACE,
+            AtomicWriteStage.PARENT_FSYNC,
+        ],
+    )
+    def test_f3_approval_factor_publication_fault_is_old_or_new(
+        self,
+        tmp_path,
+        fault_stage: AtomicWriteStage,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "state" / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-old",
+                user_id="alice",
+                method="totp",
+                principal_id="old-device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+
+        def _inject(stage: AtomicWriteStage) -> None:
+            if stage == fault_stage:
+                raise OSError(f"fault:{stage.value}")
+
+        store._approval_state_fault_injector = _inject
+        with pytest.raises(AtomicWriteError):
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="factor-new",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="new-device",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+
+        published_new = fault_stage == AtomicWriteStage.PARENT_FSYNC
+        if published_new:
+            assert store.approval_state_degraded is True
+            with pytest.raises(StatePersistenceDegradedError):
+                store.list_approval_factors()
+        else:
+            assert [
+                item.credential_id for item in store.list_approval_factors()
+            ] == ["factor-old"]
+        assert list(store_path.parent.glob(f".{store_path.name}.*.tmp")) == []
+        assert not store_path.with_suffix(f"{store_path.suffix}.tmp").exists()
+
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+        assert [
+            item.credential_id for item in restarted.list_approval_factors()
+        ] == (["factor-old", "factor-new"] if published_new else ["factor-old"])
+
+    @pytest.mark.parametrize(
+        "fault_stage",
+        [
+            AtomicWriteStage.TEMP_OPEN,
+            AtomicWriteStage.WRITE,
+            AtomicWriteStage.FILE_FSYNC,
+            AtomicWriteStage.REPLACE,
+            AtomicWriteStage.PARENT_FSYNC,
+        ],
+    )
+    def test_f3_signer_revocation_fault_is_old_or_new(
+        self,
+        tmp_path,
+        fault_stage: AtomicWriteStage,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "state" / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_signer_key(
+            SignerKeyRecord(
+                credential_id="kms:primary",
+                user_id="alice",
+                backend="kms",
+                principal_id="finance-owner",
+                algorithm="ed25519",
+                device_type="enterprise",
+                public_key_pem="test-public-key",
+            )
+        )
+
+        def _inject(stage: AtomicWriteStage) -> None:
+            if stage == fault_stage:
+                raise OSError(f"fault:{stage.value}")
+
+        store._approval_state_fault_injector = _inject
+        with pytest.raises(AtomicWriteError):
+            store.revoke_signer_key(credential_id="kms:primary")
+
+        published_revocation = fault_stage == AtomicWriteStage.PARENT_FSYNC
+        if published_revocation:
+            with pytest.raises(StatePersistenceDegradedError):
+                store.get_signer_key("kms:primary")
+        else:
+            current = store.get_signer_key("kms:primary")
+            assert current is not None
+            assert current.revoked_at is None
+
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+        durable = restarted.get_signer_key("kms:primary")
+        assert durable is not None
+        assert (durable.revoked_at is not None) is published_revocation
+
+    def test_f3_approval_store_uses_owner_only_modes_under_permissive_umask(
+        self,
+        tmp_path,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "state" / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        previous_umask = os.umask(0)
+        try:
+            store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="factor-1",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="device",
+                    secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                )
+            )
+        finally:
+            os.umask(previous_umask)
+
+        assert stat.S_IMODE(store_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(store_path.stat().st_mode) == 0o600
