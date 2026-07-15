@@ -749,6 +749,41 @@ def test_f3_skill_inventory_corruption_is_retained_and_blocks_registration(
     assert inventory_path.read_bytes() == corrupt_bytes
 
 
+def test_f3_skill_existing_domain_missing_inventory_is_degraded(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    SkillManager(storage_dir=storage).activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    inventory_path.unlink()
+    registry = ToolRegistry()
+
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "inventory_missing_existing_root"
+    assert manager.state_degraded is True
+    assert registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+
+
+def test_f3_skill_legacy_empty_domain_is_initialized_then_guarded(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+
+    manager = SkillManager(storage_dir=storage)
+
+    assert manager.inventory_load_result().status == StateLoadStatus.MISSING
+    assert manager.state_degraded is False
+    inventory_path = storage / "inventory.json"
+    assert inventory_path.exists()
+
+    inventory_path.unlink()
+    restarted = SkillManager(storage_dir=storage)
+
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.state_degraded is True
+
+
 def test_f3_skill_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> None:
     storage = tmp_path / "state"
     storage.mkdir()

@@ -16,7 +16,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -33,6 +40,7 @@ _IDENTIFIER_RE = re.compile(r"^[a-f0-9]{32}$")
 _ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SELFMOD_INVENTORY_VERSION = 1
+_SELFMOD_INVENTORY_DOMAIN_MARKER = b"shisad-selfmod-inventory-domain-v1\n"
 
 
 class ArtifactFileRecord(BaseModel):
@@ -121,21 +129,59 @@ class _Inventory(BaseModel):
 
 
 class _ProposalRecord(SelfModificationProposal):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_type: Literal["skill_bundle", "behavior_pack"]
     manifest: ArtifactManifest
+
+    @model_validator(mode="after")
+    def _validate_record_semantics(self) -> _ProposalRecord:
+        if not _is_valid_identifier(self.proposal_id):
+            raise ValueError("invalid proposal id")
+        if self.name and not _ARTIFACT_NAME_RE.fullmatch(self.name):
+            raise ValueError("invalid proposal name")
+        if self.version and not _ARTIFACT_VERSION_RE.fullmatch(self.version):
+            raise ValueError("invalid proposal version")
+        if self.valid and (
+            not self.name
+            or not self.version
+            or self.artifact_type != self.manifest.type
+            or self.name != self.manifest.name
+            or self.version != self.manifest.version
+        ):
+            raise ValueError("proposal identity does not match manifest")
+        return self
 
 
 class _ChangeRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     change_id: str
     proposal_id: str
-    artifact_type: str
+    artifact_type: Literal["skill_bundle", "behavior_pack"]
     name: str
     previous_active_version: str = ""
     previous_enabled: bool = False
     new_active_version: str
     applied_at: str
 
+    @model_validator(mode="after")
+    def _validate_record_semantics(self) -> _ChangeRecord:
+        if not _is_valid_identifier(self.change_id) or not _is_valid_identifier(self.proposal_id):
+            raise ValueError("invalid change identity")
+        if not _ARTIFACT_NAME_RE.fullmatch(self.name):
+            raise ValueError("invalid change name")
+        for version in (self.previous_active_version, self.new_active_version):
+            if version and not _ARTIFACT_VERSION_RE.fullmatch(version):
+                raise ValueError("invalid change version")
+        if not self.new_active_version:
+            raise ValueError("missing new active version")
+        return self
+
 
 class _IncidentRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     proposal_id: str
     artifact_path: str
     reason: str
@@ -178,6 +224,10 @@ class SelfModificationManager:
         default_persona_text: str,
     ) -> None:
         self._root = root
+        self._root_existed_at_start = self._root.exists()
+        self._root_was_legacy_empty_at_start = (
+            _selfmod_root_is_legacy_empty(self._root) if self._root_existed_at_start else True
+        )
         self._allowed_signers_path = allowed_signers_path
         self._skill_manager = skill_manager
         self._planner = planner
@@ -187,6 +237,7 @@ class SelfModificationManager:
         self._change_dir = self._root / "changes"
         self._artifact_root = self._root / "artifacts"
         self._inventory_path = self._root / "inventory.yaml"
+        self._inventory_domain_marker_path = self._root / ".inventory-domain-v1"
         self._incident_path = self._root / "last_incident.json"
         self._state_fault_injector: AtomicWriteFaultInjector | None = None
         self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
@@ -199,7 +250,19 @@ class SelfModificationManager:
         self._proposal_dir.mkdir(parents=True, exist_ok=True)
         self._change_dir.mkdir(parents=True, exist_ok=True)
         self._artifact_root.mkdir(parents=True, exist_ok=True)
+        self._inventory_domain_marker_status = self._inspect_inventory_domain_marker()
         self._inventory = self._load_inventory()
+        if self._state_load_result.status is StateLoadStatus.MISSING:
+            initial_result = self._state_load_result
+            if self._ensure_inventory_domain_marker():
+                try:
+                    self._persist_inventory_snapshot(self._inventory)
+                except AtomicWriteError as exc:
+                    self._persistence_degradation = exc
+                else:
+                    self._state_load_result = initial_result
+        elif self._state_load_result.status is StateLoadStatus.OK:
+            self._ensure_inventory_domain_marker()
         if self.state_degraded:
             self._block_coupled_skill_authority()
         else:
@@ -687,7 +750,11 @@ class SelfModificationManager:
                 except ValueError:
                     self._mark_inventory_degraded("active_artifact_identity_invalid")
                     return
-                inspection = self._inspect_artifact(artifact_path)
+                try:
+                    inspection = self._inspect_artifact(artifact_path)
+                except Exception:
+                    self._mark_inventory_degraded("active_artifact_invalid")
+                    return
                 if (
                     not inspection.valid
                     or inspection.manifest.type != artifact_type
@@ -933,7 +1000,14 @@ class SelfModificationManager:
         try:
             target_stat = self._inventory_path.lstat()
         except FileNotFoundError:
-            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+            new_or_legacy_empty_domain = not self._root_existed_at_start or (
+                self._inventory_domain_marker_status == "missing"
+                and self._root_was_legacy_empty_at_start
+            )
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.MISSING if new_or_legacy_empty_domain else StateLoadStatus.CORRUPT,
+                reason=("" if new_or_legacy_empty_domain else "inventory_missing_existing_root"),
+            )
             return _Inventory()
         except OSError:
             self._state_load_result = StateLoadResult(
@@ -1030,6 +1104,42 @@ class SelfModificationManager:
         self._state_load_result = load_result
         return inventory
 
+    def _inspect_inventory_domain_marker(self) -> str:
+        try:
+            target_stat = self._inventory_domain_marker_path.lstat()
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "invalid"
+        if not stat.S_ISREG(target_stat.st_mode):
+            return "invalid"
+        try:
+            marker = self._inventory_domain_marker_path.read_bytes()
+        except OSError:
+            return "invalid"
+        return "valid" if marker == _SELFMOD_INVENTORY_DOMAIN_MARKER else "invalid"
+
+    def _ensure_inventory_domain_marker(self) -> bool:
+        if self._inventory_domain_marker_status == "valid":
+            return True
+        if self._inventory_domain_marker_status == "invalid":
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_inventory_domain_marker",
+            )
+            return False
+        try:
+            atomic_write_bytes(
+                self._inventory_domain_marker_path,
+                _SELFMOD_INVENTORY_DOMAIN_MARKER,
+                fault_injector=self._state_fault_injector,
+            )
+        except AtomicWriteError as exc:
+            self._persistence_degradation = exc
+            return False
+        self._inventory_domain_marker_status = "valid"
+        return True
+
     def _persist_inventory(self) -> None:
         self._persist_inventory_snapshot(self._inventory)
 
@@ -1071,6 +1181,27 @@ class SelfModificationManager:
                 if self.state_degraded
                 else ""
             ),
+        }
+
+    def doctor_status(self) -> dict[str, Any]:
+        self._load_incident()
+        inventory_status = self.inventory_state_status()
+        records = {
+            kind: self._record_state_status(kind) for kind in ("proposal", "change", "incident")
+        }
+        problems = list(inventory_status["problems"])
+        for kind, record_status in records.items():
+            load_status = str(record_status["load_status"])
+            if load_status in {
+                StateLoadStatus.CORRUPT.value,
+                StateLoadStatus.UNSUPPORTED_SCHEMA.value,
+            }:
+                problems.append(f"selfmod_{kind}_{load_status}")
+        return {
+            **inventory_status,
+            "status": "degraded" if problems else "ok",
+            "problems": problems,
+            "records": records,
         }
 
     def _require_inventory_available(self, *, transition: str) -> None:
@@ -1120,20 +1251,28 @@ class SelfModificationManager:
     def _load_proposal(self, proposal_id: str) -> _ProposalRecord | None:
         if not _is_valid_identifier(proposal_id):
             return None
-        return self._load_record(
+        record = self._load_record(
             self._proposal_path(proposal_id),
             model_type=_ProposalRecord,
             record_kind="proposal",
         )
+        if record is not None and record.proposal_id != proposal_id:
+            self._mark_record_corrupt("proposal", "record_identity_mismatch")
+            return None
+        return record
 
     def _load_change(self, change_id: str) -> _ChangeRecord | None:
         if not _is_valid_identifier(change_id):
             return None
-        return self._load_record(
+        record = self._load_record(
             self._change_path(change_id),
             model_type=_ChangeRecord,
             record_kind="change",
         )
+        if record is not None and record.change_id != change_id:
+            self._mark_record_corrupt("change", "record_identity_mismatch")
+            return None
+        return record
 
     def _load_incident(self) -> _IncidentRecord | None:
         return self._load_record(
@@ -1250,6 +1389,15 @@ class SelfModificationManager:
             "legacy": load_result.legacy,
         }
 
+    def _mark_record_corrupt(self, record_kind: str, reason: str) -> None:
+        current = self._record_load_results[record_kind]
+        self._record_load_results[record_kind] = StateLoadResult(
+            StateLoadStatus.CORRUPT,
+            reason=reason,
+            schema_version=current.schema_version,
+            legacy=current.legacy,
+        )
+
     def _restore_inventory_after_failed_transition(self, inventory: _Inventory) -> bool:
         try:
             self._persist_inventory_snapshot(inventory)
@@ -1277,6 +1425,24 @@ class SelfModificationManager:
             record.model_dump(mode="json"),
             record_kind="incident",
         )
+
+
+def _selfmod_root_is_legacy_empty(path: Path) -> bool:
+    allowed_children = {"proposals", "changes", "artifacts"}
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.name not in allowed_children:
+            return False
+        try:
+            child_stat = child.lstat()
+            if not stat.S_ISDIR(child_stat.st_mode) or next(child.iterdir(), None) is not None:
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def _is_valid_identifier(value: str) -> bool:

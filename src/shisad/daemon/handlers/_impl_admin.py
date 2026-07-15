@@ -1851,7 +1851,7 @@ class AdminImplMixin(HandlerMixinBase):
             "storage": self._doctor_storage_status,
             "approvals": self._doctor_approval_status,
             "skills": self._skill_manager.state_status,
-            "selfmod": self._selfmod_manager.inventory_state_status,
+            "selfmod": self._selfmod_manager.doctor_status,
             "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,

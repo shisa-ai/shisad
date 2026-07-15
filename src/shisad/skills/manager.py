@@ -47,6 +47,7 @@ from shisad.skills.signatures import KeyRing, SignatureStatus, verify_manifest_s
 logger = logging.getLogger(__name__)
 
 _SKILL_INVENTORY_VERSION = 1
+_SKILL_INVENTORY_DOMAIN_MARKER = b"shisad-skill-inventory-domain-v1\n"
 
 
 class SkillInstallDecision(BaseModel):
@@ -82,8 +83,14 @@ class SkillManager:
         tool_registry: ToolRegistry | None = None,
     ) -> None:
         self._storage_dir = storage_dir
+        self._storage_root_existed_at_start = self._storage_dir.exists()
+        self._storage_root_was_empty_at_start = (
+            _directory_is_empty(self._storage_dir) if self._storage_root_existed_at_start else True
+        )
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._inventory_path = self._storage_dir / "inventory.json"
+        self._inventory_domain_marker_path = self._storage_dir / ".inventory-domain-v1"
+        self._inventory_domain_marker_status = self._inspect_inventory_domain_marker()
         self._policy = policy or SkillPolicy()
         self._keyring = keyring or KeyRing()
         self._llm_analyzer = llm_analyzer
@@ -101,9 +108,20 @@ class SkillManager:
             skills_root=self._storage_dir.parent / "skills",
             config_root=self._storage_dir.parent,
         )
-        self._inventory = self._load_inventory()
         self._skill_tool_map: dict[str, list[ToolName]] = {}
         self._pending_registration_events: list[SkillToolRegistrationDropped] = []
+        self._inventory = self._load_inventory()
+        if self._state_load_result.status is StateLoadStatus.MISSING:
+            initial_result = self._state_load_result
+            if self._ensure_inventory_domain_marker():
+                try:
+                    self._persist_inventory_snapshot({})
+                except AtomicWriteError as exc:
+                    self._persistence_degradation = exc
+                else:
+                    self._state_load_result = initial_result
+        elif self._state_load_result.status is StateLoadStatus.OK:
+            self._ensure_inventory_domain_marker()
         self._register_inventory_tools()
 
     def review(self, skill_path: Path) -> dict[str, Any]:
@@ -455,7 +473,14 @@ class SkillManager:
         try:
             target_stat = self._inventory_path.lstat()
         except FileNotFoundError:
-            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+            new_or_legacy_empty_domain = not self._storage_root_existed_at_start or (
+                self._inventory_domain_marker_status == "missing"
+                and self._storage_root_was_empty_at_start
+            )
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.MISSING if new_or_legacy_empty_domain else StateLoadStatus.CORRUPT,
+                reason=("" if new_or_legacy_empty_domain else "inventory_missing_existing_root"),
+            )
             return {}
         except OSError:
             self._state_load_result = StateLoadResult(
@@ -584,6 +609,42 @@ class SkillManager:
             or any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
         )
         return inventory
+
+    def _inspect_inventory_domain_marker(self) -> str:
+        try:
+            target_stat = self._inventory_domain_marker_path.lstat()
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "invalid"
+        if not stat.S_ISREG(target_stat.st_mode):
+            return "invalid"
+        try:
+            marker = self._inventory_domain_marker_path.read_bytes()
+        except OSError:
+            return "invalid"
+        return "valid" if marker == _SKILL_INVENTORY_DOMAIN_MARKER else "invalid"
+
+    def _ensure_inventory_domain_marker(self) -> bool:
+        if self._inventory_domain_marker_status == "valid":
+            return True
+        if self._inventory_domain_marker_status == "invalid":
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_inventory_domain_marker",
+            )
+            return False
+        try:
+            atomic_write_bytes(
+                self._inventory_domain_marker_path,
+                _SKILL_INVENTORY_DOMAIN_MARKER,
+                fault_injector=self._state_fault_injector,
+            )
+        except AtomicWriteError as exc:
+            self._persistence_degradation = exc
+            return False
+        self._inventory_domain_marker_status = "valid"
+        return True
 
     def _persist_inventory_snapshot(self, inventory: dict[str, InstalledSkill]) -> None:
         payload = [
@@ -806,6 +867,16 @@ class SkillManager:
             event.expected_hash_prefix,
             event.actual_hash_prefix,
         )
+
+
+def _directory_is_empty(path: Path) -> bool:
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def _risk_score(findings: list[Finding]) -> float:

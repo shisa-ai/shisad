@@ -253,6 +253,66 @@ def test_f3_selfmod_missing_inventory_is_healthy_and_applies_defaults(tmp_path: 
     assert manager.status()["inventory"]["status"] == "ok"
 
 
+def test_f3_selfmod_legacy_empty_domain_is_initialized_then_guarded(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "selfmod"
+    for child in ("proposals", "changes", "artifacts"):
+        (root / child).mkdir(parents=True, exist_ok=True)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    assert manager.inventory_load_result().status == StateLoadStatus.MISSING
+    assert manager.state_degraded is False
+    assert planner.defaults == [("neutral", "")]
+    assert manager._inventory_path.exists()
+
+    manager._inventory_path.unlink()
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.state_degraded is True
+    assert restarted_planner.defaults == []
+
+
+def test_f3_selfmod_existing_domain_missing_inventory_blocks_coupled_skill(
+    tmp_path: Path,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    applied = manager.apply(manager.propose(artifact).proposal_id, confirm=True)
+    assert applied.applied is True
+    tool_name = ToolName("skill.calendar-helper.lookup")
+    assert manager._skill_manager._tool_registry.get_tool(tool_name) is not None
+    inventory_path = manager._inventory_path
+    inventory_path.unlink()
+
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.inventory_load_result().reason == "inventory_missing_existing_root"
+    assert restarted.state_degraded is True
+    assert restarted_planner.defaults == []
+    assert restarted._skill_manager._tool_registry.get_tool(tool_name) is None
+    assert any(restarted._artifact_root.rglob("manifest.json"))
+
+
 def test_f3_selfmod_corrupt_inventory_is_retained_and_blocks_runtime(
     tmp_path: Path,
 ) -> None:
@@ -496,6 +556,10 @@ def test_f3_selfmod_corrupt_control_record_is_retained_and_not_missing(
     record_status = manager.status()["records"][record_kind]
     assert record_status["load_status"] == "corrupt"
     assert record_status["reason"] == "invalid_json"
+    doctor = manager.doctor_status()
+    assert doctor["status"] == "degraded"
+    assert doctor["records"][record_kind]["load_status"] == "corrupt"
+    assert f"selfmod_{record_kind}_corrupt" in doctor["problems"]
 
 
 def test_f3_selfmod_corrupt_incident_is_retained_and_actionable(tmp_path: Path) -> None:
@@ -555,6 +619,135 @@ def test_f3_selfmod_legacy_raw_proposal_with_artifact_version_remains_readable(
 
     assert preview.requires_confirmation is True
     assert manager.status()["records"]["proposal"]["legacy"] is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["artifact_type", "unsafe_name", "record_id", "manifest_identity", "extra"],
+)
+def test_f3_selfmod_semantically_invalid_proposal_is_retained_as_corrupt(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+    path = manager._proposal_path(proposal.proposal_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))["payload"]
+    if mutation == "artifact_type":
+        payload["artifact_type"] = "unknown"
+    elif mutation == "unsafe_name":
+        payload["name"] = "../escape"
+    elif mutation == "record_id":
+        payload["proposal_id"] = "b" * 32
+    elif mutation == "manifest_identity":
+        payload["version"] = "2.0.0"
+    else:
+        payload["unexpected"] = True
+    snapshot = encode_versioned_json_snapshot(payload, version=1)
+    path.write_bytes(snapshot)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "proposal_corrupt"
+    assert path.read_bytes() == snapshot
+
+
+@pytest.mark.parametrize("mutation", ["artifact_type", "unsafe_name", "record_id", "extra"])
+def test_f3_selfmod_semantically_invalid_change_is_retained_as_corrupt(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    applied = manager.apply(manager.propose(artifact).proposal_id, confirm=True)
+    path = manager._change_path(applied.change_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))["payload"]
+    if mutation == "artifact_type":
+        payload["artifact_type"] = "unknown"
+    elif mutation == "unsafe_name":
+        payload["name"] = "../escape"
+    elif mutation == "record_id":
+        payload["change_id"] = "b" * 32
+    else:
+        payload["unexpected"] = True
+    snapshot = encode_versioned_json_snapshot(payload, version=1)
+    path.write_bytes(snapshot)
+
+    result = manager.rollback(applied.change_id)
+
+    assert result.rolled_back is False
+    assert result.reason == "change_corrupt"
+    assert path.read_bytes() == snapshot
+
+
+@pytest.mark.parametrize("artifact_kind", ["skill", "behavior"])
+def test_f3_selfmod_startup_artifact_io_failure_degrades_without_aborting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_kind: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_kind == "skill":
+        artifact = _write_signed_skill_bundle(tmp_path / "artifact", key_path=key_path)
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "artifact",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    applied = manager.apply(manager.propose(artifact).proposal_id, confirm=True)
+    assert applied.applied is True
+
+    def _inspection_io_failure(**_kwargs: object) -> tuple[bool, str]:
+        raise OSError("unreadable active payload")
+
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "_validate_manifest_files",
+        _inspection_io_failure,
+    )
+
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert restarted.state_degraded is True
+    assert restarted.inventory_load_result().reason == "active_artifact_invalid"
+    assert restarted_planner.defaults == []
+    assert restarted._skill_manager.state_degraded is True
+    assert restarted._skill_manager._tool_registry.list_tools() == []
 
 
 @pytest.mark.parametrize(
@@ -650,7 +843,8 @@ def test_f3_selfmod_apply_inventory_fault_precedes_behavior_runtime(
         assert restarted.state_degraded is False
         assert restarted_planner.defaults[-1] == ("strict", "Stay strict.")
     else:
-        assert restarted.inventory_load_result().status == StateLoadStatus.MISSING
+        assert restarted.inventory_load_result().status == StateLoadStatus.OK
+        assert restarted.status()["behavior_packs"] == {}
         assert restarted_planner.defaults[-1] == ("neutral", "")
 
 
