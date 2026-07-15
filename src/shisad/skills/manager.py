@@ -386,14 +386,19 @@ class SkillManager:
             StateLoadStatus.UNSUPPORTED_SCHEMA,
         }:
             problems.append(f"skill_inventory_{load_result.status.value}")
+        external = self._external_degradation
         remediation = ""
-        if self.state_degraded:
+        if external is not None:
+            remediation = (
+                f"Restore the coupled {external[0]} authority from a trusted backup or "
+                "explicitly reset that state domain after verification, then restart shisad."
+            )
+        elif self.state_degraded:
             remediation = (
                 "Restore the skill inventory from a trusted backup, or remove it only after "
                 "verifying that no skills should remain active, then restart shisad."
             )
         persistence = self._persistence_degradation
-        external = self._external_degradation
         return {
             "status": "degraded" if self.state_degraded else "ok",
             "problems": problems,

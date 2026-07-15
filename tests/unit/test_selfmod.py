@@ -299,6 +299,7 @@ def test_f3_selfmod_corrupt_inventory_is_retained_and_blocks_runtime(
     assert planner.defaults == []
     assert registry.get_tool(tool_name) is None
     assert skill_manager.state_degraded is True
+    assert "selfmod" in skill_manager.state_status()["remediation"]
     with pytest.raises(StatePersistenceDegradedError, match="invalid_json"):
         manager.rollback("a" * 32)
     assert inventory_path.read_bytes() == corrupt_bytes
