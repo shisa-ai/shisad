@@ -225,15 +225,23 @@ def atomic_write_bytes(
     payload: bytes,
     *,
     fault_injector: AtomicWriteFaultInjector | None = None,
+    preserve_existing_parent_mode: bool = False,
 ) -> None:
-    """Publish bytes as an owner-only old-or-new file and fsync its parent."""
+    """Publish owner-only bytes old-or-new and fsync the containing directory.
+
+    Existing daemon-owned parents are restricted by default. Arbitrary-path
+    callers may preserve an existing parent mode; newly created parents remain
+    owner-only.
+    """
 
     target = Path(path)
     _validate_existing_target(target)
     parent = target.parent
+    parent_existed = parent.exists()
     try:
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        parent.chmod(0o700)
+        if not preserve_existing_parent_mode or not parent_existed:
+            parent.chmod(0o700)
     except OSError as exc:
         raise AtomicWriteError(
             path=target,

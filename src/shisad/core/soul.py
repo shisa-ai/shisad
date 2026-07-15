@@ -129,7 +129,12 @@ def write_soul_text(
     _reject_symlink_components(path)
     _existing_regular_soul_stat(path)
     try:
-        atomic_write_bytes(path, data, fault_injector=fault_injector)
+        atomic_write_bytes(
+            path,
+            data,
+            fault_injector=fault_injector,
+            preserve_existing_parent_mode=True,
+        )
     except AtomicWriteError as exc:
         raise SoulFileError(f"SOUL.md write failed: {exc}") from exc
     return SoulWriteResult(

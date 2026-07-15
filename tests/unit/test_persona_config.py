@@ -254,6 +254,41 @@ def test_f3_soul_write_uses_owner_only_modes_under_permissive_umask(tmp_path) ->
     assert stat.S_IMODE(soul_path.stat().st_mode) == 0o600
 
 
+def test_f3_soul_write_preserves_existing_parent_mode(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    parent = tmp_path / "shared-config"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    soul_path = parent / "SOUL.md"
+
+    write_soul_text(soul_path, "owner-only file", max_bytes=4096)
+
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE(soul_path.stat().st_mode) == 0o600
+
+
+def test_f3_soul_write_fault_preserves_existing_parent_mode(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    parent = tmp_path / "shared-config"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    soul_path = parent / "SOUL.md"
+    soul_path.write_text("old persona", encoding="utf-8")
+
+    def _fail_before_temp(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.TEMP_OPEN:
+            raise OSError("fault:temp_open")
+
+    with pytest.raises(SoulFileError):
+        write_soul_text(
+            soul_path,
+            "new persona",
+            max_bytes=4096,
+            fault_injector=_fail_before_temp,
+        )
+
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+    assert soul_path.read_text(encoding="utf-8") == "old persona"
+
+
 def test_s9_effective_persona_text_combines_inline_config_and_soul_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
     soul_path = tmp_path / "SOUL.md"
     soul_path.write_text("Prefer concise answers.", encoding="utf-8")
