@@ -119,12 +119,18 @@ def _canonical_json_bytes(payload: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _snapshot_integrity_bytes(*, version: int, payload: Any) -> bytes:
+    return _canonical_json_bytes({"payload": payload, "version": version})
+
+
 def encode_versioned_json_snapshot(payload: Any, *, version: int = 1) -> bytes:
     """Encode a deterministic checksum-bound JSON snapshot envelope."""
 
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError("snapshot version must be a positive integer")
-    checksum = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+    checksum = hashlib.sha256(
+        _snapshot_integrity_bytes(version=version, payload=payload)
+    ).hexdigest()
     envelope = {
         "version": version,
         "checksum": checksum,
@@ -188,7 +194,7 @@ def decode_versioned_json_snapshot(
         )
     payload = raw["payload"]
     try:
-        canonical_payload = _canonical_json_bytes(payload)
+        integrity_input = _snapshot_integrity_bytes(version=version, payload=payload)
     except (TypeError, ValueError):
         return (
             StateLoadResult(
@@ -198,7 +204,7 @@ def decode_versioned_json_snapshot(
             ),
             None,
         )
-    actual_checksum = hashlib.sha256(canonical_payload).hexdigest()
+    actual_checksum = hashlib.sha256(integrity_input).hexdigest()
     if not hmac.compare_digest(checksum, actual_checksum):
         return (
             StateLoadResult(

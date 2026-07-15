@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from datetime import UTC, datetime, timedelta
@@ -118,6 +119,21 @@ def test_versioned_json_snapshot_reports_unsupported_schema_before_payload_use()
 
     assert result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
     assert result.schema_version == 2
+    assert payload is None
+
+
+def test_versioned_json_snapshot_checksum_detects_version_only_tampering() -> None:
+    envelope = json.loads(
+        encode_versioned_json_snapshot({"rows": []}, version=2).decode("utf-8")
+    )
+    envelope["version"] = 1
+
+    result, payload = decode_versioned_json_snapshot(
+        json.dumps(envelope).encode("utf-8")
+    )
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "checksum_mismatch"
     assert payload is None
 
 

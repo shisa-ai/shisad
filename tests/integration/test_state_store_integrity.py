@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -261,3 +262,136 @@ def test_pending_confirmation_serialization_failure_restores_durable_view(
     }
     assert live_ids == {"confirm-1"}
     assert pending_path.read_bytes() == durable_bytes
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    [
+        AtomicWriteStage.TEMP_OPEN,
+        AtomicWriteStage.WRITE,
+        AtomicWriteStage.FILE_FSYNC,
+        AtomicWriteStage.REPLACE,
+        AtomicWriteStage.PARENT_FSYNC,
+    ],
+)
+@pytest.mark.parametrize("success", [True, False])
+def test_confirmation_outcome_task_fault_retries_exactly_once(
+    tmp_path: Path,
+    fault_stage: AtomicWriteStage,
+    success: bool,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    scheduler.queue_confirmation(
+        task_id,
+        {"confirmation_id": "confirm-outcome", "status": "pending"},
+    )
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == fault_stage:
+            raise OSError(f"fault:{stage.value}")
+
+    scheduler._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        scheduler.record_confirmation_outcome(
+            task_id,
+            confirmation_id="confirm-outcome",
+            success=success,
+        )
+
+    if fault_stage == AtomicWriteStage.PARENT_FSYNC:
+        recovered = SchedulerManager(storage_dir=storage)
+    else:
+        assert (
+            scheduler.confirmation_outcome(
+                task_id,
+                confirmation_id="confirm-outcome",
+            )
+            is None
+        )
+        pre_retry = scheduler.get_task(task_id)
+        assert pre_retry is not None
+        assert pre_retry.success_count == 0
+        assert pre_retry.failure_count == 0
+        scheduler._state_fault_injector = None
+        recovered = scheduler
+
+    assert recovered.record_confirmation_outcome(
+        task_id,
+        confirmation_id="confirm-outcome",
+        success=success,
+    )
+    task = recovered.get_task(task_id)
+    assert task is not None
+    assert task.success_count == int(success)
+    assert task.failure_count == int(not success)
+    assert (
+        recovered.confirmation_outcome(
+            task_id,
+            confirmation_id="confirm-outcome",
+        )
+        is success
+    )
+
+    restarted = SchedulerManager(storage_dir=storage)
+    durable = restarted.get_task(task_id)
+    assert durable is not None
+    assert durable.success_count == int(success)
+    assert durable.failure_count == int(not success)
+    assert (
+        restarted.confirmation_outcome(
+            task_id,
+            confirmation_id="confirm-outcome",
+        )
+        is success
+    )
+
+
+def test_expiry_task_fault_restores_pending_transition_for_retry(tmp_path: Path) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    scheduler.queue_confirmation(
+        task_id,
+        {
+            "confirmation_id": "confirm-expired",
+            "status": "pending",
+            "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        },
+    )
+
+    def _fail_task_fsync(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.FILE_FSYNC:
+            raise OSError("fault:file_fsync")
+
+    scheduler._state_fault_injector = _fail_task_fsync
+    with pytest.raises(AtomicWriteError):
+        scheduler.pending_confirmations(task_id)
+
+    scheduler._state_fault_injector = None
+    assert scheduler.pending_confirmations(task_id) == []
+    task = scheduler.get_task(task_id)
+    assert task is not None
+    assert task.success_count == 0
+    assert task.failure_count == 1
+    assert (
+        scheduler.confirmation_outcome(
+            task_id,
+            confirmation_id="confirm-expired",
+        )
+        is False
+    )
+
+    restarted = SchedulerManager(storage_dir=storage)
+    durable = restarted.get_task(task_id)
+    assert durable is not None
+    assert durable.success_count == 0
+    assert durable.failure_count == 1
+    assert (
+        restarted.confirmation_outcome(
+            task_id,
+            confirmation_id="confirm-expired",
+        )
+        is False
+    )

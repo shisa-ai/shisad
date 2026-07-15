@@ -445,7 +445,15 @@ class SchedulerManager:
             task.success_count += 1
         else:
             task.failure_count += 1
-        self._persist_tasks()
+        try:
+            self._persist_tasks()
+        except AtomicWriteError as exc:
+            if not exc.publication_may_have_committed:
+                self._restore_durable_pending_confirmations()
+            raise
+        except (TypeError, ValueError):
+            self._restore_durable_pending_confirmations()
+            raise
         self._persist_pending_confirmations()
         self._prune_confirmation_outcome_dedup(task_id)
         self._audit(
