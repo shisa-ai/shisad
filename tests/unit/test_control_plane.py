@@ -3390,6 +3390,27 @@ def test_f3_control_plane_trace_corruption_and_future_schema_fail_closed(
     assert path.read_bytes() == future_bytes
 
 
+def test_f3_control_plane_trace_recursive_snapshot_is_typed_and_retained(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    recursive_bytes = (
+        b'{"version":1,"checksum":"unused","payload":'
+        + (b"[" * 10000)
+        + b"0"
+        + (b"]" * 10000)
+        + b"}"
+    )
+    path.write_bytes(recursive_bytes)
+
+    trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+
+    assert trace.state_load_result.status == StateLoadStatus.CORRUPT
+    assert trace.active_plan("s-trace") is None
+    assert path.read_bytes() == recursive_bytes
+
+
 def test_f3_control_plane_trace_legacy_migrates_and_fault_retains_live_view(
     tmp_path: Path,
 ) -> None:

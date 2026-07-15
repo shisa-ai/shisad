@@ -234,7 +234,7 @@ class SecurityDashboard:
             return
         try:
             raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             raw_payload = None
         legacy_candidate = isinstance(raw_payload, dict) and all(
             isinstance(key, str)

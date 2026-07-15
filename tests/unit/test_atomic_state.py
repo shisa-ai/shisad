@@ -287,6 +287,22 @@ def test_versioned_json_snapshot_malformed_unicode_is_typed_corrupt(
     assert payload is None
 
 
+def test_versioned_json_snapshot_recursive_payload_is_typed_corrupt() -> None:
+    raw_bytes = (
+        b'{"version":1,"checksum":"unused","payload":'
+        + (b"[" * 10000)
+        + b"0"
+        + (b"]" * 10000)
+        + b"}"
+    )
+
+    result, payload = decode_versioned_json_snapshot(raw_bytes)
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    assert payload is None
+
+
 def test_pending_actions_snapshot_uses_atomic_writer_fault_boundary(tmp_path: Path) -> None:
     created_at = datetime.now(UTC)
     pending = PendingAction(

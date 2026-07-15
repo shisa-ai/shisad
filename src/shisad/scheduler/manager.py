@@ -1167,7 +1167,7 @@ class SchedulerManager:
             return
         try:
             raw = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             raw = None
         result: StateLoadResult
         payload: Any
@@ -1307,7 +1307,7 @@ class SchedulerManager:
             return False
         try:
             raw = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             raw = None
         result: StateLoadResult
         payload: Any

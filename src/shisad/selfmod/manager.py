@@ -1033,7 +1033,7 @@ class SelfModificationManager:
         legacy = False
         try:
             json_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             json_payload = None
         envelope_candidate = (
             isinstance(json_payload, dict)
@@ -1335,7 +1335,7 @@ class SelfModificationManager:
             return None
         try:
             raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             raw_payload = None
         envelope_candidate = (
             isinstance(raw_payload, dict)

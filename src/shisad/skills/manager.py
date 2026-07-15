@@ -506,7 +506,7 @@ class SkillManager:
         legacy = False
         try:
             raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             raw_payload = None
         if isinstance(raw_payload, list):
             payload: Any = raw_payload

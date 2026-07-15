@@ -196,6 +196,13 @@ async def test_daemon_services_builds_with_local_provider(
         b'{"version":1,"payload":',
         b'{"version":1,"checksum":"\\u00e9","payload":{}}',
         b'{"version":1,"checksum":"unused","payload":{"text":"\\ud800"}}',
+        (
+            b'{"version":1,"checksum":"unused","payload":'
+            + (b"[" * 10000)
+            + b"0"
+            + (b"]" * 10000)
+            + b"}"
+        ),
     ],
 )
 async def test_f3_corrupt_control_plane_state_is_visible_while_daemon_stays_up(
