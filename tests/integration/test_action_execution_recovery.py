@@ -80,6 +80,16 @@ def _control_plane_history_rows(config: DaemonConfig) -> list[dict[str, object]]
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _control_plane_plans(config: DaemonConfig) -> dict[str, dict[str, object]]:
+    envelope = json.loads(
+        (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+    )
+    assert envelope["version"] == 1
+    payload = envelope["payload"]
+    assert isinstance(payload, dict)
+    return payload
+
+
 def _replace_with_self_asserted_fabricated_evidence(row: dict[str, object]) -> None:
     evidence = row["confirmation_evidence"]
     assert isinstance(evidence, dict)
@@ -1006,11 +1016,7 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
             if row.get("execution_status") == "outcome_unknown"
         ]
         assert len(execution_rows) == 1
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(execution_rows[0]["session_id"])]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -1465,11 +1471,7 @@ async def test_confirmed_post_effect_exception_accounts_uncertain_effect(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -2814,11 +2816,7 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -2974,11 +2972,7 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -3583,9 +3577,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert len(all_execution_records) == 1
         expected_initial_status = "failed" if recovery_case == "failure-then-success" else "success"
         assert all_execution_records[0].get("execution_status") == expected_initial_status
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(recovered.session_id)]["executed_actions"] == (
             0 if expected_initial_status == "failed" else 1
         )
@@ -3765,9 +3757,7 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(session_id)]["executed_actions"] == 1
         executed_audits = [
             row
@@ -3877,9 +3867,7 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
         )[0]
         assert durable["status"] == "executing"
         assert _control_plane_history_rows(config) == []
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(session_id)]["executed_actions"] == 0
         assert len(calls) == 1
         assert len(logical_effects) == 1
@@ -3906,9 +3894,7 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(recovered.session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -3948,9 +3934,7 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
                 if row.get("tool_name") == str(tool_name)
             ]
         ) == 1
-        plans = json.loads(
-            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-        )
+        plans = _control_plane_plans(config)
         assert plans[str(pending.session_id)]["executed_actions"] == 1
         assert len(calls) == 2
     finally:

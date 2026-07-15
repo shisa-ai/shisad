@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import hashlib
 import json
 import re
+import stat
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +15,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteFaultInjector,
+    StateLoadResult,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    atomic_write_bytes,
+    decode_versioned_json_snapshot,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.types import Capability
 from shisad.core.url_parsing import safe_url_hostname
 from shisad.security.control_plane.schema import (
@@ -127,6 +139,7 @@ _WORKSPACE_ROOT_GIT_COMMAND_RE = re.compile(
     r"repository status|repository diff|repository log)\s*[.!?]?\s*$",
     re.IGNORECASE,
 )
+_TRACE_STATE_VERSION = 1
 
 
 def trace_reason_requires_confirmation(reason_code: str) -> bool:
@@ -180,7 +193,61 @@ class ExecutionTraceVerifier:
             item.expanduser().resolve(strict=False) for item in (workspace_roots or [Path.cwd()])
         ]
         self._plans: dict[str, CommittedPlan] = {}
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK if storage_path is None else StateLoadStatus.MISSING
+        )
+        self._persistence_degradation: AtomicWriteError | None = None
+        self._state_fault_injector: AtomicWriteFaultInjector | None = None
         self._load()
+
+    @property
+    def state_load_result(self) -> StateLoadResult:
+        return self._state_load_result
+
+    @property
+    def state_degraded(self) -> bool:
+        return self._persistence_degradation is not None or self._state_load_result.status in {
+            StateLoadStatus.CORRUPT,
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+        }
+
+    def state_status(self) -> dict[str, Any]:
+        persistence = self._persistence_degradation
+        load_result = self._state_load_result
+        return {
+            "status": "degraded" if self.state_degraded else "ok",
+            "problems": ["control_plane_trace_state_degraded"] if self.state_degraded else [],
+            "path": str(self._storage_path or ""),
+            "load_status": load_result.status.value,
+            "reason": load_result.reason,
+            "schema_version": load_result.schema_version,
+            "legacy": load_result.legacy,
+            "fail_closed": self.state_degraded,
+            "stage": persistence.stage.value if persistence is not None else "",
+            "remediation": (
+                "Restore or explicitly reset the retained control-plane plan snapshot, then "
+                "restart shisad."
+                if self.state_degraded
+                else ""
+            ),
+        }
+
+    def _require_available(self, *, transition: str) -> None:
+        if not self.state_degraded:
+            return
+        persistence = self._persistence_degradation
+        raise StatePersistenceDegradedError(
+            authority="control_plane_trace",
+            transition=transition,
+            stage=persistence.stage.value if persistence is not None else "load",
+            reason=(
+                "publication_commit_uncertain"
+                if persistence is not None and persistence.publication_may_have_committed
+                else "persistence_failed"
+                if persistence is not None
+                else self._state_load_result.reason or self._state_load_result.status.value
+            ),
+        )
 
     def begin_precontent_plan(
         self,
@@ -193,6 +260,7 @@ class ExecutionTraceVerifier:
         capabilities: set[Capability] | None = None,
         declared_resource_roots: set[str] | None = None,
     ) -> CommittedPlan:
+        self._require_available(transition="begin_precontent_plan")
         _ = origin
         now = datetime.now(UTC)
         ttl = ttl_seconds or self._default_ttl_seconds
@@ -216,11 +284,14 @@ class ExecutionTraceVerifier:
             stage=PlanStage.STAGE1_PRECONTENT,
             amendment_of="",
         )
-        self._plans[session_id] = plan
-        self._persist()
+        candidate = dict(self._plans)
+        candidate[session_id] = plan
+        self._commit_candidate(candidate)
         return plan
 
     def active_plan(self, session_id: str) -> CommittedPlan | None:
+        if self.state_degraded:
+            return None
         plan = self._plans.get(session_id)
         if plan is None:
             return None
@@ -328,6 +399,7 @@ class ExecutionTraceVerifier:
         idempotency_key: str = "",
         expected_plan_hash: str = "",
     ) -> None:
+        self._require_available(transition="record_action")
         plan = self._plans.get(session_id)
         if plan is None:
             return
@@ -340,10 +412,12 @@ class ExecutionTraceVerifier:
             # Persist the same state again so replay repairs that boundary.
             self._persist()
             return
-        plan.executed_actions += 1
+        candidate = self._copy_plans()
+        candidate_plan = candidate[session_id]
+        candidate_plan.executed_actions += 1
         if normalized_key:
-            plan.recorded_action_keys.add(normalized_key)
-        self._persist()
+            candidate_plan.recorded_action_keys.add(normalized_key)
+        self._commit_candidate(candidate)
 
     def record_dependency_path(
         self,
@@ -353,6 +427,7 @@ class ExecutionTraceVerifier:
         idempotency_key: str = "",
         expected_plan_hash: str = "",
     ) -> None:
+        self._require_available(transition="record_dependency_path")
         plan = self._plans.get(session_id)
         if plan is None:
             return
@@ -367,18 +442,22 @@ class ExecutionTraceVerifier:
             # repaired without applying the dependency mutation twice.
             self._persist()
             return
-        plan.reachable_resources.update(item for item in action.resource_ids if item)
+        candidate = self._copy_plans()
+        candidate_plan = candidate[session_id]
+        candidate_plan.reachable_resources.update(item for item in action.resource_ids if item)
         if normalized_key:
-            plan.recorded_dependency_keys.add(normalized_key)
-        self._persist()
+            candidate_plan.recorded_dependency_keys.add(normalized_key)
+        self._commit_candidate(candidate)
 
     def cancel(self, *, session_id: str, reason: str) -> bool:
+        self._require_available(transition="cancel")
         plan = self._plans.get(session_id)
         if plan is None:
             return False
-        plan.cancelled = True
-        plan.cancelled_reason = reason
-        self._persist()
+        candidate = self._copy_plans()
+        candidate[session_id].cancelled = True
+        candidate[session_id].cancelled_reason = reason
+        self._commit_candidate(candidate)
         return True
 
     def amend(
@@ -393,6 +472,7 @@ class ExecutionTraceVerifier:
         expected_previous_hash: str = "",
         execution_idempotency_key: str = "",
     ) -> CommittedPlan:
+        self._require_available(transition="amend")
         if not approved_by.strip():
             raise ValueError("approved_by is required for plan amendment")
         current = self.active_plan(session_id)
@@ -437,8 +517,9 @@ class ExecutionTraceVerifier:
         amended.reachable_resources = set(current.reachable_resources)
         amended.recorded_dependency_keys = set(current.recorded_dependency_keys)
         amended.recorded_action_keys = set(current.recorded_action_keys)
-        self._plans[session_id] = amended
-        self._persist()
+        candidate = dict(self._plans)
+        candidate[session_id] = amended
+        self._commit_candidate(candidate)
         return amended
 
     def _commit_plan(
@@ -663,36 +744,137 @@ class ExecutionTraceVerifier:
     def _normalize_goal_path(self, token: str) -> str:
         return normalize_workspace_path(token, workspace_roots=self._workspace_roots)
 
+    def _copy_plans(self) -> dict[str, CommittedPlan]:
+        return {
+            session_id: plan.model_copy(deep=True)
+            for session_id, plan in self._plans.items()
+        }
+
+    def _commit_candidate(self, candidate: dict[str, CommittedPlan]) -> None:
+        previous = self._plans
+        self._plans = candidate
+        try:
+            self._persist()
+        except Exception:
+            self._plans = previous
+            raise
+        if self._storage_path is not None:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.OK,
+                schema_version=_TRACE_STATE_VERSION,
+            )
+
     def _persist(self) -> None:
         if self._storage_path is None:
             return
-        self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             session_id: plan.model_dump(mode="json")
             for session_id, plan in sorted(self._plans.items(), key=lambda item: item[0])
         }
-        self._storage_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        try:
+            atomic_write_bytes(
+                self._storage_path,
+                encode_versioned_json_snapshot(payload, version=_TRACE_STATE_VERSION),
+                fault_injector=self._state_fault_injector,
+            )
+        except AtomicWriteError as exc:
+            if exc.publication_may_have_committed:
+                self._persistence_degradation = exc
+            raise
 
     def _load(self) -> None:
-        if self._storage_path is None or not self._storage_path.exists():
+        if self._storage_path is None:
             return
         try:
-            payload = json.loads(self._storage_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            target_stat = self._storage_path.lstat()
+        except FileNotFoundError:
             return
+        except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="trace_stat_failed",
+            )
+            return
+        if not stat.S_ISREG(target_stat.st_mode):
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_trace_target",
+            )
+            return
+        try:
+            raw_bytes = self._storage_path.read_bytes()
+        except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="trace_read_failed",
+            )
+            return
+        try:
+            raw_payload = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_json",
+            )
+            return
+        if not isinstance(raw_payload, dict):
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_trace_payload",
+            )
+            return
+
+        envelope_keys = {"version", "checksum", "payload"}
+        legacy = not bool(envelope_keys.intersection(raw_payload))
+        if legacy:
+            payload: Any = raw_payload
+            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
+        else:
+            load_result, payload = decode_versioned_json_snapshot(
+                raw_bytes,
+                supported_version=_TRACE_STATE_VERSION,
+            )
+            if load_result.status != StateLoadStatus.OK:
+                self._state_load_result = load_result
+                return
         if not isinstance(payload, dict):
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_trace_payload",
+                schema_version=load_result.schema_version,
+                legacy=legacy,
+            )
             return
+
+        candidate: dict[str, CommittedPlan] = {}
         cancel_unreconciled_stage2 = False
         for key, value in payload.items():
             if not isinstance(key, str):
-                continue
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="invalid_trace_session_key",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return
             try:
                 plan = CommittedPlan.model_validate(value)
             except ValidationError:
-                continue
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason=f"invalid_trace_plan:{key}",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return
+            if plan.session_id != key:
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason=f"trace_session_mismatch:{key}",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return
             correlated_action_key = control_plane_trace_action_idempotency_key(
                 plan.amendment_execution_idempotency_key
             )
@@ -709,6 +891,22 @@ class ExecutionTraceVerifier:
                 plan.cancelled = True
                 plan.cancelled_reason = "unreconciled_stage2_restart"
                 cancel_unreconciled_stage2 = True
-            self._plans[key] = plan
+            candidate[key] = plan
+        self._plans = candidate
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=load_result.schema_version,
+            legacy=legacy,
+        )
         if cancel_unreconciled_stage2:
-            self._persist()
+            try:
+                self._persist()
+            except AtomicWriteError as exc:
+                # An unreconciled stage-2 plan must never become live merely
+                # because its conservative cancellation could not be published.
+                self._persistence_degradation = exc
+        elif legacy:
+            # A fully validated legacy snapshot remains authoritative when a
+            # safe migration did not publish.
+            with contextlib.suppress(AtomicWriteError):
+                self._persist()

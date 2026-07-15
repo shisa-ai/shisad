@@ -139,6 +139,20 @@ amendment. After control-plane restart, authority remains active only when the
 exact correlated attempt key appears in durable trace-action accounting;
 aggregate execution by unrelated same-session actions is not reconciliation.
 
+Control-plane history, committed plans, the learned network baseline, and the
+independent audit chain use owner-only durable state under the sidecar data
+directory. Plan and network snapshots are versioned and checksum-bound; plan
+mutations publish before becoming live. History and audit appends are fsynced
+before acknowledgement and their complete retained JSONL domains are validated
+on startup. Malformed, truncated, semantically invalid, or newer authoritative
+state is retained rather than replaced with an empty view: trace, history, and
+audit authority fail closed. The network baseline is advisory, so corruption
+or publication failure disables further learning and reports an unknown
+baseline without stopping otherwise-authorized actions. `shisad status` and
+`shisad doctor check --component control_plane` expose the aggregate and each
+domain's typed load/degradation state while the daemon remains available for
+diagnosis.
+
 Concurrent confirmation clicks for one action are serialized by an in-memory
 per-confirmation lock while that daemon process is running. That lock is a
 local concurrency guard, not durable exactly-once evidence; the persisted

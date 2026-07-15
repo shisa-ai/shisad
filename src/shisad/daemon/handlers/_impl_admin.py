@@ -75,6 +75,7 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "skills",
     "selfmod",
     "dashboard",
+    "control_plane",
     "provider",
     "policy",
     "channels",
@@ -1528,9 +1529,35 @@ class AdminImplMixin(HandlerMixinBase):
         result["operation"] = operation
         return result
 
+    async def _control_plane_state_status(self) -> dict[str, Any]:
+        try:
+            status = await self._control_plane.state_status()
+        except Exception as exc:
+            logger.warning(
+                "Control-plane state diagnostics unavailable: %s",
+                exc.__class__.__name__,
+            )
+            return {
+                "status": "degraded",
+                "problems": [f"control_plane_diagnostics_unavailable:{exc.__class__.__name__}"],
+                "fail_closed": True,
+                "domains": {},
+                "remediation": "Restart shisad and inspect the control-plane sidecar logs.",
+            }
+        if not isinstance(status, Mapping):
+            return {
+                "status": "degraded",
+                "problems": ["control_plane_diagnostics_invalid"],
+                "fail_closed": True,
+                "domains": {},
+                "remediation": "Restart shisad and inspect the control-plane sidecar logs.",
+            }
+        return dict(status)
+
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
         a2a_runtime = getattr(self._services, "a2a_runtime", None)
+        control_plane_status = await self._control_plane_state_status()
         return {
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
@@ -1587,6 +1614,7 @@ class AdminImplMixin(HandlerMixinBase):
             "approvals": self._credential_store.approval_state_status(),
             "skills": self._skill_manager.state_status(),
             "dashboard": self._dashboard.state_status(),
+            "control_plane": control_plane_status,
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
                 "connect_path": self._sandbox.connect_path_status(),
@@ -1857,6 +1885,7 @@ class AdminImplMixin(HandlerMixinBase):
             "skills": self._skill_manager.state_status,
             "selfmod": self._selfmod_manager.doctor_status,
             "dashboard": self._dashboard.state_status,
+            "control_plane": self._control_plane_state_status,
             "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,

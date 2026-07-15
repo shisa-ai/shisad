@@ -19,6 +19,7 @@ from shisad.core.audit import AuditLog
 from shisad.core.types import Capability, UserId
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
+from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.ui.dashboard import SecurityDashboard
 
 
@@ -415,3 +416,36 @@ def test_auxiliary_state_corruption_is_visible_and_retained(tmp_path: Path) -> N
     with pytest.raises(StatePersistenceDegradedError, match="dashboard_marks"):
         dashboard.mark_false_positive(event_id="evt-2", reason="reviewed")
     assert marks_path.read_bytes() == corrupt_bytes
+
+
+def test_control_plane_state_corruption_is_typed_aggregated_and_retained(
+    tmp_path: Path,
+) -> None:
+    control_plane_dir = tmp_path / "control_plane"
+    control_plane_dir.mkdir(parents=True)
+    retained = {
+        "history.jsonl": b'{"session_id":"torn"',
+        "plans.json": b'{"version":1,"payload":',
+        "network_baseline.json": b'{"version":1,"payload":',
+        "audit.jsonl": b'{"event_type":"torn"',
+    }
+    for name, raw_bytes in retained.items():
+        (control_plane_dir / name).write_bytes(raw_bytes)
+
+    engine = ControlPlaneEngine.build(data_dir=tmp_path, workspace_roots=[tmp_path])
+    status = engine.state_status()
+
+    assert status["status"] == "degraded"
+    assert status["fail_closed"] is True
+    assert {
+        name: domain["load_status"]
+        for name, domain in status["domains"].items()
+    } == {
+        "history": "corrupt",
+        "trace": "corrupt",
+        "network": "corrupt",
+        "audit": "corrupt",
+    }
+    assert status["domains"]["network"]["learning_enabled"] is False
+    for name, raw_bytes in retained.items():
+        assert (control_plane_dir / name).read_bytes() == raw_bytes

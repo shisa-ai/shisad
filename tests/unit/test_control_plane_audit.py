@@ -5,6 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from shisad.core.atomic_state import (
+    DurableAppendError,
+    DurableAppendStage,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+)
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 
 
@@ -56,6 +64,11 @@ def test_m6_control_plane_audit_verify_chain_invalid_entry(tmp_path: Path) -> No
     assert ok is False
     assert "invalid entry" in error
 
+    resumed = ControlPlaneAuditLog(path)
+    assert resumed.state_load_result.status == StateLoadStatus.CORRUPT
+    assert resumed.entry_count == 0
+    assert resumed.query() == []
+
 
 def test_m6_control_plane_audit_verify_chain_detects_data_hash_mismatch(tmp_path: Path) -> None:
     path = tmp_path / "control-plane-audit.jsonl"
@@ -74,3 +87,39 @@ def test_m6_control_plane_audit_verify_chain_detects_data_hash_mismatch(tmp_path
     ok, _, error = log.verify_chain()
     assert ok is False
     assert "data hash mismatch" in error
+
+
+def test_f3_control_plane_audit_corruption_is_retained_and_blocks_append(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    corrupt_bytes = b'{"event_type":"torn"'
+    path.write_bytes(corrupt_bytes)
+
+    log = ControlPlaneAuditLog(path)
+
+    assert log.state_load_result.status == StateLoadStatus.CORRUPT
+    assert log.entry_count == 0
+    with pytest.raises(StatePersistenceDegradedError, match="control_plane_audit"):
+        log.append(event_type="new", session_id="s", actor="a", data={})
+    assert path.read_bytes() == corrupt_bytes
+
+
+def test_f3_control_plane_audit_commit_uncertainty_keeps_chain_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    log = ControlPlaneAuditLog(path)
+
+    def _inject(stage: DurableAppendStage) -> None:
+        if stage == DurableAppendStage.FILE_FSYNC:
+            raise OSError("fault:file_fsync")
+
+    log._state_fault_injector = _inject
+    with pytest.raises(DurableAppendError):
+        log.append(event_type="uncertain", session_id="s", actor="a", data={})
+
+    assert log.entry_count == 0
+    assert log.state_status()["stage"] == "file_fsync"
+    with pytest.raises(StatePersistenceDegradedError):
+        log.append(event_type="retry", session_id="s", actor="a", data={})

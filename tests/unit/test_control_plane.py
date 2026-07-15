@@ -11,6 +11,15 @@ from typing import Any
 
 import pytest
 
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    DurableAppendError,
+    DurableAppendStage,
+    StateLoadStatus,
+    StatePersistenceDegradedError,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.events import (
     ControlPlaneActionObserved,
     ControlPlaneNetworkObserved,
@@ -2960,8 +2969,9 @@ def test_m5_rt8_history_load_logs_malformed_records(
     history_path = tmp_path / "history.jsonl"
     history_path.write_text("{not-json}\n", encoding="utf-8")
     caplog.set_level("WARNING", logger="shisad.security.control_plane.history")
-    _ = SessionActionHistoryStore(history_path)
-    assert "skipping malformed record" in caplog.text
+    history = SessionActionHistoryStore(history_path)
+    assert history.state_load_result.status == StateLoadStatus.CORRUPT
+    assert "retained malformed record" in caplog.text
 
 
 def test_m5_rt11_sequence_analyzer_dedupes_preflight_and_execution_rows() -> None:
@@ -3128,9 +3138,10 @@ def test_f2_execution_attempt_key_deduplicates_normal_and_recovery_accounting(
     ]
     execution_rows = [row for row in rows if row.get("execution_status")]
     assert len(execution_rows) == 1
-    plans = json.loads(
+    plans_envelope = json.loads(
         (data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
     )
+    plans = plans_envelope["payload"]
     assert plans[origin.session_id]["executed_actions"] == 1
 
 
@@ -3290,3 +3301,242 @@ def test_f2_unrelated_execution_does_not_reconcile_correlated_stage2_restart(
     )
 
     assert restarted.active_plan_hash(origin.session_id) == ""
+
+
+def test_f3_control_plane_history_corruption_is_retained_and_blocks_append(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "history.jsonl"
+    path.parent.mkdir(parents=True)
+    valid = ActionHistoryRecord(
+        session_id="s-history",
+        action_kind=ActionKind.FS_READ,
+        tool_name="file.read",
+    )
+    corrupt_bytes = (valid.model_dump_json() + "\n{not-json}\n").encode()
+    path.write_bytes(corrupt_bytes)
+
+    history = SessionActionHistoryStore(path)
+
+    assert history.state_load_result.status == StateLoadStatus.CORRUPT
+    assert history.state_status()["fail_closed"] is True
+    with pytest.raises(StatePersistenceDegradedError, match="control_plane_history"):
+        history.append(
+            ActionHistoryRecord(
+                session_id="s-history",
+                action_kind=ActionKind.FS_READ,
+                tool_name="file.read",
+            )
+        )
+    assert history.all_for_session("s-history") == []
+    assert path.read_bytes() == corrupt_bytes
+
+
+def test_f3_control_plane_history_commit_uncertainty_retains_live_view(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "history.jsonl"
+    history = SessionActionHistoryStore(path)
+
+    def _inject(stage: DurableAppendStage) -> None:
+        if stage == DurableAppendStage.FILE_FSYNC:
+            raise OSError("fault:file_fsync")
+
+    history._state_fault_injector = _inject
+    with pytest.raises(DurableAppendError):
+        history.append(
+            ActionHistoryRecord(
+                session_id="s-history",
+                action_kind=ActionKind.FS_READ,
+                tool_name="file.read",
+            )
+        )
+
+    assert history.all_for_session("s-history") == []
+    assert history.state_status()["stage"] == "file_fsync"
+    with pytest.raises(StatePersistenceDegradedError):
+        history.append(
+            ActionHistoryRecord(
+                session_id="s-history",
+                action_kind=ActionKind.FS_READ,
+                tool_name="file.read",
+            )
+        )
+
+
+def test_f3_control_plane_trace_corruption_and_future_schema_fail_closed(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    corrupt_bytes = b'{"version":1,"payload":'
+    path.write_bytes(corrupt_bytes)
+
+    corrupt = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    assert corrupt.state_load_result.status == StateLoadStatus.CORRUPT
+    with pytest.raises(StatePersistenceDegradedError, match="control_plane_trace"):
+        corrupt.begin_precontent_plan(
+            session_id="s-trace",
+            goal="read a file",
+            origin=_origin("s-trace"),
+        )
+    assert path.read_bytes() == corrupt_bytes
+
+    future_bytes = encode_versioned_json_snapshot({}, version=99)
+    path.write_bytes(future_bytes)
+    future = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    assert future.state_load_result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
+    assert future.active_plan("s-trace") is None
+    assert path.read_bytes() == future_bytes
+
+
+def test_f3_control_plane_trace_legacy_migrates_and_fault_retains_live_view(
+    tmp_path: Path,
+) -> None:
+    source = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    plan = source.begin_precontent_plan(
+        session_id="s-trace",
+        goal="read a file",
+        origin=_origin("s-trace"),
+    )
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"s-trace": plan.model_dump(mode="json")}),
+        encoding="utf-8",
+    )
+    trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    assert trace.state_load_result.status == StateLoadStatus.OK
+    assert trace.state_load_result.legacy is True
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.PARENT_FSYNC:
+            raise OSError("fault:parent_fsync")
+
+    trace._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        trace.cancel(session_id="s-trace", reason="reviewed")
+
+    assert trace._plans["s-trace"].cancelled is False
+    assert trace.active_plan("s-trace") is None
+    assert trace.state_status()["stage"] == "parent_fsync"
+
+
+def test_f3_control_plane_network_corruption_disables_learning_without_authority(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "network_baseline.json"
+    path.parent.mkdir(parents=True)
+    corrupt_bytes = b'{"version":1,"payload":'
+    path.write_bytes(corrupt_bytes)
+    baseline = BaselineDatabase(str(path))
+    metadata = extract_network_metadata(
+        origin=_origin("s-network"),
+        tool_name="http.request",
+        destination_host="api.example.com",
+        destination_port=443,
+        protocol="https",
+        request_size=128,
+    )
+
+    assert baseline.state_load_result.status == StateLoadStatus.CORRUPT
+    baseline.record(
+        metadata=metadata,
+        allow_or_confirmed=True,
+        suspicious=False,
+        lockdown=False,
+    )
+
+    assert baseline.known_hosts_for_origin(metadata.origin) == set()
+    assert baseline.state_status()["fail_closed"] is False
+    assert path.read_bytes() == corrupt_bytes
+
+
+def test_f3_control_plane_network_atomic_fault_keeps_old_live_baseline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "network_baseline.json"
+    baseline = BaselineDatabase(str(path))
+    metadata = extract_network_metadata(
+        origin=_origin("s-network"),
+        tool_name="http.request",
+        destination_host="api.example.com",
+        destination_port=443,
+        protocol="https",
+        request_size=100,
+    )
+    baseline.record(
+        metadata=metadata,
+        allow_or_confirmed=True,
+        suspicious=False,
+        lockdown=False,
+    )
+    assert baseline.get(origin=metadata.origin, host=metadata.destination_host).count == 1
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.PARENT_FSYNC:
+            raise OSError("fault:parent_fsync")
+
+    baseline._state_fault_injector = _inject
+    baseline.record(
+        metadata=metadata.model_copy(update={"request_size": 200}),
+        allow_or_confirmed=True,
+        suspicious=False,
+        lockdown=False,
+    )
+
+    assert baseline.get(origin=metadata.origin, host=metadata.destination_host).count == 1
+    assert baseline.state_status()["stage"] == "parent_fsync"
+
+
+def test_f3_control_plane_network_legacy_migrates_and_future_schema_is_retained(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "network_baseline.json"
+    path.parent.mkdir(parents=True)
+    legacy_entry = {
+        "first_seen": datetime.now(UTC).isoformat(),
+        "last_seen": datetime.now(UTC).isoformat(),
+        "count": 1,
+        "average_request_size": 128.0,
+    }
+    path.write_text(json.dumps({"ws:user:none:api.example.com": legacy_entry}))
+
+    legacy = BaselineDatabase(str(path))
+
+    assert legacy.state_load_result.status == StateLoadStatus.OK
+    assert legacy.state_load_result.legacy is True
+    migrated = json.loads(path.read_text(encoding="utf-8"))
+    assert migrated["version"] == 1
+    assert "checksum" in migrated
+
+    future_bytes = encode_versioned_json_snapshot({}, version=99)
+    path.write_bytes(future_bytes)
+    future = BaselineDatabase(str(path))
+
+    assert future.state_load_result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
+    assert future.state_status()["learning_enabled"] is False
+    assert path.read_bytes() == future_bytes
+
+
+def test_f3_control_plane_engine_state_status_aggregates_domain_failures(
+    tmp_path: Path,
+) -> None:
+    control_plane_dir = tmp_path / "control_plane"
+    control_plane_dir.mkdir(parents=True)
+    (control_plane_dir / "history.jsonl").write_bytes(b'{"session_id":"torn"')
+    (control_plane_dir / "plans.json").write_bytes(b'{"version":1,"payload":')
+    (control_plane_dir / "network_baseline.json").write_bytes(
+        b'{"version":1,"payload":'
+    )
+    (control_plane_dir / "audit.jsonl").write_bytes(b'{"event_type":"torn"')
+
+    engine = ControlPlaneEngine.build(data_dir=tmp_path, workspace_roots=[tmp_path])
+    status = engine.state_status()
+
+    assert status["status"] == "degraded"
+    assert status["fail_closed"] is True
+    assert set(status["domains"]) == {"history", "trace", "network", "audit"}
+    assert status["domains"]["network"]["fail_closed"] is False
+    assert status["domains"]["trace"]["load_status"] == "corrupt"
+    assert status["domains"]["audit"]["load_status"] == "corrupt"

@@ -151,6 +151,7 @@ async def test_daemon_services_builds_with_local_provider(
         skill_doctor = await impl.do_doctor_check({"component": "skills"})
         selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
         dashboard_doctor = await impl.do_doctor_check({"component": "dashboard"})
+        control_plane_doctor = await impl.do_doctor_check({"component": "control_plane"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
@@ -162,6 +163,7 @@ async def test_daemon_services_builds_with_local_provider(
         assert status["dashboard"]["status"] == "ok"
         assert status["dashboard"]["load_status"] == "missing"
         assert status["pairing_requests"]["status"] == "ok"
+        assert status["control_plane"]["status"] == "ok"
         assert "pairing_requests" not in status["channels"]
         channel_health = _safe_channel_rows(status["channels"])
         assert {row["channel"] for row in channel_health} == {
@@ -181,6 +183,42 @@ async def test_daemon_services_builds_with_local_provider(
         assert selfmod_doctor["checks"]["selfmod"]["load_status"] == "missing"
         assert dashboard_doctor["status"] == "ok"
         assert dashboard_doctor["checks"]["dashboard"]["load_status"] == "missing"
+        assert control_plane_doctor["status"] == "ok"
+        assert control_plane_doctor["checks"]["control_plane"]["status"] == "ok"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_corrupt_control_plane_state_is_visible_while_daemon_stays_up(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    plans_path = data_dir / "control_plane" / "plans.json"
+    plans_path.parent.mkdir(parents=True)
+    corrupt_bytes = b'{"version":1,"payload":'
+    plans_path.write_bytes(corrupt_bytes)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        assert await services.control_plane.ping() is True
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "control_plane"})
+
+        assert status["control_plane"]["status"] == "degraded"
+        assert status["control_plane"]["fail_closed"] is True
+        assert status["control_plane"]["domains"]["trace"]["load_status"] == "corrupt"
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["control_plane"]["status"] == "degraded"
+        assert plans_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
 

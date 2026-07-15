@@ -70,6 +70,8 @@ class ControlPlaneGateway(Protocol):
 
     async def ping(self) -> bool: ...
 
+    async def state_status(self) -> dict[str, Any]: ...
+
     async def begin_precontent_plan(
         self,
         *,
@@ -161,6 +163,14 @@ class _EmptyParams(BaseModel):
 
 class _PingResult(BaseModel):
     ok: bool = True
+
+
+class _StateStatusResult(BaseModel):
+    status: str = "ok"
+    problems: list[str] = Field(default_factory=list)
+    fail_closed: bool = False
+    domains: dict[str, Any] = Field(default_factory=dict)
+    remediation: str = ""
 
 
 class _PlanHashResult(BaseModel):
@@ -332,6 +342,14 @@ class _ControlPlaneSidecarHandlers:
     ) -> _PingResult:
         _ = (params, ctx)
         return _PingResult()
+
+    async def handle_state_status(
+        self,
+        params: _EmptyParams,
+        ctx: RequestContext,
+    ) -> _StateStatusResult:
+        _ = (params, ctx)
+        return _StateStatusResult.model_validate(self._engine.state_status())
 
     async def handle_begin_precontent_plan(
         self,
@@ -506,6 +524,14 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             timeout_seconds=_SIDECAR_PING_TIMEOUT_SECONDS,
         )
         return bool(result.ok)
+
+    async def state_status(self) -> dict[str, Any]:
+        result = await self._call(
+            "control_plane.state_status",
+            {},
+            _StateStatusResult,
+        )
+        return result.model_dump(mode="json")
 
     async def begin_precontent_plan(
         self,
@@ -887,6 +913,11 @@ async def _run_sidecar(
     server.register_method(
         "control_plane.ping",
         cast(Any, handlers.handle_ping),
+        params_model=_EmptyParams,
+    )
+    server.register_method(
+        "control_plane.state_status",
+        cast(Any, handlers.handle_state_status),
         params_model=_EmptyParams,
     )
     server.register_method(
