@@ -839,7 +839,7 @@ def _structured_fs_read(
     )
 
 
-def _structured_attachment_ingest(
+async def _structured_attachment_ingest(
     handler: Any,
     arguments: Mapping[str, Any],
     context: StructuredToolContext | None = None,
@@ -858,7 +858,8 @@ def _structured_attachment_ingest(
             "taint_labels": [TaintLabel.UNTRUSTED.value],
         }
     return dict(
-        ingestor.ingest_path(
+        await asyncio.to_thread(
+            ingestor.ingest_path,
             session_id=context.session_id,
             path=_argument_string(arguments, "path"),
             declared_mime_type=(
@@ -2413,7 +2414,7 @@ class HandlerImplementation(
             if "identity_pairing_requests" in cleared:
                 cleared.setdefault("pairing_requests", int(cleared["identity_pairing_requests"]))
             cleared.update(self._clear_handler_test_state())
-            invariants = self._reset_invariants()
+            invariants = await asyncio.to_thread(self._reset_invariants)
             status = "reset" if all(invariants.values()) else "reset_failed"
             return {
                 "status": status,

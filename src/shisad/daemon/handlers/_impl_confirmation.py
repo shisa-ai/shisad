@@ -3077,7 +3077,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 transcript_appended = True
                 if not target_ref_id or store is None:
                     raise ValueError("missing evidence ref for endorsement")
-                endorsed = store.endorse(
+                endorsed = await asyncio.to_thread(
+                    store.endorse,
                     pending.session_id,
                     target_ref_id,
                     endorsement_state=ArtifactEndorsementState.USER_ENDORSED,

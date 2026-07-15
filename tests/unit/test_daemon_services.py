@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -1331,6 +1333,67 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert not impl._pending_actions_file.exists()
         assert not impl._pairing_requests_file.exists()
     finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_route_keeps_event_loop_live_behind_ledger_writer(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    ledger = services.evidence_store
+    ledger.store(
+        SessionId("sess-a"),
+        "reset me",
+        taint_labels=set(),
+        source="unit-test",
+        summary="reset me",
+    )
+    lock_held = Event()
+    release_writer = Event()
+    holder_timed_out = Event()
+
+    def _hold_writer() -> None:
+        with ledger._lock:
+            lock_held.set()
+            if not release_writer.wait(timeout=3.0):
+                holder_timed_out.set()
+
+    holder = Thread(target=_hold_writer)
+    holder.start()
+    try:
+        assert await asyncio.to_thread(lock_held.wait, 1.0)
+        heartbeat_ticks = 0
+
+        async def _heartbeat() -> None:
+            nonlocal heartbeat_ticks
+            for _ in range(5):
+                heartbeat_ticks += 1
+                await asyncio.sleep(0)
+            release_writer.set()
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        result = await impl.do_daemon_reset({})
+        await heartbeat
+        await asyncio.to_thread(holder.join, 1.0)
+
+        assert holder_timed_out.is_set() is False
+        assert heartbeat_ticks == 5
+        assert result["status"] == "reset"
+        assert result["cleared"]["evidence_refs"] == 1
+        assert all(result["invariants"].values())
+    finally:
+        release_writer.set()
+        holder.join(timeout=1.0)
         await services.shutdown()
 
 

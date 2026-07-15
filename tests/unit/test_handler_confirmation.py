@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -4328,6 +4329,74 @@ def test_m5_confirmed_tool_output_rebuild_preserves_shared_channel(
         context_delivery_target=delivery_target.model_dump(mode="json"),
     )
     assert result.results_count == 1
+
+
+@pytest.mark.asyncio
+async def test_f3_promote_confirmation_keeps_event_loop_live_behind_ledger_writer(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    ref = harness._evidence_store.store(
+        SessionId("s-1"),
+        "promoted body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="promoted body",
+    )
+    envelope = _software_approval_envelope(tool_name=ToolName("evidence.promote"))
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="expected",
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("evidence.promote"),
+        arguments={"ref_id": ref.ref_id},
+        reason="manual",
+        capabilities={Capability.MEMORY_READ},
+        created_at=datetime.now(UTC),
+        approval_envelope=envelope,
+        approval_envelope_hash=approval_envelope_hash(envelope),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    _bind_pending_action_identity(pending)
+    harness._pending_actions[pending.confirmation_id] = pending
+    lock_held = Event()
+    release_writer = Event()
+    holder_timed_out = Event()
+
+    def _hold_writer() -> None:
+        with harness._evidence_store._lock:
+            lock_held.set()
+            if not release_writer.wait(timeout=3.0):
+                holder_timed_out.set()
+
+    holder = Thread(target=_hold_writer)
+    holder.start()
+    assert await asyncio.to_thread(lock_held.wait, 1.0)
+    heartbeat_ticks = 0
+
+    async def _heartbeat() -> None:
+        nonlocal heartbeat_ticks
+        for _ in range(5):
+            heartbeat_ticks += 1
+            await asyncio.sleep(0)
+        release_writer.set()
+
+    heartbeat = asyncio.create_task(_heartbeat())
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+    await heartbeat
+    await asyncio.to_thread(holder.join, 1.0)
+
+    assert holder_timed_out.is_set() is False
+    assert heartbeat_ticks == 5
+    assert result["confirmed"] is True
+    endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
+    assert endorsed is not None
+    assert endorsed.endorsement_state == ArtifactEndorsementState.USER_ENDORSED
 
 
 def _register_totp_factor(

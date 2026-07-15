@@ -100,7 +100,7 @@ def test_taint_bypass_text_cannot_change_runtime_taint_labels(tmp_path) -> None:
     ref = store.get_ref(SessionId("sess-a"), ref_ids[0])
 
     assert ref is not None
-    assert ref.taint_labels == [TaintLabel.UNTRUSTED]
+    assert ref.taint_labels == (TaintLabel.UNTRUSTED,)
 
 
 def test_unknown_key_large_untrusted_payload_is_evidence_wrapped(tmp_path) -> None:

@@ -14,19 +14,21 @@ import re
 import shutil
 import stat
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from html.parser import HTMLParser
 from http.client import InvalidURL
 from pathlib import Path
-from threading import RLock, Thread
-from typing import Protocol
+from threading import Lock, RLock, Thread
+from types import MappingProxyType
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -195,9 +197,11 @@ class KmsArtifactBlobCodec:
 class EvidenceRef(BaseModel):
     """Opaque reference to tainted content stored out-of-band."""
 
+    model_config = ConfigDict(frozen=True)
+
     ref_id: str
     content_hash: str
-    taint_labels: list[TaintLabel] = Field(default_factory=list)
+    taint_labels: tuple[TaintLabel, ...] = Field(default_factory=tuple)
     source: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     summary: str
@@ -210,6 +214,29 @@ class EvidenceRef(BaseModel):
     endorsed_by: str = ""
     storage_codec: str = "plaintext"
     metadata_mac: str = ""
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> EvidenceRef:
+        """Copy through validation so collection updates cannot stay mutable."""
+
+        values = self.model_dump(mode="python")
+        values.update(update or {})
+        return type(self).model_validate(values)
+
+
+@dataclass(frozen=True, slots=True)
+class _CommittedEvidenceView:
+    """Atomically replaceable, deeply immutable metadata read boundary."""
+
+    refs: Mapping[str, Mapping[str, EvidenceRef]]
+    state_load_result: StateLoadResult
+    cleanup_allowed: bool
+    salt: bytes
+    unreadable_refs: frozenset[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -388,30 +415,38 @@ class ArtifactLedger:
         self._atomic_fault_injector: AtomicWriteFaultInjector | None = None
         self._salt = b"\x00" * 32
         self._refs: dict[str, dict[str, EvidenceRef]] = {}
-        self._committed_refs: dict[str, dict[str, EvidenceRef]] = {}
         self._temporarily_unreadable_refs: dict[str, dict[str, _UnreadableRefState]] = {}
         self._unreadable_probe_in_flight: set[tuple[str, str]] = set()
+        self._unreadable_probe_guard = Lock()
         self._state_load_result = StateLoadResult(
             StateLoadStatus.CORRUPT,
             reason="uninitialized",
         )
         self._cleanup_allowed = False
+        self._committed_view = _CommittedEvidenceView(
+            refs=MappingProxyType({}),
+            state_load_result=self._state_load_result,
+            cleanup_allowed=False,
+            salt=self._salt,
+            unreadable_refs=frozenset(),
+        )
         with self._lock:
             self._initialize_domain(configured_salt=salt)
 
     @property
     def state_degraded(self) -> bool:
-        return self._state_load_result.status is not StateLoadStatus.OK
+        return self._committed_view.state_load_result.status is not StateLoadStatus.OK
 
     @property
     def cleanup_allowed(self) -> bool:
-        return self._cleanup_allowed
+        return self._committed_view.cleanup_allowed
 
     def state_load_result(self) -> StateLoadResult:
-        return self._state_load_result
+        return self._committed_view.state_load_result
 
     def state_status(self) -> dict[str, object]:
-        result = self._state_load_result
+        view = self._committed_view
+        result = view.state_load_result
         degraded = result.status is not StateLoadStatus.OK
         problems = [result.reason or result.status.value] if degraded else []
         return {
@@ -419,12 +454,12 @@ class ArtifactLedger:
             "scope": "evidence_only",
             "problems": problems,
             "fail_closed": degraded,
-            "cleanup_allowed": self._cleanup_allowed,
+            "cleanup_allowed": view.cleanup_allowed,
             "load_status": result.status.value,
             "reason": result.reason,
             "schema_version": result.schema_version,
             "legacy": result.legacy,
-            "committed_ref_count": self.committed_ref_count(),
+            "committed_ref_count": sum(len(refs) for refs in view.refs.values()),
             "remediation": (
                 "Restore the exact evidence_salt, refs_index.json, and referenced blobs, "
                 "or use an explicitly authorized evidence-domain reset boundary."
@@ -434,8 +469,7 @@ class ArtifactLedger:
         }
 
     def committed_ref_count(self) -> int:
-        with self._lock:
-            return sum(len(refs) for refs in self._committed_refs.values())
+        return sum(len(refs) for refs in self._committed_view.refs.values())
 
     def domain_file_count(self) -> int:
         """Return the number of regular files in the evidence domain."""
@@ -447,6 +481,12 @@ class ArtifactLedger:
                 return sum(1 for path in self._root_dir.rglob("*") if path.is_file())
             except OSError:
                 return 0
+
+    def domain_reset_inspection(self) -> tuple[int, int]:
+        """Return reset counts under the ledger lock for worker-thread callers."""
+
+        with self._lock:
+            return self.committed_ref_count(), self.domain_file_count()
 
     def is_empty_domain(self) -> bool:
         """Return whether the durable evidence domain is healthy and empty."""
@@ -538,8 +578,18 @@ class ArtifactLedger:
         return ref
 
     def get_ref_metadata(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
+        view = self._committed_view
+        if view.state_load_result.status is not StateLoadStatus.OK:
+            return None
         session_key = self._session_key(session_id)
-        return self._committed_refs.get(session_key, {}).get(ref_id)
+        ref = view.refs.get(session_key, {}).get(ref_id)
+        if ref is None:
+            return None
+        if (session_key, ref_id) in view.unreadable_refs:
+            return None
+        if self._is_expired(ref, max_age_seconds=self._default_max_age_seconds):
+            return None
+        return ref
 
     def resolve_ref_content(
         self,
@@ -595,22 +645,27 @@ class ArtifactLedger:
             )
 
     def validate_ref_metadata(self, session_id: SessionId, ref_id: str) -> bool:
-        if self.state_degraded:
-            if self._state_load_result.reason == "blob_unreadable":
+        view = self._committed_view
+        if view.state_load_result.status is not StateLoadStatus.OK:
+            if view.state_load_result.reason == "blob_unreadable":
                 self._maybe_probe_temporarily_unreadable(session_id, ref_id)
             return False
-        ref = self.get_ref_metadata(session_id, ref_id)
+        session_key = self._session_key(session_id)
+        ref = view.refs.get(session_key, {}).get(ref_id)
         if ref is None or ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
             return False
         if self._is_expired(ref, max_age_seconds=self._default_max_age_seconds):
             return False
-        session_key = self._session_key(session_id)
-        if self._is_temporarily_unreadable(session_key, ref_id):
+        if (session_key, ref_id) in view.unreadable_refs:
             self._maybe_probe_temporarily_unreadable(session_id, ref_id)
             return False
         return hmac.compare_digest(
             ref.ref_id,
-            self._make_ref_id(session_id=session_id, content_hash=ref.content_hash),
+            self._make_ref_id_with_salt(
+                session_id=session_id,
+                content_hash=ref.content_hash,
+                salt=view.salt,
+            ),
         )
 
     def evict_expired(
@@ -744,20 +799,19 @@ class ArtifactLedger:
                 self._salt = new_salt
                 self._refs = {}
                 self._temporarily_unreadable_refs = {}
-                self._publish_committed({})
-                self._mark_runtime_degraded("reset_cleanup_failed")
+                self._mark_runtime_degraded("reset_cleanup_failed", committed_refs={})
                 raise
 
             self._salt = new_salt
             self._refs = {}
             self._temporarily_unreadable_refs = {}
-            self._publish_committed({})
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.OK,
                 reason="explicit_reset",
                 schema_version=_EVIDENCE_INDEX_VERSION,
             )
             self._cleanup_allowed = True
+            self._publish_committed({})
             return {
                 "status": "ok",
                 "destroyed_ref_count": destroyed_ref_count,
@@ -791,13 +845,13 @@ class ArtifactLedger:
                 self._set_load_failure(StateLoadStatus.CORRUPT, "new_domain_publication_failed")
                 return
             self._refs = {}
-            self._publish_committed({})
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.OK,
                 reason="new_domain",
                 schema_version=_EVIDENCE_INDEX_VERSION,
             )
             self._cleanup_allowed = True
+            self._publish_committed({})
             return
 
         directory_reason = self._validate_existing_domain_directories()
@@ -852,7 +906,6 @@ class ArtifactLedger:
                 return
         self._refs = refs
         self._temporarily_unreadable_refs = unreadable
-        self._publish_committed(refs)
         self._state_load_result = StateLoadResult(
             StateLoadStatus.OK,
             reason="loaded",
@@ -860,6 +913,7 @@ class ArtifactLedger:
             legacy=load_result.legacy,
         )
         self._cleanup_allowed = True
+        self._publish_committed(refs)
         self._quarantine_orphaned_blobs()
         if self._cleanup_allowed:
             self._migrate_legacy_quarantine_entries()
@@ -1023,13 +1077,21 @@ class ArtifactLedger:
         self._cleanup_allowed = False
         self._publish_committed({})
 
-    def _mark_runtime_degraded(self, reason: str) -> None:
+    def _mark_runtime_degraded(
+        self,
+        reason: str,
+        *,
+        committed_refs: Mapping[str, Mapping[str, EvidenceRef]] | None = None,
+    ) -> None:
         self._state_load_result = StateLoadResult(
             StateLoadStatus.CORRUPT,
             reason=reason,
             schema_version=_EVIDENCE_INDEX_VERSION,
         )
         self._cleanup_allowed = False
+        self._publish_committed(
+            self._committed_view.refs if committed_refs is None else committed_refs
+        )
 
     def _require_writable(self, transition: str) -> None:
         if not self.state_degraded:
@@ -1091,12 +1153,32 @@ class ArtifactLedger:
                     break
             return [ref for _, _, ref in removed]
 
-    def _publish_committed(self, refs: dict[str, dict[str, EvidenceRef]]) -> None:
-        self._committed_refs = self._copy_refs(refs)
+    def _publish_committed(
+        self,
+        refs: Mapping[str, Mapping[str, EvidenceRef]],
+    ) -> None:
+        frozen_refs = MappingProxyType(
+            {
+                session_key: MappingProxyType(dict(session_refs))
+                for session_key, session_refs in refs.items()
+            }
+        )
+        unreadable_refs = frozenset(
+            (session_key, ref_id)
+            for session_key, session_refs in self._temporarily_unreadable_refs.items()
+            for ref_id in session_refs
+        )
+        self._committed_view = _CommittedEvidenceView(
+            refs=frozen_refs,
+            state_load_result=self._state_load_result,
+            cleanup_allowed=self._cleanup_allowed,
+            salt=bytes(self._salt),
+            unreadable_refs=unreadable_refs,
+        )
 
     @staticmethod
     def _copy_refs(
-        refs: dict[str, dict[str, EvidenceRef]],
+        refs: Mapping[str, Mapping[str, EvidenceRef]],
     ) -> dict[str, dict[str, EvidenceRef]]:
         return {session_key: dict(session_refs) for session_key, session_refs in refs.items()}
 
@@ -1137,8 +1219,21 @@ class ArtifactLedger:
         return ref.model_copy(update={"metadata_mac": mac})
 
     def _make_ref_id(self, *, session_id: SessionId, content_hash: str) -> str:
-        payload = f"{self._session_key(session_id)}:{content_hash}".encode()
-        digest = hmac.new(self._salt, payload, hashlib.sha256).hexdigest()[:16]
+        return self._make_ref_id_with_salt(
+            session_id=session_id,
+            content_hash=content_hash,
+            salt=self._salt,
+        )
+
+    @staticmethod
+    def _make_ref_id_with_salt(
+        *,
+        session_id: SessionId,
+        content_hash: str,
+        salt: bytes,
+    ) -> str:
+        payload = f"{session_id!s}:{content_hash}".encode()
+        digest = hmac.new(salt, payload, hashlib.sha256).hexdigest()[:16]
         return f"{_EVIDENCE_REF_PREFIX}{digest}"
 
     def _make_metadata_mac(self, session_key: str, ref: EvidenceRef) -> str:
@@ -1295,6 +1390,7 @@ class ArtifactLedger:
         self._temporarily_unreadable_refs.setdefault(session_key, {})[ref_id] = _UnreadableRefState(
             reason=reason.strip() or "temporarily_unreadable"
         )
+        self._publish_committed(self._committed_view.refs)
 
     def _clear_temporarily_unreadable(self, session_key: str, ref_id: str) -> None:
         session_refs = self._temporarily_unreadable_refs.get(session_key)
@@ -1303,24 +1399,30 @@ class ArtifactLedger:
         session_refs.pop(ref_id, None)
         if not session_refs:
             self._temporarily_unreadable_refs.pop(session_key, None)
+        self._publish_committed(self._committed_view.refs)
 
     def _is_temporarily_unreadable(self, session_key: str, ref_id: str) -> bool:
         return ref_id in self._temporarily_unreadable_refs.get(session_key, {})
 
     def _maybe_probe_temporarily_unreadable(self, session_id: SessionId, ref_id: str) -> None:
         session_key = self._session_key(session_id)
-        with self._lock:
-            if not self._is_temporarily_unreadable(session_key, ref_id):
-                return
+        view = self._committed_view
+        if (session_key, ref_id) not in view.unreadable_refs:
+            return
+        if not self._unreadable_probe_guard.acquire(blocking=False):
+            return
+        try:
             if self._unreadable_probe_in_flight:
                 return
             self._unreadable_probe_in_flight.add(_DOMAIN_PROBE_KEY)
+        finally:
+            self._unreadable_probe_guard.release()
 
         def _probe() -> None:
             try:
                 self._probe_temporarily_unreadable_domain()
             finally:
-                with self._lock:
+                with self._unreadable_probe_guard:
                     self._unreadable_probe_in_flight.discard(_DOMAIN_PROBE_KEY)
 
         Thread(
@@ -1354,14 +1456,16 @@ class ArtifactLedger:
                     reason=validation_reason,
                     schema_version=_EVIDENCE_INDEX_VERSION,
                 )
+                self._cleanup_allowed = False
+                self._publish_committed(self._refs)
                 return
-            self._publish_committed(self._refs)
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.OK,
                 reason="blob_access_recovered",
                 schema_version=_EVIDENCE_INDEX_VERSION,
             )
             self._cleanup_allowed = True
+            self._publish_committed(self._refs)
 
     @staticmethod
     def _blob_domain_failure_reason(blob_load: _BlobLoadResult) -> str:

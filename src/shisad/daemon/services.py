@@ -1250,8 +1250,11 @@ class DaemonServices:
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
         # -- Evidence --
-        cleared["evidence_refs"] = self.evidence_store.committed_ref_count()
-        cleared["evidence_files"] = self.evidence_store.domain_file_count()
+        evidence_refs, evidence_files = await asyncio.to_thread(
+            self.evidence_store.domain_reset_inspection
+        )
+        cleared["evidence_refs"] = evidence_refs
+        cleared["evidence_files"] = evidence_files
         await asyncio.to_thread(self.evidence_store.reset_domain)
 
         # -- Self-modification --

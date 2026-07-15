@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import time
+from hashlib import sha256
 from pathlib import Path
 from stat import S_IMODE
 from threading import Event, Thread
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -417,7 +419,8 @@ def test_f3_evidence_index_publication_fault_keeps_prior_committed_view(
     with pytest.raises(AtomicWriteError):
         _store(ledger, sid="sess-b", content="shared")
 
-    assert ledger.get_ref_metadata(SessionId("sess-a"), original.ref_id) == original
+    assert ledger.get_ref_metadata(SessionId("sess-a"), original.ref_id) is None
+    assert ledger._committed_view.refs["sess-a"][original.ref_id] == original
     assert ledger.committed_ref_count() == 1
     assert ledger.state_degraded is True
     assert ledger.cleanup_allowed is False
@@ -449,7 +452,8 @@ def test_f3_evidence_endorsement_index_fault_keeps_prior_ref(
             actor="human",
         )
 
-    assert ledger.get_ref_metadata(SessionId("sess-a"), original.ref_id) == original
+    assert ledger.get_ref_metadata(SessionId("sess-a"), original.ref_id) is None
+    assert ledger._committed_view.refs["sess-a"][original.ref_id] == original
     assert ledger._refs["sess-a"][original.ref_id] == original
     assert ledger.state_degraded is True
     assert ledger.cleanup_allowed is False
@@ -482,7 +486,8 @@ def test_f3_evidence_eviction_index_fault_restores_ref_marker_and_blob(
     with pytest.raises(AtomicWriteError):
         ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60)
 
-    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) == ref
+    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) is None
+    assert ledger._committed_view.refs["sess-a"][ref.ref_id] == ref
     assert ref.ref_id in ledger._refs["sess-a"]
     assert ledger._is_temporarily_unreadable("sess-a", ref.ref_id) is True
     assert blob_path.read_bytes() == blob_bytes
@@ -512,7 +517,8 @@ def test_f3_evidence_lazy_drop_index_fault_restores_ref_and_marker(
 
     assert ledger.read(SessionId("sess-a"), ref.ref_id) is None
 
-    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) == ref
+    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) is None
+    assert ledger._committed_view.refs["sess-a"][ref.ref_id] == ref
     assert ref.ref_id in ledger._refs["sess-a"]
     assert ledger._is_temporarily_unreadable("sess-a", ref.ref_id) is True
     assert ledger.state_degraded is True
@@ -763,7 +769,8 @@ def test_f3_evidence_failed_evict_rollback_cannot_overwrite_waiting_store(
     assert isinstance(evict_errors[0], AtomicWriteError)
     assert len(store_errors) == 1
     assert isinstance(store_errors[0], StatePersistenceDegradedError)
-    assert ledger.get_ref_metadata(SessionId("sess-a"), old_ref.ref_id) == old_ref
+    assert ledger.get_ref_metadata(SessionId("sess-a"), old_ref.ref_id) is None
+    assert ledger._committed_view.refs["sess-a"][old_ref.ref_id] == old_ref
     assert ledger.committed_ref_count() == 1
     assert ledger.state_degraded is True
     assert ledger.cleanup_allowed is False
@@ -955,6 +962,8 @@ def test_f3_evidence_reset_cleanup_failure_is_typed_and_restart_recoverable(
         ledger.reset_domain()
 
     _assert_degraded(ledger, reason="reset_cleanup_failed")
+    assert ledger._committed_view.refs == {}
+    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) is None
     tombstones = list(tmp_path.glob(".evidence.reset-*"))
     assert len(tombstones) == 1
     assert list(tombstones[0].glob(f"blobs/{ref.content_hash}.txt"))
@@ -1056,6 +1065,111 @@ def test_f3_evidence_kms_recovery_is_one_domain_wide_single_flight(
     assert restarted.state_degraded is False
     assert restarted.get_ref_metadata(SessionId("sess-a"), first_ref.ref_id) == first_ref
     assert restarted.get_ref_metadata(SessionId("sess-b"), second_ref.ref_id) == second_ref
+
+
+def test_f3_evidence_ref_and_collection_are_deeply_immutable() -> None:
+    labels = [TaintLabel.UNTRUSTED]
+    ref = EvidenceRef(
+        ref_id="ev-immutable",
+        content_hash="a" * 64,
+        taint_labels=labels,
+        source="unit-test",
+        summary="immutable",
+        byte_size=9,
+    )
+    labels.append(TaintLabel.USER_REVIEWED)
+
+    assert ref.taint_labels == (TaintLabel.UNTRUSTED,)
+    with pytest.raises(ValidationError):
+        ref.summary = "mutated"  # type: ignore[misc]
+
+    update_labels = [TaintLabel.UNTRUSTED, TaintLabel.USER_REVIEWED]
+    copied = ref.model_copy(update={"taint_labels": update_labels})
+    update_labels.clear()
+
+    assert copied.taint_labels == (
+        TaintLabel.UNTRUSTED,
+        TaintLabel.USER_REVIEWED,
+    )
+    with pytest.raises(AttributeError):
+        copied.taint_labels.append(TaintLabel.SENSITIVE_FILE)  # type: ignore[attr-defined]
+
+
+def test_f3_evidence_committed_snapshot_is_nested_frozen_and_returned_ref_cannot_mutate(
+    tmp_path: Path,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    ref = _store(ledger)
+    view = ledger._committed_view
+    returned = ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id)
+
+    assert returned == ref
+    with pytest.raises(TypeError):
+        view.refs["new"] = {}  # type: ignore[index]
+    with pytest.raises(TypeError):
+        view.refs["sess-a"][ref.ref_id] = ref  # type: ignore[index]
+    assert returned is not None
+    with pytest.raises(ValidationError):
+        returned.endorsed_by = "forged"  # type: ignore[misc]
+
+
+def test_f3_evidence_inflight_writer_leaves_lock_free_prior_committed_snapshot(
+    tmp_path: Path,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    prior = _store(ledger, content="prior")
+    writer_entered = Event()
+    writer_release = Event()
+    stored: list[EvidenceRef] = []
+
+    def _pause_first_write(stage: AtomicWriteStage) -> None:
+        if stage is AtomicWriteStage.WRITE and not writer_entered.is_set():
+            writer_entered.set()
+            assert writer_release.wait(timeout=5.0)
+
+    ledger._atomic_fault_injector = _pause_first_write
+
+    def _store_new() -> None:
+        stored.append(_store(ledger, content="pending"))
+
+    writer = Thread(target=_store_new)
+    writer.start()
+    assert writer_entered.wait(timeout=5.0)
+    pending_hash = sha256(b"pending").hexdigest()
+    pending_ref_id = ledger._make_ref_id(
+        session_id=SessionId("sess-a"),
+        content_hash=pending_hash,
+    )
+    started = time.monotonic()
+
+    assert ledger.get_ref_metadata(SessionId("sess-a"), prior.ref_id) == prior
+    assert ledger.validate_ref_metadata(SessionId("sess-a"), prior.ref_id) is True
+    assert ledger.get_ref_metadata(SessionId("sess-a"), pending_ref_id) is None
+    assert time.monotonic() - started < 0.1
+
+    writer_release.set()
+    writer.join(timeout=5.0)
+    assert len(stored) == 1
+    assert ledger.get_ref_metadata(SessionId("sess-a"), stored[0].ref_id) == stored[0]
+
+
+def test_f3_evidence_failed_writer_keeps_frozen_refs_but_metadata_rejects_degradation(
+    tmp_path: Path,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    prior = _store(ledger, content="prior")
+
+    def _fail_write(stage: AtomicWriteStage) -> None:
+        if stage is AtomicWriteStage.WRITE:
+            raise OSError("writer failed")
+
+    ledger._atomic_fault_injector = _fail_write
+    with pytest.raises(AtomicWriteError):
+        _store(ledger, content="failed")
+
+    assert ledger._committed_view.refs["sess-a"][prior.ref_id] == prior
+    assert ledger.get_ref_metadata(SessionId("sess-a"), prior.ref_id) is None
+    assert ledger.validate_ref_metadata(SessionId("sess-a"), prior.ref_id) is False
 
 
 def test_f3_evidence_status_is_actionable_without_claiming_whole_daemon_failure(
