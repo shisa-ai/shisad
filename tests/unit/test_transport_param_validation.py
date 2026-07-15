@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from shisad.core.api.schema import JsonRpcResponse, SessionCreateParams
 from shisad.core.api.transport import ControlServer
+from shisad.core.atomic_state import StatePersistenceDegradedError
 from shisad.core.errors import PolicyError
 from shisad.daemon.context import RequestContext
 
@@ -271,6 +272,50 @@ async def test_transport_maps_shisad_errors_to_structured_reason_codes(
         assert response.error.code == -32602
         assert response.error.message == "capability denied"
         assert response.error.data == {"reason_code": "policy.capability_denied"}
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_f3_transport_maps_state_degradation_without_leaking_store_detail(
+    tmp_path: Path,
+) -> None:
+    server = ControlServer(tmp_path / "control.sock")
+
+    async def _handler(params: SessionCreateParams, ctx: RequestContext) -> dict[str, object]:
+        _ = params, ctx
+        raise StatePersistenceDegradedError(
+            authority="approval_factors",
+            transition="list_factors",
+            stage="load",
+            reason="invalid_json_secret_path_detail",
+        )
+
+    server.register_method("session.create", _handler, params_model=SessionCreateParams)
+    await server.start()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
+        request = {
+            "jsonrpc": "2.0",
+            "method": "session.create",
+            "params": {"channel": "cli"},
+            "id": 5,
+        }
+        writer.write(json.dumps(request).encode("utf-8") + b"\n")
+        await writer.drain()
+        response = JsonRpcResponse.model_validate_json(await reader.readline())
+        assert response.error is not None
+        assert response.error.code == -32603
+        assert response.error.message == (
+            "State authority unavailable; inspect daemon status and doctor diagnostics"
+        )
+        assert response.error.data == {"reason_code": "state.persistence_degraded"}
+        assert "invalid_json_secret_path_detail" not in response.model_dump_json()
     finally:
         if writer is not None:
             writer.close()

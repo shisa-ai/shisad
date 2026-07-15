@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.api.transport import ControlClient
+from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.approval import generate_totp_code
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
@@ -372,19 +372,28 @@ async def test_two_factor_daemon_starts_with_malformed_persisted_state(
 ) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "approval-factors.json").write_text("{not-json", encoding="utf-8")
+    approval_path = data_dir / "approval-factors.json"
+    approval_bytes = b"{not-json"
+    approval_path.write_bytes(approval_bytes)
     (data_dir / "confirmation_lockouts.json").write_text("{not-json", encoding="utf-8")
 
     daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
-        listed = await client.call("2fa.list", {"user_id": "alice"})
-        assert listed["count"] == 0
+        with pytest.raises(JsonRpcCallError) as raised:
+            await client.call("2fa.list", {"user_id": "alice"})
+        assert raised.value.reason_code == "state.persistence_degraded"
+        status = await client.call("daemon.status")
+        assert status["approvals"]["load_status"] == "corrupt"
+        assert status["approvals"]["fail_closed"] is True
+        doctor = await client.call("doctor.check", {"component": "approvals"})
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["approvals"]["reason"] == "invalid_json"
     finally:
         await _shutdown_daemon(daemon_task, client)
 
-    assert not (data_dir / "approval-factors.json").exists()
+    assert approval_path.read_bytes() == approval_bytes
     assert not (data_dir / "confirmation_lockouts.json").exists()
-    assert list(data_dir.glob("approval-factors.json.corrupt.*"))
+    assert list(data_dir.glob("approval-factors.json.corrupt.*")) == []
     assert list(data_dir.glob("confirmation_lockouts.json.corrupt.*"))
 
 

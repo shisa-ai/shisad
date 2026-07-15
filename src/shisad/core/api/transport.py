@@ -31,6 +31,7 @@ from shisad.core.api.schema import (
     JsonRpcRequest,
     JsonRpcResponse,
 )
+from shisad.core.atomic_state import StatePersistenceDegradedError
 from shisad.core.errors import ShisadError
 from shisad.core.interfaces import TypedHandler, TypedMethodRegistration
 from shisad.core.request_context import RequestContext
@@ -443,6 +444,22 @@ class ControlServer:
             else:
                 payload = result
             return self._success_response(request.id, payload)
+        except StatePersistenceDegradedError as exc:
+            logger.warning(
+                "Method %s blocked by degraded state: authority=%s transition=%s "
+                "stage=%s reason=%s",
+                request.method,
+                exc.authority,
+                exc.transition,
+                exc.stage,
+                exc.reason,
+            )
+            return self._error_response(
+                request.id,
+                INTERNAL_ERROR,
+                "State authority unavailable; inspect daemon status and doctor diagnostics",
+                reason_code="state.persistence_degraded",
+            )
         except ShisadError as exc:
             logger.warning(
                 "Method %s failed (%s); reason_code=%s",

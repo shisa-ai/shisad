@@ -702,6 +702,7 @@ For L3+ signed approvals, the audit trail also includes:
 | `confirmation_method_mismatch` | The proof you submitted does not match the pending action's required backend | Check `shisad action list` for the required method |
 | `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire, then re-queue the action and approve the new pending confirmation |
 | `signer_backend_invalid_response` | The KMS endpoint returned a malformed or invalid response | Check KMS endpoint logs; the daemon fails closed on invalid responses |
+| `state.persistence_degraded` | A factor/signer operation reached retained or commit-uncertain authority state and was blocked | Inspect `shisad status` and `shisad doctor check --component approvals`; restore/reset the complete authority and restart before retrying |
 | `approval_store_corrupt` | The retained approval snapshot is malformed, checksum-mismatched, or semantically invalid | Run `shisad doctor check --component approvals`, restore the complete store from a trusted backup or perform an audited whole-authority reset, then restart shisad |
 | `approval_store_unsupported_schema` | The retained approval snapshot was written by a newer unsupported schema | Upgrade shisad to a compatible version or restore a supported complete store; do not replace it with an empty file |
 
