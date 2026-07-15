@@ -1085,7 +1085,10 @@ class ArtifactLedger:
             for session_key, ref_id, _ref in removed:
                 self._clear_temporarily_unreadable(session_key, ref_id)
             for content_hash in dict.fromkeys(ref.content_hash for _, _, ref in removed):
-                self._delete_blob_if_unreferenced(content_hash)
+                if not self._cleanup_allowed:
+                    break
+                if not self._delete_blob_if_unreferenced(content_hash):
+                    break
             return [ref for _, _, ref in removed]
 
     def _publish_committed(self, refs: dict[str, dict[str, EvidenceRef]]) -> None:
@@ -1198,18 +1201,22 @@ class ArtifactLedger:
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
 
-    def _delete_blob_if_unreferenced(self, content_hash: str) -> None:
+    def _delete_blob_if_unreferenced(self, content_hash: str) -> bool:
         for session_refs in self._refs.values():
             if any(ref.content_hash == content_hash for ref in session_refs.values()):
-                return
+                return True
         path = self._blob_path(content_hash)
         if not path.exists():
-            return
+            return True
+        if not self._cleanup_allowed:
+            return False
         try:
             path.unlink()
             self._fsync_directory(self._blob_dir)
         except OSError:
             self._mark_runtime_degraded("blob_delete_failed")
+            return False
+        return True
 
     def _quarantine_orphaned_blobs(self) -> None:
         if not self._cleanup_allowed:

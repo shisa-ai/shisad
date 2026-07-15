@@ -605,6 +605,64 @@ def test_f3_evidence_blob_delete_failure_gates_cleanup_after_index_commit(
     assert list((evidence_root / "quarantine").iterdir()) == []
 
 
+@pytest.mark.parametrize("failure_kind", ["unlink", "parent_fsync"])
+def test_f3_evidence_batch_removal_stops_after_first_blob_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    first = _store(ledger, content="first expired blob")
+    second = _store(ledger, content="second expired blob")
+    for ref in (first, second):
+        ledger._refs["sess-a"][ref.ref_id] = ref.model_copy(
+            update={"created_at": ref.created_at.replace(year=2000)}
+        )
+    first_blob = evidence_root / "blobs" / f"{first.content_hash}.txt"
+    second_blob = evidence_root / "blobs" / f"{second.content_hash}.txt"
+    first_bytes = first_blob.read_bytes()
+    second_bytes = second_blob.read_bytes()
+    cleanup_attempts: list[str] = []
+
+    if failure_kind == "unlink":
+        original_unlink = Path.unlink
+
+        def _fail_first_unlink(path: Path, missing_ok: bool = False) -> None:
+            if path in {first_blob, second_blob}:
+                cleanup_attempts.append(path.name)
+            if path == first_blob:
+                raise OSError("first blob unlink failed")
+            original_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", _fail_first_unlink)
+    else:
+        original_fsync = ledger._fsync_directory
+
+        def _fail_first_blob_parent(path: Path) -> None:
+            if path == evidence_root / "blobs":
+                cleanup_attempts.append(path.name)
+                raise OSError("first blob parent fsync failed")
+            original_fsync(path)
+
+        monkeypatch.setattr(ledger, "_fsync_directory", _fail_first_blob_parent)
+
+    assert ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60) == [
+        first.ref_id,
+        second.ref_id,
+    ]
+
+    assert _index_payload(evidence_root / "refs_index.json") == {}
+    _assert_degraded(ledger, reason="blob_delete_failed")
+    assert len(cleanup_attempts) == 1
+    if failure_kind == "unlink":
+        assert first_blob.read_bytes() == first_bytes
+    else:
+        assert first_blob.exists() is False
+    assert second_blob.read_bytes() == second_bytes
+    assert list((evidence_root / "quarantine").iterdir()) == []
+
+
 def test_f3_evidence_concurrent_evict_then_store_serializes_without_stale_snapshot(
     tmp_path: Path,
 ) -> None:
