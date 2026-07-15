@@ -585,13 +585,14 @@ class ArtifactLedger:
         return ref, blob_load.content
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
-        ref = self.get_ref(session_id, ref_id)
-        if ref is None:
-            return False
-        return hmac.compare_digest(
-            ref.ref_id,
-            self._make_ref_id(session_id=session_id, content_hash=ref.content_hash),
-        )
+        with self._lock:
+            ref = self.get_ref(session_id, ref_id)
+            if ref is None:
+                return False
+            return hmac.compare_digest(
+                ref.ref_id,
+                self._make_ref_id(session_id=session_id, content_hash=ref.content_hash),
+            )
 
     def validate_ref_metadata(self, session_id: SessionId, ref_id: str) -> bool:
         if self.state_degraded:
@@ -631,20 +632,16 @@ class ArtifactLedger:
             ]
             if not evicted:
                 return []
-            candidate = self._copy_refs(self._refs)
-            candidate_session = candidate.get(session_key, {})
-            removed_refs = [candidate_session.pop(ref_id) for ref_id in evicted]
-            if not candidate_session:
-                candidate.pop(session_key, None)
             try:
-                self._commit_candidate(candidate, transition="evict_expired")
+                removed_refs = self._commit_ref_removals(
+                    [(session_key, ref_id) for ref_id in evicted],
+                    transition="evict_expired",
+                )
             except (AtomicWriteError, StatePersistenceDegradedError):
                 if best_effort_persist:
                     return []
                 raise
-            for ref in removed_refs:
-                self._delete_blob_if_unreferenced(ref.content_hash)
-            return evicted
+            return [ref.ref_id for ref in removed_refs]
 
     def collect_garbage(self, *, max_age_seconds: int | None = None) -> list[str]:
         with self._lock:
@@ -1050,13 +1047,46 @@ class ArtifactLedger:
         *,
         transition: str,
     ) -> None:
-        try:
-            self._persist_refs_index(candidate)
-        except AtomicWriteError:
-            self._mark_runtime_degraded(f"{transition}_index_publication_failed")
-            raise
-        self._refs = candidate
-        self._publish_committed(candidate)
+        with self._lock:
+            try:
+                self._persist_refs_index(candidate)
+            except AtomicWriteError:
+                self._mark_runtime_degraded(f"{transition}_index_publication_failed")
+                raise
+            self._refs = candidate
+            self._publish_committed(candidate)
+
+    def _commit_ref_removals(
+        self,
+        removals: list[tuple[str, str]],
+        *,
+        transition: str,
+    ) -> list[EvidenceRef]:
+        """Durably remove refs, then clear markers and delete unreferenced blobs."""
+
+        with self._lock:
+            self._require_writable(transition)
+            candidate = self._copy_refs(self._refs)
+            removed: list[tuple[str, str, EvidenceRef]] = []
+            for session_key, ref_id in removals:
+                session_refs = candidate.get(session_key)
+                if session_refs is None:
+                    continue
+                ref = session_refs.pop(ref_id, None)
+                if ref is None:
+                    continue
+                removed.append((session_key, ref_id, ref))
+                if not session_refs:
+                    candidate.pop(session_key, None)
+            if not removed:
+                return []
+
+            self._commit_candidate(candidate, transition=transition)
+            for session_key, ref_id, _ref in removed:
+                self._clear_temporarily_unreadable(session_key, ref_id)
+            for content_hash in dict.fromkeys(ref.content_hash for _, _, ref in removed):
+                self._delete_blob_if_unreferenced(content_hash)
+            return [ref for _, _, ref in removed]
 
     def _publish_committed(self, refs: dict[str, dict[str, EvidenceRef]]) -> None:
         self._committed_refs = self._copy_refs(refs)
@@ -1246,16 +1276,13 @@ class ArtifactLedger:
         if not refs or ref_id not in refs:
             self._clear_temporarily_unreadable(session_key, ref_id)
             return
-        candidate = self._copy_refs(self._refs)
-        candidate_refs = candidate[session_key]
-        candidate_refs.pop(ref_id, None)
-        if not candidate_refs:
-            candidate.pop(session_key, None)
         try:
-            self._commit_candidate(candidate, transition="drop_ref")
+            self._commit_ref_removals(
+                [(session_key, ref_id)],
+                transition="drop_ref",
+            )
         except (AtomicWriteError, StatePersistenceDegradedError):
             return
-        self._clear_temporarily_unreadable(session_key, ref_id)
 
     def _mark_temporarily_unreadable(self, session_key: str, ref_id: str, reason: str) -> None:
         self._temporarily_unreadable_refs.setdefault(session_key, {})[ref_id] = _UnreadableRefState(

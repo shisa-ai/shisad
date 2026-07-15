@@ -7,7 +7,7 @@ import os
 import time
 from pathlib import Path
 from stat import S_IMODE
-from threading import Event
+from threading import Event, Thread
 from uuid import uuid4
 
 import pytest
@@ -19,7 +19,12 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     encode_versioned_json_snapshot,
 )
-from shisad.core.evidence import ArtifactBlobCodecError, ArtifactLedger, EvidenceRef
+from shisad.core.evidence import (
+    ArtifactBlobCodecError,
+    ArtifactEndorsementState,
+    ArtifactLedger,
+    EvidenceRef,
+)
 from shisad.core.types import SessionId, TaintLabel
 
 
@@ -418,6 +423,292 @@ def test_f3_evidence_index_publication_fault_keeps_prior_committed_view(
     assert ledger.cleanup_allowed is False
     if stage is not AtomicWriteStage.PARENT_FSYNC:
         assert (tmp_path / "evidence" / "refs_index.json").read_bytes() == committed_index
+
+
+@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+def test_f3_evidence_endorsement_index_fault_keeps_prior_ref(
+    tmp_path: Path,
+    stage: AtomicWriteStage,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    original = _store(ledger)
+    committed_index = (evidence_root / "refs_index.json").read_bytes()
+
+    def _fault(observed: AtomicWriteStage) -> None:
+        if observed is stage:
+            raise OSError(f"fault at {stage.value}")
+
+    ledger._atomic_fault_injector = _fault
+
+    with pytest.raises(AtomicWriteError):
+        ledger.endorse(
+            SessionId("sess-a"),
+            original.ref_id,
+            endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+            actor="human",
+        )
+
+    assert ledger.get_ref_metadata(SessionId("sess-a"), original.ref_id) == original
+    assert ledger._refs["sess-a"][original.ref_id] == original
+    assert ledger.state_degraded is True
+    assert ledger.cleanup_allowed is False
+    if stage is not AtomicWriteStage.PARENT_FSYNC:
+        assert (evidence_root / "refs_index.json").read_bytes() == committed_index
+
+
+@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+def test_f3_evidence_eviction_index_fault_restores_ref_marker_and_blob(
+    tmp_path: Path,
+    stage: AtomicWriteStage,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+    ledger._refs["sess-a"][ref.ref_id] = ref.model_copy(
+        update={"created_at": ref.created_at.replace(year=2000)}
+    )
+    ledger._mark_temporarily_unreadable("sess-a", ref.ref_id, "kms_unavailable")
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    blob_bytes = blob_path.read_bytes()
+    committed_index = (evidence_root / "refs_index.json").read_bytes()
+
+    def _fault(observed: AtomicWriteStage) -> None:
+        if observed is stage:
+            raise OSError(f"fault at {stage.value}")
+
+    ledger._atomic_fault_injector = _fault
+
+    with pytest.raises(AtomicWriteError):
+        ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60)
+
+    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) == ref
+    assert ref.ref_id in ledger._refs["sess-a"]
+    assert ledger._is_temporarily_unreadable("sess-a", ref.ref_id) is True
+    assert blob_path.read_bytes() == blob_bytes
+    assert ledger.state_degraded is True
+    assert ledger.cleanup_allowed is False
+    if stage is not AtomicWriteStage.PARENT_FSYNC:
+        assert (evidence_root / "refs_index.json").read_bytes() == committed_index
+
+
+@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+def test_f3_evidence_lazy_drop_index_fault_restores_ref_and_marker(
+    tmp_path: Path,
+    stage: AtomicWriteStage,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+    (evidence_root / "blobs" / f"{ref.content_hash}.txt").unlink()
+    ledger._mark_temporarily_unreadable("sess-a", ref.ref_id, "prior_marker")
+    committed_index = (evidence_root / "refs_index.json").read_bytes()
+
+    def _fault(observed: AtomicWriteStage) -> None:
+        if observed is stage:
+            raise OSError(f"fault at {stage.value}")
+
+    ledger._atomic_fault_injector = _fault
+
+    assert ledger.read(SessionId("sess-a"), ref.ref_id) is None
+
+    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) == ref
+    assert ref.ref_id in ledger._refs["sess-a"]
+    assert ledger._is_temporarily_unreadable("sess-a", ref.ref_id) is True
+    assert ledger.state_degraded is True
+    assert ledger.cleanup_allowed is False
+    if stage is not AtomicWriteStage.PARENT_FSYNC:
+        assert (evidence_root / "refs_index.json").read_bytes() == committed_index
+
+
+def test_f3_evidence_successful_eviction_clears_marker_before_same_ref_reuse(
+    tmp_path: Path,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    ref = _store(ledger)
+    ledger._refs["sess-a"][ref.ref_id] = ref.model_copy(
+        update={"created_at": ref.created_at.replace(year=2000)}
+    )
+    ledger._mark_temporarily_unreadable("sess-a", ref.ref_id, "kms_unavailable")
+
+    assert ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60) == [ref.ref_id]
+    recreated = _store(ledger)
+
+    assert recreated.ref_id == ref.ref_id
+    assert ledger._is_temporarily_unreadable("sess-a", ref.ref_id) is False
+    assert ledger.validate_ref_metadata(SessionId("sess-a"), ref.ref_id) is True
+
+
+def test_f3_evidence_hash_mismatch_commits_ref_removal_before_blob_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    blob_path.write_bytes(b"tampered runtime blob")
+    events: list[str] = []
+    original_persist = ledger._persist_refs_index
+    original_delete = ledger._delete_blob_if_unreferenced
+
+    def _persist(refs: dict[str, dict[str, EvidenceRef]]) -> None:
+        original_persist(refs)
+        assert refs == {}
+        events.append("index_committed")
+
+    def _delete(content_hash: str) -> None:
+        assert events == ["index_committed"]
+        events.append("blob_delete")
+        original_delete(content_hash)
+
+    monkeypatch.setattr(ledger, "_persist_refs_index", _persist)
+    monkeypatch.setattr(ledger, "_delete_blob_if_unreferenced", _delete)
+
+    assert ledger.read(SessionId("sess-a"), ref.ref_id) is None
+
+    assert events == ["index_committed", "blob_delete"]
+    assert blob_path.exists() is False
+    assert _index_payload(evidence_root / "refs_index.json") == {}
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    assert restarted.get_ref_metadata(SessionId("sess-a"), ref.ref_id) is None
+
+
+def test_f3_evidence_blob_delete_failure_gates_cleanup_after_index_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(ledger)
+    ledger._refs["sess-a"][ref.ref_id] = ref.model_copy(
+        update={"created_at": ref.created_at.replace(year=2000)}
+    )
+    blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+    blob_bytes = blob_path.read_bytes()
+    original_unlink = Path.unlink
+
+    def _fail_blob_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path == blob_path:
+            raise OSError("blob delete failed")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _fail_blob_unlink)
+
+    assert ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60) == [ref.ref_id]
+
+    assert _index_payload(evidence_root / "refs_index.json") == {}
+    assert ledger.get_ref_metadata(SessionId("sess-a"), ref.ref_id) is None
+    assert blob_path.read_bytes() == blob_bytes
+    _assert_degraded(ledger, reason="blob_delete_failed")
+    assert ledger.collect_garbage() == []
+    assert list((evidence_root / "quarantine").iterdir()) == []
+
+
+def test_f3_evidence_concurrent_evict_then_store_serializes_without_stale_snapshot(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    old_ref = _store(ledger, content="old")
+    ledger._refs["sess-a"][old_ref.ref_id] = old_ref.model_copy(
+        update={"created_at": old_ref.created_at.replace(year=2000)}
+    )
+    writer_entered = Event()
+    writer_release = Event()
+    evicted: list[str] = []
+    stored: list[EvidenceRef] = []
+    errors: list[BaseException] = []
+
+    def _pause_first_write(stage: AtomicWriteStage) -> None:
+        if stage is AtomicWriteStage.WRITE and not writer_entered.is_set():
+            writer_entered.set()
+            assert writer_release.wait(timeout=5.0)
+
+    ledger._atomic_fault_injector = _pause_first_write
+
+    def _evict() -> None:
+        try:
+            evicted.extend(ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def _store_new() -> None:
+        try:
+            stored.append(_store(ledger, content="new"))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    evict_thread = Thread(target=_evict)
+    store_thread = Thread(target=_store_new)
+    evict_thread.start()
+    assert writer_entered.wait(timeout=5.0)
+    store_thread.start()
+    writer_release.set()
+    evict_thread.join(timeout=5.0)
+    store_thread.join(timeout=5.0)
+
+    assert errors == []
+    assert evicted == [old_ref.ref_id]
+    assert len(stored) == 1
+    assert ledger.get_ref_metadata(SessionId("sess-a"), old_ref.ref_id) is None
+    assert ledger.get_ref_metadata(SessionId("sess-a"), stored[0].ref_id) == stored[0]
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    assert restarted.get_ref_metadata(SessionId("sess-a"), old_ref.ref_id) is None
+    assert restarted.get_ref_metadata(SessionId("sess-a"), stored[0].ref_id) == stored[0]
+
+
+def test_f3_evidence_failed_evict_rollback_cannot_overwrite_waiting_store(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    old_ref = _store(ledger, content="old")
+    ledger._refs["sess-a"][old_ref.ref_id] = old_ref.model_copy(
+        update={"created_at": old_ref.created_at.replace(year=2000)}
+    )
+    writer_entered = Event()
+    writer_release = Event()
+    evict_errors: list[BaseException] = []
+    store_errors: list[BaseException] = []
+
+    def _fail_first_write(stage: AtomicWriteStage) -> None:
+        if stage is AtomicWriteStage.WRITE and not writer_entered.is_set():
+            writer_entered.set()
+            assert writer_release.wait(timeout=5.0)
+            raise OSError("eviction write failed")
+
+    ledger._atomic_fault_injector = _fail_first_write
+
+    def _evict() -> None:
+        try:
+            ledger.evict_expired(SessionId("sess-a"), max_age_seconds=60)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            evict_errors.append(exc)
+
+    def _store_new() -> None:
+        try:
+            _store(ledger, content="new")
+        except BaseException as exc:  # pragma: no cover - asserted below
+            store_errors.append(exc)
+
+    evict_thread = Thread(target=_evict)
+    store_thread = Thread(target=_store_new)
+    evict_thread.start()
+    assert writer_entered.wait(timeout=5.0)
+    store_thread.start()
+    writer_release.set()
+    evict_thread.join(timeout=5.0)
+    store_thread.join(timeout=5.0)
+
+    assert len(evict_errors) == 1
+    assert isinstance(evict_errors[0], AtomicWriteError)
+    assert len(store_errors) == 1
+    assert isinstance(store_errors[0], StatePersistenceDegradedError)
+    assert ledger.get_ref_metadata(SessionId("sess-a"), old_ref.ref_id) == old_ref
+    assert ledger.committed_ref_count() == 1
+    assert ledger.state_degraded is True
+    assert ledger.cleanup_allowed is False
 
 
 def test_f3_evidence_quarantine_is_collision_safe_and_uses_durable_timestamp(
