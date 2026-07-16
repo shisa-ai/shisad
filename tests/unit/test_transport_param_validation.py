@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from shisad.core.api.schema import JsonRpcResponse, SessionCreateParams
+from shisad.core.api.schema import (
+    ChannelIngestParams,
+    JsonRpcResponse,
+    SessionCreateParams,
+)
 from shisad.core.api.transport import ControlServer
 from shisad.core.atomic_state import StatePersistenceDegradedError
 from shisad.core.errors import PolicyError
@@ -47,6 +51,54 @@ async def test_transport_rejects_extra_params_when_model_is_registered(tmp_path:
         assert response.error is not None
         assert response.error.code == -32602
         assert response.error.data == {"reason_code": "rpc.invalid_params"}
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_id", [None, "   "])
+async def test_channel_ingest_rejects_missing_or_blank_replay_id_before_dispatch(
+    tmp_path: Path,
+    message_id: str | None,
+) -> None:
+    server = ControlServer(tmp_path / "control.sock")
+    handler_calls = 0
+
+    async def _handler(params: ChannelIngestParams, ctx: RequestContext) -> dict[str, object]:
+        nonlocal handler_calls
+        _ = params, ctx
+        handler_calls += 1
+        return {"ok": True}
+
+    server.register_method("channel.ingest", _handler, params_model=ChannelIngestParams)
+    await server.start()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
+        message: dict[str, object] = {
+            "channel": "discord",
+            "external_user_id": "alice",
+            "content": "hello",
+        }
+        if message_id is not None:
+            message["message_id"] = message_id
+        request = {
+            "jsonrpc": "2.0",
+            "method": "channel.ingest",
+            "params": {"message": message},
+            "id": 5,
+        }
+        writer.write(json.dumps(request).encode("utf-8") + b"\n")
+        await writer.drain()
+        response = JsonRpcResponse.model_validate_json(await reader.readline())
+        assert response.error is not None
+        assert response.error.code == -32602
+        assert response.error.data == {"reason_code": "rpc.invalid_params"}
+        assert handler_calls == 0
     finally:
         if writer is not None:
             writer.close()

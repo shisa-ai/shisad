@@ -12,6 +12,7 @@ from pydantic import (
     Field,
     StrictInt,
     StrictStr,
+    field_validator,
     model_validator,
 )
 
@@ -1799,10 +1800,18 @@ class ChannelMessageParams(_StrictParams):
     external_user_id: str
     workspace_hint: str = ""
     content: str
-    message_id: str = ""
+    message_id: str
     reply_target: str = ""
     thread_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("message_id")
+    @classmethod
+    def _require_replay_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("message_id must not be blank")
+        return normalized
 
 
 class ChannelIngestParams(_StrictParams):
