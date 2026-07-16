@@ -22,6 +22,8 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    ensure_owner_only_directory,
+    read_owner_only_regular_file,
 )
 from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.scheduler.rendering import parse_interval_seconds, task_schedule_rendering
@@ -66,7 +68,7 @@ class SchedulerManager:
             str, list[dict[str, Any]]
         ] = defaultdict(list)
         if self._storage_dir is not None:
-            self._storage_dir.mkdir(parents=True, exist_ok=True)
+            ensure_owner_only_directory(self._storage_dir)
         self._load_tasks()
         pending_confirmation_state_loaded = self._load_pending_confirmations()
         if pending_confirmation_state_loaded:
@@ -1153,17 +1155,17 @@ class SchedulerManager:
     def _load_tasks(self) -> None:
         if self._tasks_file is None:
             return
-        if not self._tasks_file.exists():
-            self._state_load_results["tasks"] = StateLoadResult(StateLoadStatus.MISSING)
-            self._durable_tasks = {}
-            return
         try:
-            raw_bytes = self._tasks_file.read_bytes()
+            raw_bytes = read_owner_only_regular_file(self._tasks_file)
         except OSError:
             self._state_load_results["tasks"] = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="read_error",
             )
+            return
+        if raw_bytes is None:
+            self._state_load_results["tasks"] = StateLoadResult(StateLoadStatus.MISSING)
+            self._durable_tasks = {}
             return
         try:
             raw = json.loads(raw_bytes.decode("utf-8"))
@@ -1196,12 +1198,30 @@ class SchedulerManager:
                     "invalid_task_row",
                 )
                 return
+            counter_fields = ("trigger_count", "success_count", "failure_count", "max_runs")
+            if any(
+                type(item.get(field, 0)) is not int or item.get(field, 0) < 0
+                for field in counter_fields
+            ):
+                self._state_load_results["tasks"] = self._semantic_corruption_result(
+                    result,
+                    "invalid_task_counters",
+                )
+                return
             try:
                 task = ScheduledTask.model_validate(item)
             except ValidationError:
                 self._state_load_results["tasks"] = self._semantic_corruption_result(
                     result,
                     "invalid_task_row",
+                )
+                return
+            try:
+                self._validate_schedule(task.schedule)
+            except ValueError:
+                self._state_load_results["tasks"] = self._semantic_corruption_result(
+                    result,
+                    "invalid_task_schedule",
                 )
                 return
             outcome_dedup = item.get("_confirmation_outcome_dedup", {})
@@ -1291,19 +1311,19 @@ class SchedulerManager:
     def _load_pending_confirmations(self) -> bool:
         if self._pending_file is None:
             return False
-        if not self._pending_file.exists():
-            self._state_load_results["pending_confirmations"] = StateLoadResult(
-                StateLoadStatus.MISSING
-            )
-            self._durable_pending_confirmations = defaultdict(list)
-            return False
         try:
-            raw_bytes = self._pending_file.read_bytes()
+            raw_bytes = read_owner_only_regular_file(self._pending_file)
         except OSError:
             self._state_load_results["pending_confirmations"] = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="read_error",
             )
+            return False
+        if raw_bytes is None:
+            self._state_load_results["pending_confirmations"] = StateLoadResult(
+                StateLoadStatus.MISSING
+            )
+            self._durable_pending_confirmations = defaultdict(list)
             return False
         try:
             raw = json.loads(raw_bytes.decode("utf-8"))

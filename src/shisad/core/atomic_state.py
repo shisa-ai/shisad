@@ -232,6 +232,46 @@ def ensure_owner_only_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def read_owner_only_regular_file(path: Path) -> bytes | None:
+    """Read an existing owner-only regular file through a no-follow parent."""
+
+    absolute = _absolute_normalized_path(path)
+    parent_fd = -1
+    file_fd = -1
+    try:
+        try:
+            _absolute, parent_fd, _created = _open_directory_chain(
+                absolute.parent,
+                create=False,
+            )
+        except FileNotFoundError:
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            file_fd = os.open(absolute.name, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return None
+        file_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise OSError(f"state target is not a regular file: {absolute}")
+        if file_stat.st_uid != os.geteuid():
+            raise PermissionError(f"state target is not owner-controlled: {absolute}")
+        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise PermissionError(
+                f"state target must have mode 0600: {absolute} "
+                f"has {stat.S_IMODE(file_stat.st_mode):04o}"
+            )
+        chunks: list[bytes] = []
+        while chunk := os.read(file_fd, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
 def _fsync_directory_path(path: Path) -> None:
     _absolute, fd, _created = _open_directory_chain(path, create=False)
     try:

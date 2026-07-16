@@ -160,7 +160,12 @@ relative to the verified parent descriptor. A symlinked intermediate below an
 admitted data root therefore fails before publication instead of redirecting a
 nested state domain. Evidence-domain root admission uses the same no-follow
 directory boundary before inspecting or initializing its salt, index, blob, or
-quarantine state.
+quarantine state. Scheduler task and pending-confirmation snapshots reopen the
+final inode without following symlinks and admit only a current-user regular
+file with mode `0600`; unsafe or unreadable bytes remain in place while that
+authority reports corruption. Checksum-valid task rows also reapply the
+creation-time schedule grammar and require non-negative, non-coerced integer
+run counters and `max_runs` before becoming live authority.
 
 Concurrent confirmation clicks for one action are serialized by an in-memory
 per-confirmation lock while that daemon process is running. That lock is a

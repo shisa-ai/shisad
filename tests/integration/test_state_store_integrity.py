@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+import shisad.core.atomic_state as atomic_state
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
@@ -33,6 +36,117 @@ def _create_scheduler_task(scheduler: SchedulerManager, *, name: str = "digest")
         created_by=UserId("alice"),
     )
     return task.id
+
+
+def _empty_scheduler_snapshot(authority: str) -> bytes:
+    if authority == "tasks":
+        return encode_versioned_json_snapshot([])
+    if authority == "pending_confirmations":
+        return encode_versioned_json_snapshot({})
+    raise AssertionError(f"unknown scheduler authority: {authority}")
+
+
+@pytest.mark.parametrize(
+    ("authority", "file_name"),
+    [
+        ("tasks", "tasks.json"),
+        ("pending_confirmations", "pending_confirmations.json"),
+    ],
+)
+@pytest.mark.parametrize("link_shape", ["existing", "dangling"])
+def test_scheduler_snapshot_reopen_rejects_symlink_final_inode(
+    tmp_path: Path,
+    authority: str,
+    file_name: str,
+    link_shape: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    storage.mkdir(mode=0o700)
+    snapshot_path = storage / file_name
+    outside_path = tmp_path / f"outside-{file_name}"
+    outside_bytes = _empty_scheduler_snapshot(authority)
+    if link_shape == "existing":
+        outside_path.write_bytes(outside_bytes)
+        outside_path.chmod(0o600)
+    snapshot_path.symlink_to(outside_path)
+
+    scheduler = SchedulerManager(storage_dir=storage)
+
+    result = scheduler.state_load_result(authority)
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "read_error"
+    assert snapshot_path.is_symlink()
+    if link_shape == "existing":
+        assert outside_path.read_bytes() == outside_bytes
+    else:
+        assert not outside_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("authority", "file_name"),
+    [
+        ("tasks", "tasks.json"),
+        ("pending_confirmations", "pending_confirmations.json"),
+    ],
+)
+def test_scheduler_snapshot_reopen_rejects_permissive_mode(
+    tmp_path: Path,
+    authority: str,
+    file_name: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    storage.mkdir(mode=0o700)
+    snapshot_path = storage / file_name
+    snapshot_bytes = _empty_scheduler_snapshot(authority)
+    snapshot_path.write_bytes(snapshot_bytes)
+    snapshot_path.chmod(0o644)
+
+    scheduler = SchedulerManager(storage_dir=storage)
+
+    result = scheduler.state_load_result(authority)
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "read_error"
+    assert stat.S_IMODE(snapshot_path.stat().st_mode) == 0o644
+    assert snapshot_path.read_bytes() == snapshot_bytes
+
+
+@pytest.mark.parametrize(
+    ("authority", "file_name"),
+    [
+        ("tasks", "tasks.json"),
+        ("pending_confirmations", "pending_confirmations.json"),
+    ],
+)
+def test_scheduler_snapshot_reopen_rejects_foreign_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+    file_name: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    storage.mkdir(mode=0o700)
+    snapshot_path = storage / file_name
+    snapshot_bytes = _empty_scheduler_snapshot(authority)
+    snapshot_path.write_bytes(snapshot_bytes)
+    snapshot_path.chmod(0o600)
+    original_fstat = os.fstat
+
+    def _foreign_regular_fstat(fd: int) -> os.stat_result:
+        result = original_fstat(fd)
+        if not stat.S_ISREG(result.st_mode):
+            return result
+        values = list(result)
+        values[4] = result.st_uid + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(atomic_state.os, "fstat", _foreign_regular_fstat)
+
+    scheduler = SchedulerManager(storage_dir=storage)
+
+    result = scheduler.state_load_result(authority)
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "read_error"
+    assert snapshot_path.read_bytes() == snapshot_bytes
 
 
 @pytest.mark.parametrize(
@@ -83,6 +197,7 @@ def test_scheduler_corrupt_snapshot_is_retained_and_blocks_empty_authority(
     tasks_path = storage / "tasks.json"
     corrupt_bytes = b'{"version":1,"payload":'
     tasks_path.write_bytes(corrupt_bytes)
+    tasks_path.chmod(0o600)
 
     scheduler = SchedulerManager(storage_dir=storage)
 
@@ -125,6 +240,7 @@ def test_scheduler_unsupported_schema_is_typed_and_retained(tmp_path: Path) -> N
         {"version": 99, "checksum": "unused", "payload": []}
     ).encode()
     tasks_path.write_bytes(unsupported_bytes)
+    tasks_path.chmod(0o600)
 
     scheduler = SchedulerManager(storage_dir=storage)
 
@@ -151,6 +267,73 @@ def test_checksum_valid_semantically_invalid_task_row_is_corrupt(tmp_path: Path)
     result = restarted.state_load_result("tasks")
     assert result.status == StateLoadStatus.CORRUPT
     assert result.reason == "invalid_task_outcome_dedup"
+    assert tasks_path.read_bytes() == invalid_bytes
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        {"kind": "cron", "expression": "* * *", "event_type": None, "event_filter": {}},
+        {
+            "kind": "interval",
+            "expression": "not-an-interval",
+            "event_type": None,
+            "event_filter": {},
+        },
+        {"kind": "event", "expression": "", "event_type": "", "event_filter": {}},
+    ],
+)
+def test_checksum_valid_task_with_invalid_schedule_is_corrupt(
+    tmp_path: Path,
+    schedule: dict[str, object],
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    _create_scheduler_task(scheduler)
+    tasks_path = storage / "tasks.json"
+    envelope = json.loads(tasks_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    payload[0]["schedule"] = schedule
+    invalid_bytes = encode_versioned_json_snapshot(payload)
+    tasks_path.write_bytes(invalid_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("tasks")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_task_schedule"
+    assert tasks_path.read_bytes() == invalid_bytes
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("trigger_count", -1),
+        ("success_count", "1"),
+        ("failure_count", True),
+        ("max_runs", -1),
+    ],
+)
+def test_checksum_valid_task_with_invalid_run_counter_is_corrupt(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    _create_scheduler_task(scheduler)
+    tasks_path = storage / "tasks.json"
+    envelope = json.loads(tasks_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    payload[0][field] = value
+    invalid_bytes = encode_versioned_json_snapshot(payload)
+    tasks_path.write_bytes(invalid_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("tasks")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_task_counters"
     assert tasks_path.read_bytes() == invalid_bytes
 
 
