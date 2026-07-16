@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import uuid
 from collections import deque
@@ -13,6 +14,8 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class ReplayEventVariant(StrEnum):
@@ -145,6 +148,7 @@ class InMemoryChannel:
         self._outgoing: asyncio.Queue[DeliveryEnvelope] = asyncio.Queue(maxsize=max_buffer)
         self._offline_outgoing: deque[DeliveryEnvelope] = deque(maxlen=max_buffer)
         self._connected = False
+        self._consumer_error_type = ""
         self._last_heartbeat: datetime | None = None
         self._reconnect_backoff_base = reconnect_backoff_base
         self._reconnect_backoff_max = reconnect_backoff_max
@@ -154,6 +158,7 @@ class InMemoryChannel:
         return self._connected
 
     async def connect(self) -> None:
+        self._consumer_error_type = ""
         self._connected = True
         await self.heartbeat()
         while self._offline_outgoing:
@@ -199,11 +204,43 @@ class InMemoryChannel:
             heartbeat_age = (datetime.now(UTC) - self._last_heartbeat).total_seconds()
         return {
             "connected": self._connected,
+            "consumer_status": (
+                "failed"
+                if self._consumer_error_type
+                else ("running" if self._connected else "stopped")
+            ),
+            "consumer_error_type": self._consumer_error_type,
             "last_heartbeat": self._last_heartbeat.isoformat() if self._last_heartbeat else None,
             "heartbeat_age_seconds": heartbeat_age,
             "pending_outgoing": self.pending_outgoing(),
             "pending_incoming": self._incoming.qsize(),
         }
+
+    def _record_consumer_failure(self, error: BaseException) -> None:
+        """Make a terminal provider-consumer failure visible without leaking details."""
+
+        self._consumer_error_type = type(error).__name__
+        self._connected = False
+        logger.error(
+            "Channel consumer stopped with an error: channel=%s error_type=%s",
+            self._name,
+            self._consumer_error_type,
+        )
+
+    def _observe_consumer_task(self, task: asyncio.Task[Any]) -> None:
+        """Observe terminal task exceptions so provider conflicts cannot be false-green."""
+
+        def _completed(completed: asyncio.Task[Any]) -> None:
+            if completed.cancelled():
+                return
+            try:
+                error = completed.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                self._record_consumer_failure(error)
+
+        task.add_done_callback(_completed)
 
     def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
         tenant_id = message.workspace_hint.strip() or self._name

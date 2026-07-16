@@ -120,7 +120,7 @@ class TelegramChannel(InMemoryChannel):
         if message_handler is not None and filters_module is not None:
             handler = message_handler(filters_module.TEXT & ~filters_module.COMMAND, _on_message)
             self._application.add_handler(handler)
-        with contextlib.suppress(OSError, RuntimeError, ValueError):
+        try:
             await self._application.initialize()
             await self._application.start()
             updater = getattr(self._application, "updater", None)
@@ -128,6 +128,12 @@ class TelegramChannel(InMemoryChannel):
                 start_polling = getattr(updater, "start_polling", None)
                 if callable(start_polling):
                     await start_polling()
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                await self.disconnect()
+            self._application = None
+            await super().disconnect()
+            self._record_consumer_failure(exc)
 
     async def disconnect(self) -> None:
         if self._application is not None:

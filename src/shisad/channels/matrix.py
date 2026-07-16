@@ -69,6 +69,8 @@ class MatrixChannel(InMemoryChannel):
         return bool(self.available and self._config.enable_e2ee)
 
     async def connect(self) -> None:
+        if self._sync_task is not None and self._sync_task.done():
+            await self.disconnect()
         await super().connect()
         if nio is not None:
             client_config = None
@@ -100,6 +102,7 @@ class MatrixChannel(InMemoryChannel):
             sync_forever = getattr(self._client, "sync_forever", None)
             if callable(sync_forever):
                 self._sync_task = asyncio.create_task(self._sync_loop())
+                self._observe_consumer_task(self._sync_task)
 
     async def disconnect(self) -> None:
         if self._sync_task is not None:
@@ -168,7 +171,8 @@ class MatrixChannel(InMemoryChannel):
             await sync_forever(timeout=30_000, full_state=True)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            self._record_consumer_failure(exc)
             return
 
     async def _on_room_message(self, room: Any, event: Any) -> None:

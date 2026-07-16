@@ -14,6 +14,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from shisad.channels.base import InMemoryChannel
+from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus, SessionCreated
 from shisad.core.evidence import ArtifactLedger
@@ -39,6 +41,7 @@ from shisad.daemon.services import (
     _warn_on_evidence_kms_endpoint_config,
     _warn_on_provider_route_gaps,
 )
+from shisad.interop.a2a_registry import A2aConfig, A2aIdentityConfig
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
@@ -194,6 +197,84 @@ async def test_daemon_services_builds_with_local_provider(
         assert dashboard_doctor["checks"]["dashboard"]["load_status"] == "missing"
         assert control_plane_doctor["status"] == "ok"
         assert control_plane_doctor["checks"]["control_plane"]["status"] == "ok"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_channel_doctor_surfaces_consumer_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        channel = TelegramChannel(TelegramConfig(bot_token="token"))
+        await InMemoryChannel.connect(channel)
+        channel._record_consumer_failure(RuntimeError("duplicate consumer"))
+        services.config = config.model_copy(update={"telegram_enabled": True})
+        services.telegram_channel = channel
+        impl = HandlerImplementation(services=services)
+
+        doctor = await impl.do_doctor_check({"component": "channels"})
+
+        channels = doctor["checks"]["channels"]
+        telegram = channels["channels"]["telegram"]
+        assert doctor["status"] == "degraded"
+        assert channels["status"] == "degraded"
+        assert "telegram_consumer_failed" in channels["problems"]
+        assert telegram["status"] == "degraded"
+        assert telegram["consumer_status"] == "failed"
+        assert telegram["consumer_error_type"] == "RuntimeError"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_handler_blocks_direct_write_to_a2a_private_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    private_key = workspace / "a2a-private.key"
+    private_key.write_text("secret", encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        assistant_fs_roots=[workspace],
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.config = config.model_copy(
+            update={
+                "a2a": A2aConfig(
+                    enabled=True,
+                    identity=A2aIdentityConfig(
+                        agent_id="local-agent",
+                        private_key_path=private_key,
+                        public_key_path=workspace / "a2a-public.key",
+                    ),
+                )
+            }
+        )
+        impl = HandlerImplementation(services=services)
+
+        result = impl._fs_git_toolkit.write_file(
+            path=str(private_key),
+            content="replaced",
+            confirm=True,
+        )
+
+        assert result["error"] == "protected_control_plane_path"
+        assert private_key.read_text(encoding="utf-8") == "secret"
     finally:
         await services.shutdown()
 

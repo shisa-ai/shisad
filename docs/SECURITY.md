@@ -185,6 +185,20 @@ inspect `shisad status` or `shisad doctor check --component dashboard` before
 restoring or explicitly resetting that marks file. These artifacts do not block
 daemon startup and do not create a universal recovery or exactly-once guarantee.
 
+Daemon-owned memory and timeline SQLite databases are admitted through one
+owner/symlink-checked filesystem boundary. Their immediate directories are
+created or repaired to `0700`, database files to `0600`, and existing journal,
+WAL, and SHM companions are validated and restricted to `0600`; first-created
+SQLite companions inherit the already-restricted database mode. A symlink,
+non-regular inode, foreign-owner database or immediate directory, or writable
+untrusted ancestry fails closed rather than being silently repaired. This
+contract applies to shisad's memory databases under its claimed data tree, not
+to external SQLite products such as a separately managed msgvault database.
+Default session-archive directories and exported archive files are likewise
+created owner-only (`0700`/`0600`). A custom export parent remains at its
+operator-selected mode, but must be a non-symlink, owner-controlled directory
+(or a shared sticky directory); the archive inode itself remains owner-only.
+
 An append failure after pairing-request bytes may have been written blocks
 further pairing publication in that daemon process instead of blindly retrying
 an uncertain effect. An unterminated retained row also blocks pairing
@@ -317,21 +331,31 @@ ancestor, derived-name, and live inode/hardlink overlap fails before target
 initialization, while ordinary disjoint siblings remain usable. Owner-controlled
 external authority files are restricted to `0600` only after claim publication;
 symlinked, foreign-owner, or non-regular trust files fail closed.
-Read-only policy and allowed-signer inputs are not lifetime-claimed, so disjoint
-daemons may share them, but one daemon cannot place either input inside or on a
-derived name of its own mutable authority footprint.
+Read-only policy, allowed-signer, and enabled A2A private-key inputs are not
+lifetime-claimed, so disjoint daemons may share them, but one daemon cannot
+place any of those inputs inside or on a derived name of its own mutable
+authority footprint.
 
 An existing control path is removed only when it is an owner socket that refuses
 a stream connection. The server holds an identity descriptor for the socket it
 creates and cleanup unlinks only that same object, so delayed shutdown cannot
 remove a successor or an unrelated file. If an assistant filesystem root
-contains claimed control state or trusted policy/signer inputs, startup emits a
-visible preflight warning and the direct `fs.write` surface blocks the data tree,
-authority registry, exact trust inputs, and reserved external-file artifacts;
+contains claimed control state or trusted policy/signer/A2A private-key inputs,
+startup emits a visible preflight warning and the direct `fs.write` surface
+blocks the data tree, authority registry, exact trust inputs, and reserved
+external-file artifacts;
 legitimate changes continue through their dedicated admin routes. The daemon
 claim remains held until mutable services and listeners stop. This is a local
 mutable-file authority boundary, not a multi-host or remote provider-account
 lease.
+
+The local claim does not prevent another host or process outside that filesystem
+from using the same remote bot/account. Telegram polling startup failures and
+terminal Slack, Discord, or Matrix consumer-task failures mark the adapter
+disconnected, retain a non-secret exception type in channel health, and appear
+as degraded `shisad doctor check --component channels` status. This makes a
+provider-reported duplicate consumer/session failure visible without claiming
+that shisad holds a distributed provider lease.
 
 The contained control-plane sidecar inherits a duplicate of that exact locked
 claim record across `exec`, verifies the owner-only record identity and its

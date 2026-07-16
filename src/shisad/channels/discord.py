@@ -149,6 +149,8 @@ class DiscordChannel(InMemoryChannel):
         )
 
     async def connect(self) -> None:
+        if self._client_task is not None and self._client_task.done():
+            await self.disconnect()
         await super().connect()
         if discord is None or not self._config.bot_token:
             return
@@ -437,6 +439,7 @@ class DiscordChannel(InMemoryChannel):
         start = getattr(self._client, "start", None)
         if callable(start):
             self._client_task = asyncio.create_task(start(self._config.bot_token))
+            self._observe_consumer_task(self._client_task)
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -448,7 +451,7 @@ class DiscordChannel(InMemoryChannel):
                         await result
         if self._client_task is not None:
             self._client_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._client_task
             self._client_task = None
         self._client = None

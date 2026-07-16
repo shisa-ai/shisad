@@ -80,7 +80,10 @@ from shisad.core.atomic_state import (
     durable_append_bytes,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
-from shisad.core.authority import daemon_authority_registry_root
+from shisad.core.authority import (
+    daemon_authority_registry_root,
+    daemon_trusted_read_input_paths,
+)
 from shisad.core.clock import current_time_payload
 from shisad.core.events import (
     AnomalyReported,
@@ -2309,10 +2312,7 @@ class HandlerImplementation(
             roots=list(self._config.assistant_fs_roots),
             max_read_bytes=self._config.assistant_max_read_bytes,
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
-            protected_write_paths=(
-                self._config.policy_path,
-                self._config.selfmod_allowed_signers_path,
-            ),
+            protected_write_paths=daemon_trusted_read_input_paths(self._config),
             protected_write_roots=(daemon_authority_registry_root(),),
             protected_write_authorities=services.authority_claim.candidates,
         )
@@ -3228,6 +3228,9 @@ class HandlerImplementation(
         ):
             available = bool(channel.available) if channel is not None else False
             connected = bool(channel.connected) if channel is not None else False
+            channel_health = channel.health_status() if channel is not None else {}
+            consumer_status = str(channel_health.get("consumer_status", ""))
+            consumer_error_type = str(channel_health.get("consumer_error_type", ""))
             replay_state = self._services.channel_state_store.state_status(name)
             replay_degraded = replay_state["status"] in {
                 "corrupt",
@@ -3243,6 +3246,10 @@ class HandlerImplementation(
                 problems.append(f"{name}_not_connected")
             elif enabled:
                 status = "ok"
+            if enabled and consumer_status == "failed":
+                problems.append(f"{name}_consumer_failed")
+                if status != "misconfigured":
+                    status = "degraded"
             if enabled and replay_degraded:
                 problems.append(f"{name}_replay_state_degraded")
                 if status != "misconfigured":
@@ -3252,6 +3259,8 @@ class HandlerImplementation(
                 "enabled": bool(enabled),
                 "available": available,
                 "connected": connected,
+                "consumer_status": consumer_status,
+                "consumer_error_type": consumer_error_type,
                 "replay_state": replay_state,
             }
             if enabled:

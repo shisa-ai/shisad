@@ -2190,3 +2190,165 @@ async def test_matrix_channel_fallback_and_workspace_mapping(
     assert channel.workspace_for_room("!room:example.org") == "workspace-1"
     assert channel.is_user_verified("@alice:example.org")
     await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_f3_telegram_polling_failure_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import telegram as telegram_module
+
+    class _FakeFilter:
+        def __and__(self, _other: object) -> _FakeFilter:
+            return self
+
+        def __invert__(self) -> _FakeFilter:
+            return self
+
+    class _FakeUpdater:
+        async def start_polling(self) -> None:
+            raise RuntimeError("duplicate consumer")
+
+        async def stop(self) -> None:
+            return None
+
+    class _FakeApplication:
+        updater = _FakeUpdater()
+
+        def add_handler(self, _handler: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBuilder:
+        def token(self, _token: str) -> _FakeBuilder:
+            return self
+
+        def build(self) -> _FakeApplication:
+            return _FakeApplication()
+
+    class _FakeApplicationFactory:
+        @staticmethod
+        def builder() -> _FakeBuilder:
+            return _FakeBuilder()
+
+    monkeypatch.setattr(telegram_module, "Application", _FakeApplicationFactory)
+    monkeypatch.setattr(telegram_module, "MessageHandler", lambda *_args: object())
+    monkeypatch.setattr(
+        telegram_module,
+        "filters",
+        SimpleNamespace(TEXT=_FakeFilter(), COMMAND=_FakeFilter()),
+    )
+    channel = TelegramChannel(TelegramConfig(bot_token="token"))
+
+    await channel.connect()
+
+    health = channel.health_status()
+    assert channel.connected is False
+    assert health["consumer_status"] == "failed"
+    assert health["consumer_error_type"] == "RuntimeError"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["slack", "discord", "matrix"])
+async def test_f3_background_consumer_failure_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    if provider == "slack":
+        from shisad.channels import slack as provider_module
+
+        class _FakeApp:
+            def __init__(self, *, token: str) -> None:
+                self.token = token
+
+            def event(self, _name: str):
+                return lambda callback: callback
+
+        class _FakeHandler:
+            def __init__(self, _app: object, _token: str) -> None:
+                return None
+
+            async def start_async(self) -> None:
+                raise RuntimeError("duplicate consumer")
+
+        monkeypatch.setattr(provider_module, "AsyncApp", _FakeApp)
+        monkeypatch.setattr(provider_module, "AsyncSocketModeHandler", _FakeHandler)
+        channel = SlackChannel(SlackConfig(bot_token="xoxb", app_token="xapp"))
+    elif provider == "discord":
+        from shisad.channels import discord as provider_module
+
+        class _FakeIntents:
+            message_content = False
+
+            @staticmethod
+            def default() -> _FakeIntents:
+                return _FakeIntents()
+
+        class _FakeClient:
+            def __init__(self, *, intents: object) -> None:
+                self.intents = intents
+
+            def event(self, callback):
+                return callback
+
+            async def start(self, _token: str) -> None:
+                raise RuntimeError("duplicate consumer")
+
+        monkeypatch.setattr(
+            provider_module,
+            "discord",
+            SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+        )
+        channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    else:
+        from shisad.channels import matrix as provider_module
+
+        class _FakeClient:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self.access_token = ""
+
+            def add_event_callback(self, *_args: object) -> None:
+                return None
+
+            async def sync_forever(self, **_kwargs: object) -> None:
+                raise RuntimeError("duplicate consumer")
+
+        monkeypatch.setattr(
+            provider_module,
+            "nio",
+            SimpleNamespace(
+                AsyncClient=_FakeClient,
+                AsyncClientConfig=lambda **_kwargs: object(),
+                RoomMessageText=object(),
+            ),
+        )
+        channel = MatrixChannel(
+            MatrixConfig(
+                homeserver="https://matrix.example.org",
+                user_id="@bot:example.org",
+                access_token="token",
+                room_id="!room:example.org",
+            )
+        )
+
+    await channel.connect()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    health = channel.health_status()
+    assert channel.connected is False
+    assert health["consumer_status"] == "failed"
+    assert health["consumer_error_type"] == "RuntimeError"
+    await channel.disconnect()

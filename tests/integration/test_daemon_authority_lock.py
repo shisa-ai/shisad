@@ -33,6 +33,7 @@ from shisad.core.authority import (
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
+from shisad.interop.a2a_registry import A2aConfig, A2aIdentityConfig
 from shisad.security.control_plane.sidecar import start_control_plane_sidecar
 from tests.helpers.daemon import clear_remote_provider_env
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
@@ -636,6 +637,70 @@ async def test_f3_second_daemon_same_data_dir_fails_without_disturbing_winner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("surface", "expected_role"),
+    [
+        ("socket", "control_socket"),
+        ("approval", "approval_factor_store"),
+        ("soul", "soul"),
+    ],
+)
+async def test_f3_live_daemon_rejects_shared_external_authority_without_disturbing_winner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+    expected_role: str,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    monkeypatch.delenv("SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH", raising=False)
+    winner_config = _config(tmp_path, name="winner", socket_name="winner.sock")
+    loser_config = _config(tmp_path, name="loser", socket_name="loser.sock")
+    if surface == "socket":
+        loser_config = loser_config.model_copy(
+            update={"socket_path": winner_config.socket_path}
+        )
+    elif surface == "approval":
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(tmp_path / "shared-approval.json"),
+        )
+    else:
+        shared_soul = tmp_path / "shared-soul" / "SOUL.md"
+        winner_config = winner_config.model_copy(
+            update={"assistant_persona_soul_path": shared_soul}
+        )
+        loser_config = loser_config.model_copy(
+            update={"assistant_persona_soul_path": shared_soul}
+        )
+
+    winner_task = asyncio.create_task(run_daemon(winner_config))
+    client = ControlClient(winner_config.socket_path)
+    try:
+        await _wait_for_socket(winner_config.socket_path)
+        winner_socket = winner_config.socket_path.lstat()
+        await client.connect()
+
+        with pytest.raises(AuthorityConflictError, match=expected_role):
+            await run_daemon(loser_config)
+
+        current_socket = winner_config.socket_path.lstat()
+        assert (current_socket.st_dev, current_socket.st_ino) == (
+            winner_socket.st_dev,
+            winner_socket.st_ino,
+        )
+        if loser_config.socket_path != winner_config.socket_path:
+            assert not loser_config.socket_path.exists()
+        assert not loser_config.data_dir.exists()
+        status = await client.call("daemon.status")
+        assert status["status"] == "running"
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(winner_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_f3_failed_service_construction_releases_complete_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -930,7 +995,7 @@ def test_f3_same_config_rejects_derived_to_derived_authority(
             claim.release()
 
 
-@pytest.mark.parametrize("surface", ["policy", "signers"])
+@pytest.mark.parametrize("surface", ["policy", "signers", "a2a_private"])
 def test_f3_trusted_read_input_cannot_overlap_mutable_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -943,15 +1008,26 @@ def test_f3_trusted_read_input_cannot_overlap_mutable_authority(
     )
     policy_path = tmp_path / "policy.yaml"
     signers_path = tmp_path / "allowed_signers"
+    private_key_path = tmp_path / "a2a-private.key"
     if surface == "policy":
         policy_path = tmp_path / "data" / "policy.yaml"
-    else:
+    elif surface == "signers":
         signers_path = tmp_path / "approval.corrupt.allowed_signers"
+    else:
+        private_key_path = tmp_path / "data" / "a2a-private.key"
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=policy_path,
         selfmod_allowed_signers_path=signers_path,
+        a2a=A2aConfig(
+            enabled=True,
+            identity=A2aIdentityConfig(
+                agent_id="local-agent",
+                private_key_path=private_key_path,
+                public_key_path=tmp_path / "a2a-public.key",
+            ),
+        ),
     )
     claim: DaemonAuthorityClaim | None = None
     try:
@@ -1163,7 +1239,7 @@ def test_f3_disjoint_sibling_authorities_both_succeed(
 
 @pytest.mark.parametrize(
     "surface",
-    ["data", "socket", "policy", "approval", "soul", "signers"],
+    ["data", "socket", "policy", "approval", "soul", "signers", "a2a_private"],
 )
 def test_f3_assistant_root_preflights_protected_control_state(
     tmp_path: Path,
@@ -1179,6 +1255,7 @@ def test_f3_assistant_root_preflights_protected_control_state(
     approval_path = control / "approval.json"
     soul_path: Path | None = None
     signers_path = control / "allowed_signers"
+    private_key_path = control / "a2a-private.key"
     if surface == "data":
         data_dir = workspace / "data"
     elif surface == "socket":
@@ -1189,8 +1266,10 @@ def test_f3_assistant_root_preflights_protected_control_state(
         approval_path = workspace / "approval.json"
     elif surface == "soul":
         soul_path = workspace / "SOUL.md"
-    else:
+    elif surface == "signers":
         signers_path = workspace / "allowed_signers"
+    else:
+        private_key_path = workspace / "a2a-private.key"
     monkeypatch.setenv(
         "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
         str(approval_path),
@@ -1202,6 +1281,14 @@ def test_f3_assistant_root_preflights_protected_control_state(
         selfmod_allowed_signers_path=signers_path,
         assistant_persona_soul_path=soul_path,
         assistant_fs_roots=[workspace],
+        a2a=A2aConfig(
+            enabled=True,
+            identity=A2aIdentityConfig(
+                agent_id="local-agent",
+                private_key_path=private_key_path,
+                public_key_path=control / "a2a-public.key",
+            ),
+        ),
     )
     with caplog.at_level("WARNING", logger="shisad.core.authority"):
         claim = acquire_daemon_authority_claim(config)

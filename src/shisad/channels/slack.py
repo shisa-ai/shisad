@@ -69,6 +69,8 @@ class SlackChannel(InMemoryChannel):
         )
 
     async def connect(self) -> None:
+        if self._handler_task is not None and self._handler_task.done():
+            await self.disconnect()
         await super().connect()
         if not self.available or not self._config.bot_token or not self._config.app_token:
             return
@@ -129,11 +131,12 @@ class SlackChannel(InMemoryChannel):
         start = getattr(self._handler, "start_async", None)
         if callable(start):
             self._handler_task = asyncio.create_task(start())
+            self._observe_consumer_task(self._handler_task)
 
     async def disconnect(self) -> None:
         if self._handler_task is not None:
             self._handler_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._handler_task
             self._handler_task = None
         if self._handler is not None:

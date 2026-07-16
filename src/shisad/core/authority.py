@@ -750,6 +750,30 @@ def daemon_authority_registry_root() -> Path:
     return _canonical_path(_registry_root())
 
 
+def _trusted_read_inputs(config: DaemonConfig) -> tuple[tuple[str, Path], ...]:
+    inputs: list[tuple[str, Path]] = [
+        ("policy", _canonical_path(config.policy_path)),
+        (
+            "selfmod_allowed_signers",
+            _canonical_path(config.selfmod_allowed_signers_path),
+        ),
+    ]
+    if config.a2a.enabled and config.a2a.identity is not None:
+        inputs.append(
+            (
+                "a2a_private_key",
+                _canonical_path(config.a2a.identity.private_key_path),
+            )
+        )
+    return tuple(inputs)
+
+
+def daemon_trusted_read_input_paths(config: DaemonConfig) -> tuple[Path, ...]:
+    """Return exact read-only control inputs protected from assistant writes."""
+
+    return tuple(path for _label, path in _trusted_read_inputs(config))
+
+
 def _candidate_is_contained_by_data_root(
     candidate: DaemonAuthorityCandidate,
     data_root: DaemonAuthorityCandidate,
@@ -785,11 +809,7 @@ def _validate_trusted_read_inputs(
     config: DaemonConfig,
     candidates: tuple[DaemonAuthorityCandidate, ...],
 ) -> None:
-    trusted_inputs = (
-        ("policy", _canonical_path(config.policy_path)),
-        ("selfmod_allowed_signers", _canonical_path(config.selfmod_allowed_signers_path)),
-    )
-    for label, path in trusted_inputs:
+    for label, path in _trusted_read_inputs(config):
         probe = _candidate_at_canonical_path("control_socket", path)
         for candidate in candidates:
             overlap_kind = _authority_overlap_kind(candidate, probe)
@@ -829,10 +849,7 @@ def _preflight_assistant_filesystem_roots(
     candidates: tuple[DaemonAuthorityCandidate, ...],
     registry_root: Path,
 ) -> None:
-    protected_read_inputs = [
-        ("policy", _canonical_path(config.policy_path)),
-        ("selfmod_allowed_signers", _canonical_path(config.selfmod_allowed_signers_path)),
-    ]
+    protected_read_inputs = _trusted_read_inputs(config)
     for raw_root in config.assistant_fs_roots:
         assistant_root = _canonical_path(raw_root)
         for candidate in candidates:

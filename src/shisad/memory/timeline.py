@@ -19,6 +19,7 @@ from shisad.core.daemon_notices import strip_daemon_lockdown_notice_suffix
 from shisad.core.session import Session
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import SessionId
+from shisad.memory.sqlite_security import secure_sqlite_connect
 
 _SEARCH_STOP_WORDS = {
     "about",
@@ -145,7 +146,6 @@ class TimelineIndex:
         session_lookup: Callable[[SessionId], Session | None],
     ) -> None:
         self._storage_dir = storage_dir
-        self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = storage_dir / "timeline.sqlite3"
         self._transcript_store = transcript_store
         self._session_lookup = session_lookup
@@ -510,7 +510,7 @@ class TimelineIndex:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        conn = secure_sqlite_connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
