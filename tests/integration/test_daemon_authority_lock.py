@@ -292,6 +292,71 @@ def test_f3_data_root_rejects_filesystem_root() -> None:
         authority._ensure_owner_directory(Path("/"))
 
 
+@pytest.mark.asyncio
+async def test_f3_daemon_build_binds_runtime_to_admitted_canonical_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.daemon import services as services_module
+
+    clear_remote_provider_env(monkeypatch)
+    safe_root = tmp_path / "claimed-root"
+    safe_root.mkdir(mode=0o700)
+    attacker_root = tmp_path / "retargeted-root"
+    attacker_root.mkdir(mode=0o700)
+    alias = tmp_path / "data-alias"
+    alias.symlink_to(safe_root, target_is_directory=True)
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(tmp_path / "external-approval" / "factors.json"),
+    )
+    config = _config(tmp_path, name="unused", socket_name="retarget.sock").model_copy(
+        update={"data_dir": alias}
+    )
+    real_initialize = initialize_claimed_daemon_authorities
+    built_config: DaemonConfig | None = None
+    built_claim: DaemonAuthorityClaim | None = None
+
+    def _initialize_then_retarget(
+        run_config: DaemonConfig,
+        claim: DaemonAuthorityClaim,
+    ) -> None:
+        real_initialize(run_config, claim)
+        alias.unlink()
+        alias.symlink_to(attacker_root, target_is_directory=True)
+
+    async def _capture_build(
+        _cls: type[DaemonServices],
+        run_config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
+        nonlocal built_config, built_claim
+        built_config = run_config
+        built_claim = authority_claim
+        (run_config.data_dir / "runtime-marker").write_bytes(b"claimed")
+        return object.__new__(DaemonServices)
+
+    monkeypatch.setattr(
+        services_module,
+        "initialize_claimed_daemon_authorities",
+        _initialize_then_retarget,
+    )
+    monkeypatch.setattr(DaemonServices, "_build_claimed", classmethod(_capture_build))
+
+    await DaemonServices.build(config)
+    try:
+        assert alias.resolve() == attacker_root
+        assert built_config is not None
+        assert built_config.data_dir == safe_root
+        assert (safe_root / "runtime-marker").read_bytes() == b"claimed"
+        assert not (attacker_root / "runtime-marker").exists()
+        assert built_claim is not None
+    finally:
+        if built_claim is not None:
+            built_claim.release()
+
+
 def test_f3_disjoint_authority_claims_can_coexist(tmp_path: Path) -> None:
     config_a = _config(tmp_path, name="a", socket_name="a.sock")
     config_b = _config(tmp_path, name="b", socket_name="b.sock")

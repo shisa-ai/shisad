@@ -678,6 +678,10 @@ class DaemonServices:
             candidates, verification_cancelled = await _await_task_terminal(verify_task)
             if verification_cancelled:
                 raise asyncio.CancelledError
+            claimed_data_root = next(
+                candidate.path for candidate in candidates if candidate.role == "data_root"
+            )
+            claimed_config = config.model_copy(update={"data_dir": claimed_data_root})
             control_socket_path = next(
                 candidate.path for candidate in candidates if candidate.role == "control_socket"
             )
@@ -688,7 +692,7 @@ class DaemonServices:
             _result, initialization_cancelled = await _await_task_terminal(initialize_task)
             if initialization_cancelled:
                 raise asyncio.CancelledError
-            return await cls._build_claimed(config, authority_claim=claim)
+            return await cls._build_claimed(claimed_config, authority_claim=claim)
         except BaseException:
             with contextlib.suppress(OSError, RuntimeError):
                 await _release_authority_claim_terminal(claim)

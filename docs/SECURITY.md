@@ -342,7 +342,9 @@ inspection. Data-root ancestry is walked through held no-follow directory
 descriptors; foreign-owned or group/world-writable non-sticky intermediates
 fail before traversal or creation, while system/current-user ancestry and
 shared sticky directories such as `/tmp` remain usable. The filesystem root
-itself is never accepted as a daemon data root. Owner-controlled
+itself is never accepted as a daemon data root. Runtime service construction
+and the inherited control-plane sidecar receive the admitted canonical data
+root rather than a potentially retargetable configured alias. Owner-controlled
 external authority files are restricted to `0600` only after claim publication;
 symlinked, foreign-owner, or non-regular trust files fail closed.
 Read-only policy, allowed-signer, and enabled A2A private-key inputs are not
