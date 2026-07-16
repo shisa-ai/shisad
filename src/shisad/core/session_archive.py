@@ -67,8 +67,12 @@ def _is_shared_sticky_directory(path_stat: os.stat_result) -> bool:
     return bool(path_stat.st_mode & stat.S_ISVTX) and bool(path_stat.st_mode & 0o002)
 
 
+def _normalize_archive_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
 def _prepare_archive_directory(path: Path, *, restrict_existing: bool) -> None:
-    absolute = Path(os.path.abspath(os.fspath(path.expanduser())))
+    absolute = _normalize_archive_path(path)
     chain = list(reversed((absolute, *absolute.parents)))
     expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
     created: set[Path] = set()
@@ -89,14 +93,18 @@ def _prepare_archive_directory(path: Path, *, restrict_existing: bool) -> None:
                 raise PermissionError(
                     f"archive directory is owned by uid {directory_stat.st_uid}: {directory}"
                 )
+            if directory_stat.st_mode & 0o022 and not _is_shared_sticky_directory(
+                directory_stat
+            ):
+                raise PermissionError(
+                    f"archive ancestry is writable by another uid: {directory}"
+                )
             if restrict_existing or directory in created:
                 if not owner_ok:
                     raise PermissionError(f"archive directory is not owner-controlled: {directory}")
                 directory.chmod(0o700)
-        elif (
-            directory_stat.st_uid != expected_uid
-            and directory_stat.st_mode & 0o022
-            and not _is_shared_sticky_directory(directory_stat)
+        elif directory_stat.st_mode & 0o022 and not _is_shared_sticky_directory(
+            directory_stat
         ):
             raise PermissionError(f"archive ancestry is writable by another uid: {directory}")
 
@@ -117,12 +125,22 @@ def _open_owner_archive(path: Path) -> BinaryIO:
             raise OSError(f"archive path is not a regular file: {path}")
         if path_stat.st_uid != expected_uid:
             raise PermissionError(f"archive path is owned by uid {path_stat.st_uid}: {path}")
+        if path_stat.st_nlink != 1:
+            raise OSError(f"archive path has multiple hard links: {path}")
     fd = os.open(path, flags, 0o600)
     try:
         opened_stat = os.fstat(fd)
         if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_uid != expected_uid:
             raise PermissionError(f"archive path is not an owner-controlled regular file: {path}")
+        if opened_stat.st_nlink != 1:
+            raise OSError(f"archive path has multiple hard links: {path}")
         current_stat = path.lstat()
+        if (
+            not stat.S_ISREG(current_stat.st_mode)
+            or current_stat.st_uid != expected_uid
+            or current_stat.st_nlink != 1
+        ):
+            raise PermissionError(f"archive path is not an owner-controlled inode: {path}")
         if (opened_stat.st_dev, opened_stat.st_ino) != (
             current_stat.st_dev,
             current_stat.st_ino,
@@ -205,7 +223,7 @@ class SessionArchiveManager:
         self._transcript_store = transcript_store
         self._checkpoint_store = checkpoint_store
         self._lockdown_manager = lockdown_manager
-        self._archive_dir = archive_dir
+        self._archive_dir = _normalize_archive_path(archive_dir)
         _prepare_archive_directory(self._archive_dir, restrict_existing=True)
 
     def export_session(
@@ -224,9 +242,11 @@ class SessionArchiveManager:
             session = Session.model_validate(session_payload)
             transcript_rows = self._transcript_rows_for(session_id)
             checkpoints = self._checkpoint_store.list_for_session(session_id)
-            archive_path = destination or self._default_archive_path(session.id)
-            archive_parent = Path(os.path.abspath(os.fspath(archive_path.parent.expanduser())))
-            archive_root = Path(os.path.abspath(os.fspath(self._archive_dir.expanduser())))
+            archive_path = _normalize_archive_path(
+                destination or self._default_archive_path(session.id)
+            )
+            archive_parent = archive_path.parent
+            archive_root = self._archive_dir
             _prepare_archive_directory(
                 archive_path.parent,
                 restrict_existing=(

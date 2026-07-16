@@ -170,6 +170,61 @@ def test_f3_session_archive_export_is_owner_only_under_permissive_umask(
     assert stat.S_IMODE(exported.archive_path.stat().st_mode) == 0o600
 
 
+def test_f3_session_archive_rejects_owner_writable_ancestor(tmp_path: Path) -> None:
+    writable_ancestor = tmp_path / "writable"
+    writable_ancestor.mkdir()
+    writable_ancestor.chmod(0o777)
+
+    with pytest.raises(PermissionError, match="writable by another uid"):
+        _build_archive_stack(writable_ancestor)
+
+
+def test_f3_session_archive_normalizes_tilde_destination_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    home.chmod(0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "~").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    exported = archive_manager.export_session(session.id, destination=Path("~/export.zip"))
+
+    assert exported.archive_path == home / "export.zip"
+    assert exported.archive_path.exists()
+    assert list(outside.iterdir()) == []
+
+
+def test_f3_session_archive_rejects_hardlink_without_touching_source(
+    tmp_path: Path,
+) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    source = tmp_path / "trusted.zip"
+    source.write_bytes(b"trusted")
+    destination = tmp_path / "export.zip"
+    destination.hardlink_to(source)
+
+    with pytest.raises(SessionArchiveError, match="archive_write_failed"):
+        archive_manager.export_session(session.id, destination=destination)
+
+    assert source.read_bytes() == b"trusted"
+
+
 def test_m2_session_archive_rejects_checksum_tamper(tmp_path: Path) -> None:
     session_manager, _, checkpoint_store, lockdown, archive_manager = _build_archive_stack(tmp_path)
     session = session_manager.create(

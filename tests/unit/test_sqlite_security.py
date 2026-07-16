@@ -106,3 +106,89 @@ def test_f3_secure_sqlite_rejects_foreign_owner_without_mode_repair(
         secure_sqlite_connect(database)
 
     assert _mode(database) == 0o666
+
+
+def test_f3_secure_sqlite_rejects_owner_writable_ancestor(tmp_path: Path) -> None:
+    writable_ancestor = tmp_path / "writable"
+    database_parent = writable_ancestor / "state"
+    database_parent.mkdir(parents=True)
+    writable_ancestor.chmod(0o777)
+    database_parent.chmod(0o700)
+
+    with pytest.raises(SQLitePathSecurityError, match="writable by another uid"):
+        secure_sqlite_connect(database_parent / "memory.sqlite3")
+
+    assert not (database_parent / "memory.sqlite3").exists()
+
+
+def test_f3_secure_sqlite_rejects_symlinked_ancestor_without_mutation(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SQLitePathSecurityError, match="symlink ancestry"):
+        secure_sqlite_connect(linked / "state" / "memory.sqlite3")
+
+    assert list(outside.iterdir()) == []
+
+
+def test_f3_secure_sqlite_binds_connection_to_verified_inode_during_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "state" / "memory.sqlite3"
+    substitute = tmp_path / "substitute.sqlite3"
+    with secure_sqlite_connect(database) as connection:
+        connection.execute("CREATE TABLE original_marker (value TEXT)")
+    with sqlite_security.sqlite3.connect(substitute) as connection:
+        connection.execute("CREATE TABLE substitute_marker (value TEXT)")
+
+    real_connect = sqlite_security.sqlite3.connect
+    retained = tmp_path / "retained.sqlite3"
+
+    def _swap_around_connect(path: object, *args: object, **kwargs: object):
+        database.rename(retained)
+        substitute.rename(database)
+        try:
+            connection = real_connect(path, *args, **kwargs)
+        finally:
+            database.rename(substitute)
+            retained.rename(database)
+        return connection
+
+    monkeypatch.setattr(sqlite_security.sqlite3, "connect", _swap_around_connect)
+
+    with pytest.raises(SQLitePathSecurityError, match="identity changed"):
+        connection = secure_sqlite_connect(database)
+        connection.close()
+
+    with real_connect(database) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'original_marker'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'substitute_marker'"
+        ).fetchone() is None
+    with real_connect(substitute) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'substitute_marker'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'original_marker'"
+        ).fetchone() is None
+
+
+def test_f3_secure_sqlite_rejects_hardlink_without_touching_source(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite3"
+    source.write_bytes(b"trusted")
+    database = tmp_path / "state" / "memory.sqlite3"
+    database.parent.mkdir()
+    database.hardlink_to(source)
+
+    with pytest.raises(SQLitePathSecurityError, match="multiple hard links"):
+        secure_sqlite_connect(database)
+
+    assert source.read_bytes() == b"trusted"

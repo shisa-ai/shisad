@@ -190,14 +190,20 @@ owner/symlink-checked filesystem boundary. Their immediate directories are
 created or repaired to `0700`, database files to `0600`, and existing journal,
 WAL, and SHM companions are validated and restricted to `0600`; first-created
 SQLite companions inherit the already-restricted database mode. A symlink,
-non-regular inode, foreign-owner database or immediate directory, or writable
-untrusted ancestry fails closed rather than being silently repaired. This
-contract applies to shisad's memory databases under its claimed data tree, not
-to external SQLite products such as a separately managed msgvault database.
+multi-link/non-regular inode, foreign-owner database or immediate directory, or
+group/world-writable non-sticky ancestry fails closed regardless of ancestry
+ownership. Directory components are opened relative to held verified directory
+descriptors; SQLite connects through the verified database descriptor and must
+report the exact claimed main path before callers may use it, keeping later
+journal/WAL/SHM names in the claimed family. This contract applies to shisad's
+memory databases under its claimed data tree, not to external SQLite products
+such as a separately managed msgvault database.
 Default session-archive directories and exported archive files are likewise
-created owner-only (`0700`/`0600`). A custom export parent remains at its
-operator-selected mode, but must be a non-symlink, owner-controlled directory
-(or a shared sticky directory); the archive inode itself remains owner-only.
+created owner-only (`0700`/`0600`). A custom export destination is expanded and
+normalized once. Its parent remains at its operator-selected restrictive mode,
+but must be a non-symlink, owner-controlled, non-group/world-writable directory
+(or a shared sticky directory); the archive inode itself must be owner-only and
+single-link.
 
 An append failure after pairing-request bytes may have been written blocks
 further pairing publication in that daemon process instead of blindly retrying
