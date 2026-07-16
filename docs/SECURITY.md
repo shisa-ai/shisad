@@ -373,11 +373,13 @@ remove a successor or an unrelated file. The runner delegates stale-socket
 decisions to that identity-safe server preflight and never unlinks a path merely
 because a status or stop RPC failed. Custom socket parents and their existing
 ancestors are walked without following symlinks; group/world-writable ancestry
-is rejected unless it is a shared sticky directory such as `/tmp`, and a
-non-sticky final parent must be owned by the current user. Clients apply the
-same parent checks, require an owner socket, and authenticate the connected
-server's peer UID before sending RPC traffic. If an assistant filesystem root
-contains claimed control state or trusted policy/signer/A2A private-key inputs,
+is rejected unless it is a shared sticky directory such as `/tmp`, and every
+component must be owned by root or the current user. Root-owned `/tmp` remains
+an admitted shared boundary; a foreign-user-owned sticky directory does not.
+Clients apply the same parent checks, require an owner socket, and authenticate
+the connected server's peer UID before sending RPC traffic. If an assistant
+filesystem root contains claimed control state or trusted policy/signer/A2A
+private-key inputs,
 startup emits a visible preflight warning and the direct `fs.write` surface
 blocks the data tree, authority registry, exact trust inputs, and reserved
 external-file artifacts;

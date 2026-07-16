@@ -90,7 +90,7 @@ def _walk_custom_socket_parent(socket_path: Path, *, create: bool) -> None:
     current_fd = os.open(current, _socket_directory_open_flags())
     creation_boundary = False
     try:
-        for index, component in enumerate(parent.parts[1:]):
+        for component in parent.parts[1:]:
             current /= component
             created = False
             try:
@@ -131,12 +131,11 @@ def _walk_custom_socket_parent(socket_path: Path, *, create: bool) -> None:
                     )
                 shared_sticky = _shared_sticky_socket_directory(directory_stat)
                 mode = stat.S_IMODE(directory_stat.st_mode)
-                is_final = index == len(parent.parts[1:]) - 1
-                if is_final and not shared_sticky and directory_stat.st_uid != _current_euid():
+                if directory_stat.st_uid not in {0, _current_euid()}:
                     raise PermissionError(
-                        "Refusing to use unsafe socket directory "
+                        "Refusing to use unsafe socket ancestor "
                         f"{current}: owned by uid {directory_stat.st_uid}, "
-                        f"expected {_current_euid()}"
+                        f"expected root or {_current_euid()}"
                     )
                 if creation_boundary and directory_stat.st_uid != _current_euid():
                     raise PermissionError(

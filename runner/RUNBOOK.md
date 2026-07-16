@@ -123,8 +123,9 @@ shell's `SHISAD_*` values instead of clearing them.
 
 For a custom socket path, every existing parent component must be a real
 directory rather than a symlink and must not be group/world-writable unless it
-is a shared sticky directory such as `/tmp`. The final non-sticky parent must
-belong to the current user. Missing parents are left for the daemon's secure
+is a shared sticky directory such as `/tmp`. Every component must belong to
+root or the current user; root-owned `/tmp` is admitted, but a sticky directory
+owned by another user is not. Missing parents are left for the daemon's secure
 owner-only creation path.
 
 ## Web Search Backend

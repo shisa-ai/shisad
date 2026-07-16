@@ -206,14 +206,12 @@ _preflight_socket_parent() {
       owner="$(_stat_uid "${current}")" || _die "unable to stat socket directory owner: ${current}"
       mode="$(stat -c '%a' "${current}" 2>/dev/null || stat -f '%Lp' "${current}")"
       mode_value=$((8#${mode}))
+      if [[ "${owner}" != "0" ]] && [[ "${owner}" != "${uid}" ]]; then
+        _die "unsafe socket directory: ${current} is owned by uid ${owner}, expected root or ${uid}"
+      fi
       if (( (mode_value & 0022) != 0 )) \
         && ! (( (mode_value & 01000) != 0 && (mode_value & 0002) != 0 )); then
         _die "unsafe socket directory: ${current} has mode ${mode}"
-      fi
-      if [[ "${current}" == "${socket_dir}" ]] \
-        && ! (( (mode_value & 01000) != 0 && (mode_value & 0002) != 0 )) \
-        && [[ "${owner}" != "${uid}" ]]; then
-        _die "unsafe socket directory: ${current} is owned by uid ${owner}, expected ${uid}"
       fi
     done
     if [[ "${create}" == true ]]; then

@@ -259,16 +259,55 @@ async def test_f3_control_client_rejects_unowned_server_peer(
         socket_path.unlink(missing_ok=True)
 
 
-def test_f3_arbitrary_socket_path_allows_foreign_owned_sticky_parent(
+def _report_directory_as_foreign_owned(
+    directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = directory.stat()
+    original_fstat = os.fstat
+
+    def _foreign_directory_fstat(fd: int) -> os.stat_result:
+        result = original_fstat(fd)
+        if (result.st_dev, result.st_ino) != (identity.st_dev, identity.st_ino):
+            return result
+        values = list(result)
+        values[4] = os.getuid() + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(transport.os, "fstat", _foreign_directory_fstat)
+
+
+def test_f3_arbitrary_socket_path_rejects_foreign_owned_sticky_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shared_parent = tmp_path / "shared"
     shared_parent.mkdir()
     shared_parent.chmod(0o1777)
-    monkeypatch.setattr(transport, "_current_euid", lambda: os.getuid() + 1)
+    _report_directory_as_foreign_owned(shared_parent, monkeypatch)
 
-    transport._ensure_socket_parent(shared_parent / "control.sock")
+    with pytest.raises(PermissionError, match="owned by uid"):
+        transport._ensure_socket_parent(shared_parent / "control.sock")
+
+    with pytest.raises(PermissionError, match="owned by uid"):
+        transport._validate_socket_parent(shared_parent / "control.sock")
+
+
+def test_f3_arbitrary_socket_path_rejects_foreign_owned_intermediate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign_ancestor = tmp_path / "foreign"
+    foreign_ancestor.mkdir(mode=0o755)
+    socket_parent = foreign_ancestor / "private"
+    socket_parent.mkdir(mode=0o700)
+    _report_directory_as_foreign_owned(foreign_ancestor, monkeypatch)
+
+    with pytest.raises(PermissionError, match="owned by uid"):
+        transport._ensure_socket_parent(socket_parent / "control.sock")
+
+    with pytest.raises(PermissionError, match="owned by uid"):
+        transport._validate_socket_parent(socket_parent / "control.sock")
 
 
 def test_f3_arbitrary_socket_path_rejects_foreign_owned_nonsticky_parent(
