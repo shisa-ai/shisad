@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import shisad.memory.sqlite_security as sqlite_security
+from shisad.memory.runtime_wiring import build_memory_runtime_components
 from shisad.memory.sqlite_security import (
     SQLitePathSecurityError,
     prepare_secure_sqlite_directory,
@@ -75,8 +76,6 @@ def test_f3_secure_sqlite_prepares_caller_owned_state_root_before_nested_store(
     tmp_path: Path,
 ) -> None:
     state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o775)
-    state_root.chmod(0o775)
 
     prepare_secure_sqlite_directory(state_root)
     database = state_root / "memory_entries" / "memory.sqlite3"
@@ -86,6 +85,25 @@ def test_f3_secure_sqlite_prepares_caller_owned_state_root_before_nested_store(
     assert _mode(state_root) == 0o700
     assert _mode(database.parent) == 0o700
     assert _mode(database) == 0o600
+
+
+def test_f3_memory_runtime_rejects_writable_root_before_legacy_symlink_import(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o775)
+    state_root.chmod(0o775)
+    outside = tmp_path / "attacker-controlled"
+    outside.mkdir()
+    legacy = state_root / "memory"
+    legacy.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SQLitePathSecurityError, match="writable by another uid"):
+        build_memory_runtime_components(state_root)
+
+    assert _mode(state_root) == 0o775
+    assert legacy.is_symlink()
+    assert list(outside.iterdir()) == []
 
 
 def test_f3_secure_sqlite_rejects_symlink_target_without_touching_destination(

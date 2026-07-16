@@ -32,7 +32,7 @@ def _is_shared_sticky_directory(path_stat: os.stat_result) -> bool:
     return bool(path_stat.st_mode & stat.S_ISVTX) and bool(path_stat.st_mode & 0o002)
 
 
-def _open_owner_directory(path: Path) -> int:
+def _open_owner_directory(path: Path, *, reject_writable_final: bool = False) -> int:
     expected_uid = _current_euid()
     directory_flags = getattr(os, "O_PATH", os.O_RDONLY) | getattr(
         os,
@@ -82,6 +82,10 @@ def _open_owner_directory(path: Path) -> int:
                         raise SQLitePathSecurityError(
                             f"SQLite parent is owned by uid {current_stat.st_uid}, "
                             f"expected {expected_uid}: {current}"
+                        )
+                    if reject_writable_final and current_stat.st_mode & 0o022:
+                        raise SQLitePathSecurityError(
+                            f"SQLite root is writable by another uid: {current}"
                         )
                     os.chmod(_verified_descriptor_path(next_fd), 0o700)
                 elif current_stat.st_mode & 0o022 and not _is_shared_sticky_directory(
@@ -218,7 +222,7 @@ def prepare_secure_sqlite_directory(path: Path) -> Path:
     """Create or repair an owner-controlled root before adding SQLite stores."""
 
     directory = _lexical_absolute(path)
-    directory_fd = _open_owner_directory(directory)
+    directory_fd = _open_owner_directory(directory, reject_writable_final=True)
     os.close(directory_fd)
     return directory
 

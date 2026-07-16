@@ -25,6 +25,10 @@ from shisad.memory.runtime_wiring import (
     deterministic_embedding_fingerprint,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource
+from shisad.memory.sqlite_security import (
+    SQLitePathSecurityError,
+    prepare_secure_sqlite_directory,
+)
 
 CONTRACT_VERSION = "b2"
 SUPPORTED_CAPABILITIES = (
@@ -433,15 +437,14 @@ class EvaluationSutSession:
     def _build_components(self) -> None:
         paths = self._require_paths()
         owner = self._require_owner()
-        paths.state_dir.mkdir(parents=True, exist_ok=True)
-        paths.config_dir.mkdir(parents=True, exist_ok=True)
-        paths.artifact_dir.mkdir(parents=True, exist_ok=True)
         self._components = build_memory_runtime_components(
             paths.state_dir,
             embedding_fingerprint=self._embedding_fingerprint,
             embeddings_provider=self._embeddings_adapter,
             allow_embedding_fallback=self._embedding_mode != "provider",
         )
+        paths.config_dir.mkdir(parents=True, exist_ok=True)
+        paths.artifact_dir.mkdir(parents=True, exist_ok=True)
         self._worker = ConsolidationWorker(
             self._components.memory_manager,
             config=ConsolidationConfig(),
@@ -606,14 +609,15 @@ def _clear_directory_contents(path: Path) -> None:
 
 def _prepare_state_dir(path: Path) -> None:
     marker = path / _STATE_ROOT_MARKER
-    if path.exists() and not path.is_dir():
-        raise _ProtocolError("unsafe_path", f"state_dir must be a directory: {path}")
-    if path.exists() and not marker.exists() and any(path.iterdir()):
+    try:
+        prepare_secure_sqlite_directory(path)
+    except SQLitePathSecurityError as exc:
+        raise _ProtocolError("unsafe_path", f"unsafe state_dir: {exc}") from exc
+    if not marker.exists() and any(path.iterdir()):
         raise _ProtocolError(
             "unsafe_path",
             f"state_dir must be empty or marked as a shisad memory SUT state root: {path}",
         )
-    path.mkdir(parents=True, exist_ok=True)
     marker.touch(exist_ok=True)
 
 
