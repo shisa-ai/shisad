@@ -121,6 +121,23 @@ def test_f3_secure_sqlite_rejects_owner_writable_ancestor(tmp_path: Path) -> Non
     assert not (database_parent / "memory.sqlite3").exists()
 
 
+def test_f3_secure_sqlite_allows_execute_only_ancestry_and_repairs_final_directory(
+    tmp_path: Path,
+) -> None:
+    traverse_only = tmp_path / "traverse-only"
+    database_parent = traverse_only / "state"
+    database_parent.mkdir(parents=True)
+    traverse_only.chmod(0o711)
+    database_parent.chmod(0o300)
+
+    with secure_sqlite_connect(database_parent / "memory.sqlite3") as connection:
+        connection.execute("CREATE TABLE records (value TEXT NOT NULL)")
+
+    assert _mode(traverse_only) == 0o711
+    assert _mode(database_parent) == 0o700
+    assert _mode(database_parent / "memory.sqlite3") == 0o600
+
+
 def test_f3_secure_sqlite_rejects_symlinked_ancestor_without_mutation(
     tmp_path: Path,
 ) -> None:

@@ -34,7 +34,11 @@ def _is_shared_sticky_directory(path_stat: os.stat_result) -> bool:
 
 def _open_owner_directory(path: Path) -> int:
     expected_uid = _current_euid()
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags = getattr(os, "O_PATH", os.O_RDONLY) | getattr(
+        os,
+        "O_DIRECTORY",
+        0,
+    )
     directory_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     current = Path(path.anchor)
     current_fd = os.open(current, directory_flags)
@@ -79,7 +83,7 @@ def _open_owner_directory(path: Path) -> int:
                             f"SQLite parent is owned by uid {current_stat.st_uid}, "
                             f"expected {expected_uid}: {current}"
                         )
-                    os.fchmod(next_fd, 0o700)
+                    os.chmod(_verified_descriptor_path(next_fd), 0o700)
                 elif current_stat.st_mode & 0o022 and not _is_shared_sticky_directory(
                     current_stat
                 ):
