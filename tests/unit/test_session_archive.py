@@ -179,6 +179,35 @@ def test_f3_session_archive_rejects_owner_writable_ancestor(tmp_path: Path) -> N
         _build_archive_stack(writable_ancestor)
 
 
+def test_f3_session_archive_rejects_foreign_owned_readonly_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign_ancestor = tmp_path / "foreign"
+    foreign_ancestor.mkdir(mode=0o755)
+    foreign_identity = foreign_ancestor.stat()
+    original_lstat = Path.lstat
+
+    def _foreign_owned_lstat(path: Path) -> os.stat_result:
+        result = original_lstat(path)
+        if (result.st_dev, result.st_ino) != (
+            foreign_identity.st_dev,
+            foreign_identity.st_ino,
+        ):
+            return result
+        values = list(result)
+        values[4] = os.geteuid() + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(Path, "lstat", _foreign_owned_lstat)
+
+    with pytest.raises(PermissionError, match=r"foreign-owned|owned by uid"):
+        session_archive_module._prepare_archive_directory(
+            foreign_ancestor / "archives",
+            restrict_existing=True,
+        )
+
+
 def test_f3_session_archive_normalizes_tilde_destination_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

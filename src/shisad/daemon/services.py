@@ -20,6 +20,7 @@ from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.state import ChannelStateStore
 from shisad.coding.manager import CodingAgentManager
 from shisad.core.api.transport import ControlServer, preflight_claimed_control_socket
+from shisad.core.atomic_state import remove_owner_controlled_directory_contents
 from shisad.core.audit import AuditLog
 from shisad.core.authority import (
     DaemonAuthorityClaim,
@@ -130,15 +131,11 @@ async def _release_authority_claim_terminal(
 
 def _wipe_dir_contents(directory: Path) -> None:
     """Remove all files and subdirectories inside *directory* without removing it."""
-    import shutil
 
-    if not directory.is_dir():
-        return
-    for child in directory.iterdir():
-        if child.is_dir():
-            shutil.rmtree(child, ignore_errors=True)
-        else:
-            child.unlink(missing_ok=True)
+    remove_owner_controlled_directory_contents(
+        directory,
+        allow_nested_directories=True,
+    )
 
 
 def _count_files(directory: Path) -> int:

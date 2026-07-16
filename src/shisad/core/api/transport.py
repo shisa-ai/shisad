@@ -69,7 +69,6 @@ def _private_socket_dirs_for(socket_path: Path) -> tuple[Path, ...]:
     runtime_dir = _configured_xdg_runtime_dir()
     if runtime_dir is not None and parent == runtime_dir / "shisad":
         return (runtime_dir, parent)
-
     return ()
 
 
@@ -163,6 +162,9 @@ def _ensure_socket_parent(socket_path: Path) -> None:
     if not private_dirs:
         _walk_custom_socket_parent(socket_path, create=True)
         return
+
+    if len(private_dirs) > 1:
+        _walk_custom_socket_parent(socket_path, create=True)
 
     for directory in private_dirs:
         _ensure_private_socket_dir(directory)
@@ -272,6 +274,8 @@ def _validate_socket_parent(socket_path: Path) -> None:
     if not private_dirs:
         _walk_custom_socket_parent(socket_path, create=False)
         return
+    if len(private_dirs) > 1:
+        _walk_custom_socket_parent(socket_path, create=False)
     for directory in private_dirs:
         try:
             directory_stat = os.lstat(directory)

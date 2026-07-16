@@ -32,6 +32,7 @@ from shisad.core.atomic_state import (
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
     read_owned_regular_file,
+    remove_owner_controlled_directory_contents,
     validate_directory_ancestry,
 )
 
@@ -273,26 +274,11 @@ class ChannelStateStore:
 
         with self._lock:
             channel_count = len(self._loaded_channels)
-            file_count = 0
-            try:
-                root_stat = self._root_dir.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                if hasattr(os, "getuid") and root_stat.st_uid != os.getuid():
-                    raise OSError("replay reset root has the wrong owner")
-                if stat.S_ISDIR(root_stat.st_mode):
-                    for child in self._root_dir.iterdir():
-                        child_stat = child.lstat()
-                        if stat.S_ISDIR(child_stat.st_mode):
-                            raise OSError("replay reset refuses unexpected nested directory")
-                        child.unlink()
-                        file_count += 1
-                    self._fsync_directory_entry(self._root_dir)
-                else:
-                    self._root_dir.unlink()
-                    file_count = 1
-                    self._fsync_directory_entry(self._root_dir.parent)
+            file_count = remove_owner_controlled_directory_contents(
+                self._root_dir,
+                allow_nested_directories=False,
+                unlink_non_directory=True,
+            )
             self._clear_runtime_cache_locked()
             return channel_count, file_count
 

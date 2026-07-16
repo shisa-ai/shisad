@@ -709,6 +709,48 @@ def test_f3_harness_rejects_foreign_owned_custom_socket_ancestor(
     assert "owned by uid" in result.stderr
 
 
+def test_f3_harness_rejects_foreign_owned_xdg_socket_ancestor(tmp_path: Path) -> None:
+    foreign_ancestor = tmp_path / "foreign"
+    foreign_ancestor.mkdir(mode=0o755)
+    runtime_dir = foreign_ancestor / "runtime"
+    runtime_dir.mkdir(mode=0o700)
+    (runtime_dir / "shisad").mkdir(mode=0o700)
+    env = {k: v for k, v in os.environ.items() if k != "SHISAD_ENV_FILE"}
+    env.update(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "XDG_RUNTIME_DIR": str(runtime_dir),
+            "SHISAD_SOCKET_PATH": str(runtime_dir / "shisad" / "control.sock"),
+            "SHISAD_TEST_FOREIGN_DIR": str(foreign_ancestor),
+            "SHISAD_TEST_FOREIGN_UID": str(os.getuid() + 1),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source runner/harness.sh >/dev/null\n"
+            "_runner_env\n"
+            "_stat_uid() {\n"
+            "  if [[ \"$1\" == \"$SHISAD_TEST_FOREIGN_DIR\" ]]; then\n"
+            "    printf '%s\\n' \"$SHISAD_TEST_FOREIGN_UID\"\n"
+            "  else\n"
+            "    stat -c '%u' \"$1\"\n"
+            "  fi\n"
+            "}\n"
+            "_preflight_socket_parent false",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "owned by uid" in result.stderr
+
+
 def test_f3_harness_rejects_relative_custom_socket_path() -> None:
     env = {k: v for k, v in os.environ.items() if k != "SHISAD_ENV_FILE"}
     env.update(

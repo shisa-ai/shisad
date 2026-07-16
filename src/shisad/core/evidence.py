@@ -760,7 +760,7 @@ class ArtifactLedger:
         with self._lock:
             destroyed_ref_count = self.committed_ref_count()
             parent = self._root_dir.parent
-            parent.mkdir(parents=True, exist_ok=True)
+            ensure_owner_only_directory(parent)
             prior_tombstones = list(parent.glob(f".{self._root_dir.name}.reset-*"))
             detached_tombstone: Path | None = None
             previous_salt = self._salt

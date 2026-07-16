@@ -87,15 +87,20 @@ def _prepare_archive_directory(path: Path, *, restrict_existing: bool) -> None:
             raise OSError(f"archive directory has symlink ancestry: {directory}")
         if not stat.S_ISDIR(directory_stat.st_mode):
             raise NotADirectoryError(f"archive parent is not a directory: {directory}")
+        if directory_stat.st_uid not in {0, expected_uid}:
+            raise PermissionError(
+                f"archive ancestry is foreign-owned by uid {directory_stat.st_uid}: {directory}"
+            )
         if directory == absolute:
             owner_ok = directory_stat.st_uid == expected_uid
-            if not owner_ok and not _is_shared_sticky_directory(directory_stat):
+            shared_sticky = directory_stat.st_uid == 0 and _is_shared_sticky_directory(
+                directory_stat
+            )
+            if not owner_ok and not shared_sticky:
                 raise PermissionError(
                     f"archive directory is owned by uid {directory_stat.st_uid}: {directory}"
                 )
-            if directory_stat.st_mode & 0o022 and not _is_shared_sticky_directory(
-                directory_stat
-            ):
+            if directory_stat.st_mode & 0o022 and not shared_sticky:
                 raise PermissionError(
                     f"archive ancestry is writable by another uid: {directory}"
                 )
@@ -103,8 +108,8 @@ def _prepare_archive_directory(path: Path, *, restrict_existing: bool) -> None:
                 if not owner_ok:
                     raise PermissionError(f"archive directory is not owner-controlled: {directory}")
                 directory.chmod(0o700)
-        elif directory_stat.st_mode & 0o022 and not _is_shared_sticky_directory(
-            directory_stat
+        elif directory_stat.st_mode & 0o022 and not (
+            directory_stat.st_uid == 0 and _is_shared_sticky_directory(directory_stat)
         ):
             raise PermissionError(f"archive ancestry is writable by another uid: {directory}")
 

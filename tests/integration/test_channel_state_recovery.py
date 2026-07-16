@@ -487,6 +487,26 @@ def test_channel_replay_reset_serializes_with_inflight_reservation(tmp_path: Pat
     assert list(root.iterdir()) == []
 
 
+def test_channel_replay_reset_rejects_intermediate_symlink_without_external_mutation(
+    tmp_path: Path,
+) -> None:
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    external = tmp_path / "external"
+    external_root = external / "replay"
+    external_root.mkdir(parents=True)
+    sentinel = external_root / "retained.json"
+    sentinel.write_bytes(b"external replay bytes")
+    (configured / "redirect").symlink_to(external, target_is_directory=True)
+    store = ChannelStateStore(configured / "redirect" / "replay")
+    assert store.state_load_result("discord").reason == "invalid_root_ancestry"
+
+    with pytest.raises(OSError, match=r"symlink|ancestry"):
+        store.reset_state()
+
+    assert sentinel.read_bytes() == b"external replay bytes"
+
+
 @pytest.mark.asyncio
 async def test_channel_replay_reserves_before_dispatch_and_records_handler_uncertainty(
     tmp_path: Path,

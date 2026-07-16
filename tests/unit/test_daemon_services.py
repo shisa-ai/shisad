@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
 
@@ -873,6 +874,38 @@ async def test_daemon_services_uses_default_control_plane_startup_timeout(
     services = await DaemonServices.build(config)
     try:
         assert captured["startup_timeout_seconds"] == pytest.approx(15.0)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_rejects_intermediate_symlink_in_generic_wipe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        configured = tmp_path / "configured"
+        configured.mkdir()
+        external = tmp_path / "external"
+        external_checkpoints = external / "checkpoints"
+        external_checkpoints.mkdir(parents=True)
+        sentinel = external_checkpoints / "retained.json"
+        sentinel.write_bytes(b"external checkpoint bytes")
+        (configured / "redirect").symlink_to(external, target_is_directory=True)
+        services.checkpoint_store._dir = configured / "redirect" / "checkpoints"
+
+        with pytest.raises(OSError, match=r"symlink|ancestry"):
+            await services.reset_test_state()
+
+        assert sentinel.read_bytes() == b"external checkpoint bytes"
     finally:
         await services.shutdown()
 

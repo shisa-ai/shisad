@@ -436,6 +436,50 @@ def test_pending_confirmation_semantic_corruption_is_retained(
     assert pending_path.read_bytes() == invalid_bytes
 
 
+@pytest.mark.parametrize("task_tombstone", [None, False])
+def test_pending_confirmation_recorded_outcome_requires_matching_task_tombstone(
+    tmp_path: Path,
+    task_tombstone: bool | None,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    scheduler.queue_confirmation(
+        task_id,
+        {
+            "confirmation_id": "confirm-recorded",
+            "task_id": task_id,
+            "status": "failed",
+            "run_outcome_recorded": False,
+            "run_outcome_success": False,
+        },
+    )
+    if task_tombstone is not None:
+        tasks_path = storage / "tasks.json"
+        tasks_envelope = json.loads(tasks_path.read_text(encoding="utf-8"))
+        tasks_payload = tasks_envelope["payload"]
+        tasks_payload[0]["_confirmation_outcome_dedup"] = {
+            "confirm-recorded": task_tombstone
+        }
+        tasks_path.write_bytes(encode_versioned_json_snapshot(tasks_payload))
+    pending_path = storage / "pending_confirmations.json"
+    pending_envelope = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending_payload = pending_envelope["payload"]
+    pending_row = pending_payload[task_id][0]
+    pending_row["run_outcome_recorded"] = True
+    pending_row["run_outcome_success"] = True
+    invalid_bytes = encode_versioned_json_snapshot(pending_payload)
+    pending_path.write_bytes(invalid_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    assert restarted.state_load_result("tasks").status == StateLoadStatus.OK
+    pending_result = restarted.state_load_result("pending_confirmations")
+    assert pending_result.status == StateLoadStatus.CORRUPT
+    assert pending_result.reason == "invalid_pending_outcome_state"
+    assert pending_path.read_bytes() == invalid_bytes
+
+
 def test_legacy_pending_confirmation_rejects_string_boolean(tmp_path: Path) -> None:
     storage = tmp_path / "scheduler"
     scheduler = SchedulerManager(storage_dir=storage)

@@ -310,6 +310,30 @@ def test_f3_arbitrary_socket_path_rejects_foreign_owned_intermediate(
         transport._validate_socket_parent(socket_parent / "control.sock")
 
 
+@pytest.mark.parametrize("operation", ["ensure", "validate"])
+def test_f3_xdg_socket_path_rejects_foreign_owned_intermediate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    foreign_ancestor = tmp_path / "foreign"
+    foreign_ancestor.mkdir(mode=0o755)
+    runtime_dir = foreign_ancestor / "runtime"
+    runtime_dir.mkdir(mode=0o700)
+    socket_parent = runtime_dir / "shisad"
+    if operation == "validate":
+        socket_parent.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    _report_directory_as_foreign_owned(foreign_ancestor, monkeypatch)
+    socket_path = socket_parent / "control.sock"
+
+    with pytest.raises(PermissionError, match="owned by uid"):
+        if operation == "ensure":
+            transport._ensure_socket_parent(socket_path)
+        else:
+            transport._validate_socket_parent(socket_path)
+
+
 def test_f3_arbitrary_socket_path_rejects_foreign_owned_nonsticky_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1020,6 +1020,36 @@ def test_f3_evidence_reset_recovers_invalid_root_without_touching_external_targe
     assert external_file.read_bytes() == b"external bytes"
 
 
+def test_f3_evidence_reset_rejects_intermediate_symlink_without_external_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    external = tmp_path / "external"
+    external_root = external / "evidence"
+    external_root.mkdir(parents=True)
+    sentinel = external_root / "retained.txt"
+    sentinel.write_bytes(b"external evidence bytes")
+    (configured / "redirect").symlink_to(external, target_is_directory=True)
+    ledger = ArtifactLedger(configured / "redirect" / "evidence")
+    _assert_degraded(ledger, reason="invalid_evidence_root")
+    replacements: list[tuple[object, object]] = []
+    original_replace = os.replace
+
+    def _record_replace(source: object, destination: object) -> None:
+        replacements.append((source, destination))
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", _record_replace)
+
+    with pytest.raises(OSError, match=r"symlink|ancestry"):
+        ledger.reset_domain()
+
+    assert replacements == []
+    assert sentinel.read_bytes() == b"external evidence bytes"
+
+
 class _RecoverableGateCodec:
     name = "recoverable_gate"
 

@@ -120,11 +120,6 @@ _socket_dir_requires_private() {
     return 0
   fi
 
-  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
-    && [[ "${dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
-    return 0
-  fi
-
   return 1
 }
 
@@ -214,15 +209,14 @@ _preflight_socket_parent() {
         _die "unsafe socket directory: ${current} has mode ${mode}"
       fi
     done
-    if [[ "${create}" == true ]]; then
+    if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
+      && [[ "${socket_dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
+      _ensure_private_dir "${XDG_RUNTIME_DIR}" "${create}"
+      _ensure_private_dir "${socket_dir}" "${create}"
+    elif [[ "${create}" == true ]]; then
       chmod 700 -- "${socket_dir}" || _die "unable to restrict socket directory: ${socket_dir}"
     fi
     return 0
-  fi
-
-  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
-    && [[ "${socket_dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
-    _ensure_private_dir "${XDG_RUNTIME_DIR}" "${create}"
   fi
 
   _ensure_private_dir "${socket_dir}" "${create}"

@@ -1473,6 +1473,20 @@ class SchedulerManager:
                     )
                     return False
                 confirmation_id = item["confirmation_id"].strip()
+                if item.get("run_outcome_recorded") is True:
+                    task_outcome = self._tasks[
+                        task_id
+                    ].confirmation_outcome_dedup.get(confirmation_id)
+                    if task_outcome is None or task_outcome is not item.get(
+                        "run_outcome_success"
+                    ):
+                        self._state_load_results[
+                            "pending_confirmations"
+                        ] = self._semantic_corruption_result(
+                            result,
+                            "invalid_pending_outcome_state",
+                        )
+                        return False
                 if confirmation_id in confirmation_ids:
                     self._state_load_results[
                         "pending_confirmations"

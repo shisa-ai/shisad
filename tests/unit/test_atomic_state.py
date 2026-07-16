@@ -72,6 +72,52 @@ def test_atomic_write_uses_owner_only_modes_under_permissive_umask(tmp_path: Pat
     assert target.read_bytes() == b"payload"
 
 
+def test_descriptor_reset_does_not_follow_root_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    (root / "owned.json").write_bytes(b"owned state")
+    root_identity = root.stat()
+    detached = tmp_path / "detached-state"
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "retained.json"
+    sentinel.write_bytes(b"external state")
+    original_listdir = os.listdir
+    swapped = False
+
+    def _swap_root_after_open(
+        directory_fd: int | str | os.PathLike[str],
+    ) -> list[str]:
+        nonlocal swapped
+        if not isinstance(directory_fd, int):
+            return original_listdir(directory_fd)
+        opened = os.fstat(directory_fd)
+        if not swapped and (opened.st_dev, opened.st_ino) == (
+            root_identity.st_dev,
+            root_identity.st_ino,
+        ):
+            root.rename(detached)
+            root.symlink_to(external, target_is_directory=True)
+            swapped = True
+        return original_listdir(directory_fd)
+
+    monkeypatch.setattr(atomic_state.os, "listdir", _swap_root_after_open)
+
+    removed = atomic_state.remove_owner_controlled_directory_contents(
+        root,
+        allow_nested_directories=True,
+    )
+
+    assert removed == 1
+    assert swapped is True
+    assert list(detached.iterdir()) == []
+    assert root.is_symlink()
+    assert sentinel.read_bytes() == b"external state"
+
+
 def test_atomic_write_fsyncs_each_new_parent_directory_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

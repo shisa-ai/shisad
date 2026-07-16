@@ -249,6 +249,113 @@ def ensure_owner_only_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _remove_directory_fd_contents(
+    directory_fd: int,
+    *,
+    allow_nested_directories: bool,
+    root_device: int,
+) -> int:
+    entries: list[tuple[str, os.stat_result]] = []
+    for name in os.listdir(directory_fd):
+        entry_stat = os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if stat.S_ISDIR(entry_stat.st_mode) and not allow_nested_directories:
+            raise OSError(f"state reset refuses unexpected nested directory: {name}")
+        entries.append((name, entry_stat))
+
+    removed = 0
+    for name, entry_stat in entries:
+        if stat.S_ISDIR(entry_stat.st_mode):
+            child_fd = os.open(name, _directory_open_flags(), dir_fd=directory_fd)
+            try:
+                child_stat = os.fstat(child_fd)
+                if (child_stat.st_dev, child_stat.st_ino) != (
+                    entry_stat.st_dev,
+                    entry_stat.st_ino,
+                ):
+                    raise OSError(f"state reset directory identity changed: {name}")
+                if child_stat.st_dev != root_device:
+                    raise OSError(f"state reset refuses a nested mount: {name}")
+                removed += _remove_directory_fd_contents(
+                    child_fd,
+                    allow_nested_directories=True,
+                    root_device=root_device,
+                )
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+        removed += 1
+    if entries:
+        os.fsync(directory_fd)
+    return removed
+
+
+def remove_owner_controlled_directory_contents(
+    path: Path,
+    *,
+    allow_nested_directories: bool,
+    unlink_non_directory: bool = False,
+) -> int:
+    """Delete a state domain through held no-follow directory descriptors."""
+
+    absolute = _absolute_normalized_path(path)
+    parent_fd = -1
+    target_fd = -1
+    try:
+        try:
+            _absolute, parent_fd, _created = _open_directory_chain(
+                absolute.parent,
+                create=False,
+            )
+        except FileNotFoundError:
+            return 0
+        try:
+            target_stat = os.stat(
+                absolute.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return 0
+        if target_stat.st_uid != os.geteuid():
+            raise PermissionError(f"state reset target is not owner-controlled: {absolute}")
+        if not stat.S_ISDIR(target_stat.st_mode):
+            if not unlink_non_directory:
+                return 0
+            os.unlink(absolute.name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            return 1
+
+        target_fd = os.open(
+            absolute.name,
+            _directory_open_flags(),
+            dir_fd=parent_fd,
+        )
+        opened_stat = os.fstat(target_fd)
+        if (opened_stat.st_dev, opened_stat.st_ino) != (
+            target_stat.st_dev,
+            target_stat.st_ino,
+        ):
+            raise OSError(f"state reset target identity changed: {absolute}")
+        if opened_stat.st_uid != os.geteuid():
+            raise PermissionError(f"state reset target is not owner-controlled: {absolute}")
+        return _remove_directory_fd_contents(
+            target_fd,
+            allow_nested_directories=allow_nested_directories,
+            root_device=opened_stat.st_dev,
+        )
+    finally:
+        if target_fd >= 0:
+            os.close(target_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
 def validate_owner_controlled_parent_ancestry(path: Path) -> None:
     """Require existing file-parent ancestry to be safe for external authority."""
 
