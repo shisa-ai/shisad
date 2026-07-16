@@ -282,6 +282,38 @@ def test_f3_claim_duplicates_verifiable_sidecar_lease(tmp_path: Path) -> None:
                 )
         finally:
             wrong_path_lease.close()
+        wrong_fd = os.open(lease.record_path, os.O_RDWR)
+        wrong_descriptor_lease = authority.DaemonAuthorityLease(
+            fd=wrong_fd,
+            record_path=lease.record_path,
+        )
+        try:
+            with pytest.raises(AuthorityClaimError, match="lock is not held"):
+                authority.verify_inherited_daemon_authority_lease(
+                    wrong_descriptor_lease,
+                    data_dir=config.data_dir,
+                )
+        finally:
+            wrong_descriptor_lease.close()
+    finally:
+        lease.close()
+        claim.release()
+
+
+def test_f3_inherited_lease_requires_exact_data_root_candidate(tmp_path: Path) -> None:
+    config = _config(tmp_path, name="lease-missing-root", socket_name="missing-root.sock")
+    claim = acquire_daemon_authority_claim(config)
+    control_socket = tuple(
+        candidate for candidate in claim.candidates if candidate.role == "control_socket"
+    )
+    claim.narrow_to(control_socket)
+    lease = claim.duplicate_lease()
+    try:
+        with pytest.raises(AuthorityClaimError, match="data root"):
+            authority.verify_inherited_daemon_authority_lease(
+                lease,
+                data_dir=config.data_dir,
+            )
     finally:
         lease.close()
         claim.release()

@@ -475,6 +475,54 @@ async def test_f3_sidecar_rejects_mismatched_claim_before_target_mutation(
 
 
 @pytest.mark.asyncio
+async def test_f3_sidecar_exec_rejects_wrong_inherited_descriptor_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "uninitialized-data",
+        socket_path=tmp_path / "daemon.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    claim = acquire_daemon_authority_claim(config)
+    lease = claim.duplicate_lease()
+    wrong_fd = os.open(lease.record_path, os.O_RDWR)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "shisad.security.control_plane.sidecar",
+            "--socket-path",
+            str(config.data_dir / "control_plane" / "sidecar.sock"),
+            "--data-dir",
+            str(config.data_dir),
+            "--policy-path",
+            str(config.policy_path),
+            "--parent-pid",
+            str(os.getpid()),
+            "--authority-lease-fd",
+            str(wrong_fd),
+            "--authority-record-path",
+            str(lease.record_path),
+            pass_fds=(wrong_fd,),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        os.close(wrong_fd)
+        wrong_fd = -1
+        _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+        assert process.returncode not in {None, 0}
+        assert b"lock is not held" in stderr
+        assert not config.data_dir.exists()
+    finally:
+        if wrong_fd >= 0:
+            os.close(wrong_fd)
+        lease.close()
+        claim.release()
+
+
+@pytest.mark.asyncio
 async def test_f3_sidecar_spawn_failure_closes_parent_lease_duplicate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -581,6 +629,135 @@ async def test_f3_sidecar_spawn_cancellation_joins_spawned_child_and_closes_dupl
 
 
 @pytest.mark.asyncio
+async def test_f3_sidecar_readiness_failure_joins_spawned_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lease_closed = 0
+    process_stopped = asyncio.Event()
+
+    class _Lease:
+        fd = 0
+        record_path = tmp_path / "claim.json"
+
+        def close(self) -> None:
+            nonlocal lease_closed
+            lease_closed += 1
+
+    class _Process:
+        pid = os.getpid()
+        returncode: int | None = None
+
+        def terminate(self) -> None:
+            self.returncode = -signal.SIGTERM
+            process_stopped.set()
+
+        def kill(self) -> None:
+            self.returncode = -signal.SIGKILL
+            process_stopped.set()
+
+        async def wait(self) -> int:
+            await process_stopped.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    lease = _Lease()
+    process = _Process()
+    claim = SimpleNamespace(duplicate_lease=lambda: lease)
+
+    async def _spawn(*_args, **_kwargs):
+        return process
+
+    async def _fail_readiness(_handle: ControlPlaneSidecarHandle) -> None:
+        raise ControlPlaneUnavailableError(reason_code="control_plane.startup_failed")
+
+    monkeypatch.setattr(
+        sidecar_module,
+        "verify_inherited_daemon_authority_lease",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(sidecar_module.asyncio, "create_subprocess_exec", _spawn)
+    monkeypatch.setattr(sidecar_module, "_wait_for_sidecar_ready", _fail_readiness)
+
+    with pytest.raises(ControlPlaneUnavailableError):
+        await start_control_plane_sidecar(
+            data_dir=tmp_path / "data",
+            policy_path=tmp_path / "policy.yaml",
+            authority_claim=claim,  # type: ignore[arg-type]
+        )
+    assert process.returncode == -signal.SIGTERM
+    assert lease_closed == 1
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_readiness_cancellation_joins_spawned_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lease_closed = 0
+    readiness_started = asyncio.Event()
+    process_stopped = asyncio.Event()
+
+    class _Lease:
+        fd = 0
+        record_path = tmp_path / "claim.json"
+
+        def close(self) -> None:
+            nonlocal lease_closed
+            lease_closed += 1
+
+    class _Process:
+        pid = os.getpid()
+        returncode: int | None = None
+
+        def terminate(self) -> None:
+            self.returncode = -signal.SIGTERM
+            process_stopped.set()
+
+        def kill(self) -> None:
+            self.returncode = -signal.SIGKILL
+            process_stopped.set()
+
+        async def wait(self) -> int:
+            await process_stopped.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    lease = _Lease()
+    process = _Process()
+    claim = SimpleNamespace(duplicate_lease=lambda: lease)
+
+    async def _spawn(*_args, **_kwargs):
+        return process
+
+    async def _wait_forever(_handle: ControlPlaneSidecarHandle) -> None:
+        readiness_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        sidecar_module,
+        "verify_inherited_daemon_authority_lease",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(sidecar_module.asyncio, "create_subprocess_exec", _spawn)
+    monkeypatch.setattr(sidecar_module, "_wait_for_sidecar_ready", _wait_forever)
+
+    start_task = asyncio.create_task(
+        start_control_plane_sidecar(
+            data_dir=tmp_path / "data",
+            policy_path=tmp_path / "policy.yaml",
+            authority_claim=claim,  # type: ignore[arg-type]
+        )
+    )
+    await readiness_started.wait()
+    start_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+    assert process.returncode == -signal.SIGTERM
+    assert lease_closed == 1
+
+
+@pytest.mark.asyncio
 async def test_f3_sidecar_close_reaches_process_terminal_before_reraising_cancellation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -612,6 +789,28 @@ async def test_f3_sidecar_close_reaches_process_terminal_before_reraising_cancel
             os.kill(handle.process.pid, signal.SIGCONT)
         with contextlib.suppress(asyncio.CancelledError):
             await handle.close()
+        claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_close_kills_child_after_termination_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle, claim = await _start_claimed_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    handle.termination_timeout_seconds = 0.05
+    os.kill(handle.process.pid, signal.SIGSTOP)
+    try:
+        await handle.close()
+        assert handle.process.returncode == -signal.SIGKILL
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(handle.process.pid, signal.SIGCONT)
+        await handle.close()
         claim.release()
 
 
