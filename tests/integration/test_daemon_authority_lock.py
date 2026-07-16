@@ -296,13 +296,16 @@ def test_f3_fresh_config_same_root_deduplicates_then_narrows(
         claim.release()
 
 
+@pytest.mark.parametrize("prior_is_outer", [True, False])
 def test_f3_fresh_config_nested_roots_narrow_to_refreshed_tree(
     tmp_path: Path,
+    prior_is_outer: bool,
 ) -> None:
-    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
-    refreshed = _config(tmp_path, name="unused", socket_name="refreshed.sock").model_copy(
-        update={"data_dir": prior.data_dir / "nested"}
+    outer = _config(tmp_path, name="outer", socket_name="outer.sock")
+    inner = _config(tmp_path, name="inner", socket_name="inner.sock").model_copy(
+        update={"data_dir": outer.data_dir / "nested"}
     )
+    prior, refreshed = (outer, inner) if prior_is_outer else (inner, outer)
     claim = authority.acquire_fresh_config_authority_claim(
         prior,
         refreshed,
@@ -313,12 +316,12 @@ def test_f3_fresh_config_nested_roots_narrow_to_refreshed_tree(
         assert {item.path for item in claim.candidates if item.role == "data_root"} == {
             refreshed.data_dir.resolve(strict=False)
         }
-        assert not prior.data_dir.exists()
+        assert not outer.data_dir.exists()
     finally:
         claim.release()
 
 
-def test_f3_simultaneous_fresh_config_union_admission_has_one_winner(
+def test_f3_reversed_fresh_config_union_admission_has_one_winner(
     tmp_path: Path,
 ) -> None:
     prior = _config(tmp_path, name="prior", socket_name="prior.sock")
@@ -327,12 +330,15 @@ def test_f3_simultaneous_fresh_config_union_admission_has_one_winner(
     allow_release = threading.Event()
     outcomes: queue.Queue[tuple[str, object]] = queue.Queue()
 
-    def _contend() -> None:
+    def _contend(
+        contender_prior: DaemonConfig,
+        contender_refreshed: DaemonConfig,
+    ) -> None:
         barrier.wait(timeout=3)
         try:
             claim = authority.acquire_fresh_config_authority_claim(
-                prior,
-                refreshed,
+                contender_prior,
+                contender_refreshed,
                 timeout_seconds=0,
             )
         except AuthorityConflictError as exc:
@@ -343,12 +349,17 @@ def test_f3_simultaneous_fresh_config_union_admission_has_one_winner(
         claim.release()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(_contend) for _ in range(2)]
+        futures = [
+            pool.submit(_contend, prior, refreshed),
+            pool.submit(_contend, refreshed, prior),
+        ]
         first = outcomes.get(timeout=3)
         second = outcomes.get(timeout=3)
         assert sorted((first[0], second[0])) == ["claimed", "conflict"]
         assert not prior.data_dir.exists()
         assert not refreshed.data_dir.exists()
+        assert not (prior.data_dir / "config-backups").exists()
+        assert not (refreshed.data_dir / "config-backups").exists()
         allow_release.set()
         for future in futures:
             future.result(timeout=3)

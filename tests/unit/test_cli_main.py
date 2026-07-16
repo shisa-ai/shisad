@@ -3286,6 +3286,46 @@ def test_start_default_routes_to_foreground_path(
     assert "only supported mode" in result.output
 
 
+@pytest.mark.parametrize(
+    ("debug", "runner_name"),
+    [
+        (False, "_run_daemon_foreground"),
+        (True, "_run_daemon_with_autoreload_sync"),
+    ],
+)
+def test_start_daemon_releases_transferred_claim_on_early_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    debug: bool,
+    runner_name: str,
+) -> None:
+    released = 0
+
+    def _release() -> None:
+        nonlocal released
+        released += 1
+
+    claim = SimpleNamespace(release=_release)
+
+    def _interrupt_before_consumption(
+        _config: DaemonConfig,
+        **kwargs: object,
+    ) -> None:
+        assert kwargs["authority_claim"] is claim
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_main, runner_name, _interrupt_before_consumption)
+
+    cli_main._start_daemon(
+        config=_config(tmp_path),
+        foreground=True,
+        debug=debug,
+        authority_claim=claim,  # type: ignore[arg-type]
+    )
+
+    assert released == 1
+
+
 def test_restart_default_shuts_down_then_starts_foreground(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

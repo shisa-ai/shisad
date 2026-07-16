@@ -1047,6 +1047,8 @@ def _start_daemon(
                 **foreground_kwargs,
             )
     except KeyboardInterrupt:
+        if authority_claim is not None:
+            authority_claim.release()
         _echo("\nShutting down...", fg="yellow")
 
 
