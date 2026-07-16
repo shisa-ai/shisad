@@ -326,7 +326,7 @@ def remove_owner_controlled_directory_contents(
             raise PermissionError(f"state reset target is not owner-controlled: {absolute}")
         if not stat.S_ISDIR(target_stat.st_mode):
             if not unlink_non_directory:
-                return 0
+                raise OSError(f"state reset target is a symlink or not a directory: {absolute}")
             os.unlink(absolute.name, dir_fd=parent_fd)
             os.fsync(parent_fd)
             return 1

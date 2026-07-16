@@ -879,9 +879,11 @@ async def test_daemon_services_uses_default_control_plane_startup_timeout(
 
 
 @pytest.mark.asyncio
-async def test_f3_daemon_reset_rejects_intermediate_symlink_in_generic_wipe(
+@pytest.mark.parametrize("link_shape", ["intermediate", "final"])
+async def test_f3_daemon_reset_rejects_symlink_in_generic_wipe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    link_shape: str,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     config = DaemonConfig(
@@ -899,8 +901,13 @@ async def test_f3_daemon_reset_rejects_intermediate_symlink_in_generic_wipe(
         external_checkpoints.mkdir(parents=True)
         sentinel = external_checkpoints / "retained.json"
         sentinel.write_bytes(b"external checkpoint bytes")
-        (configured / "redirect").symlink_to(external, target_is_directory=True)
-        services.checkpoint_store._dir = configured / "redirect" / "checkpoints"
+        if link_shape == "intermediate":
+            (configured / "redirect").symlink_to(external, target_is_directory=True)
+            checkpoint_root = configured / "redirect" / "checkpoints"
+        else:
+            checkpoint_root = configured / "checkpoints"
+            checkpoint_root.symlink_to(external_checkpoints, target_is_directory=True)
+        services.checkpoint_store._dir = checkpoint_root
 
         with pytest.raises(OSError, match=r"symlink|ancestry"):
             await services.reset_test_state()
