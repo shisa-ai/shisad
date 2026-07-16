@@ -1476,8 +1476,34 @@ class DaemonServices:
     async def shutdown(self) -> None:
         """Close every service and claim before propagating caller cancellation."""
 
-        shutdown_task = asyncio.create_task(self._shutdown_claimed_services())
-        _result, cancellation_requested = await _await_task_terminal(shutdown_task)
+        cancellation_requested = False
+        caller_task = asyncio.current_task()
+        while True:
+            cancellation_count = caller_task.cancelling() if caller_task is not None else 0
+            try:
+                await self._shutdown_claimed_services()
+            except asyncio.CancelledError:
+                cancellation_requested = True
+                continue
+            if caller_task is not None and caller_task.cancelling() > cancellation_count:
+                cancellation_requested = True
+                continue
+            break
+
+        authority_claim = getattr(self, "authority_claim", None)
+        if authority_claim is not None:
+            try:
+                cancellation_requested = (
+                    await _release_authority_claim_terminal(authority_claim)
+                    or cancellation_requested
+                )
+            except BaseException as result:
+                if result.__class__.__name__ == "CancelledError":
+                    raise
+                logger.error(
+                    "Error releasing daemon mutable-authority claim",
+                    exc_info=(type(result), result, result.__traceback__),
+                )
         if cancellation_requested:
             raise asyncio.CancelledError
 
@@ -1549,17 +1575,6 @@ class DaemonServices:
                     logger.error(
                         "Error stopping daemon service %s",
                         "mcp_manager",
-                        exc_info=(type(result), result, result.__traceback__),
-                    )
-
-        authority_claim = getattr(self, "authority_claim", None)
-        if authority_claim is not None:
-            try:
-                await asyncio.to_thread(authority_claim.release)
-            except BaseException as result:
-                if result.__class__.__name__ != "CancelledError":
-                    logger.error(
-                        "Error releasing daemon mutable-authority claim",
                         exc_info=(type(result), result, result.__traceback__),
                     )
 

@@ -214,6 +214,15 @@ def prepare_secure_sqlite_path(path: Path) -> Path:
     return database
 
 
+def prepare_secure_sqlite_directory(path: Path) -> Path:
+    """Create or repair an owner-controlled root before adding SQLite stores."""
+
+    directory = _lexical_absolute(path)
+    directory_fd = _open_owner_directory(directory)
+    os.close(directory_fd)
+    return directory
+
+
 def secure_sqlite_connect(path: Path) -> sqlite3.Connection:
     """Open SQLite only after restrictive, symlink-safe path admission."""
 

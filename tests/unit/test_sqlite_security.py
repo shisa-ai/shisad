@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 import shisad.memory.sqlite_security as sqlite_security
-from shisad.memory.sqlite_security import SQLitePathSecurityError, secure_sqlite_connect
+from shisad.memory.sqlite_security import (
+    SQLitePathSecurityError,
+    prepare_secure_sqlite_directory,
+    secure_sqlite_connect,
+)
 
 
 def _mode(path: Path) -> int:
@@ -63,6 +67,23 @@ def test_f3_secure_sqlite_repairs_owner_controlled_reopen_modes(tmp_path: Path) 
     with secure_sqlite_connect(database) as connection:
         connection.execute("CREATE TABLE records (value TEXT NOT NULL)")
 
+    assert _mode(database.parent) == 0o700
+    assert _mode(database) == 0o600
+
+
+def test_f3_secure_sqlite_prepares_caller_owned_state_root_before_nested_store(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o775)
+    state_root.chmod(0o775)
+
+    prepare_secure_sqlite_directory(state_root)
+    database = state_root / "memory_entries" / "memory.sqlite3"
+    with secure_sqlite_connect(database) as connection:
+        connection.execute("CREATE TABLE records (value TEXT NOT NULL)")
+
+    assert _mode(state_root) == 0o700
     assert _mode(database.parent) == 0o700
     assert _mode(database) == 0o600
 

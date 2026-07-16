@@ -9,6 +9,7 @@ from typing import Any
 
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, SyncEmbeddingsProvider
 from shisad.memory.manager import MemoryManager
+from shisad.memory.sqlite_security import prepare_secure_sqlite_directory
 from shisad.security.firewall import ContentFirewall
 
 
@@ -42,6 +43,7 @@ def build_memory_runtime_components(
 ) -> MemoryRuntimeComponents:
     """Build the memory substrate using the daemon's canonical path layout."""
 
+    data_dir = prepare_secure_sqlite_directory(data_dir)
     storage_root = data_dir / "memory_entries"
     legacy_storage_dir = data_dir / "memory"
     return MemoryRuntimeComponents(

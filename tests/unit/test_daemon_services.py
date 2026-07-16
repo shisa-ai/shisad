@@ -2093,6 +2093,49 @@ async def test_daemon_services_shutdown_reaches_all_registered_resources() -> No
     assert calls[-1] == "server", "control server must be the last resource to stop"
 
 
+@pytest.mark.asyncio
+async def test_daemon_services_shutdown_keeps_task_affine_resources_on_caller_task() -> None:
+    owner_task = asyncio.current_task()
+    shutdown_task: asyncio.Task[object] | None = None
+
+    class _McpManagerStub:
+        async def shutdown(self) -> None:
+            nonlocal shutdown_task
+            shutdown_task = asyncio.current_task()
+
+    services = object.__new__(DaemonServices)
+    services.mcp_manager = _McpManagerStub()  # type: ignore[assignment]
+
+    await DaemonServices.shutdown(services)
+
+    assert shutdown_task is owner_task
+
+
+@pytest.mark.asyncio
+async def test_daemon_services_shutdown_retries_task_affine_resource_after_cancellation() -> None:
+    attempts = 0
+    first_attempt_entered = asyncio.Event()
+
+    class _McpManagerStub:
+        async def shutdown(self) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                first_attempt_entered.set()
+                await asyncio.Event().wait()
+
+    services = object.__new__(DaemonServices)
+    services.mcp_manager = _McpManagerStub()  # type: ignore[assignment]
+    shutdown_task = asyncio.create_task(DaemonServices.shutdown(services))
+    await first_attempt_entered.wait()
+
+    shutdown_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown_task
+    assert attempts == 2
+
+
 def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:
     assert _normalize_tool_destination("https://search.example") == "https://search.example:443"
     assert (

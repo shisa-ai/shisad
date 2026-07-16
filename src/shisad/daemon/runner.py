@@ -549,17 +549,24 @@ async def _shutdown_daemon_runtime(
     logger.info("shisad daemon stopped")
 
 
-async def _await_cleanup_terminal(cleanup_task: asyncio.Task[None]) -> None:
-    """Finish daemon cleanup before propagating repeated caller cancellation."""
+async def _shutdown_daemon_runtime_terminal(
+    *,
+    services: DaemonServices,
+    channel_pump_tasks: list[asyncio.Task[None]],
+    reminder_pump_task: asyncio.Task[None] | None,
+) -> None:
+    """Finish task-affine daemon cleanup before propagating repeated cancellation."""
 
     cancellation_requested = False
     while True:
         try:
-            await asyncio.shield(cleanup_task)
+            await _shutdown_daemon_runtime(
+                services=services,
+                channel_pump_tasks=channel_pump_tasks,
+                reminder_pump_task=reminder_pump_task,
+            )
             break
         except asyncio.CancelledError:
-            if cleanup_task.done() and cleanup_task.cancelled():
-                raise
             cancellation_requested = True
     if cancellation_requested:
         raise asyncio.CancelledError
@@ -642,11 +649,8 @@ async def run_daemon(
 
         await services.shutdown_event.wait()
     finally:
-        cleanup_task = asyncio.create_task(
-            _shutdown_daemon_runtime(
-                services=services,
-                channel_pump_tasks=channel_pump_tasks,
-                reminder_pump_task=reminder_pump_task,
-            )
+        await _shutdown_daemon_runtime_terminal(
+            services=services,
+            channel_pump_tasks=channel_pump_tasks,
+            reminder_pump_task=reminder_pump_task,
         )
-        await _await_cleanup_terminal(cleanup_task)
