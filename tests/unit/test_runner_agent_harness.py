@@ -259,6 +259,39 @@ def test_harness_tmux_socket_matches_session_default() -> None:
     assert result["RUNNER_TMUX_SESSION_NAME"] == "shisad-dev"
 
 
+def test_f3_harness_bootstrap_leaves_data_root_for_daemon_admission(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    env = {k: v for k, v in os.environ.items()}
+    env.update(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "RUNNER_TMUX_SOCKET_NAME": "f3-bootstrap",
+            "RUNNER_TMUX_SESSION_NAME": "f3-bootstrap",
+            "SHISAD_DATA_DIR": str(data_dir),
+            "SHISAD_SOCKET_PATH": str(tmp_path / "control.sock"),
+            "SHISAD_POLICY_PATH": str(tmp_path / "policy.yaml"),
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source runner/harness.sh >/dev/null\numask 0002\n"
+            "_ensure_bootstrap_dirs\n_daemon_log_path",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    log_path = Path(result.stdout.strip().splitlines()[-1])
+    assert not data_dir.exists()
+    assert log_path.parent != data_dir
+    assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
+
+
 def test_gh50_harness_socket_matches_xdg_daemon_default(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     result = _harness_env({"XDG_RUNTIME_DIR": str(runtime_dir)})

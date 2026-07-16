@@ -243,18 +243,56 @@ _export_defaults() {
   export SHISAD_SLACK_ENABLED="${SHISAD_SLACK_ENABLED:-false}"
 }
 
-_daemon_log_path() {
-  printf '%s\n' "${SHISAD_DATA_DIR}/daemon.log"
+_runner_instance_name() {
+  local socket_name session_name
+  socket_name="$(_tmux_socket_name)"
+  session_name="$(_tmux_session_name)"
+  case "${socket_name}" in
+    ""|.|..|*[!A-Za-z0-9_.-]*)
+      _die "unsafe runner tmux socket name: ${socket_name}"
+      ;;
+  esac
+  case "${session_name}" in
+    ""|.|..|*[!A-Za-z0-9_.-]*)
+      _die "unsafe runner tmux session name: ${session_name}"
+      ;;
+  esac
+  printf '%s--%s\n' "${socket_name}" "${session_name}"
 }
 
+
+_runner_state_root() {
+  printf '/tmp/shisad-runner-%s\n' "$(id -u)"
+}
+
+
+_runner_state_dir() {
+  printf '%s/%s\n' "$(_runner_state_root)" "$(_runner_instance_name)"
+}
+
+
+_ensure_runner_state_dir() {
+  local state_root state_dir
+  state_root="$(_runner_state_root)"
+  state_dir="$(_runner_state_dir)"
+  _ensure_private_dir "${state_root}" true
+  _ensure_private_dir "${state_dir}" true
+}
+
+
+_daemon_log_path() {
+  printf '%s/daemon.log\n' "$(_runner_state_dir)"
+}
+
+
 _daemon_pid_path() {
-  printf '%s\n' "${SHISAD_DATA_DIR}/daemon.pid"
+  printf '%s/daemon.pid\n' "$(_runner_state_dir)"
 }
 
 _ensure_bootstrap_dirs() {
-  mkdir -p "${SHISAD_DATA_DIR}"
+  _ensure_runner_state_dir
   mkdir -p "$(dirname "${SHISAD_POLICY_PATH}")"
-  _preflight_socket_parent true
+  _preflight_socket_parent false
 }
 
 _ensure_policy_file() {
@@ -485,8 +523,15 @@ _cmd_start() {
     daemon_args="--foreground"
   fi
 
-  # Run in tmux so the daemon survives across non-interactive shells.
-  _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "bash runner/daemon_entrypoint.sh ${daemon_args}"
+  # Run in tmux so the daemon survives across non-interactive shells. The
+  # runner log stays outside daemon-owned authority, allowing the daemon to
+  # create/admit SHISAD_DATA_DIR only after publishing its lifetime claim.
+  local entrypoint_command
+  printf -v entrypoint_command \
+    'bash runner/daemon_entrypoint.sh %q --log-path %q' \
+    "${daemon_args}" \
+    "${log_path}"
+  _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "${entrypoint_command}"
 
   # Wait for socket + status to succeed.
   local i

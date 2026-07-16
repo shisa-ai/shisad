@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 debug=false
+log_path=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --debug)
@@ -15,6 +16,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --foreground|--fg|-f)
       debug=false
+      ;;
+    --log-path)
+      shift
+      if [[ $# -eq 0 ]]; then
+        printf '%s\n' "error: --log-path requires an absolute path" >&2
+        exit 2
+      fi
+      log_path="$1"
       ;;
     *)
       printf '%s\n' "error: unknown daemon_entrypoint arg: $1" >&2
@@ -29,9 +38,16 @@ if [[ -z "${SHISAD_DATA_DIR:-}" ]]; then
   exit 2
 fi
 
-mkdir -p "${SHISAD_DATA_DIR}"
+if [[ -z "${log_path}" || "${log_path}" != /* ]]; then
+  printf '%s\n' "error: --log-path requires an absolute path" >&2
+  exit 2
+fi
+if [[ ! -d "$(dirname "${log_path}")" || -L "${log_path}" ]]; then
+  printf '%s\n' "error: unsafe runner log path: ${log_path}" >&2
+  exit 2
+fi
 
-log_path="${SHISAD_DATA_DIR}/daemon.log"
+umask 077
 exec >>"${log_path}" 2>&1
 
 if [[ "${debug}" == true ]]; then
