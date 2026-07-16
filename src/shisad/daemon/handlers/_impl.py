@@ -2485,7 +2485,8 @@ class HandlerImplementation(
                 or self._rate_limiter._by_session
                 or self._rate_limiter._by_tool_burst
             ),
-            "audit_empty": self._audit_log.entry_count == 0,
+            "audit_empty": self._audit_log.entry_count == 0
+            and not self._audit_log.state_degraded,
             "checkpoints_empty": not any(self._checkpoint_store._dir.iterdir()),
             "channel_state_empty": self._services.channel_state_store.runtime_cache_empty(),
             "channel_state_disk_empty": _dir_empty(channel_state_root),

@@ -20,6 +20,11 @@ from typing import Any, BinaryIO
 from pydantic import BaseModel, ValidationError, model_validator
 
 from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteFaultInjector,
+    DurableAppendError,
+    DurableAppendFaultInjector,
+    StatePersistenceDegradedError,
     atomic_write_bytes,
     durable_append_bytes,
     open_owned_regular_file,
@@ -74,6 +79,9 @@ class AuditLog:
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
         self._event_hashes: dict[str, str] = {}
+        self._persistence_degradation: DurableAppendError | AtomicWriteError | None = None
+        self._append_fault_injector: DurableAppendFaultInjector | None = None
+        self._reset_fault_injector: AtomicWriteFaultInjector | None = None
 
         # Resume chain from an existing owner-controlled regular file only.
         with self._open_log() as existing:
@@ -88,6 +96,21 @@ class AuditLog:
     def entry_count(self) -> int:
         return self._entry_count
 
+    @property
+    def state_degraded(self) -> bool:
+        return self._persistence_degradation is not None
+
+    def _require_available(self, *, transition: str) -> None:
+        degradation = self._persistence_degradation
+        if degradation is None:
+            return
+        raise StatePersistenceDegradedError(
+            authority="audit_log",
+            transition=transition,
+            stage=degradation.stage.value,
+            reason="publication_commit_uncertain",
+        )
+
     async def persist(self, event: BaseEvent) -> None:
         """Persist an event to the audit log (EventPersister protocol)."""
         data = event.model_dump(mode="json")
@@ -99,6 +122,7 @@ class AuditLog:
             if existing_hash != data_hash:
                 raise ValueError("audit_event_id_payload_conflict")
             return
+        self._require_available(transition="persist")
         action, target, decision, reasoning = self._derive_entry_metadata(event, data)
 
         entry = AuditEntry(
@@ -122,10 +146,16 @@ class AuditLog:
         # Compute this entry's hash (used as previous_hash for next entry)
         entry_hash = hashlib.sha256(entry_json.encode()).hexdigest()
 
-        durable_append_bytes(
-            self._log_path,
-            (entry_json + "\n").encode("utf-8"),
-        )
+        try:
+            durable_append_bytes(
+                self._log_path,
+                (entry_json + "\n").encode("utf-8"),
+                fault_injector=self._append_fault_injector,
+            )
+        except DurableAppendError as exc:
+            if exc.publication_may_have_committed:
+                self._persistence_degradation = exc
+            raise
 
         self._previous_hash = entry_hash
         self._entry_count += 1
@@ -232,14 +262,21 @@ class AuditLog:
         """Durably reset the complete audit authority without following links."""
 
         cleared = self._entry_count
-        atomic_write_bytes(
-            self._log_path,
-            b"",
-            require_safe_parent_ancestry=True,
-        )
+        try:
+            atomic_write_bytes(
+                self._log_path,
+                b"",
+                fault_injector=self._reset_fault_injector,
+                require_safe_parent_ancestry=True,
+            )
+        except AtomicWriteError as exc:
+            if exc.publication_may_have_committed:
+                self._persistence_degradation = exc
+            raise
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
         self._event_hashes.clear()
+        self._persistence_degradation = None
         return cleared
 
     def _open_log(self) -> AbstractContextManager[BinaryIO | None]:

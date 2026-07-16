@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteFaultInjector,
+    AtomicWriteStage,
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
@@ -33,6 +34,7 @@ from shisad.core.atomic_state import (
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     read_owner_only_regular_file,
+    remove_owner_controlled_sibling_entries,
     validate_owner_controlled_parent_ancestry,
 )
 from shisad.core.host_matching import host_matches
@@ -366,16 +368,17 @@ class InMemoryCredentialStore:
         signer_count = len(self._signer_keys)
         path = self._approval_store_path
         artifact_count = 0
-        corrupt_artifacts: list[Path] = []
         if path is not None:
             try:
                 path.lstat()
             except FileNotFoundError:
                 pass
+            except OSError:
+                # Atomic publication below owns target validation and converts
+                # any persistent status failure into the typed write contract.
+                pass
             else:
                 artifact_count += 1
-            corrupt_artifacts = list(path.parent.glob(f"{path.name}.corrupt.*"))
-            artifact_count += len(corrupt_artifacts)
             encoded = encode_versioned_json_snapshot(
                 {
                     "approval_factors": [],
@@ -390,9 +393,21 @@ class InMemoryCredentialStore:
                     fault_injector=self._approval_state_fault_injector,
                     require_safe_parent_ancestry=True,
                 )
+                artifact_count += remove_owner_controlled_sibling_entries(
+                    path,
+                    name_prefix=f"{path.name}.corrupt.",
+                )
             except AtomicWriteError as exc:
                 self._approval_persistence_degradation = exc
                 raise
+            except OSError as exc:
+                degradation = AtomicWriteError(
+                    path=path,
+                    stage=AtomicWriteStage.CLEANUP,
+                    publication_may_have_committed=True,
+                )
+                self._approval_persistence_degradation = degradation
+                raise degradation from exc
 
         self._set_empty_approval_state()
         self._approval_persistence_degradation = None
@@ -401,8 +416,6 @@ class InMemoryCredentialStore:
             schema_version=_APPROVAL_STORE_VERSION if path is not None else None,
         )
         self._record_durable_approval_state()
-        for artifact in corrupt_artifacts:
-            artifact.unlink(missing_ok=True)
         return factor_count, signer_count, artifact_count
 
     def approval_state_status(self) -> dict[str, Any]:

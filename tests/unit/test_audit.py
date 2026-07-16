@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from shisad.core.atomic_state import DurableAppendError
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    DurableAppendError,
+    DurableAppendStage,
+    StatePersistenceDegradedError,
+)
 from shisad.core.audit import AuditLog
 from shisad.core.events import (
     A2aIngressEvaluated,
@@ -116,6 +122,87 @@ async def test_f3_audit_reads_reject_symlink_redirect(
             audit.query()
 
     assert sentinel.read_bytes() == sentinel_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_stage",
+    [DurableAppendStage.FILE_FSYNC, DurableAppendStage.PARENT_FSYNC],
+)
+async def test_f3_audit_append_commit_uncertainty_blocks_until_reset(
+    audit_path: Path,
+    failure_stage: DurableAppendStage,
+) -> None:
+    audit = AuditLog(audit_path)
+
+    def _inject(stage: DurableAppendStage) -> None:
+        if stage is failure_stage:
+            raise OSError("injected audit append durability failure")
+
+    audit._append_fault_injector = _inject
+    with pytest.raises(DurableAppendError) as raised:
+        await audit.persist(
+            SessionCreated(
+                session_id=SessionId("uncertain-append"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+
+    assert raised.value.publication_may_have_committed is True
+    assert audit.state_degraded is True
+    with pytest.raises(StatePersistenceDegradedError, match="audit_log"):
+        await audit.persist(
+            SessionCreated(
+                session_id=SessionId("blocked-follow-up"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+
+    audit._append_fault_injector = None
+    audit.reset()
+    assert audit.state_degraded is False
+    await audit.persist(
+        SessionCreated(
+            session_id=SessionId("after-reconciliation"),
+            user_id=UserId("alice"),
+            actor="test",
+        )
+    )
+    assert audit.verify_chain() == (True, 1, "")
+
+
+@pytest.mark.asyncio
+async def test_f3_audit_reset_commit_uncertainty_blocks_until_retry(
+    audit_path: Path,
+) -> None:
+    audit = AuditLog(audit_path)
+    await _write_entries(audit, count=1)
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage is AtomicWriteStage.PARENT_FSYNC:
+            raise OSError("injected audit reset durability failure")
+
+    audit._reset_fault_injector = _inject
+    with pytest.raises(AtomicWriteError) as raised:
+        audit.reset()
+
+    assert raised.value.publication_may_have_committed is True
+    assert audit.state_degraded is True
+    with pytest.raises(StatePersistenceDegradedError, match="audit_log"):
+        await audit.persist(
+            SessionCreated(
+                session_id=SessionId("blocked-after-reset"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+
+    audit._reset_fault_injector = None
+    audit.reset()
+    assert audit.state_degraded is False
+    assert audit.entry_count == 0
 
 
 @pytest.mark.asyncio

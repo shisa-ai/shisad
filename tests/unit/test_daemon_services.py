@@ -1094,6 +1094,66 @@ async def test_f3_daemon_reset_clears_approval_durable_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_f3_approval_reset_rejects_parent_swap_before_corrupt_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        configured = tmp_path / "configured-approval"
+        configured.mkdir()
+        tmp_path.chmod(0o700)
+        configured.chmod(0o700)
+        approval_path = configured / "approval.json"
+        services.credential_store.set_approval_store_path(approval_path)
+        services.credential_store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="pre-reset-factor",
+                user_id="alice",
+                method="totp",
+                principal_id="alice",
+                secret_b32="JBSWY3DPEHPK3PXP",
+            )
+        )
+        corrupt_name = "approval.json.corrupt.race"
+        (configured / corrupt_name).write_bytes(b"owned corrupt artifact")
+        external = tmp_path / "external-approval"
+        external.mkdir()
+        sentinel = external / corrupt_name
+        sentinel.write_bytes(b"external approval sentinel")
+        parked = tmp_path / "parked-approval"
+        original_atomic_write = sys.modules[
+            "shisad.security.credentials"
+        ].atomic_write_bytes
+
+        def _publish_then_swap(path: Path, payload: bytes, **kwargs: object) -> None:
+            original_atomic_write(path, payload, **kwargs)
+            if Path(path) == approval_path:
+                configured.rename(parked)
+                configured.symlink_to(external, target_is_directory=True)
+
+        monkeypatch.setattr(
+            "shisad.security.credentials.atomic_write_bytes",
+            _publish_then_swap,
+        )
+
+        with pytest.raises(AtomicWriteError):
+            services.credential_store.reset_approval_state()
+
+        assert sentinel.read_bytes() == b"external approval sentinel"
+        assert services.credential_store.approval_state_degraded is True
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_f3_daemon_reset_clears_authority_load_degradation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1139,6 +1199,86 @@ async def test_f3_daemon_reset_clears_authority_load_degradation(
         assert services.selfmod_manager.state_degraded is False
         assert services.selfmod_manager._inventory.skills == {}
         assert services.selfmod_manager._inventory.behavior_packs == {}
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_surface", ["readmission", "runtime_overlay"])
+async def test_f3_selfmod_reset_post_wipe_failure_withdraws_skill_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_surface: str,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
+
+        def _fail_post_wipe(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise OSError(f"injected selfmod {failure_surface} failure")
+
+        if failure_surface == "readmission":
+            monkeypatch.setattr(
+                "shisad.selfmod.manager.ensure_owner_only_directory",
+                _fail_post_wipe,
+            )
+        else:
+            monkeypatch.setattr(
+                services.selfmod_manager,
+                "_apply_behavior_overlay",
+                _fail_post_wipe,
+            )
+
+        with pytest.raises(OSError, match=failure_surface):
+            await services.reset_test_state()
+
+        assert services.selfmod_manager.state_degraded is True
+        assert services.selfmod_manager.inventory_load_result().status.value == "corrupt"
+        assert services.skill_manager.state_degraded is True
+        assert services.skill_manager._skill_tool_map == {}
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_reset_readmission_failure_stays_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
+
+        def _fail_readmission(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise OSError("injected skill readmission failure")
+
+        monkeypatch.setattr(
+            "shisad.skills.manager.ensure_owner_only_directory",
+            _fail_readmission,
+        )
+
+        with pytest.raises(OSError, match="skill readmission"):
+            await services.reset_test_state()
+
+        assert services.skill_manager.state_degraded is True
+        assert services.skill_manager.inventory_load_result().status.value == "corrupt"
+        assert services.skill_manager._skill_tool_map == {}
     finally:
         await services.shutdown()
 

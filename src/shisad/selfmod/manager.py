@@ -1200,47 +1200,59 @@ class SelfModificationManager:
                 self._root,
                 allow_nested_directories=True,
             )
-        except OSError:
             self._inventory = _Inventory()
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="reset_failed",
-            )
-            self._apply_behavior_overlay()
-            self._block_coupled_skill_authority()
-            raise
-
-        self._inventory = _Inventory()
-        self._root_invalid = False
-        self._inventory_domain_marker_status = "missing"
-        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation = None
-        self._record_load_results = {
-            "proposal": StateLoadResult(StateLoadStatus.MISSING),
-            "change": StateLoadResult(StateLoadStatus.MISSING),
-            "incident": StateLoadResult(StateLoadStatus.MISSING),
-        }
-        ensure_owner_only_directory(self._root)
-        ensure_owner_only_directory(self._proposal_dir)
-        ensure_owner_only_directory(self._change_dir)
-        ensure_owner_only_directory(self._artifact_root)
-        if not self._ensure_inventory_domain_marker():
-            degradation = self._persistence_degradation
-            if degradation is not None:
-                raise degradation
-            raise RuntimeError("selfmod inventory reset marker publication failed")
-        try:
+            self._root_invalid = False
+            self._inventory_domain_marker_status = "missing"
+            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+            self._persistence_degradation = None
+            self._record_load_results = {
+                "proposal": StateLoadResult(StateLoadStatus.MISSING),
+                "change": StateLoadResult(StateLoadStatus.MISSING),
+                "incident": StateLoadResult(StateLoadStatus.MISSING),
+            }
+            ensure_owner_only_directory(self._root)
+            ensure_owner_only_directory(self._proposal_dir)
+            ensure_owner_only_directory(self._change_dir)
+            ensure_owner_only_directory(self._artifact_root)
+            if not self._ensure_inventory_domain_marker():
+                degradation = self._persistence_degradation
+                if degradation is not None:
+                    raise degradation
+                raise RuntimeError("selfmod inventory reset marker publication failed")
             self._persist_inventory_snapshot(self._inventory)
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            self._block_coupled_skill_authority()
+        except Exception as exc:
+            if isinstance(exc, AtomicWriteError):
+                self._persistence_degradation = exc
+            self._mark_reset_failed(apply_empty_overlay=True)
+            raise
+        try:
+            self._apply_behavior_overlay()
+        except Exception:
+            self._mark_reset_failed(apply_empty_overlay=False)
             raise
         self._state_load_result = StateLoadResult(
             StateLoadStatus.OK,
             schema_version=_SELFMOD_INVENTORY_VERSION,
         )
-        self._apply_behavior_overlay()
         return entry_count, artifact_count
+
+    def _mark_reset_failed(self, *, apply_empty_overlay: bool) -> None:
+        self._inventory = _Inventory()
+        self._root_invalid = True
+        self._inventory_domain_marker_status = "invalid"
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.CORRUPT,
+            reason="reset_failed",
+        )
+        self._record_load_results = {
+            "proposal": StateLoadResult(StateLoadStatus.CORRUPT, reason="reset_failed"),
+            "change": StateLoadResult(StateLoadStatus.CORRUPT, reason="reset_failed"),
+            "incident": StateLoadResult(StateLoadStatus.CORRUPT, reason="reset_failed"),
+        }
+        self._block_coupled_skill_authority()
+        if apply_empty_overlay:
+            with suppress(Exception):
+                self._apply_behavior_overlay()
 
     def inventory_state_status(self) -> dict[str, Any]:
         load_result = self._state_load_result

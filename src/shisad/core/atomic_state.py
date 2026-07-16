@@ -27,6 +27,7 @@ class AtomicWriteStage(StrEnum):
     FILE_FSYNC = "file_fsync"
     REPLACE = "replace"
     PARENT_FSYNC = "parent_fsync"
+    CLEANUP = "cleanup"
 
 
 AtomicWriteFaultInjector = Callable[[AtomicWriteStage], None]
@@ -350,6 +351,46 @@ def remove_owner_controlled_directory_contents(
     finally:
         if target_fd >= 0:
             os.close(target_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def remove_owner_controlled_sibling_entries(
+    path: Path,
+    *,
+    name_prefix: str,
+) -> int:
+    """Remove matching non-directory siblings through one held parent descriptor."""
+
+    if not name_prefix or Path(name_prefix).name != name_prefix:
+        raise ValueError("sibling cleanup prefix must be one path component")
+    absolute = _absolute_normalized_path(path)
+    parent_fd = -1
+    try:
+        _absolute, parent_fd, _created = _open_directory_chain(
+            absolute.parent,
+            create=False,
+            require_safe_ancestry=True,
+        )
+        parent_stat = os.fstat(parent_fd)
+        if parent_stat.st_uid != os.geteuid():
+            raise PermissionError(
+                f"state cleanup parent is not owner-controlled: {absolute.parent}"
+            )
+        matches: list[str] = []
+        for name in os.listdir(parent_fd):
+            if not name.startswith(name_prefix):
+                continue
+            entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if stat.S_ISDIR(entry_stat.st_mode):
+                raise OSError(f"state cleanup refuses matching directory: {name}")
+            matches.append(name)
+        for name in matches:
+            os.unlink(name, dir_fd=parent_fd)
+        if matches:
+            os.fsync(parent_fd)
+        return len(matches)
+    finally:
         if parent_fd >= 0:
             os.close(parent_fd)
 

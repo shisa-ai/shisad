@@ -431,33 +431,41 @@ class SkillManager:
                 self._storage_dir,
                 allow_nested_directories=True,
             )
-        except OSError:
             self._inventory = {}
-            self._external_degradation = ("skill_reset", "reset_failed")
-            raise
-
-        self._inventory = {}
-        self._storage_root_invalid = False
-        self._inventory_domain_marker_status = "missing"
-        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation = None
-        self._external_degradation = None
-        ensure_owner_only_directory(self._storage_dir)
-        if not self._ensure_inventory_domain_marker():
-            degradation = self._persistence_degradation
-            if degradation is not None:
-                raise degradation
-            raise RuntimeError("skill inventory reset marker publication failed")
-        try:
+            self._storage_root_invalid = False
+            self._inventory_domain_marker_status = "missing"
+            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+            self._persistence_degradation = None
+            self._external_degradation = None
+            ensure_owner_only_directory(self._storage_dir)
+            if not self._ensure_inventory_domain_marker():
+                degradation = self._persistence_degradation
+                if degradation is not None:
+                    raise degradation
+                raise RuntimeError("skill inventory reset marker publication failed")
             self._persist_inventory_snapshot({})
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
+        except Exception as exc:
+            if isinstance(exc, AtomicWriteError):
+                self._persistence_degradation = exc
+            self._mark_reset_failed()
             raise
         self._state_load_result = StateLoadResult(
             StateLoadStatus.OK,
             schema_version=_SKILL_INVENTORY_VERSION,
         )
         return entry_count, registration_count, pending_event_count
+
+    def _mark_reset_failed(self) -> None:
+        self._inventory = {}
+        self._storage_root_invalid = True
+        self._inventory_domain_marker_status = "invalid"
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.CORRUPT,
+            reason="reset_failed",
+        )
+        self._external_degradation = ("skill_reset", "reset_failed")
+        self._pending_registration_events.clear()
+        self._unregister_all_skill_tools()
 
     def state_status(self) -> dict[str, Any]:
         load_result = self._state_load_result
