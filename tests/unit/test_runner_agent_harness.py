@@ -292,6 +292,131 @@ def test_f3_harness_bootstrap_leaves_data_root_for_daemon_admission(tmp_path: Pa
     assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
 
 
+def test_f3_harness_missing_policy_overlap_fails_before_authority_parent_creation(
+    tmp_path: Path,
+) -> None:
+    cases = [
+        (
+            tmp_path / "beneath-data" / "data",
+            tmp_path / "control.sock",
+            tmp_path / "beneath-data" / "data" / "config" / "policy.yaml",
+            tmp_path / "beneath-data" / "data",
+        ),
+        (
+            tmp_path / "shared-parent" / "data",
+            tmp_path / "shared-parent" / "control.sock",
+            tmp_path / "shared-parent" / "policy.yaml",
+            tmp_path / "shared-parent",
+        ),
+    ]
+    for index, (data_dir, socket_path, policy_path, forbidden_parent) in enumerate(cases):
+        env = {k: v for k, v in os.environ.items()}
+        env.update(
+            {
+                "RUNNER_INHERIT_SHISAD_ENV": "1",
+                "RUNNER_TMUX_SOCKET_NAME": f"f3-policy-{index}",
+                "RUNNER_TMUX_SESSION_NAME": f"f3-policy-{index}",
+                "SHISAD_DATA_DIR": str(data_dir),
+                "SHISAD_SOCKET_PATH": str(socket_path),
+                "SHISAD_POLICY_PATH": str(policy_path),
+            }
+        )
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "source runner/harness.sh >/dev/null\n"
+                "_ensure_bootstrap_dirs\n_ensure_policy_file",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path.cwd()),
+            env=env,
+        )
+
+        assert result.returncode != 0
+        assert "policy" in result.stderr
+        assert not forbidden_parent.exists()
+
+
+def test_f3_harness_bootstraps_disjoint_policy_parent_owner_only(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    policy_path = tmp_path / "policy-parent" / "policy.yaml"
+    env = {k: v for k, v in os.environ.items()}
+    env.update(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "RUNNER_TMUX_SOCKET_NAME": "f3-policy-disjoint",
+            "RUNNER_TMUX_SESSION_NAME": "f3-policy-disjoint",
+            "SHISAD_DATA_DIR": str(data_dir),
+            "SHISAD_SOCKET_PATH": str(tmp_path / "control.sock"),
+            "SHISAD_POLICY_PATH": str(policy_path),
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source runner/harness.sh >/dev/null\numask 0002\n"
+            "_ensure_bootstrap_dirs\n_ensure_policy_file",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not data_dir.exists()
+    assert stat.S_IMODE(policy_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(policy_path.stat().st_mode) == 0o600
+
+
+def test_f3_harness_default_policy_uses_runner_state() -> None:
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("SHISAD_") and not k.startswith("RUNNER_TMUX_")
+    }
+    env.update(
+        {
+            "RUNNER_TMUX_SOCKET_NAME": "f3-default-policy",
+            "RUNNER_TMUX_SESSION_NAME": "f3-default-policy",
+        }
+    )
+    result = subprocess.run(
+        ["bash", "runner/harness.sh", "env"],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert Path(values["SHISAD_POLICY_PATH"]).parent == Path(values["DAEMON_LOG"]).parent
+
+
+def test_f3_harness_runner_state_key_is_injective() -> None:
+    first = _harness_env(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "RUNNER_TMUX_SOCKET_NAME": "a--b",
+            "RUNNER_TMUX_SESSION_NAME": "c",
+        }
+    )
+    second = _harness_env(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "RUNNER_TMUX_SOCKET_NAME": "a",
+            "RUNNER_TMUX_SESSION_NAME": "b--c",
+        }
+    )
+
+    assert first["DAEMON_LOG"] != second["DAEMON_LOG"]
+    assert first["DAEMON_PID"] != second["DAEMON_PID"]
+
+
 def test_gh50_harness_socket_matches_xdg_daemon_default(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     result = _harness_env({"XDG_RUNTIME_DIR": str(runtime_dir)})

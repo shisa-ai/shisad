@@ -218,7 +218,7 @@ _clear_inherited_shisad_env() {
 _export_defaults() {
   export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-dev}"
   export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-$(_default_user_socket_path)}"
-  export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$REPO_ROOT/.local/policy.yaml}"
+  export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$(_runner_state_dir)/policy.yaml}"
   export SHISAD_LOG_LEVEL="${SHISAD_LOG_LEVEL:-INFO}"
   export SHISAD_CODING_REPO_ROOT="${SHISAD_CODING_REPO_ROOT:-$REPO_ROOT}"
   export SHISAD_ASSISTANT_FS_ROOTS="${SHISAD_ASSISTANT_FS_ROOTS:-[\"$REPO_ROOT\"]}"
@@ -243,21 +243,14 @@ _export_defaults() {
   export SHISAD_SLACK_ENABLED="${SHISAD_SLACK_ENABLED:-false}"
 }
 
-_runner_instance_name() {
-  local socket_name session_name
-  socket_name="$(_tmux_socket_name)"
-  session_name="$(_tmux_session_name)"
-  case "${socket_name}" in
+_validate_runner_name() {
+  local kind="$1"
+  local name="$2"
+  case "${name}" in
     ""|.|..|*[!A-Za-z0-9_.-]*)
-      _die "unsafe runner tmux socket name: ${socket_name}"
+      _die "unsafe runner tmux ${kind} name: ${name}"
       ;;
   esac
-  case "${session_name}" in
-    ""|.|..|*[!A-Za-z0-9_.-]*)
-      _die "unsafe runner tmux session name: ${session_name}"
-      ;;
-  esac
-  printf '%s--%s\n' "${socket_name}" "${session_name}"
 }
 
 
@@ -266,16 +259,33 @@ _runner_state_root() {
 }
 
 
+_runner_socket_state_dir() {
+  local socket_name
+  socket_name="$(_tmux_socket_name)"
+  _validate_runner_name socket "${socket_name}"
+  printf '%s/sockets/%s\n' "$(_runner_state_root)" "${socket_name}"
+}
+
+
 _runner_state_dir() {
-  printf '%s/%s\n' "$(_runner_state_root)" "$(_runner_instance_name)"
+  local session_name
+  session_name="$(_tmux_session_name)"
+  _validate_runner_name session "${session_name}"
+  printf '%s/sessions/%s\n' "$(_runner_socket_state_dir)" "${session_name}"
 }
 
 
 _ensure_runner_state_dir() {
-  local state_root state_dir
+  local sockets_root socket_dir sessions_root state_dir state_root
   state_root="$(_runner_state_root)"
+  sockets_root="${state_root}/sockets"
+  socket_dir="$(_runner_socket_state_dir)"
+  sessions_root="${socket_dir}/sessions"
   state_dir="$(_runner_state_dir)"
   _ensure_private_dir "${state_root}" true
+  _ensure_private_dir "${sockets_root}" true
+  _ensure_private_dir "${socket_dir}" true
+  _ensure_private_dir "${sessions_root}" true
   _ensure_private_dir "${state_dir}" true
 }
 
@@ -291,8 +301,22 @@ _daemon_pid_path() {
 
 _ensure_bootstrap_dirs() {
   _ensure_runner_state_dir
-  mkdir -p "$(dirname "${SHISAD_POLICY_PATH}")"
   _preflight_socket_parent false
+}
+
+_absolute_normalized_path() {
+  local path="$1"
+  if [[ "${path}" != /* ]]; then
+    path="${PWD}/${path}"
+  fi
+  realpath -m -- "${path}"
+}
+
+_path_contains() {
+  local ancestor descendant
+  ancestor="$(_absolute_normalized_path "$1")"
+  descendant="$(_absolute_normalized_path "$2")"
+  [[ "${descendant}" == "${ancestor}" || "${descendant}" == "${ancestor}/"* ]]
 }
 
 _ensure_policy_file() {
@@ -305,6 +329,18 @@ _ensure_policy_file() {
     _die "policy template not found: ${template}"
   fi
 
+  local policy_parent socket_parent
+  policy_parent="$(dirname "${SHISAD_POLICY_PATH}")"
+  socket_parent="$(dirname "${SHISAD_SOCKET_PATH}")"
+  if _path_contains "${SHISAD_DATA_DIR}" "${SHISAD_POLICY_PATH}"; then
+    _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
+  fi
+  if [[ ! -d "${policy_parent}" ]] \
+    && { _path_contains "${policy_parent}" "${SHISAD_DATA_DIR}" \
+      || _path_contains "${policy_parent}" "${socket_parent}"; }; then
+    _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
+  fi
+  (umask 077 && mkdir -p -- "${policy_parent}")
   cp "${template}" "${SHISAD_POLICY_PATH}"
   chmod 600 "${SHISAD_POLICY_PATH}" || true
 }
