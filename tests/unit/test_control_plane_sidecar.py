@@ -569,6 +569,7 @@ async def test_f3_sidecar_spawn_cancellation_joins_spawned_child_and_closes_dupl
     spawn_started = asyncio.Event()
     allow_spawn = asyncio.Event()
     process_stopped = asyncio.Event()
+    wait_calls = 0
 
     class _Lease:
         fd = 0
@@ -591,6 +592,8 @@ async def test_f3_sidecar_spawn_cancellation_joins_spawned_child_and_closes_dupl
             process_stopped.set()
 
         async def wait(self) -> int:
+            nonlocal wait_calls
+            wait_calls += 1
             await process_stopped.wait()
             assert self.returncode is not None
             return self.returncode
@@ -625,6 +628,7 @@ async def test_f3_sidecar_spawn_cancellation_joins_spawned_child_and_closes_dupl
     with pytest.raises(asyncio.CancelledError):
         await start_task
     assert process.returncode == -signal.SIGTERM
+    assert wait_calls == 1
     assert lease_closed == 1
 
 
@@ -635,6 +639,7 @@ async def test_f3_sidecar_readiness_failure_joins_spawned_child(
 ) -> None:
     lease_closed = 0
     process_stopped = asyncio.Event()
+    wait_calls = 0
 
     class _Lease:
         fd = 0
@@ -657,6 +662,8 @@ async def test_f3_sidecar_readiness_failure_joins_spawned_child(
             process_stopped.set()
 
         async def wait(self) -> int:
+            nonlocal wait_calls
+            wait_calls += 1
             await process_stopped.wait()
             assert self.returncode is not None
             return self.returncode
@@ -686,6 +693,7 @@ async def test_f3_sidecar_readiness_failure_joins_spawned_child(
             authority_claim=claim,  # type: ignore[arg-type]
         )
     assert process.returncode == -signal.SIGTERM
+    assert wait_calls == 1
     assert lease_closed == 1
 
 
@@ -697,6 +705,7 @@ async def test_f3_sidecar_readiness_cancellation_joins_spawned_child(
     lease_closed = 0
     readiness_started = asyncio.Event()
     process_stopped = asyncio.Event()
+    wait_calls = 0
 
     class _Lease:
         fd = 0
@@ -719,6 +728,8 @@ async def test_f3_sidecar_readiness_cancellation_joins_spawned_child(
             process_stopped.set()
 
         async def wait(self) -> int:
+            nonlocal wait_calls
+            wait_calls += 1
             await process_stopped.wait()
             assert self.returncode is not None
             return self.returncode
@@ -754,6 +765,7 @@ async def test_f3_sidecar_readiness_cancellation_joins_spawned_child(
     with pytest.raises(asyncio.CancelledError):
         await start_task
     assert process.returncode == -signal.SIGTERM
+    assert wait_calls == 1
     assert lease_closed == 1
 
 
