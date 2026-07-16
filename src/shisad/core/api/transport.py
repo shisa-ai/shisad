@@ -166,6 +166,34 @@ def _unlink_socket_identity(socket_path: Path, identity_fd: int) -> bool:
     return True
 
 
+@dataclass(slots=True)
+class OwnedSocketIdentity:
+    """An open owner-socket inode used for replacement-safe cleanup."""
+
+    path: Path
+    _fd: int
+
+    @classmethod
+    def capture(cls, path: Path) -> OwnedSocketIdentity:
+        return cls(path=path, _fd=_open_owned_socket_identity(path))
+
+    @property
+    def closed(self) -> bool:
+        return self._fd < 0
+
+    def unlink_if_current(self) -> bool:
+        if self.closed:
+            return False
+        return _unlink_socket_identity(self.path, self._fd)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        fd = self._fd
+        self._fd = -1
+        os.close(fd)
+
+
 async def _remove_owned_stale_socket(socket_path: Path) -> None:
     try:
         identity_fd = _open_owned_socket_identity(socket_path)
@@ -348,7 +376,7 @@ class ControlServer:
     ) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
-        self._socket_identity_fd: int | None = None
+        self._socket_identity: OwnedSocketIdentity | None = None
         self._methods: dict[str, TypedMethodRegistration] = {}
         self._event_subscribers: dict[asyncio.StreamWriter, _EventSubscription] = {}
         self._event_queue_size = event_queue_size
@@ -378,20 +406,20 @@ class ControlServer:
             self._handle_connection,
             path=str(self._socket_path),
         )
-        identity_fd: int | None = None
+        identity: OwnedSocketIdentity | None = None
         try:
-            identity_fd = _open_owned_socket_identity(self._socket_path)
+            identity = OwnedSocketIdentity.capture(self._socket_path)
             os.chmod(self._socket_path, 0o600, follow_symlinks=False)
         except BaseException:
             server.close()
             await server.wait_closed()
-            if identity_fd is not None:
+            if identity is not None:
                 with contextlib.suppress(OSError):
-                    _unlink_socket_identity(self._socket_path, identity_fd)
-                os.close(identity_fd)
+                    identity.unlink_if_current()
+                identity.close()
             raise
         self._server = server
-        self._socket_identity_fd = identity_fd
+        self._socket_identity = identity
         logger.info("Control API listening on %s", self._socket_path)
 
     async def stop(self) -> None:
@@ -405,13 +433,13 @@ class ControlServer:
         for writer in list(self._event_subscribers):
             await self._remove_subscription(writer, close_writer=True)
 
-        identity_fd = self._socket_identity_fd
-        self._socket_identity_fd = None
-        if identity_fd is not None:
+        identity = self._socket_identity
+        self._socket_identity = None
+        if identity is not None:
             try:
-                _unlink_socket_identity(self._socket_path, identity_fd)
+                identity.unlink_if_current()
             finally:
-                os.close(identity_fd)
+                identity.close()
 
         logger.info("Control API stopped")
 

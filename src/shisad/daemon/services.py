@@ -1019,6 +1019,7 @@ class DaemonServices:
             control_plane_sidecar = await start_control_plane_sidecar(
                 data_dir=config.data_dir,
                 policy_path=config.policy_path,
+                authority_claim=authority_claim,
                 assistant_fs_roots=list(config.assistant_fs_roots),
                 startup_timeout_seconds=config.control_plane_startup_timeout_seconds,
             )

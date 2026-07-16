@@ -616,10 +616,17 @@ async def test_h1_daemon_services_build_fails_closed_when_control_plane_sidecar_
         *,
         data_dir,
         policy_path,
+        authority_claim,
         assistant_fs_roots,
         startup_timeout_seconds,
     ):
-        _ = (data_dir, policy_path, assistant_fs_roots, startup_timeout_seconds)
+        _ = (
+            data_dir,
+            policy_path,
+            authority_claim,
+            assistant_fs_roots,
+            startup_timeout_seconds,
+        )
         raise ControlPlaneUnavailableError(reason_code="control_plane.startup_failed")
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _raise_sidecar)
@@ -656,10 +663,17 @@ async def test_h1_daemon_services_closes_started_sidecar_on_late_build_failure(
         *,
         data_dir,
         policy_path,
+        authority_claim,
         assistant_fs_roots,
         startup_timeout_seconds,
     ):
-        _ = (data_dir, policy_path, assistant_fs_roots, startup_timeout_seconds)
+        _ = (
+            data_dir,
+            policy_path,
+            authority_claim,
+            assistant_fs_roots,
+            startup_timeout_seconds,
+        )
         return _FakeSidecar()
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
@@ -685,7 +699,7 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    captured: dict[str, float] = {}
+    captured: dict[str, object] = {}
 
     class _FakeSidecar:
         def __init__(self) -> None:
@@ -697,7 +711,8 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
             return True
 
         async def close(self) -> None:
-            return None
+            claim = captured["authority_claim"]
+            captured["claim_released_during_sidecar_close"] = claim.released
 
     async def _fake_start(  # type: ignore[no-untyped-def]
         *,
@@ -705,9 +720,11 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
         policy_path,
         assistant_fs_roots,
         startup_timeout_seconds,
+        authority_claim,
     ):
         _ = (data_dir, policy_path, assistant_fs_roots)
         captured["startup_timeout_seconds"] = float(startup_timeout_seconds)
+        captured["authority_claim"] = authority_claim
         return _FakeSidecar()
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
@@ -720,8 +737,11 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
     services = await DaemonServices.build(config)
     try:
         assert captured["startup_timeout_seconds"] == pytest.approx(12.5)
+        assert captured["authority_claim"] is services.authority_claim
     finally:
         await services.shutdown()
+    assert captured["claim_released_during_sidecar_close"] is False
+    assert services.authority_claim.released is True
 
 
 @pytest.mark.asyncio
@@ -748,10 +768,11 @@ async def test_daemon_services_uses_default_control_plane_startup_timeout(
         *,
         data_dir,
         policy_path,
+        authority_claim,
         assistant_fs_roots,
         startup_timeout_seconds,
     ):
-        _ = (data_dir, policy_path, assistant_fs_roots)
+        _ = (data_dir, policy_path, authority_claim, assistant_fs_roots)
         captured["startup_timeout_seconds"] = float(startup_timeout_seconds)
         return _FakeSidecar()
 

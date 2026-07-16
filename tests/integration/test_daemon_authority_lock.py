@@ -6,6 +6,7 @@ import asyncio
 import multiprocessing
 import os
 import queue
+import signal
 import socket
 import stat
 import tempfile
@@ -32,6 +33,7 @@ from shisad.core.authority import (
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
+from shisad.security.control_plane.sidecar import start_control_plane_sidecar
 from tests.helpers.daemon import clear_remote_provider_env
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
@@ -59,6 +61,36 @@ def _hold_authority_claim(
     ready.set()
     release.wait(timeout=10)
     claim.release()
+
+
+def _hold_claimed_sidecar_after_parent_ready(
+    data_dir: str,
+    socket_path: str,
+    policy_path: str,
+    outcome: Any,
+) -> None:
+    async def _run() -> None:
+        config = DaemonConfig(
+            data_dir=Path(data_dir),
+            socket_path=Path(socket_path),
+            policy_path=Path(policy_path),
+        )
+        claim = acquire_daemon_authority_claim(config)
+        initialize_claimed_daemon_authorities(config, claim)
+        try:
+            handle = await start_control_plane_sidecar(
+                data_dir=config.data_dir,
+                policy_path=config.policy_path,
+                authority_claim=claim,
+            )
+        except BaseException as exc:
+            outcome.put(("error", type(exc).__name__, str(exc)))
+            claim.release()
+            return
+        outcome.put(("ready", handle.process.pid))
+        await asyncio.Event().wait()
+
+    asyncio.run(_run())
 
 
 def _config(tmp_path: Path, *, name: str, socket_name: str) -> DaemonConfig:
@@ -217,6 +249,64 @@ def test_f3_fresh_config_union_claim_narrows_without_admission_gap(
         if prior_successor is not None:
             prior_successor.release()
         claim.release()
+
+
+def test_f3_claim_duplicates_verifiable_sidecar_lease(tmp_path: Path) -> None:
+    config = _config(tmp_path, name="lease", socket_name="lease.sock")
+    claim = acquire_daemon_authority_claim(config)
+    lease = claim.duplicate_lease()
+    try:
+        candidates = authority.verify_inherited_daemon_authority_lease(
+            lease,
+            data_dir=config.data_dir,
+        )
+        assert any(
+            candidate.role == "data_root"
+            and candidate.path == config.data_dir.resolve(strict=False)
+            for candidate in candidates
+        )
+        with pytest.raises(AuthorityClaimError, match="data root"):
+            authority.verify_inherited_daemon_authority_lease(
+                lease,
+                data_dir=tmp_path / "another-data-root",
+            )
+        wrong_path_lease = authority.DaemonAuthorityLease(
+            fd=os.dup(lease.fd),
+            record_path=tmp_path / "not-the-claim.json",
+        )
+        try:
+            with pytest.raises(AuthorityClaimError, match="record path"):
+                authority.verify_inherited_daemon_authority_lease(
+                    wrong_path_lease,
+                    data_dir=config.data_dir,
+                )
+        finally:
+            wrong_path_lease.close()
+    finally:
+        lease.close()
+        claim.release()
+
+
+def test_f3_inherited_lease_keeps_record_visible_after_parent_reference_release(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, name="lease-reference", socket_name="lease-reference.sock")
+    claim = acquire_daemon_authority_claim(config)
+    lease = claim.duplicate_lease()
+    successor: DaemonAuthorityClaim | None = None
+    try:
+        claim.release()
+        assert lease.record_path.exists()
+        with pytest.raises(AuthorityConflictError):
+            acquire_daemon_authority_claim(config)
+
+        lease.close()
+        successor = acquire_daemon_authority_claim(config)
+    finally:
+        lease.close()
+        claim.release()
+        if successor is not None:
+            successor.release()
 
 
 def test_f3_fresh_config_union_waits_without_holding_registry_guard(
@@ -1331,3 +1421,85 @@ async def test_f3_run_daemon_consumes_transferred_authority_claim(
             await client.close()
             await asyncio.wait_for(daemon_task, timeout=3)
         assert claim.released
+
+
+@pytest.mark.asyncio
+async def test_f3_orphan_sidecar_retains_claim_until_listener_and_writers_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = _config(tmp_path, name="orphan", socket_name="orphan.sock")
+    context = multiprocessing.get_context("spawn")
+    outcome = context.Queue()
+    parent = context.Process(
+        target=_hold_claimed_sidecar_after_parent_ready,
+        args=(
+            os.fspath(config.data_dir),
+            os.fspath(config.socket_path),
+            os.fspath(config.policy_path),
+            outcome,
+        ),
+    )
+    sidecar_pid: int | None = None
+    successor_claim: DaemonAuthorityClaim | None = None
+    successor_handle: Any = None
+    parent.start()
+    try:
+        ready = outcome.get(timeout=20)
+        assert ready[0] == "ready", ready
+        sidecar_pid = int(ready[1])
+        os.kill(sidecar_pid, signal.SIGSTOP)
+        parent.kill()
+        parent.join(timeout=5)
+        assert parent.exitcode is not None
+
+        root_stat = config.data_dir.stat()
+        children = sorted(path.name for path in config.data_dir.iterdir())
+        with pytest.raises(AuthorityConflictError):
+            acquire_daemon_authority_claim(config)
+        after_conflict = config.data_dir.stat()
+        assert (after_conflict.st_ino, after_conflict.st_mode, after_conflict.st_mtime_ns) == (
+            root_stat.st_ino,
+            root_stat.st_mode,
+            root_stat.st_mtime_ns,
+        )
+        assert sorted(path.name for path in config.data_dir.iterdir()) == children
+
+        os.kill(sidecar_pid, signal.SIGCONT)
+        deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            try:
+                successor_claim = acquire_daemon_authority_claim(config)
+                break
+            except AuthorityConflictError:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise
+                await asyncio.sleep(0.05)
+
+        successor_handle = await start_control_plane_sidecar(
+            data_dir=config.data_dir,
+            policy_path=config.policy_path,
+            authority_claim=successor_claim,
+        )
+        successor_identity = successor_handle.socket_path.stat()
+        await asyncio.sleep(1.1)
+        current_identity = successor_handle.socket_path.stat()
+        assert (current_identity.st_dev, current_identity.st_ino) == (
+            successor_identity.st_dev,
+            successor_identity.st_ino,
+        )
+        assert await successor_handle.client.ping() is True
+    finally:
+        if parent.is_alive():
+            parent.kill()
+            parent.join(timeout=5)
+        if sidecar_pid is not None:
+            with suppress(ProcessLookupError):
+                os.kill(sidecar_pid, signal.SIGCONT)
+            with suppress(ProcessLookupError):
+                os.kill(sidecar_pid, signal.SIGTERM)
+        if successor_handle is not None:
+            await successor_handle.close()
+        if successor_claim is not None:
+            successor_claim.release()

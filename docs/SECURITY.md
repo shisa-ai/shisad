@@ -333,6 +333,17 @@ claim remains held until mutable services and listeners stop. This is a local
 mutable-file authority boundary, not a multi-host or remote provider-account
 lease.
 
+The contained control-plane sidecar inherits a duplicate of that exact locked
+claim record across `exec`, verifies the owner-only record identity and its
+exact data-root candidate before sidecar mutation, and retains the descriptor
+until its listener and control-state writers stop. Graceful daemon shutdown
+joins the sidecar before releasing the parent's claim reference. If the parent
+dies abruptly, the inherited descriptor keeps the visible registry record
+active until the sidecar's parent watcher completes shutdown; releasing only
+the parent reference cannot unlink a record that still has an inherited lock
+holder. Sidecar fallback cleanup is bound to the socket inode captured after
+readiness and does not unlink a replacement socket.
+
 `restart --fresh-config` reloads the candidate configuration before writing its
 secret-bearing prior-config snapshot. It reserves the prior data/backup tree and
 the complete refreshed authority set in one bounded same-host admission, then

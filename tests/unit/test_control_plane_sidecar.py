@@ -8,11 +8,20 @@ import json
 import os
 import signal
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from shisad.core.api.transport import ControlClient, JsonRpcCallError
+import shisad.security.control_plane.sidecar as sidecar_module
+from shisad.core.api.transport import ControlClient, ControlServer, JsonRpcCallError
+from shisad.core.authority import (
+    AuthorityClaimError,
+    DaemonAuthorityClaim,
+    acquire_daemon_authority_claim,
+    initialize_claimed_daemon_authorities,
+)
+from shisad.core.config import DaemonConfig
 from shisad.core.request_context import RequestContext
 from shisad.core.types import Capability
 from shisad.security.control_plane.consensus import ConsensusDecision
@@ -26,6 +35,7 @@ from shisad.security.control_plane.schema import (
 from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
     ControlPlaneSidecarClient,
+    ControlPlaneSidecarHandle,
     ControlPlaneUnavailableError,
     _ControlPlaneSidecarHandlers,
     _EvaluateActionParams,
@@ -43,6 +53,32 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "false")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
+
+
+async def _start_claimed_sidecar(
+    *,
+    data_dir: Path,
+    policy_path: Path,
+    startup_timeout_seconds: float = 15.0,
+) -> tuple[ControlPlaneSidecarHandle, DaemonAuthorityClaim]:
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=data_dir / "daemon.sock",
+        policy_path=policy_path,
+    )
+    claim = acquire_daemon_authority_claim(config)
+    initialize_claimed_daemon_authorities(config, claim)
+    try:
+        handle = await start_control_plane_sidecar(
+            data_dir=data_dir,
+            policy_path=policy_path,
+            authority_claim=claim,
+            startup_timeout_seconds=startup_timeout_seconds,
+        )
+    except BaseException:
+        claim.release()
+        raise
+    return handle, claim
 
 
 @pytest.mark.parametrize("failed_trace_write", [1, 2])
@@ -323,7 +359,7 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
     )
@@ -388,6 +424,7 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
         assert "action_observed" in event_types
     finally:
         await handle.close()
+        claim.release()
 
     assert handle.process.returncode is not None
     assert not handle.socket_path.exists()
@@ -399,7 +436,7 @@ async def test_h1_control_plane_sidecar_respects_overridden_startup_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
         startup_timeout_seconds=7.25,
@@ -409,6 +446,204 @@ async def test_h1_control_plane_sidecar_respects_overridden_startup_timeout(
         assert await handle.client.ping() is True
     finally:
         await handle.close()
+        claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_rejects_mismatched_claim_before_target_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    claimed_config = DaemonConfig(
+        data_dir=tmp_path / "claimed-data",
+        socket_path=tmp_path / "claimed.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    claim = acquire_daemon_authority_claim(claimed_config)
+    unclaimed_data = tmp_path / "unclaimed-parent" / "data"
+    try:
+        with pytest.raises(AuthorityClaimError, match="data root"):
+            await start_control_plane_sidecar(
+                data_dir=unclaimed_data,
+                policy_path=claimed_config.policy_path,
+                authority_claim=claim,
+            )
+        assert not unclaimed_data.parent.exists()
+    finally:
+        claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_spawn_failure_closes_parent_lease_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lease_closed = 0
+
+    class _Lease:
+        fd = 0
+        record_path = tmp_path / "claim.json"
+
+        def close(self) -> None:
+            nonlocal lease_closed
+            lease_closed += 1
+
+    lease = _Lease()
+    claim = SimpleNamespace(duplicate_lease=lambda: lease)
+
+    async def _fail_spawn(*_args, **_kwargs):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(
+        sidecar_module,
+        "verify_inherited_daemon_authority_lease",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(sidecar_module.asyncio, "create_subprocess_exec", _fail_spawn)
+
+    with pytest.raises(OSError, match="spawn failed"):
+        await start_control_plane_sidecar(
+            data_dir=tmp_path / "data",
+            policy_path=tmp_path / "policy.yaml",
+            authority_claim=claim,  # type: ignore[arg-type]
+        )
+
+    assert lease_closed == 1
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_spawn_cancellation_joins_spawned_child_and_closes_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lease_closed = 0
+    spawn_started = asyncio.Event()
+    allow_spawn = asyncio.Event()
+    process_stopped = asyncio.Event()
+
+    class _Lease:
+        fd = 0
+        record_path = tmp_path / "claim.json"
+
+        def close(self) -> None:
+            nonlocal lease_closed
+            lease_closed += 1
+
+    class _Process:
+        pid = os.getpid()
+        returncode: int | None = None
+
+        def terminate(self) -> None:
+            self.returncode = -signal.SIGTERM
+            process_stopped.set()
+
+        def kill(self) -> None:
+            self.returncode = -signal.SIGKILL
+            process_stopped.set()
+
+        async def wait(self) -> int:
+            await process_stopped.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    lease = _Lease()
+    process = _Process()
+    claim = SimpleNamespace(duplicate_lease=lambda: lease)
+
+    async def _delayed_spawn(*_args, **_kwargs):
+        spawn_started.set()
+        await allow_spawn.wait()
+        return process
+
+    monkeypatch.setattr(
+        sidecar_module,
+        "verify_inherited_daemon_authority_lease",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(sidecar_module.asyncio, "create_subprocess_exec", _delayed_spawn)
+
+    start_task = asyncio.create_task(
+        start_control_plane_sidecar(
+            data_dir=tmp_path / "data",
+            policy_path=tmp_path / "policy.yaml",
+            authority_claim=claim,  # type: ignore[arg-type]
+        )
+    )
+    await spawn_started.wait()
+    start_task.cancel()
+    allow_spawn.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+    assert process.returncode == -signal.SIGTERM
+    assert lease_closed == 1
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_close_reaches_process_terminal_before_reraising_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle, claim = await _start_claimed_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    os.kill(handle.process.pid, signal.SIGSTOP)
+    close_task = asyncio.create_task(handle.close())
+    try:
+        deadline = asyncio.get_running_loop().time() + 1
+        while handle._close_task is None:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("sidecar terminal close task did not start")
+            await asyncio.sleep(0)
+        close_task.cancel()
+        await asyncio.sleep(0.05)
+        assert not close_task.done()
+        assert handle.process.returncode is None
+
+        os.kill(handle.process.pid, signal.SIGCONT)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(close_task, timeout=3)
+        assert handle.process.returncode is not None
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(handle.process.pid, signal.SIGCONT)
+        with contextlib.suppress(asyncio.CancelledError):
+            await handle.close()
+        claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_handle_close_does_not_unlink_successor_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle, claim = await _start_claimed_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    successor = ControlServer(handle.socket_path)
+    try:
+        handle.process.kill()
+        await handle.process.wait()
+        handle.socket_path.unlink()
+        await successor.start()
+        successor_stat = handle.socket_path.stat()
+
+        await handle.close()
+
+        current_stat = handle.socket_path.stat()
+        assert (current_stat.st_dev, current_stat.st_ino) == (
+            successor_stat.st_dev,
+            successor_stat.st_ino,
+        )
+    finally:
+        await successor.stop()
+        await handle.close()
+        claim.release()
 
 
 @pytest.mark.asyncio
@@ -417,7 +652,7 @@ async def test_u5_control_plane_sidecar_round_trips_operator_owned_cli_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
     )
@@ -460,6 +695,7 @@ async def test_u5_control_plane_sidecar_round_trips_operator_owned_cli_metadata(
         assert "action_monitor:untrusted_input_side_effect" not in vote_reason_codes
     finally:
         await handle.close()
+        claim.release()
 
 
 @pytest.mark.asyncio
@@ -468,7 +704,7 @@ async def test_h1_control_plane_sidecar_surfaces_semantic_rpc_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
     )
@@ -499,6 +735,7 @@ async def test_h1_control_plane_sidecar_surfaces_semantic_rpc_errors(
         assert "inactive plan" in excinfo.value.message
     finally:
         await handle.close()
+        claim.release()
 
 
 @pytest.mark.asyncio
@@ -507,7 +744,7 @@ async def test_f2_control_plane_sidecar_cancels_exact_stage2_correlation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
     )
@@ -553,6 +790,7 @@ async def test_f2_control_plane_sidecar_cancels_exact_stage2_correlation(
         assert await handle.client.active_plan_hash(origin.session_id) == ""
     finally:
         await handle.close()
+        claim.release()
 
 
 @pytest.mark.asyncio
@@ -561,7 +799,7 @@ async def test_h1_control_plane_sidecar_fails_closed_after_midrun_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
     )
@@ -572,6 +810,7 @@ async def test_h1_control_plane_sidecar_fails_closed_after_midrun_exit(
             await handle.client.ping()
     finally:
         await handle.close()
+        claim.release()
 
 
 @pytest.mark.asyncio
@@ -580,21 +819,37 @@ async def test_h1_control_plane_sidecar_rejects_client_when_parent_pid_mismatche
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    socket_path = tmp_path / "data" / "control_plane" / "sidecar.sock"
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "shisad.security.control_plane.sidecar",
-        "--socket-path",
-        str(socket_path),
-        "--data-dir",
-        str(tmp_path / "data"),
-        "--policy-path",
-        str(tmp_path / "policy.yaml"),
-        "--parent-pid",
-        str(os.getpid() + 99999),
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "data" / "daemon.sock",
+        policy_path=tmp_path / "policy.yaml",
     )
+    claim = acquire_daemon_authority_claim(config)
+    initialize_claimed_daemon_authorities(config, claim)
+    socket_path = config.data_dir / "control_plane" / "sidecar.sock"
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    lease = claim.duplicate_lease()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "shisad.security.control_plane.sidecar",
+            "--socket-path",
+            str(socket_path),
+            "--data-dir",
+            str(config.data_dir),
+            "--policy-path",
+            str(config.policy_path),
+            "--parent-pid",
+            str(os.getpid() + 99999),
+            "--authority-lease-fd",
+            str(lease.fd),
+            "--authority-record-path",
+            str(lease.record_path),
+            pass_fds=(lease.fd,),
+        )
+    finally:
+        lease.close()
     client = ControlClient(socket_path)
     try:
         deadline = asyncio.get_running_loop().time() + 5.0
@@ -623,6 +878,7 @@ async def test_h1_control_plane_sidecar_rejects_client_when_parent_pid_mismatche
             except TimeoutError:
                 process.kill()
                 await process.wait()
+        claim.release()
 
 
 @pytest.mark.asyncio
@@ -631,7 +887,7 @@ async def test_h3_control_plane_sidecar_round_trips_denied_action_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    handle = await start_control_plane_sidecar(
+    handle, claim = await _start_claimed_sidecar(
         data_dir=tmp_path / "data",
         policy_path=tmp_path / "policy.yaml",
     )
@@ -675,3 +931,4 @@ async def test_h3_control_plane_sidecar_round_trips_denied_action_observation(
         assert "reason" not in deny_event["data"]
     finally:
         await handle.close()
+        claim.release()

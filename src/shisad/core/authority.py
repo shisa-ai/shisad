@@ -74,6 +74,26 @@ class DaemonAuthorityCandidate:
         }
 
 
+@dataclass(slots=True)
+class DaemonAuthorityLease:
+    """A duplicated claim fd transferred to a contained child process."""
+
+    fd: int
+    record_path: Path
+
+    @property
+    def closed(self) -> bool:
+        return self.fd < 0
+
+    def close(self) -> None:
+        if self.fd < 0:
+            return
+        fd = self.fd
+        self.fd = -1
+        with suppress(OSError):
+            os.close(fd)
+
+
 @dataclass(frozen=True, slots=True)
 class _SiblingPattern:
     """Finite machine-defined sibling name family owned by one component."""
@@ -169,14 +189,28 @@ class DaemonAuthorityClaim:
             _write_claim_record(fd, candidates)
             self._candidates = candidates
 
+    def duplicate_lease(self) -> DaemonAuthorityLease:
+        """Duplicate this exact locked record for an exec-contained child."""
+
+        with _registry_guard(self._registry_root):
+            self.verify(self._candidates)
+            fd = self._fd
+            if fd is None:
+                raise AuthorityClaimError("daemon authority claim has already been released")
+            return DaemonAuthorityLease(
+                fd=os.dup(fd),
+                record_path=self._record_path,
+            )
+
     def release(self) -> None:
-        """Release this claim and durably remove its registry record."""
+        """Release this reference and remove its record after inherited holders."""
 
         fd = self._fd
         if fd is None:
             return
         self._fd = None
         cleanup_error: OSError | AuthorityRegistryError | None = None
+        fd_open = True
         try:
             with _registry_guard(self._registry_root):
                 try:
@@ -192,12 +226,44 @@ class DaemonAuthorityClaim:
                         raise AuthorityRegistryError(
                             "daemon authority claim record identity changed during release"
                         )
-                    self._record_path.unlink()
-                    _fsync_directory(self._registry_root)
+                    record_identity = (record_stat.st_dev, record_stat.st_ino)
+                    os.close(fd)
+                    fd_open = False
+                    try:
+                        probe_fd = _open_owner_file(self._record_path)
+                    except OSError as exc:
+                        raise AuthorityRegistryError(
+                            "cannot re-open daemon authority claim during release"
+                        ) from exc
+                    try:
+                        inherited_holder = False
+                        try:
+                            fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except OSError as exc:
+                            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                                raise AuthorityRegistryError(
+                                    "cannot inspect daemon authority lease references"
+                                ) from exc
+                            inherited_holder = True
+                        if not inherited_holder:
+                            probe_stat = os.fstat(probe_fd)
+                            current_stat = self._record_path.lstat()
+                            if (
+                                (probe_stat.st_dev, probe_stat.st_ino) != record_identity
+                                or (current_stat.st_dev, current_stat.st_ino) != record_identity
+                            ):
+                                raise AuthorityRegistryError(
+                                    "daemon authority claim record identity changed during release"
+                                )
+                            self._record_path.unlink()
+                            _fsync_directory(self._registry_root)
+                    finally:
+                        os.close(probe_fd)
         except (OSError, AuthorityRegistryError) as exc:
             cleanup_error = exc
         finally:
-            os.close(fd)
+            if fd_open:
+                os.close(fd)
         if cleanup_error is not None:
             raise AuthorityRegistryError(
                 "failed to clean daemon authority claim"
@@ -516,6 +582,54 @@ def _read_claim_record(fd: int, path: Path) -> tuple[DaemonAuthorityCandidate, .
             )
         )
     return tuple(candidates)
+
+
+def verify_inherited_daemon_authority_lease(
+    lease: DaemonAuthorityLease,
+    *,
+    data_dir: Path,
+) -> tuple[DaemonAuthorityCandidate, ...]:
+    """Verify an inherited record fd covers the sidecar's exact data root."""
+
+    if lease.closed:
+        raise AuthorityClaimError("inherited daemon authority lease is closed")
+    record_path = _canonical_path(lease.record_path)
+    registry_root = _canonical_path(_registry_root())
+    if (
+        record_path.parent != registry_root
+        or not record_path.name.startswith(_CLAIM_PREFIX)
+        or not record_path.name.endswith(_CLAIM_SUFFIX)
+    ):
+        raise AuthorityClaimError("inherited daemon authority record path is invalid")
+    try:
+        record_stat = os.fstat(lease.fd)
+        path_stat = record_path.lstat()
+    except OSError as exc:
+        raise AuthorityClaimError("inherited daemon authority record is unavailable") from exc
+    if (record_stat.st_dev, record_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+        raise AuthorityClaimError("inherited daemon authority record identity changed")
+    if (
+        not stat.S_ISREG(record_stat.st_mode)
+        or record_stat.st_uid != os.getuid()
+        or record_stat.st_nlink != 1
+        or stat.S_IMODE(record_stat.st_mode) != 0o600
+    ):
+        raise AuthorityClaimError("inherited daemon authority record is unsafe")
+    try:
+        fcntl.flock(lease.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        raise AuthorityClaimError("inherited daemon authority lock is not held") from exc
+    candidates = _read_claim_record(lease.fd, record_path)
+    canonical_data_dir = _canonical_path(data_dir)
+    if not any(
+        candidate.role == "data_root" and candidate.path == canonical_data_dir
+        for candidate in candidates
+    ):
+        raise AuthorityClaimError(
+            "inherited daemon authority lease does not cover the exact data root"
+        )
+    os.set_inheritable(lease.fd, False)
+    return candidates
 
 
 def _active_claims(root: Path) -> list[tuple[Path, tuple[DaemonAuthorityCandidate, ...]]]:
