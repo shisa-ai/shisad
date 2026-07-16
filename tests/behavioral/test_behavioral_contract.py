@@ -5979,8 +5979,9 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
     created_at = "2026-04-22T09:00:00+00:00"
 
     def _seed(config: DaemonConfig) -> None:
+        config.data_dir.mkdir(parents=True, mode=0o700)
         storage = config.data_dir / "memory_entries"
-        storage.mkdir(parents=True, exist_ok=True)
+        storage.mkdir(mode=0o700)
         payloads = [
             {
                 "id": "legacy-user-verified",
