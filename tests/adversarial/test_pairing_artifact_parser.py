@@ -26,14 +26,20 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
 
+def _owner_only_pairing_artifact_path(data_dir: Path) -> Path:
+    data_dir.mkdir(mode=0o700)
+    artifact_dir = data_dir / "channels"
+    artifact_dir.mkdir(mode=0o700)
+    return artifact_dir / "pairing_requests.jsonl"
+
+
 @pytest.mark.asyncio
 async def test_m3_pairing_artifact_parser_skips_control_chars_and_malformed_lines(
     model_env: None,
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
-    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file = _owner_only_pairing_artifact_path(data_dir)
     artifact_file.write_bytes(
         b'{"channel":"discord","external_user_id":"safe-user","workspace_hint":"guild-1"}\n'
         b'{"channel":"discord","external_user_id":"null-\x00-user","workspace_hint":"guild-1"}\n'
@@ -42,6 +48,7 @@ async def test_m3_pairing_artifact_parser_skips_control_chars_and_malformed_line
         b'["not","a","mapping"]\n'
         b'{"channel":"discord"}\n'
     )
+    artifact_file.chmod(0o600)
 
     config = DaemonConfig(
         data_dir=data_dir,
@@ -83,8 +90,7 @@ async def test_m3_pairing_artifact_parser_rejects_oversized_identifiers(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
-    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file = _owner_only_pairing_artifact_path(data_dir)
     oversized = "u" * (1024 * 1024)
     artifact_file.write_text(
         (
@@ -95,6 +101,7 @@ async def test_m3_pairing_artifact_parser_rejects_oversized_identifiers(
         ),
         encoding="utf-8",
     )
+    artifact_file.chmod(0o600)
 
     config = DaemonConfig(
         data_dir=data_dir,
@@ -130,8 +137,7 @@ async def test_m3_pairing_artifact_parser_rejects_json_escaped_control_chars(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
-    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file = _owner_only_pairing_artifact_path(data_dir)
     artifact_file.write_text(
         (
             '{"channel":"discord","external_user_id":"safe-user","workspace_hint":"guild-1"}\n'
@@ -140,6 +146,7 @@ async def test_m3_pairing_artifact_parser_rejects_json_escaped_control_chars(
         ),
         encoding="utf-8",
     )
+    artifact_file.chmod(0o600)
 
     config = DaemonConfig(
         data_dir=data_dir,
@@ -175,8 +182,7 @@ async def test_f3_pairing_request_append_rejects_symlink_target(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
-    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file = _owner_only_pairing_artifact_path(data_dir)
     outside = tmp_path / "outside.jsonl"
     outside.write_text("outside\n", encoding="utf-8")
     artifact_file.symlink_to(outside)
@@ -361,10 +367,10 @@ async def test_f3_pairing_unterminated_startup_artifact_fails_closed(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
-    artifact_file.parent.mkdir(parents=True)
+    artifact_file = _owner_only_pairing_artifact_path(data_dir)
     partial_bytes = b'{"channel":"discord"'
     artifact_file.write_bytes(partial_bytes)
+    artifact_file.chmod(0o600)
     config = DaemonConfig(
         data_dir=data_dir,
         socket_path=tmp_path / "control.sock",
