@@ -332,12 +332,17 @@ _ensure_policy_file() {
   local policy_parent socket_parent
   policy_parent="$(dirname "${SHISAD_POLICY_PATH}")"
   socket_parent="$(dirname "${SHISAD_SOCKET_PATH}")"
-  if _path_contains "${SHISAD_DATA_DIR}" "${SHISAD_POLICY_PATH}"; then
+  if _path_contains "${SHISAD_DATA_DIR}" "${SHISAD_POLICY_PATH}" \
+    || _path_contains "${SHISAD_SOCKET_PATH}" "${SHISAD_POLICY_PATH}"; then
     _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
   fi
   if [[ ! -d "${policy_parent}" ]] \
     && { _path_contains "${policy_parent}" "${SHISAD_DATA_DIR}" \
       || _path_contains "${policy_parent}" "${socket_parent}"; }; then
+    _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
+  fi
+  if [[ ! -d "${socket_parent}" ]] \
+    && _path_contains "${socket_parent}" "${policy_parent}"; then
     _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
   fi
   (umask 077 && mkdir -p -- "${policy_parent}")
