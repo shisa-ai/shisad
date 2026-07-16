@@ -8606,7 +8606,6 @@ async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
         )
         harness = _PendingPolicySnapshotHarness()
         harness._registry = registry
-        harness._pep = pep
         lock_held = Event()
         release_writer = Event()
         holder_timed_out = Event()
@@ -8625,13 +8624,14 @@ async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
                 await asyncio.sleep(0)
             release_writer.set()
 
-        async def _barrier_before_session_pep(**_kwargs: object) -> None:
+        def _evaluate_with_held_writer(*args: Any, **kwargs: Any) -> PEPDecision:
             holder.start()
-            assert await asyncio.to_thread(lock_held.wait, 1.0)
+            assert lock_held.wait(timeout=1.0)
             heartbeat_tasks.append(asyncio.create_task(_heartbeat()))
+            return pep.evaluate(*args, **kwargs)
 
-        harness._publish_control_plane_evaluation = (  # type: ignore[method-assign]
-            _barrier_before_session_pep
+        harness._pep = SimpleNamespace(
+            evaluate=_evaluate_with_held_writer,
         )
 
         async def _evaluate_action(**_kwargs: object) -> object:
