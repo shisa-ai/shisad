@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shisad.channels.base import DeliveryTarget, InMemoryChannel
+from shisad.channels.base import DeliveryTarget, InMemoryChannel, ReplayEventVariant
 from shisad.channels.delivery import ChannelDeliveryService
 from shisad.channels.discord import (
     DiscordChannel,
@@ -340,7 +340,7 @@ def test_m4_channel_state_store_persists_journal_before_compaction(tmp_path) -> 
     assert reloaded.has_seen(channel="discord", message_id="m1") is True
 
 
-def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_path) -> None:
+def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_recent_cache(tmp_path) -> None:
     store = ChannelStateStore(
         tmp_path / "state",
         max_seen_ids=32,
@@ -352,9 +352,10 @@ def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_
 
     state_file = tmp_path / "state" / "slack.state.json"
     envelope = json.loads(state_file.read_text(encoding="utf-8"))
-    assert envelope["payload"]["recent_message_ids"] == [
-        f"m{index:02d}" for index in range(2, 34)
-    ]
+    assert len(envelope["payload"]["recent_identity_keys"]) == 32
+    assert {
+        row["identity"]["message_id"] for row in envelope["payload"]["records"]
+    } == {f"m{index:02d}" for index in range(34)}
 
     journal = tmp_path / "state" / "slack.state.journal"
     if journal.exists():
@@ -408,6 +409,11 @@ def test_m5_channel_state_store_isolates_channels_with_sanitized_name_collision(
     assert store.has_seen(channel="matrix", message_id="m2") is False
     store.mark_seen(channel=" matrix ", message_id="m3")
     assert store.has_seen(channel="matrix", message_id="m3") is False
+    assert store.has_seen(channel=" matrix ", message_id="m3") is True
+
+    reloaded = ChannelStateStore(tmp_path / "state", max_seen_ids=64)
+    assert reloaded.has_seen(channel="matrix", message_id="m3") is False
+    assert reloaded.has_seen(channel=" matrix ", message_id="m3") is True
 
 
 def test_m5_channel_state_store_loads_legacy_filename_state(tmp_path) -> None:
@@ -544,6 +550,15 @@ async def test_discord_channel_registers_dispatchable_on_message_handler(
     assert received.channel == "discord"
     assert received.external_user_id == "u-1"
     assert received.reply_target == "c-1"
+    replay_identity = channel.replay_identity(received)
+    assert replay_identity.provider == "discord"
+    assert received.metadata["discord_account_id"] == "bot-999"
+    assert replay_identity.tenant_id == "g-1"
+    assert replay_identity.delivery_id == "c-1"
+    assert replay_identity.event_variant == ReplayEventVariant.ORDINARY_MESSAGE
+    assert replay_identity.message_id == "m-1"
+    rotated = DiscordChannel(DiscordConfig(bot_token="rotated-token"))
+    assert rotated.replay_identity(received).account_id == replay_identity.account_id
     # Bot mention tag should be stripped from content.
     assert received.content == "hello"
     await channel.disconnect()
@@ -1855,12 +1870,21 @@ async def test_slack_channel_handler_accepts_say_and_filters_bot_messages(
         await asyncio.wait_for(channel.receive(), timeout=0.05)
     await channel._app.invoke_message(
         event={"user": "U1", "text": "hello", "channel": "C1", "ts": "1.23"},
-        body={"team_id": "T1"},
+        body={"team_id": "T1", "api_app_id": "A1"},
     )
     message = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert message.channel == "slack"
     assert message.external_user_id == "U1"
     assert message.workspace_hint == "T1"
+    assert message.metadata["slack_team_id"] == "T1"
+    assert message.metadata["slack_account_id"] == "A1"
+    replay_identity = channel.replay_identity(message)
+    assert replay_identity.provider == "slack"
+    assert replay_identity.tenant_id == "T1"
+    assert replay_identity.delivery_id == "C1"
+    assert replay_identity.message_id == "1.23"
+    rotated = SlackChannel(SlackConfig(bot_token="rotated", app_token="rotated"))
+    assert rotated.replay_identity(message).account_id == replay_identity.account_id
     await channel.disconnect()
 
 
@@ -1892,7 +1916,7 @@ async def test_telegram_channel_ignores_bot_messages(
         def __init__(self) -> None:
             self.handlers: list[_FakeMessageHandler] = []
             self.updater = _FakeUpdater()
-            self.bot = SimpleNamespace(send_message=self._send_message)
+            self.bot = SimpleNamespace(id="bot-account-1", send_message=self._send_message)
 
         async def _send_message(self, **_kwargs: object) -> None:
             return None
@@ -1957,6 +1981,14 @@ async def test_telegram_channel_ignores_bot_messages(
     message = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert message.channel == "telegram"
     assert message.external_user_id == "u-1"
+    replay_identity = channel.replay_identity(message)
+    assert replay_identity.provider == "telegram"
+    assert message.metadata["telegram_account_id"] == "bot-account-1"
+    assert replay_identity.tenant_id == "chat-1"
+    assert replay_identity.delivery_id == "chat-1"
+    assert replay_identity.message_id == "m2"
+    rotated = TelegramChannel(TelegramConfig(bot_token="rotated-token"))
+    assert rotated.replay_identity(message).account_id == replay_identity.account_id
     await channel.disconnect()
 
 

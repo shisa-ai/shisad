@@ -37,6 +37,7 @@ from shisad.core.api.schema import (
     AdminSoulReadResult,
     AdminSoulUpdateResult,
     ChannelPairingProposalResult,
+    ChannelReplayRebaselineResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
     DaemonStatusResult,
@@ -2999,6 +3000,32 @@ def channel_pairing_propose(channel_name: str, workspace_hint: str, limit: int) 
             "limit": limit,
         },
         response_model=ChannelPairingProposalResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@channel.command("replay-rebaseline")
+@click.option(
+    "--channel",
+    "channel_name",
+    type=click.Choice(["telegram", "slack", "discord", "matrix", "direct"]),
+    required=True,
+)
+@click.option(
+    "--confirm",
+    is_flag=True,
+    help="Acknowledge that retained replay history for this scope will be discarded.",
+)
+def channel_replay_rebaseline(channel_name: str, confirm: bool) -> None:
+    """Explicitly rebaseline one degraded legacy replay scope."""
+    if not confirm:
+        raise click.ClickException("replay rebaseline requires --confirm")
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "channel.replay_rebaseline",
+        {"channel": channel_name, "confirm": True},
+        response_model=ChannelReplayRebaselineResult,
     )
     click.echo(_dump_model(result))
 

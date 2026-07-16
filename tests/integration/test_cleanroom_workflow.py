@@ -632,6 +632,7 @@ async def test_m4_pairing_proposal_uses_pairing_request_artifacts(
                     "external_user_id": "attacker-user",
                     "workspace_hint": "guild-1",
                     "content": "hello",
+                    "message_id": "cleanroom-pairing-1",
                 }
             },
         )

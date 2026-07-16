@@ -1832,6 +1832,17 @@ class ChannelPairingProposalResult(BaseModel):
     applied: bool = False
 
 
+class ChannelReplayRebaselineParams(_StrictParams):
+    channel: Literal["telegram", "slack", "discord", "matrix", "direct"]
+    confirm: bool = False
+
+
+class ChannelReplayRebaselineResult(BaseModel):
+    status: str
+    channel: str
+    files_removed: int = 0
+
+
 class ActionPendingParams(_StrictParams):
     confirmation_id: str | None = None
     session_id: str | None = None

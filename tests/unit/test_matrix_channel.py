@@ -133,6 +133,11 @@ async def test_matrix_channel_dummy_nio_paths(monkeypatch: pytest.MonkeyPatch) -
     received = await channel.receive()
     assert received.content == "incoming"
     assert received.workspace_hint == "ws1"
+    replay_identity = channel.replay_identity(received)
+    assert replay_identity.provider == "matrix"
+    assert replay_identity.tenant_id == "https://example.invalid"
+    assert replay_identity.delivery_id == "!room:example.invalid"
+    assert replay_identity.message_id == "$e1"
     assert received.reply_target == "!room:example.invalid"
 
     await channel.disconnect()

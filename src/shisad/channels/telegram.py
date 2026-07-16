@@ -9,7 +9,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.base import (
+    ChannelMessage,
+    DeliveryTarget,
+    InMemoryChannel,
+    ReplayEventVariant,
+    ReplayIdentity,
+    provider_account_fingerprint,
+)
 
 _telegram_ext: Any | None
 try:  # pragma: no cover - optional dependency.
@@ -44,6 +51,24 @@ class TelegramChannel(InMemoryChannel):
     def available(self) -> bool:
         return bool(Application is not None and MessageHandler is not None and filters is not None)
 
+    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
+        chat_id = message.reply_target.strip()
+        account_id = str(message.metadata.get("telegram_account_id", "")).strip()
+        if not account_id and self._application is not None:
+            account_id = str(
+                getattr(getattr(self._application, "bot", None), "id", "")
+            ).strip()
+        if not account_id:
+            account_id = self._config.bot_token.partition(":")[0]
+        return ReplayIdentity(
+            provider="telegram",
+            account_id=provider_account_fingerprint("telegram", account_id),
+            tenant_id=chat_id,
+            delivery_id=message.thread_id.strip() or chat_id,
+            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
+            message_id=message.message_id,
+        )
+
     async def connect(self) -> None:
         await super().connect()
         if not self.available or not self._config.bot_token:
@@ -74,6 +99,9 @@ class TelegramChannel(InMemoryChannel):
             if not text:
                 return
             chat_id = str(getattr(chat, "id", "")) if chat is not None else ""
+            account_id = str(
+                getattr(getattr(self._application, "bot", None), "id", "")
+            ).strip()
             await self._incoming.put(
                 ChannelMessage(
                     channel="telegram",
@@ -83,6 +111,7 @@ class TelegramChannel(InMemoryChannel):
                     message_id=str(getattr(message, "message_id", "")),
                     reply_target=chat_id,
                     thread_id=str(getattr(message, "message_thread_id", "") or ""),
+                    metadata={"telegram_account_id": account_id},
                 )
             )
 

@@ -9,11 +9,15 @@ import logging
 import os
 import stat
 from collections import deque
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from pydantic import ValidationError
+
+from shisad.channels.base import ReplayEventVariant, ReplayIdentity
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteFaultInjector,
@@ -39,10 +43,16 @@ class ReplayOutcome(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+@dataclass(frozen=True, slots=True)
+class _ReplayRecord:
+    identity: ReplayIdentity
+    outcome: ReplayOutcome
+
+
 class ChannelStateStore:
     """Stores authoritative channel replay state under ``SHISAD_DATA_DIR``."""
 
-    _SCHEMA_VERSION = 1
+    _SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -54,7 +64,8 @@ class ChannelStateStore:
         self._root_dir = Path(root_dir)
         self._max_seen_ids = max(max_seen_ids, 32)
         self._journal_compact_every = max(journal_compact_every, 1)
-        self._records: dict[str, dict[str, ReplayOutcome]] = {}
+        self._records: dict[str, dict[str, _ReplayRecord]] = {}
+        self._legacy_message_ids: dict[str, set[str]] = {}
         self._seen_ids: dict[str, deque[str]] = {}
         self._seen_id_sets: dict[str, set[str]] = {}
         self._journal_appends_since_compaction: dict[str, int] = {}
@@ -69,12 +80,15 @@ class ChannelStateStore:
 
     def has_seen(self, *, channel: str, message_id: str) -> bool:
         with self._lock:
-            msg_id = self._normalize_message_id(message_id)
-            if msg_id is None:
+            identity = self._optional_compatibility_identity(channel, message_id)
+            if identity is None:
                 return False
+            channel = identity.provider
             self._ensure_loaded(channel)
+            if self._is_known(channel, identity):
+                return True
             self._raise_if_degraded(channel)
-            return msg_id in self._records[channel]
+            return False
 
     def mark_seen(self, *, channel: str, message_id: str) -> None:
         """Compatibility helper that records a completed ingress durably."""
@@ -97,7 +111,13 @@ class ChannelStateStore:
             self.mark_terminal(channel=channel, message_id=msg_id)
             return False
 
-    def reserve(self, *, channel: str, message_id: str) -> bool:
+    def reserve(
+        self,
+        *,
+        identity: ReplayIdentity | None = None,
+        channel: str = "",
+        message_id: str = "",
+    ) -> bool:
         """Durably reserve a fresh identity before dispatch.
 
         Returns ``True`` when the identity is already known and therefore must
@@ -106,13 +126,18 @@ class ChannelStateStore:
         """
 
         with self._lock:
-            msg_id = self._required_message_id(message_id)
+            resolved = self._resolve_identity(
+                identity=identity,
+                channel=channel,
+                message_id=message_id,
+            )
+            channel = resolved.provider
             self._ensure_loaded(channel)
-            self._raise_if_degraded(channel)
-            if msg_id in self._records[channel]:
+            if self._is_known(channel, resolved):
                 return True
+            self._raise_if_degraded(channel)
             try:
-                self._append_journal_entry(channel, msg_id, ReplayOutcome.RESERVED)
+                self._append_journal_entry(channel, resolved, ReplayOutcome.RESERVED)
             except DurableAppendError as exc:
                 self._degrade(
                     channel,
@@ -125,30 +150,70 @@ class ChannelStateStore:
                     ),
                 )
                 self._raise_if_degraded(channel)
-            self._records[channel][msg_id] = ReplayOutcome.RESERVED
-            self._record_recent_id(channel, msg_id)
+            key = self._identity_key(resolved)
+            self._records[channel][key] = _ReplayRecord(resolved, ReplayOutcome.RESERVED)
+            self._record_recent_id(channel, key)
             self._after_journal_append(channel)
             return False
 
-    def mark_terminal(self, *, channel: str, message_id: str) -> None:
+    def mark_terminal(
+        self,
+        *,
+        identity: ReplayIdentity | None = None,
+        channel: str = "",
+        message_id: str = "",
+    ) -> None:
         """Durably mark a reserved ingress as having a terminal handler result."""
 
         with self._lock:
-            self._record_outcome(channel, message_id, ReplayOutcome.TERMINAL)
+            self._record_outcome(
+                self._resolve_identity(
+                    identity=identity,
+                    channel=channel,
+                    message_id=message_id,
+                ),
+                ReplayOutcome.TERMINAL,
+            )
 
-    def mark_uncertain(self, *, channel: str, message_id: str) -> None:
+    def mark_uncertain(
+        self,
+        *,
+        identity: ReplayIdentity | None = None,
+        channel: str = "",
+        message_id: str = "",
+    ) -> None:
         """Durably retain an ingress whose handler/effect outcome is uncertain."""
 
         with self._lock:
-            self._record_outcome(channel, message_id, ReplayOutcome.UNCERTAIN)
+            self._record_outcome(
+                self._resolve_identity(
+                    identity=identity,
+                    channel=channel,
+                    message_id=message_id,
+                ),
+                ReplayOutcome.UNCERTAIN,
+            )
 
-    def outcome(self, *, channel: str, message_id: str) -> ReplayOutcome | None:
+    def outcome(
+        self,
+        *,
+        identity: ReplayIdentity | None = None,
+        channel: str = "",
+        message_id: str = "",
+    ) -> ReplayOutcome | None:
         with self._lock:
-            msg_id = self._normalize_message_id(message_id)
-            if msg_id is None:
+            try:
+                resolved = self._resolve_identity(
+                    identity=identity,
+                    channel=channel,
+                    message_id=message_id,
+                )
+            except ValueError:
                 return None
+            channel = resolved.provider
             self._ensure_loaded(channel)
-            return self._records[channel].get(msg_id)
+            record = self._records[channel].get(self._identity_key(resolved))
+            return record.outcome if record is not None else None
 
     def state_load_result(self, channel: str) -> StateLoadResult:
         with self._lock:
@@ -161,7 +226,13 @@ class ChannelStateStore:
             degradation = self._degradation.get(channel)
             load_result = self._load_results[channel]
             if degradation is not None:
-                return {"status": "degraded", **degradation}
+                status = {"status": "degraded", **degradation}
+                if degradation["reason"] == "legacy_scope_ambiguous_rebaseline_required":
+                    status["remediation"] = (
+                        "shisad channel replay-rebaseline "
+                        f"--channel {channel} --confirm"
+                    )
+                return status
             return {
                 "status": load_result.status.value,
                 "reason": load_result.reason,
@@ -174,16 +245,19 @@ class ChannelStateStore:
             self._ensure_loaded(channel)
             self._raise_if_degraded(channel)
             ids = list(self._seen_ids[channel])
-            outcomes = self._records[channel]
+            records = self._records[channel]
             return {
                 "channel": channel,
-                "seen_message_ids": ids,
+                "recent_identity_keys": ids,
                 "seen_count": len(ids),
-                "authoritative_count": len(outcomes),
+                "authoritative_count": len(records) + len(self._legacy_message_ids[channel]),
                 "outcome_counts": {
-                    outcome.value: sum(1 for value in outcomes.values() if value == outcome)
+                    outcome.value: sum(
+                        1 for record in records.values() if record.outcome == outcome
+                    )
                     for outcome in ReplayOutcome
                 },
+                "legacy_ambiguous_count": len(self._legacy_message_ids[channel]),
                 "max_seen_ids": self._max_seen_ids,
             }
 
@@ -219,10 +293,37 @@ class ChannelStateStore:
             self._clear_runtime_cache_locked()
             return channel_count, file_count
 
+    def rebaseline(self, channel: str) -> int:
+        """Explicitly discard one ambiguous replay scope after operator review."""
+
+        with self._lock:
+            self._ensure_loaded(channel)
+            degradation = self._degradation.get(channel)
+            if (
+                degradation is None
+                or degradation.get("reason")
+                != "legacy_scope_ambiguous_rebaseline_required"
+            ):
+                raise ValueError(
+                    "replay rebaseline is only available for ambiguous legacy state"
+                )
+            removed = 0
+            for path in (self._state_path(channel), self._journal_path(channel)):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+                removed += 1
+            if removed and self._root_dir.exists():
+                self._fsync_directory_entry(self._root_dir)
+            self._clear_channel_cache_locked(channel)
+            return removed
+
     def runtime_cache_empty(self) -> bool:
         with self._lock:
             return not (
                 self._records
+                or self._legacy_message_ids
                 or self._seen_ids
                 or self._seen_id_sets
                 or self._loaded_channels
@@ -231,6 +332,7 @@ class ChannelStateStore:
 
     def _clear_runtime_cache_locked(self) -> None:
         self._records.clear()
+        self._legacy_message_ids.clear()
         self._seen_ids.clear()
         self._seen_id_sets.clear()
         self._journal_appends_since_compaction.clear()
@@ -239,23 +341,34 @@ class ChannelStateStore:
         self._load_results.clear()
         self._degradation.clear()
 
+    def _clear_channel_cache_locked(self, channel: str) -> None:
+        self._records.pop(channel, None)
+        self._legacy_message_ids.pop(channel, None)
+        self._seen_ids.pop(channel, None)
+        self._seen_id_sets.pop(channel, None)
+        self._journal_appends_since_compaction.pop(channel, None)
+        self._compaction_warning_logged.discard(channel)
+        self._loaded_channels.discard(channel)
+        self._load_results.pop(channel, None)
+        self._degradation.pop(channel, None)
+
     def _record_outcome(
         self,
-        channel: str,
-        message_id: str,
+        identity: ReplayIdentity,
         outcome: ReplayOutcome,
     ) -> None:
-        msg_id = self._required_message_id(message_id)
+        channel = identity.provider
+        key = self._identity_key(identity)
         self._ensure_loaded(channel)
         self._raise_if_degraded(channel)
-        if msg_id not in self._records[channel]:
+        if key not in self._records[channel]:
             raise ValueError("replay outcome requires a durable reservation")
-        if self._records[channel][msg_id] == outcome:
+        if self._records[channel][key].outcome == outcome:
             return
         try:
-            self._append_journal_entry(channel, msg_id, outcome)
+            self._append_journal_entry(channel, identity, outcome)
         except DurableAppendError as exc:
-            self._records[channel][msg_id] = ReplayOutcome.UNCERTAIN
+            self._records[channel][key] = _ReplayRecord(identity, ReplayOutcome.UNCERTAIN)
             self._degrade(
                 channel,
                 transition=outcome.value,
@@ -267,14 +380,15 @@ class ChannelStateStore:
                 ),
             )
             self._raise_if_degraded(channel)
-        self._records[channel][msg_id] = outcome
-        self._record_recent_id(channel, msg_id)
+        self._records[channel][key] = _ReplayRecord(identity, outcome)
+        self._record_recent_id(channel, key)
         self._after_journal_append(channel)
 
     def _ensure_loaded(self, channel: str) -> None:
         if channel in self._loaded_channels:
             return
-        records: dict[str, ReplayOutcome] = {}
+        records: dict[str, _ReplayRecord] = {}
+        legacy_message_ids: set[str] = set()
         recent: deque[str] = deque()
         recent_set: set[str] = set()
 
@@ -283,6 +397,7 @@ class ChannelStateStore:
             self._publish_loaded_channel(
                 channel,
                 records=records,
+                legacy_message_ids=legacy_message_ids,
                 recent=recent,
                 recent_set=recent_set,
                 journal_lines=0,
@@ -296,27 +411,31 @@ class ChannelStateStore:
             )
             return
 
-        snapshot_result, snapshot_rows, snapshot_recent = self._load_snapshot(
+        snapshot_result, snapshot_rows, snapshot_recent, snapshot_legacy = self._load_snapshot(
             self._state_path(channel),
             channel=channel,
         )
-        journal_result, journal_rows = self._load_journal(
+        journal_result, journal_rows, journal_legacy = self._load_journal(
             self._journal_path(channel),
             channel=channel,
         )
         load_result = self._combine_load_results(snapshot_result, journal_result)
         if load_result.status in {StateLoadStatus.OK, StateLoadStatus.MISSING}:
-            for message_id, outcome in snapshot_rows:
-                records[message_id] = outcome
-            for message_id in snapshot_recent:
-                self._record_recent_value(recent, recent_set, message_id)
-            for message_id, outcome in journal_rows:
-                records[message_id] = outcome
-                self._record_recent_value(recent, recent_set, message_id)
+            for record in snapshot_rows:
+                records[self._identity_key(record.identity)] = record
+            for key in snapshot_recent:
+                self._record_recent_value(recent, recent_set, key)
+            for record in journal_rows:
+                key = self._identity_key(record.identity)
+                records[key] = record
+                self._record_recent_value(recent, recent_set, key)
+            legacy_message_ids.update(snapshot_legacy)
+            legacy_message_ids.update(journal_legacy)
 
         self._publish_loaded_channel(
             channel,
             records=records,
+            legacy_message_ids=legacy_message_ids,
             recent=recent,
             recent_set=recent_set,
             journal_lines=len(journal_rows),
@@ -330,6 +449,14 @@ class ChannelStateStore:
                 reason=load_result.reason or load_result.status.value,
             )
             return
+        if load_result.legacy:
+            self._degrade(
+                channel,
+                transition="load",
+                stage="migration",
+                reason="legacy_scope_ambiguous_rebaseline_required",
+            )
+            return
         if len(journal_rows) >= self._journal_compact_every:
             self._attempt_compaction(channel, trigger="load")
 
@@ -337,13 +464,15 @@ class ChannelStateStore:
         self,
         channel: str,
         *,
-        records: dict[str, ReplayOutcome],
+        records: dict[str, _ReplayRecord],
+        legacy_message_ids: set[str],
         recent: deque[str],
         recent_set: set[str],
         journal_lines: int,
         load_result: StateLoadResult,
     ) -> None:
         self._records[channel] = records
+        self._legacy_message_ids[channel] = legacy_message_ids
         self._seen_ids[channel] = recent
         self._seen_id_sets[channel] = recent_set
         self._journal_appends_since_compaction[channel] = journal_lines
@@ -355,10 +484,10 @@ class ChannelStateStore:
         path: Path,
         *,
         channel: str,
-    ) -> tuple[StateLoadResult, list[tuple[str, ReplayOutcome]], list[str]]:
+    ) -> tuple[StateLoadResult, list[_ReplayRecord], list[str], set[str]]:
         file_result, raw = self._read_private_bytes(path)
         if file_result.status != StateLoadStatus.OK or raw is None:
-            return file_result, [], []
+            return file_result, [], [], set()
         decoded, payload = decode_versioned_json_snapshot(
             raw,
             supported_version=self._SCHEMA_VERSION,
@@ -370,36 +499,70 @@ class ChannelStateStore:
                     StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_snapshot_payload"),
                     [],
                     [],
+                    set(),
                 )
             rows, recent = parsed
-            return decoded, rows, recent
+            return decoded, rows, recent, set()
 
         if self._is_envelope_candidate(raw):
-            return decoded, [], []
-        legacy = self._parse_legacy_snapshot(raw, channel=channel)
-        if legacy is not None:
+            if (
+                decoded.status == StateLoadStatus.UNSUPPORTED_SCHEMA
+                and decoded.schema_version == 1
+            ):
+                old_decoded, old_payload = decode_versioned_json_snapshot(
+                    raw,
+                    supported_version=1,
+                )
+                legacy = self._parse_v1_snapshot_payload(old_payload, channel=channel)
+                if old_decoded.status == StateLoadStatus.OK and legacy is not None:
+                    return (
+                        StateLoadResult(
+                            StateLoadStatus.OK,
+                            schema_version=1,
+                            legacy=True,
+                        ),
+                        [],
+                        [],
+                        legacy,
+                    )
+                if old_decoded.status != StateLoadStatus.OK:
+                    return old_decoded, [], [], set()
+                return (
+                    StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_v1_snapshot"),
+                    [],
+                    [],
+                    set(),
+                )
+            return decoded, [], [], set()
+        unversioned_legacy = self._parse_legacy_snapshot(raw, channel=channel)
+        if unversioned_legacy is not None:
             return (
                 StateLoadResult(StateLoadStatus.OK, legacy=True),
-                [(message_id, ReplayOutcome.TERMINAL) for message_id in legacy],
-                legacy,
+                [],
+                [],
+                set(unversioned_legacy),
             )
-        return decoded, [], []
+        return decoded, [], [], set()
 
     def _load_journal(
         self,
         path: Path,
         *,
         channel: str,
-    ) -> tuple[StateLoadResult, list[tuple[str, ReplayOutcome]]]:
+    ) -> tuple[StateLoadResult, list[_ReplayRecord], set[str]]:
         file_result, raw = self._read_private_bytes(path)
         if file_result.status != StateLoadStatus.OK or raw is None:
-            return file_result, []
+            return file_result, [], set()
         if not raw:
-            return StateLoadResult(StateLoadStatus.OK), []
+            return StateLoadResult(StateLoadStatus.OK), [], set()
         if not raw.endswith(b"\n"):
-            return StateLoadResult(StateLoadStatus.CORRUPT, reason="truncated_journal"), []
-        rows: list[tuple[str, ReplayOutcome]] = []
-        legacy = False
+            return (
+                StateLoadResult(StateLoadStatus.CORRUPT, reason="truncated_journal"),
+                [],
+                set(),
+            )
+        rows: list[_ReplayRecord] = []
+        legacy_message_ids: set[str] = set()
         for raw_line in raw.splitlines():
             if not raw_line.strip():
                 continue
@@ -409,8 +572,33 @@ class ChannelStateStore:
                     line,
                     supported_version=self._SCHEMA_VERSION,
                 )
+                if (
+                    decoded.status == StateLoadStatus.UNSUPPORTED_SCHEMA
+                    and decoded.schema_version == 1
+                ):
+                    old_decoded, old_payload = decode_versioned_json_snapshot(
+                        line,
+                        supported_version=1,
+                    )
+                    legacy_value = self._parse_v1_journal_payload(
+                        old_payload,
+                        channel=channel,
+                    )
+                    if old_decoded.status != StateLoadStatus.OK:
+                        return old_decoded, [], set()
+                    if legacy_value is None:
+                        return (
+                            StateLoadResult(
+                                StateLoadStatus.CORRUPT,
+                                reason="invalid_v1_journal_payload",
+                            ),
+                            [],
+                            set(),
+                        )
+                    legacy_message_ids.add(legacy_value)
+                    continue
                 if decoded.status != StateLoadStatus.OK:
-                    return decoded, []
+                    return decoded, [], set()
                 parsed = self._parse_journal_payload(payload, channel=channel)
                 if parsed is None:
                     return (
@@ -419,29 +607,37 @@ class ChannelStateStore:
                             reason="invalid_journal_payload",
                         ),
                         [],
+                        set(),
                     )
                 rows.append(parsed)
                 continue
             legacy_value = self._parse_legacy_journal_line(line)
             if legacy_value is None:
-                return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_journal"), []
-            rows.append((legacy_value, ReplayOutcome.TERMINAL))
-            legacy = True
-        return StateLoadResult(StateLoadStatus.OK, legacy=legacy), rows
+                return (
+                    StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_journal"),
+                    [],
+                    set(),
+                )
+            legacy_message_ids.add(legacy_value)
+        return (
+            StateLoadResult(StateLoadStatus.OK, legacy=bool(legacy_message_ids)),
+            rows,
+            legacy_message_ids,
+        )
 
     def _parse_snapshot_payload(
         self,
         payload: Any,
         *,
         channel: str,
-    ) -> tuple[list[tuple[str, ReplayOutcome]], list[str]] | None:
+    ) -> tuple[list[_ReplayRecord], list[str]] | None:
         if not isinstance(payload, dict) or payload.get("channel") != channel:
             return None
         raw_records = payload.get("records")
-        raw_recent = payload.get("recent_message_ids")
+        raw_recent = payload.get("recent_identity_keys")
         if not isinstance(raw_records, list) or not isinstance(raw_recent, list):
             return None
-        records: list[tuple[str, ReplayOutcome]] = []
+        records: list[_ReplayRecord] = []
         for row in raw_records:
             parsed = self._parse_journal_payload(row, channel=channel)
             if parsed is None:
@@ -451,8 +647,8 @@ class ChannelStateStore:
         for value in raw_recent:
             if not isinstance(value, str):
                 return None
-            normalized = self._normalize_message_id(value)
-            if normalized is None:
+            normalized = value.strip()
+            if not normalized:
                 return None
             recent.append(normalized)
         return records, recent
@@ -462,18 +658,55 @@ class ChannelStateStore:
         payload: Any,
         *,
         channel: str,
-    ) -> tuple[str, ReplayOutcome] | None:
+    ) -> _ReplayRecord | None:
+        if not isinstance(payload, dict) or payload.get("channel") != channel:
+            return None
+        raw_identity = payload.get("identity")
+        raw_outcome = payload.get("outcome")
+        if not isinstance(raw_identity, dict) or not isinstance(raw_outcome, str):
+            return None
+        try:
+            identity = ReplayIdentity.model_validate(raw_identity)
+        except ValidationError:
+            return None
+        if identity.provider != channel:
+            return None
+        with contextlib.suppress(ValueError):
+            return _ReplayRecord(identity, ReplayOutcome(raw_outcome))
+        return None
+
+    def _parse_v1_snapshot_payload(self, payload: Any, *, channel: str) -> set[str] | None:
+        if not isinstance(payload, dict) or payload.get("channel") != channel:
+            return None
+        raw_records = payload.get("records")
+        raw_recent = payload.get("recent_message_ids")
+        if not isinstance(raw_records, list) or not isinstance(raw_recent, list):
+            return None
+        message_ids: set[str] = set()
+        for row in raw_records:
+            value = self._parse_v1_journal_payload(row, channel=channel)
+            if value is None:
+                return None
+            message_ids.add(value)
+        for value in raw_recent:
+            if not isinstance(value, str):
+                return None
+            normalized = self._normalize_message_id(value)
+            if normalized is None:
+                return None
+            message_ids.add(normalized)
+        return message_ids
+
+    def _parse_v1_journal_payload(self, payload: Any, *, channel: str) -> str | None:
         if not isinstance(payload, dict) or payload.get("channel") != channel:
             return None
         raw_message_id = payload.get("message_id")
         raw_outcome = payload.get("outcome")
         if not isinstance(raw_message_id, str) or not isinstance(raw_outcome, str):
             return None
-        message_id = self._normalize_message_id(raw_message_id)
-        if message_id is None:
-            return None
         with contextlib.suppress(ValueError):
-            return message_id, ReplayOutcome(raw_outcome)
+            ReplayOutcome(raw_outcome)
+            return self._normalize_message_id(raw_message_id)
         return None
 
     def _parse_legacy_snapshot(self, raw: bytes, *, channel: str) -> list[str] | None:
@@ -582,12 +815,12 @@ class ChannelStateStore:
     def _append_journal_entry(
         self,
         channel: str,
-        message_id: str,
+        identity: ReplayIdentity,
         outcome: ReplayOutcome,
     ) -> None:
         payload = {
             "channel": channel,
-            "message_id": message_id,
+            "identity": identity.model_dump(mode="json"),
             "outcome": outcome.value,
         }
         envelope = json.loads(
@@ -650,12 +883,12 @@ class ChannelStateStore:
             "records": [
                 {
                     "channel": channel,
-                    "message_id": message_id,
-                    "outcome": outcome.value,
+                    "identity": record.identity.model_dump(mode="json"),
+                    "outcome": record.outcome.value,
                 }
-                for message_id, outcome in records.items()
+                for _key, record in sorted(records.items())
             ],
-            "recent_message_ids": list(recent),
+            "recent_identity_keys": list(recent),
         }
         atomic_write_bytes(
             self._state_path(channel),
@@ -727,6 +960,64 @@ class ChannelStateStore:
     def _legacy_channel_file_stem(channel: str) -> str:
         safe = "".join(ch for ch in channel if ch.isalnum() or ch in {"-", "_"}).strip("_-")
         return safe or "unknown"
+
+    @staticmethod
+    def _identity_key(identity: ReplayIdentity) -> str:
+        encoded = json.dumps(
+            identity.model_dump(mode="json"),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _is_known(self, channel: str, identity: ReplayIdentity) -> bool:
+        return (
+            self._identity_key(identity) in self._records[channel]
+            or identity.message_id in self._legacy_message_ids[channel]
+        )
+
+    @classmethod
+    def _resolve_identity(
+        cls,
+        *,
+        identity: ReplayIdentity | None,
+        channel: str,
+        message_id: str,
+    ) -> ReplayIdentity:
+        if identity is not None:
+            if channel and channel.strip() != identity.provider:
+                raise ValueError("replay identity provider does not match channel")
+            if message_id and message_id.strip() != identity.message_id:
+                raise ValueError("replay identity message_id does not match message")
+            return identity
+        resolved = cls._optional_compatibility_identity(channel, message_id)
+        if resolved is None:
+            raise ValueError("replay message_id cannot be empty")
+        return resolved
+
+    @staticmethod
+    def _optional_compatibility_identity(
+        channel: str,
+        message_id: str,
+    ) -> ReplayIdentity | None:
+        normalized_channel = channel.strip()
+        normalized_message_id = ChannelStateStore._normalize_message_id(message_id)
+        if not normalized_channel or normalized_message_id is None:
+            return None
+        provider = normalized_channel
+        if channel != normalized_channel:
+            suffix = hashlib.sha256(channel.encode("utf-8")).hexdigest()[:16]
+            provider = f"{normalized_channel}-compat-{suffix}"
+        return ReplayIdentity(
+            provider=provider,
+            account_id="compatibility",
+            tenant_id="compatibility",
+            delivery_id="compatibility",
+            event_variant=ReplayEventVariant.COMPATIBILITY,
+            message_id=normalized_message_id,
+        )
 
     @staticmethod
     def _required_message_id(value: str) -> str:

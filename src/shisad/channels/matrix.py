@@ -11,7 +11,14 @@ import contextlib
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.base import (
+    ChannelMessage,
+    DeliveryTarget,
+    InMemoryChannel,
+    ReplayEventVariant,
+    ReplayIdentity,
+    provider_account_fingerprint,
+)
 
 try:  # pragma: no cover - optional dependency.
     import nio  # type: ignore
@@ -43,6 +50,19 @@ class MatrixChannel(InMemoryChannel):
     @property
     def available(self) -> bool:
         return nio is not None
+
+    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
+        return ReplayIdentity(
+            provider="matrix",
+            account_id=provider_account_fingerprint(
+                "matrix",
+                f"{self._config.homeserver}\0{self._config.user_id}",
+            ),
+            tenant_id=self._config.homeserver,
+            delivery_id=message.reply_target,
+            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
+            message_id=message.message_id,
+        )
 
     @property
     def e2ee_enabled(self) -> bool:

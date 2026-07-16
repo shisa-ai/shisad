@@ -3252,6 +3252,23 @@ class HandlerImplementation(
             }
             if enabled:
                 active_statuses.append(status)
+        direct_replay_state = self._services.channel_state_store.state_status("direct")
+        direct_replay_degraded = direct_replay_state["status"] in {
+            "corrupt",
+            "degraded",
+            "unsupported_schema",
+        }
+        direct_status = "degraded" if direct_replay_degraded else "ok"
+        if direct_replay_degraded:
+            problems.append("direct_replay_state_degraded")
+        rows["direct"] = {
+            "status": direct_status,
+            "enabled": True,
+            "available": True,
+            "connected": True,
+            "replay_state": direct_replay_state,
+        }
+        active_statuses.append(direct_status)
         overall = "disabled"
         if any(item == "misconfigured" for item in active_statuses):
             overall = "misconfigured"

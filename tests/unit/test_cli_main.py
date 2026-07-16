@@ -181,6 +181,11 @@ def test_cli_commands_route_through_rpc_wrapper(
             "config_patch": {},
             "applied": False,
         },
+        "channel.replay_rebaseline": {
+            "status": "rebaselined",
+            "channel": "discord",
+            "files_removed": 2,
+        },
         "admin.selfmod.propose": {
             "proposal_id": "selfmod-proposal-1",
             "artifact_type": "skill_bundle",
@@ -605,6 +610,11 @@ def test_cli_commands_route_through_rpc_wrapper(
     ).output
     assert '"level": "quarantine"' in lockdown_status
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
+    replay_rebaseline = _invoke_ok(
+        runner,
+        ["channel", "replay-rebaseline", "--channel", "discord", "--confirm"],
+    ).output
+    assert '"status": "rebaselined"' in replay_rebaseline
     assert (
         "selfmod-proposal-1"
         in _invoke_ok(

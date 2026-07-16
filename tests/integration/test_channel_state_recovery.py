@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from shisad.channels.base import ReplayEventVariant, ReplayIdentity
 from shisad.channels.state import ChannelStateStore, ReplayOutcome
 from shisad.core import atomic_state
 from shisad.core.atomic_state import (
@@ -23,6 +24,99 @@ from shisad.core.atomic_state import (
     encode_versioned_json_snapshot,
 )
 from shisad.daemon.event_wiring import channel_receive_pump
+
+
+def _identity(
+    *,
+    provider: str = "discord",
+    account_id: str = "acct-1",
+    tenant_id: str = "guild-1",
+    delivery_id: str = "channel-1",
+    message_id: str = "m-1",
+) -> ReplayIdentity:
+    return ReplayIdentity(
+        provider=provider,
+        account_id=account_id,
+        tenant_id=tenant_id,
+        delivery_id=delivery_id,
+        event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
+        message_id=message_id,
+    )
+
+
+def test_provider_scoped_replay_identity_distinguishes_delivery_domains(
+    tmp_path: Path,
+) -> None:
+    store = ChannelStateStore(tmp_path / "state", journal_compact_every=2)
+    first = _identity(delivery_id="channel-1", message_id="same-raw-id")
+    second = _identity(delivery_id="channel-2", message_id="same-raw-id")
+
+    assert store.reserve(identity=first) is False
+    store.mark_terminal(identity=first)
+    assert store.reserve(identity=first) is True
+    assert store.reserve(identity=second) is False
+    store.mark_terminal(identity=second)
+
+    restarted = ChannelStateStore(tmp_path / "state", journal_compact_every=2)
+    assert restarted.reserve(identity=first) is True
+    assert restarted.reserve(identity=second) is True
+
+
+def test_replay_eviction_never_turns_old_ingress_fresh(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    store = ChannelStateStore(root, max_seen_ids=2048, journal_compact_every=128)
+    identities = [_identity(message_id=f"m-{index:04d}") for index in range(2050)]
+
+    for identity in identities:
+        assert store.reserve(identity=identity) is False
+        store.mark_terminal(identity=identity)
+
+    snapshot = store.snapshot("discord")
+    assert snapshot["seen_count"] == 2048
+    assert len(snapshot["recent_identity_keys"]) == 2048
+    assert "seen_message_ids" not in snapshot
+    assert snapshot["authoritative_count"] == 2050
+    restarted = ChannelStateStore(root, max_seen_ids=2048, journal_compact_every=128)
+    assert restarted.reserve(identity=identities[0]) is True
+    assert restarted.reserve(identity=identities[-1]) is True
+
+
+def test_unscoped_v1_state_blocks_unknown_identity_until_explicit_rebaseline(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    state_path = root / "discord.state.json"
+    state_path.write_bytes(
+        encode_versioned_json_snapshot(
+            {
+                "channel": "discord",
+                "records": [
+                    {
+                        "channel": "discord",
+                        "message_id": "legacy-known",
+                        "outcome": "terminal",
+                    }
+                ],
+                "recent_message_ids": ["legacy-known"],
+            },
+            version=1,
+        )
+    )
+    original = state_path.read_bytes()
+    store = ChannelStateStore(root)
+
+    assert store.reserve(identity=_identity(message_id="legacy-known")) is True
+    with pytest.raises(StatePersistenceDegradedError, match="rebaseline"):
+        store.reserve(identity=_identity(message_id="unknown"))
+    assert store.state_status("discord")["reason"] == "legacy_scope_ambiguous_rebaseline_required"
+    assert store.state_status("discord")["remediation"] == (
+        "shisad channel replay-rebaseline --channel discord --confirm"
+    )
+    assert state_path.read_bytes() == original
+
+    store.rebaseline("discord")
+    assert store.reserve(identity=_identity(message_id="unknown")) is False
 
 
 def test_channel_replay_corrupt_snapshot_is_retained_and_blocks_fresh_admission(
@@ -386,12 +480,15 @@ async def test_channel_replay_reserves_before_dispatch_and_records_handler_uncer
         async def receive(self) -> Any:
             return message
 
+        def replay_identity(self, _message: Any) -> ReplayIdentity:
+            return _identity(message_id="m-1")
+
     class _Handler:
         calls = 0
 
         async def handle_channel_ingest(self, _params: Any, _ctx: Any) -> None:
             self.calls += 1
-            assert store.outcome(channel="discord", message_id="m-1") == ReplayOutcome.RESERVED
+            assert store.outcome(identity=_identity(message_id="m-1")) == ReplayOutcome.RESERVED
             shutdown.set()
             raise RuntimeError("effect outcome unknown")
 
@@ -405,6 +502,6 @@ async def test_channel_replay_reserves_before_dispatch_and_records_handler_uncer
     )
 
     assert handler.calls == 1
-    assert store.outcome(channel="discord", message_id="m-1") == ReplayOutcome.UNCERTAIN
+    assert store.outcome(identity=_identity(message_id="m-1")) == ReplayOutcome.UNCERTAIN
     restarted = ChannelStateStore(root)
-    assert restarted.reserve(channel="discord", message_id="m-1") is True
+    assert restarted.reserve(identity=_identity(message_id="m-1")) is True

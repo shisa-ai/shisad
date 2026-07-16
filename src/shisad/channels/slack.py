@@ -9,7 +9,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.base import (
+    ChannelMessage,
+    DeliveryTarget,
+    InMemoryChannel,
+    ReplayEventVariant,
+    ReplayIdentity,
+    provider_account_fingerprint,
+)
 
 _slack_app_module: Any | None
 _slack_handler_module: Any | None
@@ -49,6 +56,18 @@ class SlackChannel(InMemoryChannel):
     def available(self) -> bool:
         return bool(AsyncApp is not None and AsyncSocketModeHandler is not None)
 
+    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
+        team_id = str(message.metadata.get("slack_team_id", "")).strip()
+        account_id = str(message.metadata.get("slack_account_id", "")).strip() or team_id
+        return ReplayIdentity(
+            provider="slack",
+            account_id=provider_account_fingerprint("slack", account_id),
+            tenant_id=team_id,
+            delivery_id=message.reply_target,
+            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
+            message_id=message.message_id,
+        )
+
     async def connect(self) -> None:
         await super().connect()
         if not self.available or not self._config.bot_token or not self._config.app_token:
@@ -73,7 +92,15 @@ class SlackChannel(InMemoryChannel):
             user_id = str(event.get("user", "")).strip()
             text = str(event.get("text", "")).strip()
             channel_id = str(event.get("channel", "")).strip()
-            team_id = str((body.get("team_id") if isinstance(body, dict) else "") or "").strip()
+            team_id = str(
+                (
+                    body.get("team_id")
+                    if isinstance(body, dict)
+                    else event.get("team", "")
+                )
+                or event.get("team", "")
+            ).strip()
+            account_id = str(body.get("api_app_id", "")).strip() or team_id
             if not user_id or not text:
                 return
             await self._incoming.put(
@@ -85,6 +112,10 @@ class SlackChannel(InMemoryChannel):
                     message_id=str(event.get("client_msg_id") or event.get("ts") or ""),
                     reply_target=channel_id,
                     thread_id=str(event.get("thread_ts", "")),
+                    metadata={
+                        "slack_team_id": team_id,
+                        "slack_account_id": account_id,
+                    },
                 )
             )
 

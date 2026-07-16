@@ -12,7 +12,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.base import (
+    ChannelMessage,
+    DeliveryTarget,
+    InMemoryChannel,
+    ReplayEventVariant,
+    ReplayIdentity,
+    provider_account_fingerprint,
+)
 from shisad.channels.discord_components import (
     DiscordApprovalInteraction,
     discord_approval_custom_id,
@@ -92,6 +99,26 @@ class DiscordChannel(InMemoryChannel):
     def available(self) -> bool:
         return discord is not None
 
+    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
+        guild_id = str(message.metadata.get("discord_guild_id", "")).strip() or "@dm"
+        channel_id = (
+            str(message.metadata.get("discord_channel_id", "")).strip()
+            or message.reply_target.strip()
+        )
+        account_id = str(message.metadata.get("discord_account_id", "")).strip()
+        if not account_id and self._client is not None:
+            account_id = str(getattr(getattr(self._client, "user", None), "id", "")).strip()
+        if not account_id:
+            account_id = self._config.bot_token.partition(".")[0]
+        return ReplayIdentity(
+            provider="discord",
+            account_id=provider_account_fingerprint("discord", account_id),
+            tenant_id=guild_id,
+            delivery_id=channel_id,
+            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
+            message_id=message.message_id,
+        )
+
     @property
     def supports_components(self) -> bool:
         if discord is None:
@@ -138,6 +165,9 @@ class DiscordChannel(InMemoryChannel):
                 guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
                 channel_obj = getattr(message, "channel", None)
                 channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
+                account_id = str(
+                    getattr(getattr(self._client, "user", None), "id", "")
+                ).strip()
                 author = getattr(message, "author", None)
                 if author is None:
                     logger.debug(
@@ -241,6 +271,7 @@ class DiscordChannel(InMemoryChannel):
                                         metadata={
                                             "discord_guild_id": guild_id,
                                             "discord_channel_id": channel_id,
+                                            "discord_account_id": account_id,
                                             "addressed": addressed,
                                             "interaction_type": "observed",
                                             "engagement_mode": policy_decision.engagement_mode,
@@ -346,6 +377,7 @@ class DiscordChannel(InMemoryChannel):
                         metadata={
                             "discord_guild_id": guild_id,
                             "discord_channel_id": channel_id,
+                            "discord_account_id": account_id,
                             "addressed": True,
                             "interaction_type": "direct",
                             "engagement_mode": "mention-only",

@@ -291,16 +291,28 @@ An attacker would need to fool all voters simultaneously. Each sees a different 
 - Risk scoring (not just pass/fail)
 - All output taint-labeled with provenance for downstream enforcement
 
-Channel receive pumps durably reserve a non-empty channel/message replay key
-before dispatch. A successful handler records a terminal outcome; a failed or
-uncertain handler retains an uncertain outcome. Any known outcome is
-non-dispatchable after restart. Replay snapshot/journal corruption, unsupported
-schema, or reservation persistence failure is retained and blocks that channel's
-ingress instead of treating the message as fresh; `shisad doctor check
---component channels` reports the replay-state posture. The current F3C.1
-boundary does not yet claim provider-account/delivery scoping or Discord
-interaction-specific identity; those keys remain release-close requirements for
-v0.8.1.
+Channel receive pumps durably reserve a frozen provider-scoped replay identity
+before dispatch. The identity binds a non-secret account fingerprint, the raw
+provider tenant and delivery domain, an event variant, and the raw provider
+message ID. Telegram chat/topic, Slack team/channel, Discord guild/channel
+ordinary-message, and Matrix account/room scopes are derived inside their
+adapters. Direct `channel.ingest` uses a separate identity derived from the
+authenticated local RPC peer and fixed server route; caller channel metadata
+cannot impersonate or widen a provider scope. Missing or adapter-mismatched
+identity blocks dispatch.
+
+A successful handler records a terminal outcome; a failed or uncertain handler
+retains an uncertain outcome. Reserved, terminal, and uncertain records are
+non-evicting authority, while the bounded 2,048-entry recent set is only an
+optimization. Eviction, compaction, and restart therefore cannot make a known
+identity fresh. Valid old unscoped state continues to reject known raw IDs but
+blocks unknown admission in that provider scope until an explicit operator
+rebaseline with `shisad channel replay-rebaseline --channel <scope> --confirm`;
+it is not silently migrated. Replay snapshot/journal corruption,
+unsupported schema, or reservation persistence failure is retained and blocks
+that scope. `shisad doctor check --component channels` reports provider and
+direct-ingress replay posture. Discord component/modal interaction identity is
+a separate v0.8.1 release-close requirement and is not claimed by this boundary.
 
 ### Context Builder (spotlighting)
 

@@ -100,6 +100,25 @@ _CASES: tuple[_PumpCase, ...] = (
 )
 
 
+def _provider_coordinates(case: _PumpCase) -> dict[str, object]:
+    if case.channel_name == "matrix":
+        return {"reply_target": case.workspace_hint}
+    if case.channel_name == "discord":
+        return {
+            "reply_target": "channel-1",
+            "metadata": {
+                "discord_guild_id": case.workspace_hint,
+                "discord_channel_id": "channel-1",
+            },
+        }
+    if case.channel_name == "telegram":
+        return {"reply_target": case.workspace_hint}
+    return {
+        "reply_target": "channel-1",
+        "metadata": {"slack_team_id": case.workspace_hint},
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", _CASES, ids=[item.channel_name for item in _CASES])
 async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit(
@@ -110,8 +129,19 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
 ) -> None:
     async def _fake_connect(self: InMemoryChannel) -> None:
         await InMemoryChannel.connect(self)
-        await self.inject(case.blocked_user, "blocked inbound message", case.workspace_hint)
-        await self.inject(case.allowed_user, "allowed inbound message", case.workspace_hint)
+        coordinates = _provider_coordinates(case)
+        await self.inject(
+            case.blocked_user,
+            "blocked inbound message",
+            case.workspace_hint,
+            **coordinates,
+        )
+        await self.inject(
+            case.allowed_user,
+            "allowed inbound message",
+            case.workspace_hint,
+            **coordinates,
+        )
 
     monkeypatch.setattr(case.channel_cls, "connect", _fake_connect)
 
@@ -225,7 +255,7 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
 
 
 @pytest.mark.asyncio
-async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
+async def test_gh41_slack_confirm_reply_completes_without_reentering_planner(
     model_env: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -321,6 +351,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
             workspace_hint="team-1",
             message_id="gh41-slack-1",
             reply_target="D1",
+            metadata={"slack_team_id": "team-1"},
         )
         pending_before: dict[str, Any] = {}
         sid = ""
@@ -353,6 +384,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
             workspace_hint="team-1",
             message_id="gh41-slack-2",
             reply_target="D1",
+            metadata={"slack_team_id": "team-1"},
         )
         pending_after: dict[str, Any] = {}
         received_total = 0
@@ -373,7 +405,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
             if (
                 received_total >= 2
                 and len(planner_requests) == 1
-                and len(pending_after.get("actions", [])) == 1
+                and len(pending_after.get("actions", [])) == 0
             ):
                 break
             await asyncio.sleep(0.05)
@@ -382,7 +414,7 @@ async def test_gh41_slack_confirm_reply_does_not_reenter_planner_or_grow_queue(
         assert len(planner_requests) == 1
         assert "please write my preference" in planner_requests[0]
         assert "confirm 1" not in planner_requests[0]
-        assert len(pending_after.get("actions", [])) == 1
+        assert len(pending_after.get("actions", [])) == 0
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

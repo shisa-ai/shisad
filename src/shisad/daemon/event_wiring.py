@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
-from shisad.channels.base import Channel
+from shisad.channels.base import Channel, ReplayIdentity
 from shisad.channels.state import ChannelStateStore
 from shisad.core.api.schema import ChannelIngestParams
 from shisad.core.api.transport import ControlServer
@@ -392,13 +392,24 @@ async def channel_receive_pump(
             continue
 
         message_id = str(getattr(message, "message_id", "")).strip()
+        try:
+            replay_identity = channel.replay_identity(message)
+        except (TypeError, ValueError):
+            logger.exception("%s replay identity derivation failed; blocking ingress", channel_name)
+            continue
+        if (
+            not isinstance(replay_identity, ReplayIdentity)
+            or replay_identity.provider != channel_name
+            or replay_identity.message_id != message_id
+        ):
+            logger.error("%s replay identity mismatch; blocking ingress", channel_name)
+            continue
         replay_reserved = False
-        if state_store is not None and message_id:
+        if state_store is not None:
             try:
                 is_replay = await asyncio.to_thread(
                     state_store.reserve,
-                    channel=channel_name,
-                    message_id=message_id,
+                    identity=replay_identity,
                 )
             except Exception:
                 logger.exception(
@@ -432,8 +443,7 @@ async def channel_receive_pump(
                 try:
                     await asyncio.to_thread(
                         state_store.mark_uncertain,
-                        channel=channel_name,
-                        message_id=message_id,
+                        identity=replay_identity,
                     )
                 except Exception:
                     logger.exception(
@@ -446,8 +456,7 @@ async def channel_receive_pump(
             try:
                 await asyncio.to_thread(
                     state_store.mark_terminal,
-                    channel=channel_name,
-                    message_id=message_id,
+                    identity=replay_identity,
                 )
             except Exception:
                 logger.exception(

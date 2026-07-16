@@ -9,6 +9,7 @@ from shisad.core.api.schema import (
     AdminSoulReadParams,
     AdminSoulUpdateParams,
     ChannelPairingProposalParams,
+    ChannelReplayRebaselineParams,
     DevCloseParams,
     DevImplementParams,
     DevRemediateParams,
@@ -82,6 +83,8 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert mapping["plan.steps"] is PlanStepsParams
     assert mapping["task.status_snapshot"] is TaskStatusSnapshotParams
     assert mapping["channel.pairing_propose"] is ChannelPairingProposalParams
+    assert mapping["channel.replay_rebaseline"] is ChannelReplayRebaselineParams
+    assert admin_only["channel.replay_rebaseline"] is True
     assert mapping["realitycheck.search"] is RealityCheckSearchParams
     assert mapping["realitycheck.read"] is RealityCheckReadParams
     assert mapping["email.search"] is EmailSearchParams
