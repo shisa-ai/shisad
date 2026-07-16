@@ -119,6 +119,7 @@ from shisad.core.api.schema import (
     WebFetchParams,
     WebSearchParams,
 )
+from shisad.core.authority import DaemonAuthorityClaim
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.interfaces import TypedHandler
 from shisad.core.log import setup_logging
@@ -564,10 +565,22 @@ async def _await_cleanup_terminal(cleanup_task: asyncio.Task[None]) -> None:
         raise asyncio.CancelledError
 
 
-async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None = None) -> None:
+async def run_daemon(
+    config: DaemonConfig,
+    on_started: Callable[[], None] | None = None,
+    authority_claim: DaemonAuthorityClaim | None = None,
+) -> None:
     """Run the shisad daemon."""
-    setup_logging(level=config.log_level)
-    services = await DaemonServices.build(config)
+    try:
+        setup_logging(level=config.log_level)
+    except BaseException:
+        if authority_claim is not None:
+            authority_claim.release()
+        raise
+    build_kwargs: dict[str, DaemonAuthorityClaim] = {}
+    if authority_claim is not None:
+        build_kwargs["authority_claim"] = authority_claim
+    services = await DaemonServices.build(config, **build_kwargs)
     channel_pump_tasks: list[asyncio.Task[None]] = []
     reminder_pump_task: asyncio.Task[None] | None = None
     try:

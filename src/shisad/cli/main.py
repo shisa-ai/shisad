@@ -9,8 +9,10 @@ import asyncio
 import json
 import os
 import re
+import stat
 import sys
 import time
+import uuid
 from collections.abc import Callable, Coroutine
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
@@ -108,6 +110,11 @@ from shisad.core.api.schema import (
     TwoFactorRevokeResult,
     WebFetchResult,
     WebSearchResult,
+)
+from shisad.core.authority import (
+    DaemonAuthorityClaim,
+    acquire_fresh_config_authority_claim,
+    narrow_daemon_authority_claim,
 )
 from shisad.core.config import DaemonConfig
 from shisad.interop.a2a_envelope import (
@@ -666,6 +673,8 @@ def a2a_keygen(
 
 # --- Daemon lifecycle ---
 
+_FRESH_CONFIG_ADMISSION_TIMEOUT_SECONDS = 5.0
+
 
 def _default_autoreload_roots() -> tuple[Path, ...]:
     package_src = Path(__file__).resolve().parents[1]
@@ -719,74 +728,114 @@ async def _run_daemon_with_autoreload(
     daemon_runner: Callable[[DaemonConfig], Coroutine[Any, Any, None]] | None = None,
     on_started: Callable[[DaemonConfig], None] | None = None,
     on_starting: Callable[[DaemonConfig], None] | None = None,
+    initial_authority_claim: DaemonAuthorityClaim | None = None,
 ) -> None:
-    runner = daemon_runner
-    if runner is None:
-        from shisad.daemon.runner import run_daemon
+    if daemon_runner is not None and initial_authority_claim is not None:
+        raise ValueError("a transferred authority claim requires the production daemon runner")
 
-        async def _default_runner(run_config: DaemonConfig) -> None:
+    async def _run_once(
+        run_config: DaemonConfig,
+        authority_claim: DaemonAuthorityClaim | None,
+        claim_handoff: asyncio.Event | None,
+    ) -> None:
+        if claim_handoff is not None:
+            claim_handoff.set()
+        try:
+            if daemon_runner is not None:
+                await daemon_runner(run_config)
+                return
+            from shisad.daemon.runner import run_daemon
+
             started_callback = None if on_started is None else lambda: on_started(run_config)
-            await run_daemon(run_config, on_started=started_callback)
-
-        runner = _default_runner
+            await run_daemon(
+                run_config,
+                on_started=started_callback,
+                authority_claim=authority_claim,
+            )
+        except BaseException:
+            if authority_claim is not None:
+                authority_claim.release()
+            raise
 
     roots = watch_roots or _default_autoreload_roots()
     snapshot = _snapshot_autoreload_files(roots)
     _echo(f"Debug autoreload watching {len(snapshot)} Python files", fg="cyan")
 
-    while True:
-        if on_starting is not None:
-            on_starting(config)
-        daemon_task: asyncio.Task[None] = asyncio.create_task(runner(config))
-        change_task: asyncio.Task[dict[Path, int]] = asyncio.create_task(
-            _wait_for_autoreload_change(
-                watch_roots=roots,
-                baseline=snapshot,
-                poll_interval=poll_interval,
+    pending_authority_claim = initial_authority_claim
+    try:
+        while True:
+            if on_starting is not None:
+                on_starting(config)
+            run_claim = pending_authority_claim
+            claim_handoff = asyncio.Event() if run_claim is not None else None
+            daemon_task: asyncio.Task[None] = asyncio.create_task(
+                _run_once(config, run_claim, claim_handoff)
             )
-        )
-        try:
-            done, _ = await asyncio.wait(
-                {daemon_task, change_task},
-                return_when=asyncio.FIRST_COMPLETED,
+            if claim_handoff is not None:
+                try:
+                    await asyncio.shield(claim_handoff.wait())
+                except asyncio.CancelledError:
+                    if claim_handoff.is_set():
+                        pending_authority_claim = None
+                    daemon_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await daemon_task
+                    raise
+            pending_authority_claim = None
+            change_task: asyncio.Task[dict[Path, int]] = asyncio.create_task(
+                _wait_for_autoreload_change(
+                    watch_roots=roots,
+                    baseline=snapshot,
+                    poll_interval=poll_interval,
+                )
             )
-        except asyncio.CancelledError:
+            try:
+                done, _ = await asyncio.wait(
+                    {daemon_task, change_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                daemon_task.cancel()
+                change_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await daemon_task
+                with suppress(asyncio.CancelledError):
+                    await change_task
+                raise
+
+            if daemon_task in done:
+                change_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await change_task
+                await daemon_task
+                return
+
+            snapshot = change_task.result()
+            _echo("Autoreload detected local source changes; restarting daemon", fg="yellow")
             daemon_task.cancel()
-            change_task.cancel()
             with suppress(asyncio.CancelledError):
                 await daemon_task
-            with suppress(asyncio.CancelledError):
-                await change_task
-            raise
-
-        if daemon_task in done:
-            change_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await change_task
-            await daemon_task
-            return
-
-        snapshot = change_task.result()
-        _echo("Autoreload detected local source changes; restarting daemon", fg="yellow")
-        daemon_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await daemon_task
-        if str(config.log_level).strip().upper() == "DEBUG":
-            refreshed = _get_config()
-            config = refreshed.model_copy(update={"log_level": "DEBUG"})
-            _echo("Autoreload reloaded daemon config from environment", fg="cyan")
+            if str(config.log_level).strip().upper() == "DEBUG":
+                refreshed = _get_config()
+                config = refreshed.model_copy(update={"log_level": "DEBUG"})
+                _echo("Autoreload reloaded daemon config from environment", fg="cyan")
+    finally:
+        if pending_authority_claim is not None:
+            pending_authority_claim.release()
 
 
 def _run_daemon_with_autoreload_sync(
     config: DaemonConfig,
     on_started: Callable[[DaemonConfig], None] | None = None,
     on_starting: Callable[[DaemonConfig], None] | None = None,
+    authority_claim: DaemonAuthorityClaim | None = None,
 ) -> None:
     run_async(
         _run_daemon_with_autoreload(
             config=config,
             on_started=on_started,
             on_starting=on_starting,
+            initial_authority_claim=authority_claim,
         )
     )
 
@@ -795,32 +844,136 @@ def _run_daemon_foreground(
     config: DaemonConfig,
     on_started: Callable[[DaemonConfig], None] | None = None,
     on_starting: Callable[[DaemonConfig], None] | None = None,
+    authority_claim: DaemonAuthorityClaim | None = None,
 ) -> None:
     from shisad.daemon.runner import run_daemon
 
     if on_starting is not None:
         on_starting(config)
     started_callback = None if on_started is None else lambda: on_started(config)
-    run_async(run_daemon(config, on_started=started_callback))
+    run_async(
+        run_daemon(
+            config,
+            on_started=started_callback,
+            authority_claim=authority_claim,
+        )
+    )
 
 
-def _backup_config_snapshot(config: DaemonConfig) -> Path:
-    """Write a timestamped JSON snapshot of current config before reload."""
-    backup_dir = config.data_dir / "config-backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _ensure_claimed_backup_directory(data_root: Path, backup_dir: Path) -> None:
+    missing: list[Path] = []
+    current = backup_dir
+    while True:
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            missing.append(current)
+            if current.parent == current:
+                raise OSError(f"cannot locate existing ancestor for {backup_dir}") from None
+            current = current.parent
+            continue
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise OSError(f"fresh-config backup ancestor is not a directory: {current}")
+        if (current == data_root or current.is_relative_to(data_root)) and (
+            current_stat.st_uid != os.getuid()
+        ):
+            raise OSError(f"fresh-config backup directory is not owner-controlled: {current}")
+        break
+
+    for directory in reversed(missing):
+        with suppress(FileExistsError):
+            directory.mkdir(mode=0o700)
+        directory_stat = directory.lstat()
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
+            raise OSError(f"fresh-config backup directory is not owner-controlled: {directory}")
+        if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+            directory.chmod(0o700)
+        _fsync_directory(directory)
+        _fsync_directory(directory.parent)
+
+    for directory in (data_root, backup_dir):
+        directory_stat = directory.lstat()
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
+            raise OSError(f"fresh-config backup directory is not owner-controlled: {directory}")
+        if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+            directory.chmod(0o700)
+            _fsync_directory(directory)
+            _fsync_directory(directory.parent)
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write while staging fresh-config backup")
+        view = view[written:]
+
+
+def _backup_config_snapshot(
+    config: DaemonConfig,
+    claim: DaemonAuthorityClaim,
+) -> Path:
+    """Durably publish a secret-bearing snapshot under acquired authority."""
+
+    raw_backup_dir = config.data_dir / "config-backups"
+    data_root = claim.verify_covers_path(config.data_dir)
+    backup_dir = claim.verify_covers_path(raw_backup_dir)
+    payload = (
+        json.dumps(
+            config.model_dump(mode="json"),
+            allow_nan=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    _ensure_claimed_backup_directory(data_root, backup_dir)
+
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    backup_path = backup_dir / f"{timestamp}.json"
-
-    # Keep names unique if multiple backups happen within the same second.
-    counter = 1
-    while backup_path.exists():
-        backup_path = backup_dir / f"{timestamp}-{counter}.json"
-        counter += 1
-
-    payload = config.model_dump(mode="json")
-    backup_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.chmod(backup_path, 0o600)
-    return backup_path
+    stage_path = backup_dir / f".{timestamp}.{uuid.uuid4().hex}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    published = False
+    try:
+        fd = os.open(stage_path, flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            _write_all(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        counter = 0
+        while True:
+            if counter > 4096:
+                raise OSError("exhausted fresh-config backup filename candidates")
+            suffix = "" if counter == 0 else f"-{counter}"
+            backup_path = backup_dir / f"{timestamp}{suffix}.json"
+            try:
+                os.link(stage_path, backup_path, follow_symlinks=False)
+                break
+            except FileExistsError:
+                counter += 1
+        published = True
+        _fsync_directory(backup_dir)
+        stage_path.unlink()
+        _fsync_directory(backup_dir)
+        return backup_path
+    except BaseException:
+        if not published:
+            with suppress(OSError):
+                stage_path.unlink()
+                _fsync_directory(backup_dir)
+        raise
 
 
 def _single_line_status_value(value: object) -> str:
@@ -857,6 +1010,7 @@ def _start_daemon(
     debug: bool,
     on_started: Callable[[DaemonConfig], None] | None = None,
     on_starting: Callable[[DaemonConfig], None] | None = None,
+    authority_claim: DaemonAuthorityClaim | None = None,
 ) -> None:
     effective_foreground = foreground or debug
     effective_config = config.model_copy(update={"log_level": "DEBUG"}) if debug else config
@@ -873,16 +1027,24 @@ def _start_daemon(
 
     try:
         if debug:
+            debug_kwargs: dict[str, Any] = {}
+            if authority_claim is not None:
+                debug_kwargs["authority_claim"] = authority_claim
             _run_daemon_with_autoreload_sync(
                 effective_config,
                 on_started=on_started,
                 on_starting=on_starting,
+                **debug_kwargs,
             )
         else:
+            foreground_kwargs: dict[str, Any] = {}
+            if authority_claim is not None:
+                foreground_kwargs["authority_claim"] = authority_claim
             _run_daemon_foreground(
                 effective_config,
                 on_started=on_started,
                 on_starting=on_starting,
+                **foreground_kwargs,
             )
     except KeyboardInterrupt:
         _echo("\nShutting down...", fg="yellow")
@@ -942,6 +1104,7 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
 
     phase = "fresh-config" if fresh_config else "start"
     status_config = config
+    transferred_claim: DaemonAuthorityClaim | None = None
 
     def _mark_starting(starting_config: DaemonConfig) -> None:
         nonlocal status_config
@@ -949,10 +1112,22 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
 
     try:
         if fresh_config:
-            backup_path = _backup_config_snapshot(config)
-            _echo(f"Saved prior config snapshot: {backup_path}", fg="yellow")
-            config = _get_config()
+            refreshed_config = _get_config()
             _echo("Reloaded configuration from environment", fg="cyan")
+            transferred_claim = acquire_fresh_config_authority_claim(
+                config,
+                refreshed_config,
+                timeout_seconds=_FRESH_CONFIG_ADMISSION_TIMEOUT_SECONDS,
+            )
+            try:
+                backup_path = _backup_config_snapshot(config, transferred_claim)
+                narrow_daemon_authority_claim(refreshed_config, transferred_claim)
+            except BaseException:
+                transferred_claim.release()
+                transferred_claim = None
+                raise
+            _echo(f"Saved prior config snapshot: {backup_path}", fg="yellow")
+            config = refreshed_config
 
         def _announce_started(started_config: DaemonConfig) -> None:
             nonlocal status_config
@@ -960,14 +1135,20 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             _echo(_format_restart_status("daemon restarted", started_config), fg="green")
 
         phase = "start"
+        start_kwargs: dict[str, Any] = {}
+        if transferred_claim is not None:
+            start_kwargs["authority_claim"] = transferred_claim
         _start_daemon(
             config=config,
             foreground=foreground,
             debug=debug,
             on_started=_announce_started,
             on_starting=_mark_starting,
+            **start_kwargs,
         )
     except click.ClickException as exc:
+        if transferred_claim is not None:
+            transferred_claim.release()
         _echo(
             _format_restart_status(
                 "daemon restart failed",
@@ -979,6 +1160,8 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
         )
         raise
     except Exception as exc:
+        if transferred_claim is not None:
+            transferred_claim.release()
         _echo(
             _format_restart_status(
                 "daemon restart failed",
@@ -988,6 +1171,10 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
             ),
             err=True,
         )
+        raise
+    except BaseException:
+        if transferred_claim is not None:
+            transferred_claim.release()
         raise
 
 

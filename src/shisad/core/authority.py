@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import stat
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -23,9 +24,11 @@ _CLAIM_SUFFIX = ".json"
 _MAX_CLAIM_BYTES = 256 * 1024
 _MAX_MATCHING_ARTIFACTS = 4096
 _EXTERNAL_FILE_ROLES = frozenset({"approval_factor_store", "soul"})
-_BASELINE_ROLES = frozenset({"data_root", "control_socket", *_EXTERNAL_FILE_ROLES})
+_TREE_ROLES = frozenset({"config_backup_root", "data_root"})
+_BASELINE_ROLES = frozenset({*_TREE_ROLES, "control_socket", *_EXTERNAL_FILE_ROLES})
 _SYMLINK_REJECT_ROLES = frozenset({"control_socket", *_EXTERNAL_FILE_ROLES})
 _ROLE_FOOTPRINT_KIND = {
+    "config_backup_root": "tree-v1",
     "data_root": "tree-v1",
     "control_socket": "exact-v1",
     "approval_factor_store": "external-file-v1",
@@ -133,6 +136,38 @@ class DaemonAuthorityClaim:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise AuthorityClaimError("daemon authority claim lock is not held") from exc
+
+    def verify_covers_path(self, path: Path) -> Path:
+        """Return a canonical path only when this live claim covers its tree."""
+
+        self.verify(self._candidates)
+        canonical = _canonical_path(path)
+        if not any(
+            candidate.role in _TREE_ROLES
+            and (canonical == candidate.path or canonical.is_relative_to(candidate.path))
+            for candidate in self._candidates
+        ):
+            raise AuthorityClaimError(
+                f"daemon authority claim does not cover mutable path: {canonical}"
+            )
+        return canonical
+
+    def narrow_to(self, candidates: tuple[DaemonAuthorityCandidate, ...]) -> None:
+        """Atomically retain an exact subset without releasing the live record."""
+
+        if not candidates:
+            raise AuthorityClaimError("cannot narrow daemon authority claim to an empty set")
+        current = {(candidate.role, candidate.path) for candidate in self._candidates}
+        supplied = {(candidate.role, candidate.path) for candidate in candidates}
+        if not supplied.issubset(current):
+            raise AuthorityClaimError("daemon authority claim cannot expand during narrowing")
+        with _registry_guard(self._registry_root):
+            self.verify(self._candidates)
+            fd = self._fd
+            if fd is None:
+                raise AuthorityClaimError("daemon authority claim has already been released")
+            _write_claim_record(fd, candidates)
+            self._candidates = candidates
 
     def release(self) -> None:
         """Release this claim and durably remove its registry record."""
@@ -585,7 +620,7 @@ def daemon_authority_protects_path(
     """Return whether a write target enters one claimed structural footprint."""
 
     canonical = _canonical_path(path)
-    if candidate.role == "data_root":
+    if candidate.role in _TREE_ROLES:
         return canonical == candidate.path or canonical.is_relative_to(candidate.path)
     try:
         refreshed = _candidate_at_canonical_path(candidate.role, candidate.path)
@@ -714,6 +749,80 @@ def _preflight_assistant_filesystem_roots(
                 )
 
 
+def _write_claim_record(
+    fd: int,
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+) -> None:
+    payload = json.dumps(
+        {
+            "version": _REGISTRY_SCHEMA_VERSION,
+            "pid": os.getpid(),
+            "candidates": [candidate.to_record() for candidate in candidates],
+        },
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(payload) > _MAX_CLAIM_BYTES:
+        raise AuthorityRegistryError("daemon authority claim record is oversized")
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write while publishing authority claim")
+        view = view[written:]
+    os.fsync(fd)
+
+
+def _publish_claim(
+    root: Path,
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+) -> DaemonAuthorityClaim:
+    record_path = root / f"{_CLAIM_PREFIX}{uuid.uuid4().hex}{_CLAIM_SUFFIX}"
+    try:
+        fd = _open_owner_file(record_path, create=True, exclusive=True)
+    except OSError as exc:
+        raise AuthorityRegistryError("cannot create daemon authority claim") from exc
+    published = False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _write_claim_record(fd, candidates)
+        _fsync_directory(root)
+        published = True
+        return DaemonAuthorityClaim(
+            candidates=candidates,
+            fd=fd,
+            record_path=record_path,
+            registry_root=root,
+        )
+    finally:
+        if not published:
+            try:
+                record_path.unlink()
+                _fsync_directory(root)
+            except OSError:
+                pass
+            os.close(fd)
+
+
+def _reject_active_claim_conflicts(
+    root: Path,
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+) -> None:
+    for _record_path, active_candidates in _active_claims(root):
+        for candidate in candidates:
+            for active in active_candidates:
+                overlap_kind = _authority_overlap_kind(candidate, active)
+                if overlap_kind is not None:
+                    raise AuthorityConflictError(
+                        "daemon mutable authority conflict: "
+                        f"{candidate.role}={candidate.path} overlaps "
+                        f"{active.role}={active.path} ({overlap_kind})"
+                    )
+
+
 def acquire_daemon_authority_claim(config: DaemonConfig) -> DaemonAuthorityClaim:
     """Atomically reserve the config's baseline authority set without target mutation."""
 
@@ -725,58 +834,80 @@ def acquire_daemon_authority_claim(config: DaemonConfig) -> DaemonAuthorityClaim
     with _registry_guard(root):
         candidates = derive_daemon_authority_candidates(config)
         _validate_candidate_boundaries(config, candidates, canonical_root)
-        for _record_path, active_candidates in _active_claims(root):
-            for candidate in candidates:
-                for active in active_candidates:
-                    overlap_kind = _authority_overlap_kind(candidate, active)
-                    if overlap_kind is not None:
-                        raise AuthorityConflictError(
-                            "daemon mutable authority conflict: "
-                            f"{candidate.role}={candidate.path} overlaps "
-                            f"{active.role}={active.path} ({overlap_kind})"
-                        )
+        _reject_active_claim_conflicts(root, candidates)
+        return _publish_claim(root, candidates)
 
-        record_path = root / f"{_CLAIM_PREFIX}{uuid.uuid4().hex}{_CLAIM_SUFFIX}"
+
+def _derive_fresh_config_union_candidates(
+    prior_config: DaemonConfig,
+    refreshed_config: DaemonConfig,
+) -> tuple[DaemonAuthorityCandidate, ...]:
+    candidates = [
+        _candidate("data_root", prior_config.data_dir),
+        _candidate("config_backup_root", prior_config.data_dir / "config-backups"),
+        *derive_daemon_authority_candidates(refreshed_config),
+    ]
+    unique = {(candidate.role, candidate.path): candidate for candidate in candidates}
+    return tuple(sorted(unique.values(), key=lambda item: (os.fspath(item.path), item.role)))
+
+
+def _acquire_fresh_config_authority_claim_once(
+    prior_config: DaemonConfig,
+    refreshed_config: DaemonConfig,
+) -> DaemonAuthorityClaim:
+    root = _registry_root()
+    canonical_root = _canonical_path(root)
+    with _registry_guard(root):
+        candidates = _derive_fresh_config_union_candidates(prior_config, refreshed_config)
+        _validate_candidate_boundaries(refreshed_config, candidates, canonical_root)
+        _reject_active_claim_conflicts(root, candidates)
+        return _publish_claim(root, candidates)
+
+
+def acquire_fresh_config_authority_claim(
+    prior_config: DaemonConfig,
+    refreshed_config: DaemonConfig,
+    *,
+    timeout_seconds: float = 5.0,
+    retry_interval_seconds: float = 0.05,
+) -> DaemonAuthorityClaim:
+    """Reserve prior-backup and refreshed authorities as one bounded transaction."""
+
+    preliminary_candidates = _derive_fresh_config_union_candidates(
+        prior_config,
+        refreshed_config,
+    )
+    canonical_root = _canonical_path(_registry_root())
+    _validate_candidate_boundaries(refreshed_config, preliminary_candidates, canonical_root)
+    _preflight_assistant_filesystem_roots(
+        refreshed_config,
+        preliminary_candidates,
+        canonical_root,
+    )
+    timeout = max(0.0, timeout_seconds)
+    deadline = time.monotonic() + timeout
+    while True:
         try:
-            fd = _open_owner_file(record_path, create=True, exclusive=True)
-        except OSError as exc:
-            raise AuthorityRegistryError("cannot create daemon authority claim") from exc
-        published = False
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            payload = json.dumps(
-                {
-                    "version": _REGISTRY_SCHEMA_VERSION,
-                    "pid": os.getpid(),
-                    "candidates": [candidate.to_record() for candidate in candidates],
-                },
-                allow_nan=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-            view = memoryview(payload)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError("short write while publishing authority claim")
-                view = view[written:]
-            os.fsync(fd)
-            _fsync_directory(root)
-            published = True
-            return DaemonAuthorityClaim(
-                candidates=candidates,
-                fd=fd,
-                record_path=record_path,
-                registry_root=root,
-            )
-        finally:
-            if not published:
-                try:
-                    record_path.unlink()
-                    _fsync_directory(root)
-                except OSError:
-                    pass
-                os.close(fd)
+            return _acquire_fresh_config_authority_claim_once(prior_config, refreshed_config)
+        except AuthorityConflictError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AuthorityConflictError(
+                    "timed out waiting for fresh-config daemon authorities"
+                ) from exc
+            time.sleep(min(max(0.001, retry_interval_seconds), remaining))
+
+
+def narrow_daemon_authority_claim(
+    config: DaemonConfig,
+    claim: DaemonAuthorityClaim,
+) -> None:
+    """Retain only the refreshed config candidates on a transferred union claim."""
+
+    candidates = derive_daemon_authority_candidates(config)
+    canonical_root = _canonical_path(_registry_root())
+    _validate_candidate_boundaries(config, candidates, canonical_root)
+    claim.narrow_to(candidates)
 
 
 def _ensure_owner_directory(path: Path) -> None:

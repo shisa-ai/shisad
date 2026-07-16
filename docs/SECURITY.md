@@ -333,6 +333,16 @@ claim remains held until mutable services and listeners stop. This is a local
 mutable-file authority boundary, not a multi-host or remote provider-account
 lease.
 
+`restart --fresh-config` reloads the candidate configuration before writing its
+secret-bearing prior-config snapshot. It reserves the prior data/backup tree and
+the complete refreshed authority set in one bounded same-host admission, then
+creates the backup directories and snapshot as owner-only durable state. After
+publication it narrows that same locked registry record to the exact refreshed
+set and transfers the live claim into the first daemon run; debug autoreload
+iterations after the first acquire normally only after the prior run has fully
+released its claim. Admission timeout or backup failure starts no refreshed
+daemon and does not initialize a disjoint refreshed data root.
+
 A successful handler records a terminal outcome; a failed or uncertain handler
 retains an uncertain outcome. Reserved, terminal, and uncertain records are
 non-evicting authority, while the bounded 2,048-entry recent set is only an

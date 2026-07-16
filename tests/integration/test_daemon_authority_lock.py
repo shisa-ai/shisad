@@ -8,7 +8,9 @@ import os
 import queue
 import socket
 import stat
+import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -16,6 +18,7 @@ from typing import Any
 
 import pytest
 
+import shisad.core.authority as authority
 from shisad.core.api.transport import ControlClient, ControlServer
 from shisad.core.authority import (
     AuthorityClaimError,
@@ -176,6 +179,206 @@ def test_f3_disjoint_authority_claims_can_coexist(tmp_path: Path) -> None:
             claim_b.release()
     finally:
         claim_a.release()
+
+
+def test_f3_fresh_config_union_claim_narrows_without_admission_gap(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="refreshed", socket_name="refreshed.sock")
+
+    claim = authority.acquire_fresh_config_authority_claim(
+        prior,
+        refreshed,
+        timeout_seconds=0,
+    )
+    prior_successor: DaemonAuthorityClaim | None = None
+    try:
+        assert not prior.data_dir.exists()
+        assert not refreshed.data_dir.exists()
+        claimed_paths = {candidate.path for candidate in claim.candidates}
+        assert prior.data_dir.resolve(strict=False) in claimed_paths
+        assert (prior.data_dir / "config-backups").resolve(strict=False) in claimed_paths
+        with pytest.raises(AuthorityConflictError):
+            acquire_daemon_authority_claim(prior)
+        with pytest.raises(AuthorityConflictError):
+            acquire_daemon_authority_claim(refreshed)
+
+        authority.narrow_daemon_authority_claim(refreshed, claim)
+
+        assert tuple((item.role, item.path) for item in claim.candidates) == tuple(
+            (item.role, item.path)
+            for item in derive_daemon_authority_candidates(refreshed)
+        )
+        prior_successor = acquire_daemon_authority_claim(prior)
+        with pytest.raises(AuthorityConflictError):
+            acquire_daemon_authority_claim(refreshed)
+    finally:
+        if prior_successor is not None:
+            prior_successor.release()
+        claim.release()
+
+
+def test_f3_fresh_config_union_waits_without_holding_registry_guard(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="refreshed", socket_name="refreshed.sock")
+    active = acquire_daemon_authority_claim(prior)
+    released = threading.Event()
+
+    def _release_prior() -> None:
+        time.sleep(0.05)
+        active.release()
+        released.set()
+
+    thread = threading.Thread(target=_release_prior)
+    thread.start()
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        claim = authority.acquire_fresh_config_authority_claim(
+            prior,
+            refreshed,
+            timeout_seconds=1,
+            retry_interval_seconds=0.01,
+        )
+        assert released.is_set()
+        assert not prior.data_dir.exists()
+        assert not refreshed.data_dir.exists()
+    finally:
+        if claim is not None:
+            claim.release()
+        if not active.released:
+            active.release()
+        thread.join(timeout=1)
+
+
+def test_f3_fresh_config_union_timeout_mutates_neither_tree(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="refreshed", socket_name="refreshed.sock")
+    active = acquire_daemon_authority_claim(prior)
+    try:
+        with pytest.raises(AuthorityConflictError, match="timed out"):
+            authority.acquire_fresh_config_authority_claim(
+                prior,
+                refreshed,
+                timeout_seconds=0,
+            )
+        assert not prior.data_dir.exists()
+        assert not refreshed.data_dir.exists()
+        assert not (prior.data_dir / "config-backups").exists()
+    finally:
+        active.release()
+
+
+def test_f3_fresh_config_same_root_deduplicates_then_narrows(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="shared", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="shared", socket_name="refreshed.sock")
+    claim = authority.acquire_fresh_config_authority_claim(
+        prior,
+        refreshed,
+        timeout_seconds=0,
+    )
+    try:
+        data_candidates = [item for item in claim.candidates if item.role == "data_root"]
+        assert len(data_candidates) == 1
+        assert any(item.role == "config_backup_root" for item in claim.candidates)
+
+        authority.narrow_daemon_authority_claim(refreshed, claim)
+
+        assert not any(item.role == "config_backup_root" for item in claim.candidates)
+        assert len([item for item in claim.candidates if item.role == "data_root"]) == 1
+    finally:
+        claim.release()
+
+
+def test_f3_fresh_config_nested_roots_narrow_to_refreshed_tree(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="unused", socket_name="refreshed.sock").model_copy(
+        update={"data_dir": prior.data_dir / "nested"}
+    )
+    claim = authority.acquire_fresh_config_authority_claim(
+        prior,
+        refreshed,
+        timeout_seconds=0,
+    )
+    try:
+        authority.narrow_daemon_authority_claim(refreshed, claim)
+        assert {item.path for item in claim.candidates if item.role == "data_root"} == {
+            refreshed.data_dir.resolve(strict=False)
+        }
+        assert not prior.data_dir.exists()
+    finally:
+        claim.release()
+
+
+def test_f3_simultaneous_fresh_config_union_admission_has_one_winner(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="refreshed", socket_name="refreshed.sock")
+    barrier = threading.Barrier(2)
+    allow_release = threading.Event()
+    outcomes: queue.Queue[tuple[str, object]] = queue.Queue()
+
+    def _contend() -> None:
+        barrier.wait(timeout=3)
+        try:
+            claim = authority.acquire_fresh_config_authority_claim(
+                prior,
+                refreshed,
+                timeout_seconds=0,
+            )
+        except AuthorityConflictError as exc:
+            outcomes.put(("conflict", exc))
+            return
+        outcomes.put(("claimed", claim))
+        allow_release.wait(timeout=3)
+        claim.release()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_contend) for _ in range(2)]
+        first = outcomes.get(timeout=3)
+        second = outcomes.get(timeout=3)
+        assert sorted((first[0], second[0])) == ["claimed", "conflict"]
+        assert not prior.data_dir.exists()
+        assert not refreshed.data_dir.exists()
+        allow_release.set()
+        for future in futures:
+            future.result(timeout=3)
+
+
+def test_f3_disjoint_fresh_config_unions_can_coexist(tmp_path: Path) -> None:
+    prior_a = _config(tmp_path, name="prior-a", socket_name="prior-a.sock")
+    refreshed_a = _config(tmp_path, name="refreshed-a", socket_name="refreshed-a.sock")
+    prior_b = _config(tmp_path, name="prior-b", socket_name="prior-b.sock")
+    refreshed_b = _config(tmp_path, name="refreshed-b", socket_name="refreshed-b.sock")
+
+    claim_a = authority.acquire_fresh_config_authority_claim(
+        prior_a,
+        refreshed_a,
+        timeout_seconds=0,
+    )
+    try:
+        claim_b = authority.acquire_fresh_config_authority_claim(
+            prior_b,
+            refreshed_b,
+            timeout_seconds=0,
+        )
+        claim_b.release()
+    finally:
+        claim_a.release()
+
+    assert not prior_a.data_dir.exists()
+    assert not refreshed_a.data_dir.exists()
+    assert not prior_b.data_dir.exists()
+    assert not refreshed_b.data_dir.exists()
 
 
 def test_f3_simultaneous_overlapping_authority_admission_has_one_winner(
@@ -1093,3 +1296,27 @@ async def test_f3_mismatched_injected_claim_cannot_remove_config_socket(
     assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
     assert stat.S_ISSOCK(after.st_mode)
     assert claim.released
+
+
+@pytest.mark.asyncio
+async def test_f3_run_daemon_consumes_transferred_authority_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    with tempfile.TemporaryDirectory(prefix="s3-", dir="/tmp") as raw_root:
+        root = Path(raw_root)
+        config = _config(root, name="d", socket_name="c.sock")
+        claim = acquire_daemon_authority_claim(config)
+        daemon_task = asyncio.create_task(run_daemon(config, authority_claim=claim))
+        client = ControlClient(config.socket_path)
+        try:
+            await _wait_for_socket(config.socket_path)
+            await client.connect()
+            status = await client.call("daemon.status")
+            assert status["status"] == "running"
+        finally:
+            with suppress(Exception):
+                await client.call("daemon.shutdown")
+            await client.close()
+            await asyncio.wait_for(daemon_task, timeout=3)
+        assert claim.released
