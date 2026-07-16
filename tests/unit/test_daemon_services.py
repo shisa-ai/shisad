@@ -1094,9 +1094,11 @@ async def test_f3_daemon_reset_clears_approval_durable_snapshot(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replacement_shape", ["symlink", "real_directory"])
 async def test_f3_approval_reset_rejects_parent_swap_before_corrupt_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    replacement_shape: str,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     config = DaemonConfig(
@@ -1129,25 +1131,22 @@ async def test_f3_approval_reset_rejects_parent_swap_before_corrupt_cleanup(
         sentinel = external / corrupt_name
         sentinel.write_bytes(b"external approval sentinel")
         parked = tmp_path / "parked-approval"
-        original_atomic_write = sys.modules[
-            "shisad.security.credentials"
-        ].atomic_write_bytes
 
-        def _publish_then_swap(path: Path, payload: bytes, **kwargs: object) -> None:
-            original_atomic_write(path, payload, **kwargs)
-            if Path(path) == approval_path:
-                configured.rename(parked)
+        def _swap_before_cleanup(stage: AtomicWriteStage) -> None:
+            if stage is not AtomicWriteStage.CLEANUP:
+                return
+            configured.rename(parked)
+            if replacement_shape == "symlink":
                 configured.symlink_to(external, target_is_directory=True)
+            else:
+                external.rename(configured)
 
-        monkeypatch.setattr(
-            "shisad.security.credentials.atomic_write_bytes",
-            _publish_then_swap,
-        )
+        services.credential_store._approval_state_fault_injector = _swap_before_cleanup
 
         with pytest.raises(AtomicWriteError):
             services.credential_store.reset_approval_state()
 
-        assert sentinel.read_bytes() == b"external approval sentinel"
+        assert (configured / corrupt_name).read_bytes() == b"external approval sentinel"
         assert services.credential_store.approval_state_degraded is True
     finally:
         await services.shutdown()

@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field, ValidationError
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteFaultInjector,
-    AtomicWriteStage,
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
@@ -34,7 +33,6 @@ from shisad.core.atomic_state import (
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     read_owner_only_regular_file,
-    remove_owner_controlled_sibling_entries,
     validate_owner_controlled_parent_ancestry,
 )
 from shisad.core.host_matching import host_matches
@@ -387,27 +385,16 @@ class InMemoryCredentialStore:
                 version=_APPROVAL_STORE_VERSION,
             )
             try:
-                atomic_write_bytes(
+                artifact_count += atomic_write_bytes(
                     path,
                     encoded,
                     fault_injector=self._approval_state_fault_injector,
                     require_safe_parent_ancestry=True,
-                )
-                artifact_count += remove_owner_controlled_sibling_entries(
-                    path,
-                    name_prefix=f"{path.name}.corrupt.",
+                    cleanup_sibling_prefix=f"{path.name}.corrupt.",
                 )
             except AtomicWriteError as exc:
                 self._approval_persistence_degradation = exc
                 raise
-            except OSError as exc:
-                degradation = AtomicWriteError(
-                    path=path,
-                    stage=AtomicWriteStage.CLEANUP,
-                    publication_may_have_committed=True,
-                )
-                self._approval_persistence_degradation = degradation
-                raise degradation from exc
 
         self._set_empty_approval_state()
         self._approval_persistence_degradation = None
