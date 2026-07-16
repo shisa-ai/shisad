@@ -331,6 +331,7 @@ async def test_m6_restored_legacy_session_backfills_current_policy_capabilities(
     )
     state_dir = tmp_path / "data" / "sessions" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data").chmod(0o700)
     legacy = Session(
         id=SessionId("legacy-empty-integration"),
         channel="cli",
@@ -398,6 +399,7 @@ async def test_m6_policy_default_session_syncs_to_empty_default_capabilities_on_
     )
     state_dir = tmp_path / "data" / "sessions" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data").chmod(0o700)
     policy_default = Session(
         id=SessionId("policy-default-empty-integration"),
         channel="cli",

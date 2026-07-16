@@ -196,6 +196,48 @@ def test_f3_atomic_claim_loser_cannot_create_or_repair_target(tmp_path: Path) ->
     successor_claim.release()
 
 
+@pytest.mark.asyncio
+async def test_f3_daemon_build_rejects_writable_data_root_before_legacy_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = _config(tmp_path, name="writable-root", socket_name="writable.sock")
+    config.data_dir.mkdir(parents=True)
+    config.data_dir.parent.chmod(0o700)
+    config.data_dir.chmod(0o775)
+    outside = tmp_path / "attacker-controlled"
+    outside.mkdir()
+    sentinel = outside / "legacy-key"
+    sentinel.write_bytes(b"attacker-controlled")
+    legacy = config.data_dir / "memory"
+    legacy.symlink_to(outside, target_is_directory=True)
+    reached_claimed_builder = False
+
+    async def _unexpected_build(
+        _cls: type[DaemonServices],
+        _config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
+        nonlocal reached_claimed_builder
+        del authority_claim
+        reached_claimed_builder = True
+        raise AssertionError("claimed builder reached with writable data root")
+
+    monkeypatch.setattr(DaemonServices, "_build_claimed", classmethod(_unexpected_build))
+
+    with pytest.raises(AuthorityClaimError, match="writable by another uid"):
+        await DaemonServices.build(config)
+
+    assert reached_claimed_builder is False
+    assert stat.S_IMODE(config.data_dir.stat().st_mode) == 0o775
+    assert legacy.is_symlink()
+    assert sentinel.read_bytes() == b"attacker-controlled"
+    successor_claim = acquire_daemon_authority_claim(config)
+    successor_claim.release()
+
+
 def test_f3_disjoint_authority_claims_can_coexist(tmp_path: Path) -> None:
     config_a = _config(tmp_path, name="a", socket_name="a.sock")
     config_b = _config(tmp_path, name="b", socket_name="b.sock")

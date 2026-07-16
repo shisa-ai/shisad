@@ -1063,6 +1063,10 @@ def _ensure_owner_directory(path: Path) -> None:
         directory_stat = directory.lstat()
         if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
             raise AuthorityClaimError(f"daemon data directory is not owner-controlled: {directory}")
+        if directory_stat.st_mode & 0o022:
+            raise AuthorityClaimError(
+                f"daemon data directory is writable by another uid: {directory}"
+            )
         directory.chmod(0o700)
         _fsync_directory(directory)
         _fsync_directory(directory.parent)
@@ -1070,6 +1074,8 @@ def _ensure_owner_directory(path: Path) -> None:
     path_stat = path.lstat()
     if not stat.S_ISDIR(path_stat.st_mode) or path_stat.st_uid != os.getuid():
         raise AuthorityClaimError(f"daemon data directory is not owner-controlled: {path}")
+    if path_stat.st_mode & 0o022:
+        raise AuthorityClaimError(f"daemon data directory is writable by another uid: {path}")
     if stat.S_IMODE(path_stat.st_mode) != 0o700:
         path.chmod(0o700)
         _fsync_directory(path)

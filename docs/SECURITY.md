@@ -334,7 +334,11 @@ path. The data root is treated as a contained tree; external approval/SOUL
 files also reserve their component-owned atomic temp, retained-corruption,
 backup, tombstone, migration, and lock name families. Unexpected exact,
 ancestor, derived-name, and live inode/hardlink overlap fails before target
-initialization, while ordinary disjoint siblings remain usable. Owner-controlled
+initialization, while ordinary disjoint siblings remain usable. After claim
+publication, a missing data root is created owner-only and an existing
+owner/non-writable root may be restricted to `0700`; an existing group- or
+world-writable data root fails closed before chmod or contained legacy-state
+inspection. Owner-controlled
 external authority files are restricted to `0600` only after claim publication;
 symlinked, foreign-owner, or non-regular trust files fail closed.
 Read-only policy, allowed-signer, and enabled A2A private-key inputs are not

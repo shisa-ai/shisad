@@ -304,6 +304,7 @@ async def test_f3_corrupt_control_plane_state_is_visible_while_daemon_stays_up(
     data_dir = tmp_path / "data"
     plans_path = data_dir / "control_plane" / "plans.json"
     plans_path.parent.mkdir(parents=True)
+    data_dir.chmod(0o700)
     plans_path.write_bytes(corrupt_bytes)
     config = DaemonConfig(
         data_dir=data_dir,
@@ -337,6 +338,7 @@ async def test_f3_corrupt_evidence_domain_is_visible_while_daemon_stays_up(
     data_dir = tmp_path / "data"
     evidence_root = data_dir / "sessions" / "evidence"
     ArtifactLedger(evidence_root, salt=b"a" * 32)
+    data_dir.chmod(0o700)
     index_path = evidence_root / "refs_index.json"
     corrupt_bytes = b'{"version":1,"payload":'
     index_path.write_bytes(corrupt_bytes)
@@ -377,6 +379,7 @@ async def test_f3_corrupt_dashboard_marks_start_visible_bounded_degraded(
     data_dir = tmp_path / "data"
     marks_path = data_dir / "dashboard" / "false_positives.json"
     marks_path.parent.mkdir(parents=True)
+    data_dir.chmod(0o700)
     corrupt_bytes = b'{"version":1,"payload":'
     marks_path.write_bytes(corrupt_bytes)
     config = DaemonConfig(
@@ -409,7 +412,7 @@ async def test_f3_corrupt_approval_store_starts_bounded_degraded_and_is_actionab
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     data_dir = tmp_path / "data"
-    data_dir.mkdir()
+    data_dir.mkdir(mode=0o700)
     approval_path = data_dir / "approval-factors.json"
     corrupt_bytes = b'{"version":3,"payload":'
     approval_path.write_bytes(corrupt_bytes)
@@ -452,6 +455,7 @@ async def test_f3_corrupt_skill_inventory_starts_bounded_degraded_and_is_actiona
     data_dir = tmp_path / "data"
     skill_dir = data_dir / "skills"
     skill_dir.mkdir(parents=True)
+    data_dir.chmod(0o700)
     inventory_path = skill_dir / "inventory.json"
     corrupt_bytes = b'{"version":1,"payload":'
     inventory_path.write_bytes(corrupt_bytes)
@@ -506,6 +510,7 @@ async def test_f3_corrupt_selfmod_inventory_starts_bounded_degraded_and_is_actio
     data_dir = tmp_path / "data"
     selfmod_dir = data_dir / "selfmod"
     selfmod_dir.mkdir(parents=True)
+    data_dir.chmod(0o700)
     inventory_path = selfmod_dir / "inventory.yaml"
     inventory_path.write_bytes(corrupt_bytes)
     config = DaemonConfig(
@@ -567,6 +572,7 @@ async def test_m5_daemon_services_wires_timeline_index_append_observer(
     )
     preexisting_sessions = SessionManager(state_dir=config.data_dir / "sessions" / "state")
     preexisting_transcripts = TranscriptStore(config.data_dir / "sessions")
+    config.data_dir.chmod(0o700)
     preexisting_session = preexisting_sessions.create(
         channel="cli",
         user_id=UserId("alice"),
@@ -629,6 +635,7 @@ async def test_m5_daemon_services_rebuilds_terminated_transcript_timeline(
     )
     preexisting_sessions = SessionManager(state_dir=config.data_dir / "sessions" / "state")
     preexisting_transcripts = TranscriptStore(config.data_dir / "sessions")
+    config.data_dir.chmod(0o700)
     terminated_session = preexisting_sessions.create(
         channel="cli",
         user_id=UserId("alice"),
