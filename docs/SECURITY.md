@@ -297,8 +297,9 @@ provider tenant and delivery domain, an event variant, and the raw provider
 message ID. Telegram chat/topic, Slack team/channel, Discord guild/channel
 ordinary-message, Discord component/modal interaction, and Matrix account/room
 scopes are derived inside their adapters. Discord interactions use raw
-`interaction.id` under a distinct event variant; source-message, confirmation,
-action, nonce, and component/modal fields remain binding metadata and cannot
+`interaction.id` under a distinct event variant. Confirmation, action, and
+nonce fields remain lifecycle-binding metadata; source-message and
+component/modal fields are non-authoritative interaction context. None can
 manufacture replay identity. Direct `channel.ingest` uses a separate identity
 derived from the authenticated local RPC peer and fixed server route; caller
 channel metadata cannot impersonate or widen a provider scope. Missing or

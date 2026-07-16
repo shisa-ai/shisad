@@ -743,12 +743,44 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
 
 
 @pytest.mark.asyncio
-async def test_discord_channel_rejects_interaction_without_raw_identity(
+@pytest.mark.parametrize(
+    ("interaction_id", "include_interaction_id"),
+    [
+        pytest.param("unused", False, id="absent"),
+        pytest.param(None, True, id="none"),
+        pytest.param("   ", True, id="blank"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("action", "components"),
+    [
+        pytest.param("confirm", None, id="confirm"),
+        pytest.param("reject", None, id="reject"),
+        pytest.param("totp", None, id="open-totp-modal"),
+        pytest.param(
+            "totp_submit",
+            [
+                {
+                    "components": [
+                        {"custom_id": "totp_code", "value": "123456"},
+                    ]
+                }
+            ],
+            id="submit-valid-totp",
+        ),
+        pytest.param("totp_submit", [], id="submit-missing-totp"),
+    ],
+)
+async def test_discord_channel_rejects_interaction_without_raw_identity_before_response(
     monkeypatch: pytest.MonkeyPatch,
+    interaction_id: object,
+    include_interaction_id: bool,
+    action: str,
+    components: list[dict[str, object]] | None,
 ) -> None:
     from shisad.channels import discord as discord_module
 
-    acknowledgements: list[str] = []
+    effects: list[str] = []
 
     class _FakeIntents:
         @classmethod
@@ -757,10 +789,28 @@ async def test_discord_channel_rejects_interaction_without_raw_identity(
 
     class _FakeResponse:
         async def send_message(self, _message: str, **_kwargs: object) -> None:
-            acknowledgements.append("send")
+            effects.append("send")
 
         async def defer(self, **_kwargs: object) -> None:
-            acknowledgements.append("defer")
+            effects.append("defer")
+
+        async def send_modal(self, _modal: object) -> None:
+            effects.append("modal")
+
+    class _FakeFollowup:
+        async def send(self, _message: str, **_kwargs: object) -> None:
+            effects.append("followup")
+
+    class _FakeModal:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def add_item(self, _item: object) -> None:
+            return None
+
+    class _FakeTextInput:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
 
     class _FakeClient:
         def __init__(self, *, intents: _FakeIntents) -> None:
@@ -783,31 +833,41 @@ async def test_discord_channel_rejects_interaction_without_raw_identity(
     monkeypatch.setattr(
         discord_module,
         "discord",
-        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+        SimpleNamespace(
+            Intents=_FakeIntents,
+            Client=_FakeClient,
+            ui=SimpleNamespace(Modal=_FakeModal, TextInput=_FakeTextInput),
+        ),
     )
     channel = DiscordChannel(DiscordConfig(bot_token="token"))
     await channel.connect()
     assert channel._client is not None
-    interaction = SimpleNamespace(
-        id="   ",
-        data={
-            "custom_id": discord_approval_custom_id(
-                action="confirm",
-                confirmation_id="c-missing-id",
-                decision_nonce="nonce-missing-id",
-            )
-        },
-        user=SimpleNamespace(id="u-1", bot=False),
-        guild=SimpleNamespace(id="g-1"),
-        channel=SimpleNamespace(id="chan-1"),
-        response=_FakeResponse(),
-    )
+    data: dict[str, object] = {
+        "custom_id": discord_approval_custom_id(
+            action=action,
+            confirmation_id="c-missing-id",
+            decision_nonce="nonce-missing-id",
+        )
+    }
+    if components is not None:
+        data["components"] = components
+    interaction_fields: dict[str, object] = {
+        "data": data,
+        "user": SimpleNamespace(id="u-1", bot=False),
+        "guild": SimpleNamespace(id="g-1"),
+        "channel": SimpleNamespace(id="chan-1"),
+        "response": _FakeResponse(),
+        "followup": _FakeFollowup(),
+    }
+    if include_interaction_id:
+        interaction_fields["id"] = interaction_id
+    interaction = SimpleNamespace(**interaction_fields)
 
     await channel._client.dispatch_interaction(interaction)
 
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(channel.receive(), timeout=0.05)
-    assert acknowledgements == []
+    assert effects == []
     await channel.disconnect()
 
 

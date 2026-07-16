@@ -394,6 +394,8 @@ class DiscordChannel(InMemoryChannel):
                 )
 
             async def on_interaction(interaction: Any) -> None:
+                if not self._interaction_id(interaction):
+                    return
                 data = getattr(interaction, "data", None)
                 if not isinstance(data, Mapping):
                     return
@@ -506,7 +508,7 @@ class DiscordChannel(InMemoryChannel):
         guild_id = str(getattr(guild, "id", "")).strip() if guild is not None else ""
         channel_obj = getattr(interaction, "channel", None)
         channel_id = str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
-        interaction_id = str(getattr(interaction, "id", "")).strip()
+        interaction_id = self._interaction_id(interaction)
         if not interaction_id:
             return False
         account_id = str(
@@ -542,6 +544,13 @@ class DiscordChannel(InMemoryChannel):
             )
         )
         return True
+
+    @staticmethod
+    def _interaction_id(interaction: Any) -> str:
+        raw_interaction_id = getattr(interaction, "id", None)
+        if raw_interaction_id is None:
+            return ""
+        return str(raw_interaction_id).strip()
 
     async def _open_totp_modal(
         self,
