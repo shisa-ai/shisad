@@ -32,6 +32,8 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    read_owner_only_regular_file,
+    validate_owner_controlled_parent_ancestry,
 )
 from shisad.core.host_matching import host_matches
 from shisad.core.types import CredentialRef
@@ -670,6 +672,13 @@ class InMemoryCredentialStore:
             self._set_empty_approval_state()
             return
         try:
+            validate_owner_controlled_parent_ancestry(path)
+        except OSError:
+            self._set_approval_load_failure(
+                StateLoadResult(StateLoadStatus.CORRUPT, reason="read_error")
+            )
+            return
+        try:
             path.lstat()
             exists = True
         except FileNotFoundError:
@@ -703,8 +712,13 @@ class InMemoryCredentialStore:
             return
 
         try:
-            raw_bytes = path.read_bytes()
+            raw_bytes = read_owner_only_regular_file(path)
         except OSError:
+            self._set_approval_load_failure(
+                StateLoadResult(StateLoadStatus.CORRUPT, reason="read_error")
+            )
+            return
+        if raw_bytes is None:
             self._set_approval_load_failure(
                 StateLoadResult(StateLoadStatus.CORRUPT, reason="read_error")
             )
@@ -812,6 +826,7 @@ class InMemoryCredentialStore:
                 path,
                 encoded,
                 fault_injector=self._approval_state_fault_injector,
+                require_safe_parent_ancestry=True,
             )
         except AtomicWriteError as exc:
             if exc.publication_may_have_committed:

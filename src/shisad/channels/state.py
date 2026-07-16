@@ -30,6 +30,9 @@ from shisad.core.atomic_state import (
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
+    ensure_owner_only_directory,
+    read_owned_regular_file,
+    validate_directory_ancestry,
 )
 
 logger = logging.getLogger(__name__)
@@ -769,31 +772,13 @@ class ChannelStateStore:
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="state_not_regular"), None
         if hasattr(os, "getuid") and path_stat.st_uid != os.getuid():
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="state_wrong_owner"), None
-        fd = -1
         try:
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(path, flags)
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
-                path_stat.st_dev,
-                path_stat.st_ino,
-            ):
-                raise OSError("replay state identity changed during open")
-            os.fchmod(fd, 0o600)
-            chunks: list[bytes] = []
-            while True:
-                chunk = os.read(fd, 64 * 1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return StateLoadResult(StateLoadStatus.OK), b"".join(chunks)
+            raw_bytes = read_owned_regular_file(path, normalize_mode=0o600)
         except OSError:
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="state_read_failed"), None
-        finally:
-            if fd >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
+        if raw_bytes is None:
+            return StateLoadResult(StateLoadStatus.CORRUPT, reason="state_read_failed"), None
+        return StateLoadResult(StateLoadStatus.OK), raw_bytes
 
     def _validate_existing_root(self) -> StateLoadResult:
         try:
@@ -804,10 +789,19 @@ class ChannelStateStore:
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="root_lstat_failed")
         if not stat.S_ISDIR(root_stat.st_mode):
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="root_not_directory")
+        try:
+            root_exists = validate_directory_ancestry(self._root_dir)
+        except OSError:
+            return StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_root_ancestry",
+            )
+        if not root_exists:
+            return StateLoadResult(StateLoadStatus.MISSING)
         if hasattr(os, "getuid") and root_stat.st_uid != os.getuid():
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="root_wrong_owner")
         try:
-            self._root_dir.chmod(0o700)
+            ensure_owner_only_directory(self._root_dir)
         except OSError:
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="root_mode_failed")
         return StateLoadResult(StateLoadStatus.OK)

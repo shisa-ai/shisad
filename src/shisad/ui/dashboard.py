@@ -18,6 +18,7 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    read_owned_regular_file,
 )
 from shisad.core.audit import AuditLog
 
@@ -225,8 +226,14 @@ class SecurityDashboard:
             )
             return
         try:
-            raw_bytes = self._marks_path.read_bytes()
+            raw_bytes = read_owned_regular_file(self._marks_path)
         except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="marks_read_failed",
+            )
+            return
+        if raw_bytes is None:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="marks_read_failed",

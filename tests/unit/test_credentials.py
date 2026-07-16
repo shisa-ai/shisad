@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import shisad.core.atomic_state as atomic_state
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
@@ -305,6 +306,7 @@ class TestApprovalFactorStore:
         store_path = tmp_path / "approval-factors.json"
         corrupt_bytes = b"{not-json"
         store_path.write_bytes(corrupt_bytes)
+        store_path.chmod(0o600)
 
         store = InMemoryCredentialStore()
         store.set_approval_store_path(store_path)
@@ -363,6 +365,7 @@ class TestApprovalFactorStore:
             ),
             encoding="utf-8",
         )
+        store_path.chmod(0o600)
 
         store = InMemoryCredentialStore()
         store.set_approval_store_path(store_path)
@@ -389,6 +392,7 @@ class TestApprovalFactorStore:
             "signer_keys": [],
         }
         store_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+        store_path.chmod(0o600)
         store = InMemoryCredentialStore()
 
         store.set_approval_store_path(store_path)
@@ -454,6 +458,7 @@ class TestApprovalFactorStore:
             version=99,
         )
         store_path.write_bytes(unsupported_bytes)
+        store_path.chmod(0o600)
         store = InMemoryCredentialStore()
 
         store.set_approval_store_path(store_path)
@@ -475,6 +480,7 @@ class TestApprovalFactorStore:
             version=3,
         )
         store_path.write_bytes(invalid_bytes)
+        store_path.chmod(0o600)
         store = InMemoryCredentialStore()
 
         store.set_approval_store_path(store_path)
@@ -504,6 +510,7 @@ class TestApprovalFactorStore:
         payload.pop(missing_key)
         invalid_bytes = encode_versioned_json_snapshot(payload, version=3)
         store_path.write_bytes(invalid_bytes)
+        store_path.chmod(0o600)
         store = InMemoryCredentialStore()
 
         store.set_approval_store_path(store_path)
@@ -530,6 +537,7 @@ class TestApprovalFactorStore:
         }
         ambiguous_bytes = json.dumps(ambiguous).encode("utf-8")
         store_path.write_bytes(ambiguous_bytes)
+        store_path.chmod(0o600)
         store = InMemoryCredentialStore()
 
         store.set_approval_store_path(store_path)
@@ -550,6 +558,7 @@ class TestApprovalFactorStore:
             }
         ).encode("utf-8")
         store_path.write_bytes(invalid_bytes)
+        store_path.chmod(0o600)
         store = InMemoryCredentialStore()
 
         store.set_approval_store_path(store_path)
@@ -599,6 +608,71 @@ class TestApprovalFactorStore:
         with pytest.raises(StatePersistenceDegradedError, match="read_error"):
             store.list_approval_factors()
         assert store_path.is_symlink()
+
+    def test_f3_approval_store_reopen_rejects_permissive_mode(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-1",
+                user_id="alice",
+                method="totp",
+                principal_id="device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        retained = store_path.read_bytes()
+        store_path.chmod(0o644)
+
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+
+        result = restarted.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "read_error"
+        with pytest.raises(StatePersistenceDegradedError, match="read_error"):
+            restarted.list_approval_factors()
+        assert store_path.read_bytes() == retained
+        assert stat.S_IMODE(store_path.stat().st_mode) == 0o644
+
+    def test_f3_approval_store_reopen_rejects_foreign_created_file(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="factor-1",
+                user_id="alice",
+                method="totp",
+                principal_id="device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        retained = store_path.read_bytes()
+        original_fstat = os.fstat
+
+        def _foreign_regular_fstat(fd: int) -> os.stat_result:
+            result = original_fstat(fd)
+            if not stat.S_ISREG(result.st_mode):
+                return result
+            values = list(result)
+            values[4] = result.st_uid + 1
+            return os.stat_result(values)
+
+        monkeypatch.setattr(atomic_state.os, "fstat", _foreign_regular_fstat)
+
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+
+        result = restarted.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "read_error"
+        assert store_path.read_bytes() == retained
 
     @pytest.mark.parametrize(
         "fault_stage",

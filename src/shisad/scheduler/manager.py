@@ -38,6 +38,43 @@ from shisad.scheduler.schema import (
 _MAX_RESOLVED_CONFIRMATIONS_PER_TASK = 32
 _MAX_CRON_LOOKAHEAD_DAYS = 400 * 366
 _SCHEDULER_STATE_VERSION = 1
+_PENDING_STRING_FIELDS = frozenset(
+    {
+        "action_id",
+        "confirmation_id",
+        "event_type",
+        "execution_attempt_id",
+        "expires_at",
+        "lifecycle_state",
+        "payload_taint",
+        "plan_commitment",
+        "processing_started_at",
+        "queued_at",
+        "reason",
+        "resolved_at",
+        "result_id",
+        "session_id",
+        "status",
+        "status_reason",
+        "task_id",
+        "tool_name",
+        "trigger_payload",
+    }
+)
+_PENDING_IDENTITY_STRING_FIELDS = frozenset(
+    {
+        "action_id",
+        "confirmation_id",
+        "execution_attempt_id",
+        "followup_id",
+        "origin_turn_id",
+        "result_id",
+        "session_id",
+        "task_id",
+        "user_id",
+        "workspace_id",
+    }
+)
 
 
 class SchedulerManager:
@@ -349,7 +386,41 @@ class SchedulerManager:
             "pending_confirmations",
             transition="queue_confirmation",
         )
+        if task_id not in self._tasks:
+            raise ValueError("pending confirmation task does not exist")
         payload = dict(action)
+        confirmation_id = payload.get("confirmation_id")
+        if not isinstance(confirmation_id, str) or not confirmation_id.strip():
+            raise ValueError("pending confirmation requires confirmation_id")
+        confirmation_id = confirmation_id.strip()
+        payload["confirmation_id"] = confirmation_id
+        row_task_id = payload.get("task_id")
+        if row_task_id is not None and (
+            not isinstance(row_task_id, str) or row_task_id.strip() != task_id
+        ):
+            raise ValueError("pending confirmation task identity mismatch")
+        payload["task_id"] = task_id
+        raw_identity = payload.get("identity")
+        if raw_identity is None:
+            identity: dict[str, Any] = {}
+        elif isinstance(raw_identity, dict):
+            identity = dict(raw_identity)
+        else:
+            raise ValueError("pending confirmation identity must be a mapping")
+        identity_task_id = identity.get("task_id")
+        if identity_task_id is not None and (
+            not isinstance(identity_task_id, str) or identity_task_id.strip() != task_id
+        ):
+            raise ValueError("pending confirmation nested task identity mismatch")
+        identity_confirmation_id = identity.get("confirmation_id")
+        if identity_confirmation_id is not None and (
+            not isinstance(identity_confirmation_id, str)
+            or identity_confirmation_id.strip() != confirmation_id
+        ):
+            raise ValueError("pending confirmation nested confirmation identity mismatch")
+        identity["task_id"] = task_id
+        identity["confirmation_id"] = confirmation_id
+        payload["identity"] = identity
         payload["status"] = str(payload.get("status", "pending") or "pending")
         payload["run_outcome_recorded"] = False
         payload.pop("run_outcome_success", None)
@@ -358,6 +429,14 @@ class SchedulerManager:
         payload["queued_at"] = (
             str(payload.get("queued_at", "")).strip() or datetime.now(UTC).isoformat()
         )
+        if not self._pending_row_is_valid(payload, task_id=task_id):
+            raise ValueError("pending confirmation has invalid retained semantics")
+        if any(
+            str(row.get("confirmation_id", "")).strip() == confirmation_id
+            for rows in self._pending_confirmations.values()
+            for row in rows
+        ):
+            raise ValueError("pending confirmation identity already exists")
         self._pending_confirmations[task_id].append(payload)
         self._prune_confirmation_rows(task_id)
         self._persist_pending_confirmations()
@@ -1355,13 +1434,22 @@ class SchedulerManager:
             )
             return False
         restored: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        confirmation_ids: set[str] = set()
         for task_id, rows in payload.items():
-            if not isinstance(task_id, str):
+            if not isinstance(task_id, str) or not task_id.strip():
                 self._state_load_results[
                     "pending_confirmations"
                 ] = self._semantic_corruption_result(
                     result,
                     "invalid_pending_task_id",
+                )
+                return False
+            if task_id not in self._tasks:
+                self._state_load_results[
+                    "pending_confirmations"
+                ] = self._semantic_corruption_result(
+                    result,
+                    "unknown_pending_task",
                 )
                 return False
             if not isinstance(rows, list):
@@ -1372,17 +1460,68 @@ class SchedulerManager:
                     "invalid_pending_rows",
                 )
                 return False
-            if not all(isinstance(item, dict) for item in rows):
-                self._state_load_results[
-                    "pending_confirmations"
-                ] = self._semantic_corruption_result(
-                    result,
-                    "invalid_pending_row",
-                )
-                return False
+            for item in rows:
+                if not isinstance(item, dict) or not self._pending_row_is_valid(
+                    item,
+                    task_id=task_id,
+                ):
+                    self._state_load_results[
+                        "pending_confirmations"
+                    ] = self._semantic_corruption_result(
+                        result,
+                        "invalid_pending_row",
+                    )
+                    return False
+                confirmation_id = item["confirmation_id"].strip()
+                if confirmation_id in confirmation_ids:
+                    self._state_load_results[
+                        "pending_confirmations"
+                    ] = self._semantic_corruption_result(
+                        result,
+                        "duplicate_pending_confirmation",
+                    )
+                    return False
+                confirmation_ids.add(confirmation_id)
             if rows:
                 restored[task_id] = copy.deepcopy(rows)
         self._pending_confirmations = restored
         self._durable_pending_confirmations = self._clone_pending_confirmations(restored)
         self._state_load_results["pending_confirmations"] = result
         return True
+
+    @staticmethod
+    def _pending_row_is_valid(row: dict[str, Any], *, task_id: str) -> bool:
+        confirmation_id = row.get("confirmation_id")
+        if not isinstance(confirmation_id, str) or not confirmation_id.strip():
+            return False
+        for field in _PENDING_STRING_FIELDS:
+            if field in row and not isinstance(row[field], str):
+                return False
+        row_task_id = row.get("task_id")
+        if not isinstance(row_task_id, str) or row_task_id.strip() != task_id:
+            return False
+        for field in ("run_outcome_recorded", "run_outcome_success"):
+            if field in row and not isinstance(row[field], bool):
+                return False
+        if row.get("run_outcome_recorded") is True and not isinstance(
+            row.get("run_outcome_success"),
+            bool,
+        ):
+            return False
+        identity = row.get("identity")
+        if not isinstance(identity, dict):
+            return False
+        for field in _PENDING_IDENTITY_STRING_FIELDS:
+            if field in identity and not isinstance(identity[field], str):
+                return False
+        delivery_target = identity.get("delivery_target")
+        if delivery_target is not None and not isinstance(delivery_target, dict):
+            return False
+        identity_task_id = identity.get("task_id")
+        if not isinstance(identity_task_id, str) or identity_task_id.strip() != task_id:
+            return False
+        identity_confirmation_id = identity.get("confirmation_id")
+        return (
+            isinstance(identity_confirmation_id, str)
+            and identity_confirmation_id.strip() == confirmation_id.strip()
+        )

@@ -133,6 +133,7 @@ def _open_directory_chain(
     path: Path,
     *,
     create: bool,
+    require_safe_ancestry: bool = False,
 ) -> tuple[Path, int, list[Path]]:
     """Descriptor-walk *path* without following any directory symlink."""
 
@@ -175,6 +176,22 @@ def _open_directory_chain(
             try:
                 if not stat.S_ISDIR(current_stat.st_mode):
                     raise OSError(f"state path ancestor is not a directory: {current}")
+                if require_safe_ancestry:
+                    owner_uid = current_stat.st_uid
+                    if owner_uid not in {0, os.geteuid()}:
+                        raise PermissionError(
+                            f"unsafe parent ancestry is foreign-owned: {current}"
+                        )
+                    if current_stat.st_mode & 0o022:
+                        shared_sticky_ancestor = (
+                            owner_uid == 0
+                            and bool(current_stat.st_mode & stat.S_ISVTX)
+                            and current != absolute
+                        )
+                        if not shared_sticky_ancestor:
+                            raise PermissionError(
+                                f"unsafe parent ancestry is writable by another uid: {current}"
+                            )
                 if creation_boundary and current_stat.st_uid != os.geteuid():
                     raise PermissionError(
                         f"created state ancestry is not owner-controlled: {current}"
@@ -232,8 +249,32 @@ def ensure_owner_only_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def read_owner_only_regular_file(path: Path) -> bytes | None:
-    """Read an existing owner-only regular file through a no-follow parent."""
+def validate_owner_controlled_parent_ancestry(path: Path) -> None:
+    """Require existing file-parent ancestry to be safe for external authority."""
+
+    parent_fd = -1
+    try:
+        try:
+            _absolute, parent_fd, _created = _open_directory_chain(
+                _absolute_normalized_path(path).parent,
+                create=False,
+                require_safe_ancestry=True,
+            )
+        except FileNotFoundError:
+            return
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def read_owned_regular_file(
+    path: Path,
+    *,
+    required_mode: int | None = None,
+    normalize_mode: int | None = None,
+    max_bytes: int | None = None,
+) -> bytes | None:
+    """Read an existing owner-controlled regular file through a no-follow parent."""
 
     absolute = _absolute_normalized_path(path)
     parent_fd = -1
@@ -246,7 +287,8 @@ def read_owner_only_regular_file(path: Path) -> bytes | None:
             )
         except FileNotFoundError:
             return None
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
             file_fd = os.open(absolute.name, flags, dir_fd=parent_fd)
         except FileNotFoundError:
@@ -256,20 +298,34 @@ def read_owner_only_regular_file(path: Path) -> bytes | None:
             raise OSError(f"state target is not a regular file: {absolute}")
         if file_stat.st_uid != os.geteuid():
             raise PermissionError(f"state target is not owner-controlled: {absolute}")
-        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+        if required_mode is not None and stat.S_IMODE(file_stat.st_mode) != required_mode:
             raise PermissionError(
-                f"state target must have mode 0600: {absolute} "
+                f"state target must have mode {required_mode:04o}: {absolute} "
                 f"has {stat.S_IMODE(file_stat.st_mode):04o}"
             )
+        if normalize_mode is not None:
+            os.fchmod(file_fd, normalize_mode)
         chunks: list[bytes] = []
-        while chunk := os.read(file_fd, 1024 * 1024):
+        bytes_read = 0
+        while max_bytes is None or bytes_read < max_bytes:
+            remaining = None if max_bytes is None else max_bytes - bytes_read
+            read_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
+            if not (chunk := os.read(file_fd, read_size)):
+                break
             chunks.append(chunk)
+            bytes_read += len(chunk)
         return b"".join(chunks)
     finally:
         if file_fd >= 0:
             os.close(file_fd)
         if parent_fd >= 0:
             os.close(parent_fd)
+
+
+def read_owner_only_regular_file(path: Path) -> bytes | None:
+    """Read an existing mode-0600 owner-controlled regular file."""
+
+    return read_owned_regular_file(path, required_mode=0o600)
 
 
 def _fsync_directory_path(path: Path) -> None:
@@ -433,6 +489,7 @@ def atomic_write_bytes(
     *,
     fault_injector: AtomicWriteFaultInjector | None = None,
     preserve_existing_parent_mode: bool = False,
+    require_safe_parent_ancestry: bool = False,
 ) -> None:
     """Publish owner-only bytes old-or-new and fsync the containing directory.
 
@@ -452,6 +509,7 @@ def atomic_write_bytes(
         _absolute_parent, parent_fd, created_directories = _open_directory_chain(
             parent,
             create=True,
+            require_safe_ancestry=require_safe_parent_ancestry,
         )
         missing_directories = list(reversed(created_directories))
         try:

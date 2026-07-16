@@ -824,6 +824,7 @@ def test_m2_scheduler_hydrates_pending_confirmations_after_restart(tmp_path: Pat
     first.queue_confirmation(
         created.id,
         {
+            "confirmation_id": "confirm-digest",
             "task_id": created.id,
             "event_type": "message.received",
             "trigger_payload": "hello",

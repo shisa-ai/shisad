@@ -1536,6 +1536,37 @@ def test_f3_symlinked_external_parent_fails_before_mutation(
     assert list(target_parent.iterdir()) == []
 
 
+@pytest.mark.parametrize("role", ["approval", "soul"])
+def test_f3_missing_external_authority_rejects_unsafe_parent_before_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+) -> None:
+    unsafe_parent = tmp_path / "unsafe-parent"
+    unsafe_parent.mkdir(mode=0o777)
+    unsafe_parent.chmod(0o777)
+    approval_path = (
+        unsafe_parent / "approval.json" if role == "approval" else tmp_path / "approval.json"
+    )
+    soul_path = unsafe_parent / "SOUL.md" if role == "soul" else None
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        assistant_persona_soul_path=soul_path,
+    )
+
+    with pytest.raises(AuthorityRegistryError, match="unsafe parent ancestry"):
+        acquire_daemon_authority_claim(config)
+
+    assert list(unsafe_parent.iterdir()) == []
+    assert not config.data_dir.exists()
+
+
 def test_f3_symlinked_socket_parent_fails_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

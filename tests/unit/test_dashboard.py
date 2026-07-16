@@ -189,6 +189,30 @@ def test_f3_dashboard_marks_symlink_is_rejected_without_overwrite(tmp_path: Path
     assert outside.read_text(encoding="utf-8") == '{"evt-1":"outside"}'
 
 
+def test_f3_dashboard_symlinked_root_ancestor_never_loads_external_marks(
+    tmp_path: Path,
+) -> None:
+    outside_root = tmp_path / "outside" / "dashboard"
+    outside_root.mkdir(parents=True)
+    outside_path = outside_root / "false_positives.json"
+    outside_bytes = encode_versioned_json_snapshot({"evt-external": "outside"})
+    outside_path.write_bytes(outside_bytes)
+    outside_path.chmod(0o600)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    (data_root / "redirect").symlink_to(tmp_path / "outside", target_is_directory=True)
+
+    dashboard = SecurityDashboard(
+        audit_log=AuditLog(tmp_path / "audit.jsonl"),
+        marks_path=data_root / "redirect" / "dashboard" / "false_positives.json",
+    )
+
+    assert dashboard.state_load_result.status == StateLoadStatus.CORRUPT
+    assert dashboard.state_load_result.reason == "marks_read_failed"
+    assert dashboard._marks == {}
+    assert outside_path.read_bytes() == outside_bytes
+
+
 def test_f3_dashboard_legacy_marks_migrate_on_next_mutation(tmp_path: Path) -> None:
     path = tmp_path / "dashboard" / "false_positives.json"
     path.parent.mkdir(parents=True)

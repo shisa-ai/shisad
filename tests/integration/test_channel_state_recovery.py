@@ -166,6 +166,35 @@ def test_channel_replay_non_directory_root_blocks_reads_without_following_target
     assert root.read_bytes() == b"retained-not-a-directory"
 
 
+def test_channel_replay_symlinked_root_ancestor_never_loads_external_state(
+    tmp_path: Path,
+) -> None:
+    outside_root = tmp_path / "outside" / "channels"
+    outside = ChannelStateStore(outside_root)
+    outside.mark_seen(channel="discord", message_id="m-external")
+    retained = {
+        path.name: path.read_bytes()
+        for path in outside_root.iterdir()
+        if path.is_file()
+    }
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    (data_root / "redirect").symlink_to(tmp_path / "outside", target_is_directory=True)
+
+    store = ChannelStateStore(data_root / "redirect" / "channels")
+
+    with pytest.raises(StatePersistenceDegradedError, match="channel_replay:discord"):
+        store.has_seen(channel="discord", message_id="m-external")
+    result = store.state_load_result("discord")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_root_ancestry"
+    assert {
+        path.name: path.read_bytes()
+        for path in outside_root.iterdir()
+        if path.is_file()
+    } == retained
+
+
 @pytest.mark.parametrize(
     "stage",
     [

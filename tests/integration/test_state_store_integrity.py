@@ -374,6 +374,126 @@ def test_corrupt_pending_confirmation_snapshot_never_becomes_fresh(
 
 
 @pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("empty_confirmation_id", "invalid_pending_row"),
+        ("mismatched_task_id", "invalid_pending_row"),
+        ("missing_identity", "invalid_pending_row"),
+        ("mismatched_identity", "invalid_pending_row"),
+        ("string_recorded", "invalid_pending_row"),
+        ("string_success", "invalid_pending_row"),
+        ("unknown_task", "unknown_pending_task"),
+        ("duplicate_confirmation", "duplicate_pending_confirmation"),
+    ],
+)
+def test_pending_confirmation_semantic_corruption_is_retained(
+    tmp_path: Path,
+    case: str,
+    reason: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    scheduler.queue_confirmation(
+        task_id,
+        {
+            "confirmation_id": "confirm-1",
+            "task_id": task_id,
+            "status": "pending",
+            "run_outcome_recorded": False,
+            "run_outcome_success": False,
+        },
+    )
+    pending_path = storage / "pending_confirmations.json"
+    envelope = json.loads(pending_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    row = payload[task_id][0]
+    if case == "empty_confirmation_id":
+        row["confirmation_id"] = ""
+    elif case == "mismatched_task_id":
+        row["task_id"] = "other-task"
+    elif case == "missing_identity":
+        row.pop("identity")
+    elif case == "mismatched_identity":
+        row["identity"]["confirmation_id"] = "other-confirmation"
+    elif case == "string_recorded":
+        row["run_outcome_recorded"] = "false"
+    elif case == "string_success":
+        row["run_outcome_success"] = "false"
+    elif case == "unknown_task":
+        payload["unknown-task"] = payload.pop(task_id)
+    else:
+        assert case == "duplicate_confirmation"
+        payload[task_id].append(dict(row))
+    invalid_bytes = encode_versioned_json_snapshot(payload)
+    pending_path.write_bytes(invalid_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("pending_confirmations")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == reason
+    assert pending_path.read_bytes() == invalid_bytes
+
+
+def test_legacy_pending_confirmation_rejects_string_boolean(tmp_path: Path) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    pending_path = storage / "pending_confirmations.json"
+    legacy_payload = {
+        task_id: [
+            {
+                "confirmation_id": "confirm-legacy",
+                "task_id": task_id,
+                "identity": {
+                    "confirmation_id": "confirm-legacy",
+                    "task_id": task_id,
+                },
+                "status": "pending",
+                "run_outcome_recorded": "false",
+            }
+        ]
+    }
+    invalid_bytes = json.dumps(legacy_payload).encode("utf-8")
+    pending_path.write_bytes(invalid_bytes)
+    pending_path.chmod(0o600)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("pending_confirmations")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_pending_row"
+    assert result.legacy is True
+    assert pending_path.read_bytes() == invalid_bytes
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {},
+        {"confirmation_id": "confirm-1", "task_id": "other-task"},
+        {
+            "confirmation_id": "confirm-1",
+            "identity": {"confirmation_id": "other-confirmation"},
+        },
+    ],
+)
+def test_queue_confirmation_rejects_invalid_identity_before_publication(
+    tmp_path: Path,
+    action: dict[str, object],
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+
+    with pytest.raises(ValueError, match="pending confirmation"):
+        scheduler.queue_confirmation(task_id, action)
+
+    assert not (storage / "pending_confirmations.json").exists()
+
+
+@pytest.mark.parametrize(
     ("fault_stage", "published_second_confirmation"),
     [
         (AtomicWriteStage.FILE_FSYNC, False),

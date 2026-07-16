@@ -19,6 +19,9 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    ensure_owner_only_directory,
+    read_owned_regular_file,
+    validate_directory_ancestry,
 )
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
@@ -82,15 +85,27 @@ class SkillManager:
         llm_analyzer: LlmSkillAnalyzer | None = None,
         tool_registry: ToolRegistry | None = None,
     ) -> None:
-        self._storage_dir = storage_dir
-        self._storage_root_existed_at_start = self._storage_dir.exists()
-        self._storage_root_was_empty_at_start = (
-            _directory_is_empty(self._storage_dir) if self._storage_root_existed_at_start else True
-        )
-        self._storage_dir.mkdir(parents=True, exist_ok=True)
+        self._storage_dir = Path(storage_dir)
+        self._storage_root_invalid = False
+        try:
+            self._storage_root_existed_at_start = validate_directory_ancestry(
+                self._storage_dir
+            )
+            self._storage_root_was_empty_at_start = (
+                _directory_is_empty(self._storage_dir)
+                if self._storage_root_existed_at_start
+                else True
+            )
+            ensure_owner_only_directory(self._storage_dir)
+        except OSError:
+            self._storage_root_invalid = True
+            self._storage_root_existed_at_start = True
+            self._storage_root_was_empty_at_start = False
         self._inventory_path = self._storage_dir / "inventory.json"
         self._inventory_domain_marker_path = self._storage_dir / ".inventory-domain-v1"
-        self._inventory_domain_marker_status = self._inspect_inventory_domain_marker()
+        self._inventory_domain_marker_status = (
+            "invalid" if self._storage_root_invalid else self._inspect_inventory_domain_marker()
+        )
         self._policy = policy or SkillPolicy()
         self._keyring = keyring or KeyRing()
         self._llm_analyzer = llm_analyzer
@@ -110,8 +125,18 @@ class SkillManager:
         )
         self._skill_tool_map: dict[str, list[ToolName]] = {}
         self._pending_registration_events: list[SkillToolRegistrationDropped] = []
-        self._inventory = self._load_inventory()
-        if self._state_load_result.status is StateLoadStatus.MISSING:
+        if self._storage_root_invalid:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_storage_root",
+            )
+            self._inventory = {}
+        else:
+            self._inventory = self._load_inventory()
+        if (
+            not self._storage_root_invalid
+            and self._state_load_result.status is StateLoadStatus.MISSING
+        ):
             initial_result = self._state_load_result
             if self._ensure_inventory_domain_marker():
                 try:
@@ -120,7 +145,10 @@ class SkillManager:
                     self._persistence_degradation = exc
                 else:
                     self._state_load_result = initial_result
-        elif self._state_load_result.status is StateLoadStatus.OK:
+        elif (
+            not self._storage_root_invalid
+            and self._state_load_result.status is StateLoadStatus.OK
+        ):
             self._ensure_inventory_domain_marker()
         self._register_inventory_tools()
 
@@ -495,8 +523,14 @@ class SkillManager:
             )
             return {}
         try:
-            raw_bytes = self._inventory_path.read_bytes()
+            raw_bytes = read_owned_regular_file(self._inventory_path)
         except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="inventory_read_failed",
+            )
+            return {}
+        if raw_bytes is None:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="inventory_read_failed",
@@ -620,8 +654,10 @@ class SkillManager:
         if not stat.S_ISREG(target_stat.st_mode):
             return "invalid"
         try:
-            marker = self._inventory_domain_marker_path.read_bytes()
+            marker = read_owned_regular_file(self._inventory_domain_marker_path)
         except OSError:
+            return "invalid"
+        if marker is None:
             return "invalid"
         return "valid" if marker == _SKILL_INVENTORY_DOMAIN_MARKER else "invalid"
 

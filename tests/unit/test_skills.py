@@ -801,6 +801,32 @@ def test_f3_skill_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> 
     assert target.read_bytes() == encode_versioned_json_snapshot([], version=1)
 
 
+def test_f3_skill_inventory_symlinked_root_ancestor_never_activates_external_tools(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside_storage = outside / "state"
+    skill = _f3_skill_with_tool(tmp_path, name="external-skill")
+    SkillManager(storage_dir=outside_storage).activate_bundle(skill)
+    inventory_path = outside_storage / "inventory.json"
+    inventory_bytes = inventory_path.read_bytes()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "redirect").symlink_to(outside, target_is_directory=True)
+    registry = ToolRegistry()
+
+    manager = SkillManager(
+        storage_dir=data_dir / "redirect" / "state",
+        tool_registry=registry,
+    )
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_storage_root"
+    assert registry.get_tool(ToolName("skill.external-skill.lookup")) is None
+    assert inventory_path.read_bytes() == inventory_bytes
+
+
 def test_f3_current_skill_inventory_requires_explicit_tool_binding_map(
     tmp_path: Path,
 ) -> None:

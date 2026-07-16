@@ -34,6 +34,9 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    ensure_owner_only_directory,
+    read_owned_regular_file,
+    validate_directory_ancestry,
 )
 
 _IDENTIFIER_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -223,11 +226,7 @@ class SelfModificationManager:
         default_persona_tone: str,
         default_persona_text: str,
     ) -> None:
-        self._root = root
-        self._root_existed_at_start = self._root.exists()
-        self._root_was_legacy_empty_at_start = (
-            _selfmod_root_is_legacy_empty(self._root) if self._root_existed_at_start else True
-        )
+        self._root = Path(root)
         self._allowed_signers_path = allowed_signers_path
         self._skill_manager = skill_manager
         self._planner = planner
@@ -239,6 +238,22 @@ class SelfModificationManager:
         self._inventory_path = self._root / "inventory.yaml"
         self._inventory_domain_marker_path = self._root / ".inventory-domain-v1"
         self._incident_path = self._root / "last_incident.json"
+        self._root_invalid = False
+        try:
+            self._root_existed_at_start = validate_directory_ancestry(self._root)
+            self._root_was_legacy_empty_at_start = (
+                _selfmod_root_is_legacy_empty(self._root)
+                if self._root_existed_at_start
+                else True
+            )
+            ensure_owner_only_directory(self._root)
+            ensure_owner_only_directory(self._proposal_dir)
+            ensure_owner_only_directory(self._change_dir)
+            ensure_owner_only_directory(self._artifact_root)
+        except OSError:
+            self._root_invalid = True
+            self._root_existed_at_start = True
+            self._root_was_legacy_empty_at_start = False
         self._state_fault_injector: AtomicWriteFaultInjector | None = None
         self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
         self._persistence_degradation: AtomicWriteError | None = None
@@ -247,12 +262,18 @@ class SelfModificationManager:
             "change": StateLoadResult(StateLoadStatus.MISSING),
             "incident": StateLoadResult(StateLoadStatus.MISSING),
         }
-        self._proposal_dir.mkdir(parents=True, exist_ok=True)
-        self._change_dir.mkdir(parents=True, exist_ok=True)
-        self._artifact_root.mkdir(parents=True, exist_ok=True)
-        self._inventory_domain_marker_status = self._inspect_inventory_domain_marker()
-        self._inventory = self._load_inventory()
-        if self._state_load_result.status is StateLoadStatus.MISSING:
+        self._inventory_domain_marker_status = (
+            "invalid" if self._root_invalid else self._inspect_inventory_domain_marker()
+        )
+        if self._root_invalid:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_selfmod_root",
+            )
+            self._inventory = _Inventory()
+        else:
+            self._inventory = self._load_inventory()
+        if not self._root_invalid and self._state_load_result.status is StateLoadStatus.MISSING:
             initial_result = self._state_load_result
             if self._ensure_inventory_domain_marker():
                 try:
@@ -261,7 +282,7 @@ class SelfModificationManager:
                     self._persistence_degradation = exc
                 else:
                     self._state_load_result = initial_result
-        elif self._state_load_result.status is StateLoadStatus.OK:
+        elif not self._root_invalid and self._state_load_result.status is StateLoadStatus.OK:
             self._ensure_inventory_domain_marker()
         if self.state_degraded:
             self._block_coupled_skill_authority()
@@ -751,6 +772,13 @@ class SelfModificationManager:
                     self._mark_inventory_degraded("active_artifact_identity_invalid")
                     return
                 try:
+                    artifact_exists = validate_directory_ancestry(artifact_path)
+                except OSError:
+                    artifact_exists = False
+                if not artifact_exists:
+                    self._mark_inventory_degraded("active_artifact_invalid")
+                    return
+                try:
                     inspection = self._inspect_artifact(artifact_path)
                 except Exception:
                     self._mark_inventory_degraded("active_artifact_invalid")
@@ -1022,8 +1050,14 @@ class SelfModificationManager:
             )
             return _Inventory()
         try:
-            raw_bytes = self._inventory_path.read_bytes()
+            raw_bytes = read_owned_regular_file(self._inventory_path)
         except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="inventory_read_failed",
+            )
+            return _Inventory()
+        if raw_bytes is None:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="inventory_read_failed",
@@ -1120,8 +1154,10 @@ class SelfModificationManager:
         if not stat.S_ISREG(target_stat.st_mode):
             return "invalid"
         try:
-            marker = self._inventory_domain_marker_path.read_bytes()
+            marker = read_owned_regular_file(self._inventory_domain_marker_path)
         except OSError:
+            return "invalid"
+        if marker is None:
             return "invalid"
         return "valid" if marker == _SELFMOD_INVENTORY_DOMAIN_MARKER else "invalid"
 
@@ -1332,8 +1368,14 @@ class SelfModificationManager:
             )
             return None
         try:
-            raw_bytes = path.read_bytes()
+            raw_bytes = read_owned_regular_file(path)
         except OSError:
+            self._record_load_results[record_kind] = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="record_read_failed",
+            )
+            return None
+        if raw_bytes is None:
             self._record_load_results[record_kind] = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="record_read_failed",

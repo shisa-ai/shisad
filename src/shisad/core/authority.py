@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shisad.core.atomic_state import validate_owner_controlled_parent_ancestry
 from shisad.core.config import DaemonConfig, effective_approval_factor_store_path
 
 _REGISTRY_SCHEMA_VERSION = 2
@@ -421,10 +422,22 @@ def _candidate_at_canonical_path(role: str, canonical: Path) -> DaemonAuthorityC
     )
 
 
-def _candidate(role: str, path: Path) -> DaemonAuthorityCandidate:
+def _candidate(
+    role: str,
+    path: Path,
+    *,
+    validate_external_parent: bool = True,
+) -> DaemonAuthorityCandidate:
     lexical = _absolute_lexical_path(path)
     if role in _SYMLINK_REJECT_ROLES:
         _reject_symlink_ancestry(role, lexical)
+    if role in _EXTERNAL_FILE_ROLES and validate_external_parent:
+        try:
+            validate_owner_controlled_parent_ancestry(lexical)
+        except OSError as exc:
+            raise AuthorityRegistryError(
+                f"daemon mutable authority {role} has unsafe parent ancestry: {lexical}"
+            ) from exc
     canonical = _canonical_path(lexical)
     return _candidate_at_canonical_path(role, canonical)
 
@@ -434,16 +447,29 @@ def derive_daemon_authority_candidates(
 ) -> tuple[DaemonAuthorityCandidate, ...]:
     """Derive the complete baseline mutable-authority set without mutation."""
 
+    data_dir = _absolute_lexical_path(config.data_dir)
     candidates = [
         _candidate("data_root", config.data_dir),
         _candidate("control_socket", config.socket_path),
+    ]
+    approval_path = effective_approval_factor_store_path(data_dir=config.data_dir)
+    approval_lexical = _absolute_lexical_path(approval_path)
+    candidates.append(
         _candidate(
             "approval_factor_store",
-            effective_approval_factor_store_path(data_dir=config.data_dir),
-        ),
-    ]
+            approval_path,
+            validate_external_parent=not approval_lexical.is_relative_to(data_dir),
+        )
+    )
     if config.assistant_persona_soul_path is not None:
-        candidates.append(_candidate("soul", config.assistant_persona_soul_path))
+        soul_lexical = _absolute_lexical_path(config.assistant_persona_soul_path)
+        candidates.append(
+            _candidate(
+                "soul",
+                config.assistant_persona_soul_path,
+                validate_external_parent=not soul_lexical.is_relative_to(data_dir),
+            )
+        )
     return tuple(sorted(candidates, key=lambda item: (os.fspath(item.path), item.role)))
 
 

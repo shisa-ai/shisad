@@ -472,6 +472,29 @@ def test_f3_selfmod_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -
     assert inventory_path.is_symlink()
 
 
+def test_f3_selfmod_symlinked_root_never_loads_or_mutates_external_domain(
+    tmp_path: Path,
+) -> None:
+    outside_root = tmp_path / "outside-selfmod"
+    outside_root.mkdir()
+    inventory_path = outside_root / "inventory.yaml"
+    inventory_bytes = b"skills: {}\nbehavior_packs: {}\n"
+    inventory_path.write_bytes(inventory_bytes)
+    (tmp_path / "selfmod").symlink_to(outside_root, target_is_directory=True)
+
+    manager, planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_selfmod_root"
+    assert planner.defaults == []
+    assert inventory_path.read_bytes() == inventory_bytes
+    assert sorted(path.name for path in outside_root.iterdir()) == ["inventory.yaml"]
+
+
 def test_f3_selfmod_legacy_inventory_migrates_with_owner_only_modes(
     tmp_path: Path,
 ) -> None:
