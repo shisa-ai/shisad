@@ -338,7 +338,11 @@ initialization, while ordinary disjoint siblings remain usable. After claim
 publication, a missing data root is created owner-only and an existing
 owner/non-writable root may be restricted to `0700`; an existing group- or
 world-writable data root fails closed before chmod or contained legacy-state
-inspection. Owner-controlled
+inspection. Data-root ancestry is walked through held no-follow directory
+descriptors; foreign-owned or group/world-writable non-sticky intermediates
+fail before traversal or creation, while system/current-user ancestry and
+shared sticky directories such as `/tmp` remain usable. The filesystem root
+itself is never accepted as a daemon data root. Owner-controlled
 external authority files are restricted to `0600` only after claim publication;
 symlinked, foreign-owner, or non-regular trust files fail closed.
 Read-only policy, allowed-signer, and enabled A2A private-key inputs are not

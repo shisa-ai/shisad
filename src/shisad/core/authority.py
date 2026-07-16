@@ -1041,44 +1041,105 @@ def narrow_daemon_authority_claim(
     claim.narrow_to(candidates)
 
 
-def _ensure_owner_directory(path: Path) -> None:
-    missing: list[Path] = []
-    current = path
-    while True:
-        try:
-            current_stat = current.lstat()
-        except FileNotFoundError:
-            missing.append(current)
-            parent = current.parent
-            if parent == current:
-                raise AuthorityClaimError(f"cannot locate existing ancestor for {path}") from None
-            current = parent
-            continue
-        if not stat.S_ISDIR(current_stat.st_mode):
-            raise AuthorityClaimError(f"daemon data path ancestor is not a directory: {current}")
-        break
-    for directory in reversed(missing):
-        with suppress(FileExistsError):
-            directory.mkdir(mode=0o700)
-        directory_stat = directory.lstat()
-        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
-            raise AuthorityClaimError(f"daemon data directory is not owner-controlled: {directory}")
-        if directory_stat.st_mode & 0o022:
-            raise AuthorityClaimError(
-                f"daemon data directory is writable by another uid: {directory}"
-            )
-        directory.chmod(0o700)
-        _fsync_directory(directory)
-        _fsync_directory(directory.parent)
+def _shared_sticky_directory(path_stat: os.stat_result) -> bool:
+    return bool(path_stat.st_mode & stat.S_ISVTX) and bool(path_stat.st_mode & 0o002)
 
-    path_stat = path.lstat()
-    if not stat.S_ISDIR(path_stat.st_mode) or path_stat.st_uid != os.getuid():
-        raise AuthorityClaimError(f"daemon data directory is not owner-controlled: {path}")
-    if path_stat.st_mode & 0o022:
-        raise AuthorityClaimError(f"daemon data directory is writable by another uid: {path}")
-    if stat.S_IMODE(path_stat.st_mode) != 0o700:
-        path.chmod(0o700)
-        _fsync_directory(path)
+
+def _authority_directory_descriptor_path(fd: int) -> Path:
+    for root in (Path("/proc/self/fd"), Path("/dev/fd")):
+        candidate = root / str(fd)
+        if candidate.exists():
+            return candidate
+    raise AuthorityClaimError("verified daemon data directory descriptor path is unavailable")
+
+
+def _ensure_owner_directory(path: Path) -> None:
+    if not path.is_absolute():
+        raise AuthorityClaimError(f"daemon data directory is not absolute: {path}")
+    components = path.parts[1:]
+    if not components:
+        raise AuthorityClaimError("daemon data directory cannot be the filesystem root")
+    expected_uid = os.getuid()
+    directory_flags = getattr(os, "O_PATH", os.O_RDONLY) | getattr(
+        os,
+        "O_DIRECTORY",
+        0,
+    )
+    directory_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    current = Path(path.anchor)
+    current_fd = os.open(current, directory_flags)
+    creation_boundary = False
+    try:
+        for index, component in enumerate(components):
+            current /= component
+            created = False
+            try:
+                next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                creation_boundary = True
+                try:
+                    os.mkdir(component, 0o700, dir_fd=current_fd)
+                    created = True
+                except FileExistsError:
+                    pass
+                try:
+                    next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+                except OSError as exc:
+                    raise AuthorityClaimError(
+                        f"daemon data directory cannot be opened safely: {current}"
+                    ) from exc
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise AuthorityClaimError(
+                        f"daemon data path has symlink or non-directory ancestry: {current}"
+                    ) from exc
+                raise AuthorityClaimError(
+                    f"daemon data directory cannot be opened safely: {current}"
+                ) from exc
+            current_stat = os.fstat(next_fd)
+            try:
+                if not stat.S_ISDIR(current_stat.st_mode):
+                    raise AuthorityClaimError(
+                        f"daemon data path ancestor is not a directory: {current}"
+                    )
+                is_final = index == len(components) - 1
+                if is_final:
+                    if current_stat.st_uid != expected_uid:
+                        raise AuthorityClaimError(
+                            f"daemon data directory is not owner-controlled: {current}"
+                        )
+                    if current_stat.st_mode & 0o022:
+                        raise AuthorityClaimError(
+                            f"daemon data directory is writable by another uid: {current}"
+                        )
+                    if stat.S_IMODE(current_stat.st_mode) != 0o700:
+                        os.chmod(_authority_directory_descriptor_path(next_fd), 0o700)
+                        _fsync_directory(_authority_directory_descriptor_path(next_fd))
+                else:
+                    if current_stat.st_uid not in {0, expected_uid}:
+                        raise AuthorityClaimError(
+                            f"daemon data directory ancestry is not trusted-owner: {current}"
+                        )
+                    if creation_boundary and current_stat.st_uid != expected_uid:
+                        raise AuthorityClaimError(
+                            f"created daemon data directory is not owner-controlled: {current}"
+                        )
+                    if current_stat.st_mode & 0o022 and not _shared_sticky_directory(
+                        current_stat
+                    ):
+                        raise AuthorityClaimError(
+                            f"daemon data directory is writable by another uid: {current}"
+                        )
+                if created:
+                    _fsync_directory(_authority_directory_descriptor_path(next_fd))
+                    _fsync_directory(_authority_directory_descriptor_path(current_fd))
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+    finally:
+        os.close(current_fd)
 
 
 def _restrict_external_authority_files(candidate: DaemonAuthorityCandidate) -> None:

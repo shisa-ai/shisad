@@ -164,6 +164,7 @@ def test_f3_candidate_cannot_overlap_host_global_registry(
 def test_f3_atomic_claim_loser_cannot_create_or_repair_target(tmp_path: Path) -> None:
     data_dir = tmp_path / "shared" / "data"
     data_dir.mkdir(parents=True, mode=0o755)
+    data_dir.parent.chmod(0o700)
     marker = data_dir / "marker"
     marker.write_text("winner-only", encoding="utf-8")
     before = data_dir.stat()
@@ -236,6 +237,59 @@ async def test_f3_daemon_build_rejects_writable_data_root_before_legacy_import(
     assert sentinel.read_bytes() == b"attacker-controlled"
     successor_claim = acquire_daemon_authority_claim(config)
     successor_claim.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("root_exists", [True, False])
+async def test_f3_daemon_build_rejects_writable_nonsticky_data_root_ancestry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root_exists: bool,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = _config(tmp_path, name="writable-parent", socket_name="ancestry.sock")
+    config.data_dir.parent.mkdir(parents=True)
+    config.data_dir.parent.chmod(0o777)
+    outside = tmp_path / "attacker-controlled-ancestry"
+    outside.mkdir()
+    sentinel = outside / "legacy-key"
+    sentinel.write_bytes(b"attacker-controlled")
+    legacy = config.data_dir / "memory"
+    if root_exists:
+        config.data_dir.mkdir(mode=0o700)
+        legacy.symlink_to(outside, target_is_directory=True)
+    reached_claimed_builder = False
+
+    async def _unexpected_build(
+        _cls: type[DaemonServices],
+        _config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
+        nonlocal reached_claimed_builder
+        del authority_claim
+        reached_claimed_builder = True
+        raise AssertionError("claimed builder reached below writable ancestry")
+
+    monkeypatch.setattr(DaemonServices, "_build_claimed", classmethod(_unexpected_build))
+
+    with pytest.raises(AuthorityClaimError, match="writable by another uid"):
+        await DaemonServices.build(config)
+
+    assert reached_claimed_builder is False
+    assert stat.S_IMODE(config.data_dir.parent.stat().st_mode) == 0o777
+    assert config.data_dir.exists() is root_exists
+    if root_exists:
+        assert stat.S_IMODE(config.data_dir.stat().st_mode) == 0o700
+        assert legacy.is_symlink()
+    assert sentinel.read_bytes() == b"attacker-controlled"
+    successor_claim = acquire_daemon_authority_claim(config)
+    successor_claim.release()
+
+
+def test_f3_data_root_rejects_filesystem_root() -> None:
+    with pytest.raises(AuthorityClaimError, match="cannot be the filesystem root"):
+        authority._ensure_owner_directory(Path("/"))
 
 
 def test_f3_disjoint_authority_claims_can_coexist(tmp_path: Path) -> None:
