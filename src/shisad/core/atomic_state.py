@@ -314,10 +314,13 @@ def atomic_write_bytes(
     target = Path(path)
     _validate_existing_target(target)
     parent = target.parent
-    parent_existed = parent.exists()
+    missing_directories: list[Path] = []
     try:
+        missing_directories = _missing_directory_chain(parent)
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if not preserve_existing_parent_mode or not parent_existed:
+        for created_directory in missing_directories:
+            created_directory.chmod(0o700)
+        if not preserve_existing_parent_mode or missing_directories:
             parent.chmod(0o700)
     except OSError as exc:
         raise AtomicWriteError(
@@ -328,7 +331,6 @@ def atomic_write_bytes(
 
     temp_path = parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
     file_fd = -1
-    parent_fd = -1
     replaced = False
     stage = AtomicWriteStage.TEMP_OPEN
     try:
@@ -361,10 +363,9 @@ def atomic_write_bytes(
 
         stage = AtomicWriteStage.PARENT_FSYNC
         _inject_fault(fault_injector, stage)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        directory_flags |= getattr(os, "O_CLOEXEC", 0)
-        parent_fd = os.open(parent, directory_flags)
-        os.fsync(parent_fd)
+        _fsync_directory_path(parent)
+        for created_directory in reversed(missing_directories):
+            _fsync_directory_path(created_directory.parent)
     except AtomicWriteError:
         raise
     except OSError as exc:
@@ -377,9 +378,6 @@ def atomic_write_bytes(
         if file_fd >= 0:
             with contextlib.suppress(OSError):
                 os.close(file_fd)
-        if parent_fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(parent_fd)
         if not replaced:
             with contextlib.suppress(OSError):
                 temp_path.unlink()
@@ -427,6 +425,8 @@ def durable_append_bytes(
             fault_injector(DurableAppendStage.DIRECTORY_PREPARE)
         missing_directories = _missing_directory_chain(parent)
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for created_directory in missing_directories:
+            created_directory.chmod(0o700)
         parent.chmod(0o700)
     except OSError as exc:
         raise DurableAppendError(

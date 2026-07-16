@@ -1231,11 +1231,11 @@ class DaemonServices:
         _wipe_dir_contents(self.checkpoint_store._dir)
 
         # -- Channel state --
-        cleared["channel_state_channels"] = self.channel_state_store.loaded_channel_count
-        channel_state_root = self.channel_state_store.root_dir
-        cleared["channel_state_files"] = _count_files_recursive(channel_state_root)
-        _wipe_dir_contents(channel_state_root)
-        self.channel_state_store.clear_runtime_cache()
+        channel_state_channels, channel_state_files = await asyncio.to_thread(
+            self.channel_state_store.reset_state
+        )
+        cleared["channel_state_channels"] = channel_state_channels
+        cleared["channel_state_files"] = channel_state_files
 
         # -- Transcripts --
         cleared["transcripts"] = _count_files_recursive(

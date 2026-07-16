@@ -1404,6 +1404,113 @@ async def test_f3_daemon_reset_route_keeps_event_loop_live_behind_ledger_writer(
 
 
 @pytest.mark.asyncio
+async def test_f3_channel_doctor_keeps_event_loop_live_behind_replay_writer(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    store = services.channel_state_store
+    lock_held = Event()
+    release_writer = Event()
+    holder_timed_out = Event()
+
+    def _hold_writer() -> None:
+        with store._lock:
+            lock_held.set()
+            if not release_writer.wait(timeout=2.0):
+                holder_timed_out.set()
+
+    holder = Thread(target=_hold_writer)
+    holder.start()
+    try:
+        assert await asyncio.to_thread(lock_held.wait, 1.0)
+        heartbeat_ticks = 0
+
+        async def _heartbeat() -> None:
+            nonlocal heartbeat_ticks
+            for _ in range(5):
+                heartbeat_ticks += 1
+                await asyncio.sleep(0)
+            release_writer.set()
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        result = await impl.do_doctor_check({"component": "channels"})
+        await heartbeat
+        await asyncio.to_thread(holder.join, 1.0)
+
+        assert holder_timed_out.is_set() is False
+        assert heartbeat_ticks == 5
+        assert result["status"] == "ok"
+    finally:
+        release_writer.set()
+        holder.join(timeout=1.0)
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_keeps_event_loop_live_behind_replay_writer(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    store = services.channel_state_store
+    store.mark_seen(channel="discord", message_id="m-reset")
+    lock_held = Event()
+    release_writer = Event()
+    holder_timed_out = Event()
+
+    def _hold_writer() -> None:
+        with store._lock:
+            lock_held.set()
+            if not release_writer.wait(timeout=2.0):
+                holder_timed_out.set()
+
+    holder = Thread(target=_hold_writer)
+    holder.start()
+    try:
+        assert await asyncio.to_thread(lock_held.wait, 1.0)
+        heartbeat_ticks = 0
+
+        async def _heartbeat() -> None:
+            nonlocal heartbeat_ticks
+            for _ in range(5):
+                heartbeat_ticks += 1
+                await asyncio.sleep(0)
+            release_writer.set()
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        result = await impl.do_daemon_reset({})
+        await heartbeat
+        await asyncio.to_thread(holder.join, 1.0)
+
+        assert holder_timed_out.is_set() is False
+        assert heartbeat_ticks == 5
+        assert result["status"] == "reset"
+        assert result["cleared"]["channel_state_channels"] == 1
+        assert result["cleared"]["channel_state_files"] >= 1
+        assert all(result["invariants"].values())
+    finally:
+        release_writer.set()
+        holder.join(timeout=1.0)
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_handler_daemon_reset_rejects_concurrent_reset_attempts(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

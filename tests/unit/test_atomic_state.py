@@ -72,6 +72,29 @@ def test_atomic_write_uses_owner_only_modes_under_permissive_umask(tmp_path: Pat
     assert target.read_bytes() == b"payload"
 
 
+def test_atomic_write_fsyncs_each_new_parent_directory_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "channels" / "control" / "state.json"
+    real_fsync_directory = atomic_state._fsync_directory_path
+    fsynced: list[Path] = []
+
+    def _record_fsync(path: Path) -> None:
+        fsynced.append(path)
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(atomic_state, "_fsync_directory_path", _record_fsync)
+
+    atomic_write_bytes(target, b"payload")
+
+    assert fsynced == [
+        target.parent,
+        tmp_path,
+        tmp_path / "channels",
+    ]
+
+
 def test_atomic_write_retries_short_os_writes_until_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

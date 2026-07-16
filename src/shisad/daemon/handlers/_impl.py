@@ -3209,7 +3209,10 @@ class HandlerImplementation(
             "posture_notes": sorted(set(posture_notes)),
         }
 
-    def _doctor_channels_status(self) -> dict[str, Any]:
+    async def _doctor_channels_status(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._doctor_channels_status_sync)
+
+    def _doctor_channels_status_sync(self) -> dict[str, Any]:
         rows: dict[str, dict[str, Any]] = {}
         problems: list[str] = []
         active_statuses: list[str] = []

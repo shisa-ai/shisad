@@ -19,7 +19,6 @@ from shisad.core.atomic_state import (
     AtomicWriteFaultInjector,
     DurableAppendError,
     DurableAppendFaultInjector,
-    DurableAppendStage,
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
@@ -192,23 +191,33 @@ class ChannelStateStore:
     def root_dir(self) -> Path:
         return self._root_dir
 
-    @property
-    def loaded_channel_count(self) -> int:
-        with self._lock:
-            return len(self._loaded_channels)
-
-    def clear_runtime_cache(self) -> None:
-        """Forget loaded state after the caller has durably reset its files."""
+    def reset_state(self) -> tuple[int, int]:
+        """Serialize explicit test reset with all replay readers and writers."""
 
         with self._lock:
-            self._records.clear()
-            self._seen_ids.clear()
-            self._seen_id_sets.clear()
-            self._journal_appends_since_compaction.clear()
-            self._compaction_warning_logged.clear()
-            self._loaded_channels.clear()
-            self._load_results.clear()
-            self._degradation.clear()
+            channel_count = len(self._loaded_channels)
+            file_count = 0
+            try:
+                root_stat = self._root_dir.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if hasattr(os, "getuid") and root_stat.st_uid != os.getuid():
+                    raise OSError("replay reset root has the wrong owner")
+                if stat.S_ISDIR(root_stat.st_mode):
+                    for child in self._root_dir.iterdir():
+                        child_stat = child.lstat()
+                        if stat.S_ISDIR(child_stat.st_mode):
+                            raise OSError("replay reset refuses unexpected nested directory")
+                        child.unlink()
+                        file_count += 1
+                    self._fsync_directory_entry(self._root_dir)
+                else:
+                    self._root_dir.unlink()
+                    file_count = 1
+                    self._fsync_directory_entry(self._root_dir.parent)
+            self._clear_runtime_cache_locked()
+            return channel_count, file_count
 
     def runtime_cache_empty(self) -> bool:
         with self._lock:
@@ -219,6 +228,16 @@ class ChannelStateStore:
                 or self._loaded_channels
                 or self._degradation
             )
+
+    def _clear_runtime_cache_locked(self) -> None:
+        self._records.clear()
+        self._seen_ids.clear()
+        self._seen_id_sets.clear()
+        self._journal_appends_since_compaction.clear()
+        self._compaction_warning_logged.clear()
+        self._loaded_channels.clear()
+        self._load_results.clear()
+        self._degradation.clear()
 
     def _record_outcome(
         self,
@@ -355,6 +374,8 @@ class ChannelStateStore:
             rows, recent = parsed
             return decoded, rows, recent
 
+        if self._is_envelope_candidate(raw):
+            return decoded, [], []
         legacy = self._parse_legacy_snapshot(raw, channel=channel)
         if legacy is not None:
             return (
@@ -460,7 +481,11 @@ class ChannelStateStore:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError, RecursionError):
             return None
-        if not isinstance(payload, dict) or payload.get("channel") != channel:
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"channel", "seen_message_ids"}
+            or payload.get("channel") != channel
+        ):
             return None
         raw_ids = payload.get("seen_message_ids")
         if not isinstance(raw_ids, list):
@@ -474,6 +499,16 @@ class ChannelStateStore:
                 return None
             normalized.append(value)
         return normalized
+
+    @staticmethod
+    def _is_envelope_candidate(raw: bytes) -> bool:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
+            return False
+        return isinstance(payload, dict) and bool(
+            {"version", "checksum", "payload"}.intersection(payload)
+        )
 
     def _parse_legacy_journal_line(self, line: bytes) -> str | None:
         try:
@@ -544,35 +579,12 @@ class ChannelStateStore:
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="root_mode_failed")
         return StateLoadResult(StateLoadStatus.OK)
 
-    def _ensure_root(self) -> None:
-        root_result = self._validate_existing_root()
-        if root_result.status == StateLoadStatus.OK:
-            return
-        if root_result.status != StateLoadStatus.MISSING:
-            raise DurableAppendError(
-                path=self._root_dir,
-                stage=DurableAppendStage.DIRECTORY_PREPARE,
-                publication_may_have_committed=False,
-            )
-        try:
-            self._root_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            self._root_dir.mkdir(mode=0o700)
-            self._root_dir.chmod(0o700)
-            self._fsync_directory(self._root_dir.parent)
-        except OSError as exc:
-            raise DurableAppendError(
-                path=self._root_dir,
-                stage=DurableAppendStage.DIRECTORY_PREPARE,
-                publication_may_have_committed=False,
-            ) from exc
-
     def _append_journal_entry(
         self,
         channel: str,
         message_id: str,
         outcome: ReplayOutcome,
     ) -> None:
-        self._ensure_root()
         payload = {
             "channel": channel,
             "message_id": message_id,
@@ -747,7 +759,7 @@ class ChannelStateStore:
         )
 
     @staticmethod
-    def _fsync_directory(path: Path) -> None:
+    def _fsync_directory_entry(path: Path) -> None:
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         flags |= getattr(os, "O_CLOEXEC", 0)
         fd = os.open(path, flags)

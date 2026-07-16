@@ -296,10 +296,11 @@ before dispatch. A successful handler records a terminal outcome; a failed or
 uncertain handler retains an uncertain outcome. Any known outcome is
 non-dispatchable after restart. Replay snapshot/journal corruption, unsupported
 schema, or reservation persistence failure is retained and blocks that channel's
-ingress instead of treating the message as fresh; `shisad doctor --component
-channels` reports the replay-state posture. The current F3C.1 boundary does not
-yet claim provider-account/delivery scoping or Discord interaction-specific
-identity; those keys remain release-close requirements for v0.8.1.
+ingress instead of treating the message as fresh; `shisad doctor check
+--component channels` reports the replay-state posture. The current F3C.1
+boundary does not yet claim provider-account/delivery scoping or Discord
+interaction-specific identity; those keys remain release-close requirements for
+v0.8.1.
 
 ### Context Builder (spotlighting)
 

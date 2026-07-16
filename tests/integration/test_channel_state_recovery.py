@@ -7,12 +7,14 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from shisad.channels.state import ChannelStateStore, ReplayOutcome
+from shisad.core import atomic_state
 from shisad.core.atomic_state import (
     AtomicWriteStage,
     DurableAppendStage,
@@ -217,6 +219,32 @@ def test_channel_replay_checksum_tamper_and_future_schema_are_retained(
         assert state_path.read_bytes() == raw
 
 
+@pytest.mark.parametrize("version", [1, 99])
+def test_channel_replay_envelope_candidate_never_downgrades_to_legacy(
+    tmp_path: Path,
+    version: int,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    state_path = root / "discord.state.json"
+    raw = (
+        b'{"version":'
+        + str(version).encode("ascii")
+        + b',"checksum":"invalid","payload":{"channel":"discord",'
+        b'"records":[],"recent_message_ids":[]},"channel":"discord",'
+        b'"seen_message_ids":[]}'
+    )
+    state_path.write_bytes(raw)
+
+    store = ChannelStateStore(root)
+
+    expected = StateLoadStatus.CORRUPT if version == 1 else StateLoadStatus.UNSUPPORTED_SCHEMA
+    assert store.state_load_result("discord").status == expected
+    with pytest.raises(StatePersistenceDegradedError):
+        store.reserve(channel="discord", message_id="m-new")
+    assert state_path.read_bytes() == raw
+
+
 def test_channel_replay_files_are_owner_only_under_permissive_umask(tmp_path: Path) -> None:
     root = tmp_path / "state"
     previous_umask = os.umask(0)
@@ -238,15 +266,40 @@ def test_channel_replay_root_first_create_parent_fsync_failure_blocks_admission(
 ) -> None:
     root = tmp_path / "state"
     store = ChannelStateStore(root)
+    real_fsync_directory = atomic_state._fsync_directory_path
 
     def _fail_parent_fsync(path: Path) -> None:
-        assert path == tmp_path
-        raise OSError("root parent fsync failed")
+        if path == tmp_path:
+            raise OSError("root parent fsync failed")
+        real_fsync_directory(path)
 
-    monkeypatch.setattr(store, "_fsync_directory", _fail_parent_fsync)
-    with pytest.raises(StatePersistenceDegradedError, match="directory_prepare"):
+    monkeypatch.setattr(atomic_state, "_fsync_directory_path", _fail_parent_fsync)
+    with pytest.raises(StatePersistenceDegradedError, match="parent_fsync"):
         store.reserve(channel="matrix", message_id="m-1")
-    assert not (root / "matrix.state.journal").exists()
+    assert (root / "matrix.state.journal").exists()
+
+
+def test_channel_replay_production_depth_fsyncs_every_new_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    root = data_dir / "channels" / "state"
+    store = ChannelStateStore(root)
+    real_fsync_directory = atomic_state._fsync_directory_path
+    fsynced: list[Path] = []
+
+    def _record_fsync(path: Path) -> None:
+        fsynced.append(path)
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(atomic_state, "_fsync_directory_path", _record_fsync)
+
+    assert store.reserve(channel="discord", message_id="m-1") is False
+
+    assert fsynced[:3] == [root, data_dir, data_dir / "channels"]
+    assert ChannelStateStore(root).reserve(channel="discord", message_id="m-1") is True
 
 
 def test_channel_replay_concurrent_reservation_has_one_fresh_winner(tmp_path: Path) -> None:
@@ -264,6 +317,51 @@ def test_channel_replay_concurrent_reservation_has_one_fresh_winner(tmp_path: Pa
     assert results.count(False) == 1
     assert results.count(True) == 15
     assert ChannelStateStore(root).reserve(channel="discord", message_id="m-shared") is True
+
+
+def test_channel_replay_reset_serializes_with_inflight_reservation(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    store = ChannelStateStore(root)
+    append_entered = Event()
+    release_append = Event()
+    reset_started = Event()
+    reset_finished = Event()
+    reservation_results: list[bool] = []
+    reset_results: list[tuple[int, int]] = []
+
+    def _barrier(stage: DurableAppendStage) -> None:
+        if stage == DurableAppendStage.WRITE:
+            append_entered.set()
+            assert release_append.wait(timeout=2.0)
+
+    store._append_fault_injector = _barrier
+
+    def _reserve() -> None:
+        reservation_results.append(store.reserve(channel="discord", message_id="m-1"))
+
+    def _reset() -> None:
+        reset_started.set()
+        reset_results.append(store.reset_state())
+        reset_finished.set()
+
+    reservation = Thread(target=_reserve)
+    reset = Thread(target=_reset)
+    reservation.start()
+    assert append_entered.wait(timeout=1.0)
+    reset.start()
+    assert reset_started.wait(timeout=1.0)
+    assert reset_finished.wait(timeout=0.1) is False
+
+    release_append.set()
+    reservation.join(timeout=2.0)
+    reset.join(timeout=2.0)
+
+    assert reservation.is_alive() is False
+    assert reset.is_alive() is False
+    assert reservation_results == [False]
+    assert reset_results == [(1, 1)]
+    assert store.runtime_cache_empty() is True
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.asyncio
