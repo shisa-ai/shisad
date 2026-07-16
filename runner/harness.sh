@@ -319,6 +319,25 @@ _path_contains() {
   [[ "${descendant}" == "${ancestor}" || "${descendant}" == "${ancestor}/"* ]]
 }
 
+_paths_overlap() {
+  _path_contains "$1" "$2" || _path_contains "$2" "$1"
+}
+
+_first_missing_path_component() {
+  local current first_missing parent
+  current="$(_absolute_normalized_path "$1")"
+  first_missing=""
+  while [[ ! -e "${current}" && ! -L "${current}" ]]; do
+    first_missing="${current}"
+    parent="$(dirname "${current}")"
+    if [[ "${parent}" == "${current}" ]]; then
+      break
+    fi
+    current="${parent}"
+  done
+  printf '%s\n' "${first_missing}"
+}
+
 _ensure_policy_file() {
   if [[ -f "${SHISAD_POLICY_PATH}" ]]; then
     return 0
@@ -329,21 +348,20 @@ _ensure_policy_file() {
     _die "policy template not found: ${template}"
   fi
 
-  local policy_parent socket_parent
+  local creation_root policy_parent socket_parent
   policy_parent="$(dirname "${SHISAD_POLICY_PATH}")"
   socket_parent="$(dirname "${SHISAD_SOCKET_PATH}")"
-  if _path_contains "${SHISAD_DATA_DIR}" "${SHISAD_POLICY_PATH}" \
-    || _path_contains "${SHISAD_SOCKET_PATH}" "${SHISAD_POLICY_PATH}"; then
+  if _paths_overlap "${SHISAD_POLICY_PATH}" "${SHISAD_DATA_DIR}" \
+    || _paths_overlap "${SHISAD_POLICY_PATH}" "${SHISAD_SOCKET_PATH}"; then
     _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
   fi
-  if [[ ! -d "${policy_parent}" ]] \
-    && { _path_contains "${policy_parent}" "${SHISAD_DATA_DIR}" \
-      || _path_contains "${policy_parent}" "${socket_parent}"; }; then
-    _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
-  fi
-  if [[ ! -d "${socket_parent}" ]] \
-    && _path_contains "${socket_parent}" "${policy_parent}"; then
-    _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
+  creation_root="$(_first_missing_path_component "${policy_parent}")"
+  if [[ -n "${creation_root}" ]]; then
+    if _paths_overlap "${creation_root}" "${SHISAD_DATA_DIR}" \
+      || { [[ ! -d "${socket_parent}" ]] \
+        && _paths_overlap "${creation_root}" "${socket_parent}"; }; then
+      _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
+    fi
   fi
   (umask 077 && mkdir -p -- "${policy_parent}")
   cp "${template}" "${SHISAD_POLICY_PATH}"

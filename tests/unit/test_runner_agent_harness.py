@@ -320,6 +320,24 @@ def test_f3_harness_missing_policy_overlap_fails_before_authority_parent_creatio
             tmp_path / "absent-socket-parent" / "policies" / "policy.yaml",
             tmp_path / "absent-socket-parent",
         ),
+        (
+            tmp_path / "inverse-data-policy" / "data",
+            tmp_path / "control.sock",
+            tmp_path / "inverse-data-policy",
+            tmp_path / "inverse-data-policy",
+        ),
+        (
+            tmp_path / "inverse-socket-data",
+            tmp_path / "inverse-socket-policy" / "control.sock",
+            tmp_path / "inverse-socket-policy",
+            tmp_path / "inverse-socket-policy",
+        ),
+        (
+            tmp_path / "shared-missing-ancestor" / "data",
+            tmp_path / "control.sock",
+            tmp_path / "shared-missing-ancestor" / "policy-parent" / "policy.yaml",
+            tmp_path / "shared-missing-ancestor",
+        ),
     ]
     for index, (data_dir, socket_path, policy_path, forbidden_parent) in enumerate(cases):
         env = {k: v for k, v in os.environ.items()}
