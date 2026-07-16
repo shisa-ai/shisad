@@ -6,6 +6,7 @@ import asyncio
 import os
 import socket
 import stat
+import uuid
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,51 @@ async def test_f3_control_server_creates_arbitrary_socket_parents_owner_only(
         assert stat.S_IMODE(socket_path.stat().st_mode) == 0o600
     finally:
         await server.stop()
+
+
+def test_f3_arbitrary_socket_path_allows_foreign_owned_sticky_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_parent = tmp_path / "shared"
+    shared_parent.mkdir()
+    shared_parent.chmod(0o1777)
+    monkeypatch.setattr(transport, "_current_euid", lambda: os.getuid() + 1)
+
+    transport._ensure_socket_parent(shared_parent / "control.sock")
+
+
+def test_f3_arbitrary_socket_path_rejects_foreign_owned_nonsticky_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_parent = tmp_path / "shared"
+    shared_parent.mkdir()
+    shared_parent.chmod(0o777)
+    monkeypatch.setattr(transport, "_current_euid", lambda: os.getuid() + 1)
+
+    with pytest.raises(PermissionError, match="owned by uid"):
+        transport._ensure_socket_parent(shared_parent / "control.sock")
+
+
+@pytest.mark.asyncio
+async def test_f3_control_server_supports_documented_direct_tmp_socket() -> None:
+    tmp_parent = Path("/tmp")
+    tmp_stat = tmp_parent.lstat()
+    if tmp_stat.st_uid == os.geteuid():
+        pytest.skip("/tmp is owned by the test user; synthetic sticky-parent coverage applies")
+    assert stat.S_IMODE(tmp_stat.st_mode) & stat.S_ISVTX
+    socket_path = tmp_parent / f"shisad-f3-{os.getpid()}-{uuid.uuid4().hex}.sock"
+    server = ControlServer(socket_path)
+    try:
+        await server.start()
+        assert stat.S_ISSOCK(socket_path.lstat().st_mode)
+        assert stat.S_IMODE(socket_path.lstat().st_mode) == 0o600
+    finally:
+        if server._server is not None:
+            await server.stop()
+        elif socket_path.exists():
+            socket_path.unlink()
 
 
 @pytest.mark.asyncio

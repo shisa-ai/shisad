@@ -842,14 +842,24 @@ def _restrict_external_authority_files(candidate: DaemonAuthorityCandidate) -> N
             os.close(fd)
 
 
+def verify_claimed_daemon_authorities(
+    config: DaemonConfig,
+    claim: DaemonAuthorityClaim,
+) -> tuple[DaemonAuthorityCandidate, ...]:
+    """Verify a live claim against the config without mutating any authority."""
+
+    candidates = derive_daemon_authority_candidates(config)
+    claim.verify(candidates)
+    return candidates
+
+
 def initialize_claimed_daemon_authorities(
     config: DaemonConfig,
     claim: DaemonAuthorityClaim,
 ) -> None:
     """Initialize the data root only after verifying the complete acquired claim."""
 
-    candidates = derive_daemon_authority_candidates(config)
-    claim.verify(candidates)
+    candidates = verify_claimed_daemon_authorities(config, claim)
     data_candidate = next(
         (candidate for candidate in candidates if candidate.role == "data_root"),
         None,

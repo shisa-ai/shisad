@@ -6,6 +6,7 @@ import asyncio
 import multiprocessing
 import os
 import queue
+import socket
 import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +18,7 @@ import pytest
 
 from shisad.core.api.transport import ControlClient, ControlServer
 from shisad.core.authority import (
+    AuthorityClaimError,
     AuthorityConflictError,
     AuthorityRegistryError,
     DaemonAuthorityClaim,
@@ -1065,3 +1067,29 @@ async def test_f3_active_foreign_socket_fails_before_data_initialization(
         if services is not None:
             await services.shutdown()
         await foreign.stop()
+
+
+@pytest.mark.asyncio
+async def test_f3_mismatched_injected_claim_cannot_remove_config_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    claimed_config = _config(tmp_path, name="claimed", socket_name="claimed.sock")
+    supplied_config = _config(tmp_path, name="supplied", socket_name="supplied.sock")
+    claim = acquire_daemon_authority_claim(claimed_config)
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(supplied_config.socket_path))
+    stale.close()
+    before = supplied_config.socket_path.lstat()
+
+    with pytest.raises(
+        AuthorityClaimError,
+        match="daemon authority claim does not cover this configuration",
+    ):
+        await DaemonServices.build(supplied_config, authority_claim=claim)
+
+    after = supplied_config.socket_path.lstat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+    assert stat.S_ISSOCK(after.st_mode)
+    assert claim.released

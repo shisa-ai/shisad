@@ -25,6 +25,7 @@ from shisad.core.authority import (
     DaemonAuthorityClaim,
     acquire_daemon_authority_claim,
     initialize_claimed_daemon_authorities,
+    verify_claimed_daemon_authorities,
 )
 from shisad.core.config import (
     DaemonConfig,
@@ -671,7 +672,16 @@ class DaemonServices:
         else:
             claim = authority_claim
         try:
-            await preflight_claimed_control_socket(config.socket_path)
+            verify_task = asyncio.create_task(
+                asyncio.to_thread(verify_claimed_daemon_authorities, config, claim)
+            )
+            candidates, verification_cancelled = await _await_task_terminal(verify_task)
+            if verification_cancelled:
+                raise asyncio.CancelledError
+            control_socket_path = next(
+                candidate.path for candidate in candidates if candidate.role == "control_socket"
+            )
+            await preflight_claimed_control_socket(control_socket_path)
             initialize_task = asyncio.create_task(
                 asyncio.to_thread(initialize_claimed_daemon_authorities, config, claim)
             )

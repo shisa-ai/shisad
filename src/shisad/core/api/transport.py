@@ -118,7 +118,8 @@ def _ensure_socket_parent(socket_path: Path) -> None:
         parent_stat = parent.lstat()
         if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
             raise PermissionError(f"Refusing to use unsafe socket directory {parent}")
-        if parent_stat.st_uid != _current_euid():
+        is_shared_sticky_parent = bool(parent_stat.st_mode & stat.S_ISVTX)
+        if parent_stat.st_uid != _current_euid() and not is_shared_sticky_parent:
             raise PermissionError(
                 "Refusing to use unsafe socket directory "
                 f"{parent}: owned by uid {parent_stat.st_uid}, expected {_current_euid()}"
