@@ -392,16 +392,23 @@ async def channel_receive_pump(
             continue
 
         message_id = str(getattr(message, "message_id", "")).strip()
-        if (
-            state_store is not None
-            and message_id
-            and _is_replay_message(
-                state_store=state_store,
-                channel_name=channel_name,
-                message_id=message_id,
-            )
-        ):
-            continue
+        replay_reserved = False
+        if state_store is not None and message_id:
+            try:
+                is_replay = await asyncio.to_thread(
+                    state_store.reserve,
+                    channel=channel_name,
+                    message_id=message_id,
+                )
+            except Exception:
+                logger.exception(
+                    "%s replay reservation failed; blocking ingress",
+                    channel_name,
+                )
+                continue
+            if is_replay:
+                continue
+            replay_reserved = True
 
         try:
             await handlers.handle_channel_ingest(
@@ -421,42 +428,29 @@ async def channel_receive_pump(
             )
         except Exception:
             logger.exception("%s ingress processing failed", channel_name)
+            if replay_reserved and state_store is not None:
+                try:
+                    await asyncio.to_thread(
+                        state_store.mark_uncertain,
+                        channel=channel_name,
+                        message_id=message_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "%s replay uncertainty persistence failed; scope remains blocked",
+                        channel_name,
+                    )
             continue
 
-        if state_store is not None and message_id:
-            _mark_processed_message(
-                state_store=state_store,
-                channel_name=channel_name,
-                message_id=message_id,
-            )
-
-
-def _is_replay_message(
-    *,
-    state_store: ChannelStateStore,
-    channel_name: str,
-    message_id: str,
-) -> bool:
-    try:
-        return state_store.has_seen(channel=channel_name, message_id=message_id)
-    except Exception:
-        logger.exception(
-            "%s replay guard read failed; continuing without replay check",
-            channel_name,
-        )
-        return False
-
-
-def _mark_processed_message(
-    *,
-    state_store: ChannelStateStore,
-    channel_name: str,
-    message_id: str,
-) -> None:
-    try:
-        state_store.mark_seen(channel=channel_name, message_id=message_id)
-    except Exception:
-        logger.exception(
-            "%s replay guard persist failed after successful ingest",
-            channel_name,
-        )
+        if replay_reserved and state_store is not None:
+            try:
+                await asyncio.to_thread(
+                    state_store.mark_terminal,
+                    channel=channel_name,
+                    message_id=message_id,
+                )
+            except Exception:
+                logger.exception(
+                    "%s replay terminal persistence failed; reservation remains authoritative",
+                    channel_name,
+                )

@@ -174,6 +174,29 @@ def test_durable_append_is_owner_only_and_preserves_complete_rows(
     assert target.read_bytes() == b'{"id":"one"}\n{"id":"two"}\n'
 
 
+def test_durable_append_fsyncs_each_new_parent_directory_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "channels" / "control" / "events.jsonl"
+    real_fsync_directory = atomic_state._fsync_directory_path
+    fsynced: list[Path] = []
+
+    def _record_fsync(path: Path) -> None:
+        fsynced.append(path)
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(atomic_state, "_fsync_directory_path", _record_fsync)
+
+    durable_append_bytes(target, b'{"id":"one"}\n')
+
+    assert fsynced == [
+        target.parent,
+        tmp_path,
+        tmp_path / "channels",
+    ]
+
+
 def test_durable_append_rejects_symlink_target(tmp_path: Path) -> None:
     outside = tmp_path / "outside.jsonl"
     outside.write_bytes(b"outside\n")

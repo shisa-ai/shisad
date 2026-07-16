@@ -155,6 +155,7 @@ async def test_daemon_services_builds_with_local_provider(
         selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
         dashboard_doctor = await impl.do_doctor_check({"component": "dashboard"})
         control_plane_doctor = await impl.do_doctor_check({"component": "control_plane"})
+        channels_doctor = await impl.do_doctor_check({"component": "channels"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
@@ -168,6 +169,11 @@ async def test_daemon_services_builds_with_local_provider(
         assert status["pairing_requests"]["status"] == "ok"
         assert status["control_plane"]["status"] == "ok"
         assert "pairing_requests" not in status["channels"]
+        assert channels_doctor["status"] == "ok"
+        assert all(
+            row["replay_state"]["status"] == "missing"
+            for row in channels_doctor["checks"]["channels"]["channels"].values()
+        )
         channel_health = _safe_channel_rows(status["channels"])
         assert {row["channel"] for row in channel_health} == {
             "discord",

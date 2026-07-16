@@ -1231,15 +1231,11 @@ class DaemonServices:
         _wipe_dir_contents(self.checkpoint_store._dir)
 
         # -- Channel state --
-        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
-        channel_state_root = self.channel_state_store._root_dir
+        cleared["channel_state_channels"] = self.channel_state_store.loaded_channel_count
+        channel_state_root = self.channel_state_store.root_dir
         cleared["channel_state_files"] = _count_files_recursive(channel_state_root)
-        self.channel_state_store._seen_ids.clear()
-        self.channel_state_store._seen_id_sets.clear()
-        self.channel_state_store._journal_appends_since_compaction.clear()
-        self.channel_state_store._loaded_channels.clear()
-        self.channel_state_store._compaction_warning_logged.clear()
         _wipe_dir_contents(channel_state_root)
+        self.channel_state_store.clear_runtime_cache()
 
         # -- Transcripts --
         cleared["transcripts"] = _count_files_recursive(

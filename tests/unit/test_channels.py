@@ -351,8 +351,10 @@ def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_
         store.mark_seen(channel="slack", message_id=f"m{index:02d}")
 
     state_file = tmp_path / "state" / "slack.state.json"
-    payload = json.loads(state_file.read_text(encoding="utf-8"))
-    assert payload["seen_message_ids"] == [f"m{index:02d}" for index in range(2, 34)]
+    envelope = json.loads(state_file.read_text(encoding="utf-8"))
+    assert envelope["payload"]["recent_message_ids"] == [
+        f"m{index:02d}" for index in range(2, 34)
+    ]
 
     journal = tmp_path / "state" / "slack.state.journal"
     if journal.exists():
@@ -363,7 +365,9 @@ def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_
         max_seen_ids=32,
         journal_compact_every=2,
     )
-    assert reloaded.has_seen(channel="slack", message_id="m00") is False
+    # The bounded recent list is an optimization; authoritative replay records
+    # survive eviction and compaction.
+    assert reloaded.has_seen(channel="slack", message_id="m00") is True
     assert reloaded.has_seen(channel="slack", message_id="m33") is True
 
 

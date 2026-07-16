@@ -2459,7 +2459,7 @@ class HandlerImplementation(
 
         archive_dir = self._config.data_dir / "session_archives"
         trace_dir = self._config.data_dir / "traces"
-        channel_state_root = self._services.channel_state_store._root_dir
+        channel_state_root = self._services.channel_state_store.root_dir
         approval_store_path = self._credential_store._approval_store_path
         identity_allowlists_match = {
             channel: set(values) for channel, values in self._identity_map._allowlists.items()
@@ -2483,10 +2483,7 @@ class HandlerImplementation(
             ),
             "audit_empty": self._audit_log.entry_count == 0,
             "checkpoints_empty": not any(self._checkpoint_store._dir.iterdir()),
-            "channel_state_empty": not (
-                self._services.channel_state_store._seen_ids
-                or self._services.channel_state_store._seen_id_sets
-            ),
+            "channel_state_empty": self._services.channel_state_store.runtime_cache_empty(),
             "channel_state_disk_empty": _dir_empty(channel_state_root),
             "transcripts_empty": _dir_empty(self._transcript_store._transcript_dir),
             "transcript_blobs_empty": _dir_empty(self._transcript_store._blob_dir),
@@ -3224,6 +3221,12 @@ class HandlerImplementation(
         ):
             available = bool(channel.available) if channel is not None else False
             connected = bool(channel.connected) if channel is not None else False
+            replay_state = self._services.channel_state_store.state_status(name)
+            replay_degraded = replay_state["status"] in {
+                "corrupt",
+                "degraded",
+                "unsupported_schema",
+            }
             status = "disabled"
             if enabled and not available:
                 status = "misconfigured"
@@ -3233,11 +3236,16 @@ class HandlerImplementation(
                 problems.append(f"{name}_not_connected")
             elif enabled:
                 status = "ok"
+            if enabled and replay_degraded:
+                problems.append(f"{name}_replay_state_degraded")
+                if status != "misconfigured":
+                    status = "degraded"
             rows[name] = {
                 "status": status,
                 "enabled": bool(enabled),
                 "available": available,
                 "connected": connected,
+                "replay_state": replay_state,
             }
             if enabled:
                 active_statuses.append(status)

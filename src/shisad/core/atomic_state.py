@@ -119,6 +119,37 @@ class StatePersistenceDegradedError(RuntimeError):
         )
 
 
+def _missing_directory_chain(path: Path) -> list[Path]:
+    """Return missing directories from the requested leaf toward an existing root."""
+
+    missing: list[Path] = []
+    current = path
+    while True:
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            missing.append(current)
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+            continue
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise OSError("state parent is not a directory")
+        break
+    return missing
+
+
+def _fsync_directory_path(path: Path) -> None:
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, directory_flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _inject_fault(
     fault_injector: AtomicWriteFaultInjector | None,
     stage: AtomicWriteStage,
@@ -390,9 +421,11 @@ def durable_append_bytes(
         target_existed = True
 
     parent = target.parent
+    missing_directories: list[Path] = []
     try:
         if fault_injector is not None:
             fault_injector(DurableAppendStage.DIRECTORY_PREPARE)
+        missing_directories = _missing_directory_chain(parent)
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         parent.chmod(0o700)
     except OSError as exc:
@@ -403,7 +436,6 @@ def durable_append_bytes(
         ) from exc
 
     file_fd = -1
-    parent_fd = -1
     created_file = False
     wrote_payload = False
     completed = False
@@ -444,10 +476,9 @@ def durable_append_bytes(
         stage = DurableAppendStage.PARENT_FSYNC
         if fault_injector is not None:
             fault_injector(stage)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        directory_flags |= getattr(os, "O_CLOEXEC", 0)
-        parent_fd = os.open(parent, directory_flags)
-        os.fsync(parent_fd)
+        _fsync_directory_path(parent)
+        for created_directory in reversed(missing_directories):
+            _fsync_directory_path(created_directory.parent)
         completed = True
     except DurableAppendError:
         raise
@@ -461,9 +492,6 @@ def durable_append_bytes(
         if file_fd >= 0:
             with contextlib.suppress(OSError):
                 os.close(file_fd)
-        if parent_fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(parent_fd)
         if created_file and not wrote_payload and not completed:
             current_stat: os.stat_result | None
             try:

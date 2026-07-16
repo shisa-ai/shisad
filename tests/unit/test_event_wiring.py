@@ -223,7 +223,7 @@ async def test_matrix_receive_pump_forwards_message_as_internal_ingress() -> Non
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_marks_replay_after_successful_ingest() -> None:
+async def test_channel_receive_pump_reserves_before_ingest_and_marks_terminal() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -236,14 +236,18 @@ async def test_channel_receive_pump_marks_replay_after_successful_ingest() -> No
 
     class _StateStore:
         def __init__(self) -> None:
-            self.marked: list[str] = []
+            self.transitions: list[str] = []
 
-        def has_seen(self, *, channel: str, message_id: str) -> bool:
+        def reserve(self, *, channel: str, message_id: str) -> bool:
+            self.transitions.append(f"reserve:{channel}:{message_id}")
             return False
 
-        def mark_seen(self, *, channel: str, message_id: str) -> None:
-            self.marked.append(f"{channel}:{message_id}")
+        def mark_terminal(self, *, channel: str, message_id: str) -> None:
+            self.transitions.append(f"terminal:{channel}:{message_id}")
             shutdown_event.set()
+
+        def mark_uncertain(self, *, channel: str, message_id: str) -> None:
+            self.transitions.append(f"uncertain:{channel}:{message_id}")
 
     class _Handler:
         async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
@@ -258,11 +262,14 @@ async def test_channel_receive_pump_marks_replay_after_successful_ingest() -> No
         state_store=state_store,  # type: ignore[arg-type]
     )
 
-    assert state_store.marked == ["discord:m-1"]
+    assert state_store.transitions == [
+        "reserve:discord:m-1",
+        "terminal:discord:m-1",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_does_not_mark_replay_when_ingest_fails() -> None:
+async def test_channel_receive_pump_marks_reserved_ingest_uncertain_when_handler_fails() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -275,13 +282,17 @@ async def test_channel_receive_pump_does_not_mark_replay_when_ingest_fails() -> 
 
     class _StateStore:
         def __init__(self) -> None:
-            self.marked: list[str] = []
+            self.transitions: list[str] = []
 
-        def has_seen(self, *, channel: str, message_id: str) -> bool:
+        def reserve(self, *, channel: str, message_id: str) -> bool:
+            self.transitions.append(f"reserve:{channel}:{message_id}")
             return False
 
-        def mark_seen(self, *, channel: str, message_id: str) -> None:
-            self.marked.append(f"{channel}:{message_id}")
+        def mark_terminal(self, *, channel: str, message_id: str) -> None:
+            self.transitions.append(f"terminal:{channel}:{message_id}")
+
+        def mark_uncertain(self, *, channel: str, message_id: str) -> None:
+            self.transitions.append(f"uncertain:{channel}:{message_id}")
 
     class _FailingHandler:
         async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
@@ -298,11 +309,14 @@ async def test_channel_receive_pump_does_not_mark_replay_when_ingest_fails() -> 
         state_store=state_store,  # type: ignore[arg-type]
     )
 
-    assert state_store.marked == []
+    assert state_store.transitions == [
+        "reserve:discord:m-1",
+        "uncertain:discord:m-1",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_continues_when_replay_guard_read_fails() -> None:
+async def test_channel_receive_pump_blocks_when_replay_reservation_fails() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -314,13 +328,16 @@ async def test_channel_receive_pump_continues_when_replay_guard_read_fails() -> 
     channel = _MatrixChannelStub(message)
 
     class _StateStore:
-        def has_seen(self, *, channel: str, message_id: str) -> bool:
-            _ = (channel, message_id)
-            raise RuntimeError("state read failed")
-
-        def mark_seen(self, *, channel: str, message_id: str) -> None:
+        def reserve(self, *, channel: str, message_id: str) -> bool:
             _ = (channel, message_id)
             shutdown_event.set()
+            raise RuntimeError("state read failed")
+
+        def mark_terminal(self, *, channel: str, message_id: str) -> None:
+            _ = (channel, message_id)
+
+        def mark_uncertain(self, *, channel: str, message_id: str) -> None:
+            _ = (channel, message_id)
 
     class _Handler:
         def __init__(self) -> None:
@@ -339,7 +356,7 @@ async def test_channel_receive_pump_continues_when_replay_guard_read_fails() -> 
         state_store=_StateStore(),  # type: ignore[arg-type]
     )
 
-    assert handler.calls == 1
+    assert handler.calls == 0
 
 
 @pytest.mark.asyncio
