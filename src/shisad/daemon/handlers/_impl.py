@@ -80,6 +80,7 @@ from shisad.core.atomic_state import (
     durable_append_bytes,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
+from shisad.core.authority import daemon_authority_registry_root
 from shisad.core.clock import current_time_payload
 from shisad.core.events import (
     AnomalyReported,
@@ -1004,6 +1005,8 @@ def _fs_git_toolkit_for_context(
         max_read_bytes=handler._config.assistant_max_read_bytes,
         git_timeout_seconds=handler._config.assistant_git_timeout_seconds,
         protected_write_paths=tuple(getattr(toolkit, "protected_write_paths", ())),
+        protected_write_roots=tuple(getattr(toolkit, "protected_write_roots", ())),
+        protected_write_authorities=tuple(getattr(toolkit, "protected_write_authorities", ())),
     )
 
 
@@ -2307,10 +2310,11 @@ class HandlerImplementation(
             max_read_bytes=self._config.assistant_max_read_bytes,
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
             protected_write_paths=(
-                (self._config.assistant_persona_soul_path,)
-                if self._config.assistant_persona_soul_path is not None
-                else ()
+                self._config.policy_path,
+                self._config.selfmod_allowed_signers_path,
             ),
+            protected_write_roots=(daemon_authority_registry_root(),),
+            protected_write_authorities=services.authority_claim.candidates,
         )
         self._attachment_ingestor = AttachmentIngestor(
             roots=list(self._config.assistant_fs_roots),

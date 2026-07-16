@@ -310,10 +310,28 @@ without creating or mode-repairing daemon targets. Service construction first
 publishes an owner-only, same-host lifetime claim in a registry independent of
 the target data directory. The baseline claim covers the canonical data root,
 control socket, effective approval-factor store, and configured writable SOUL
-path; exact canonical conflicts and inode aliases present at admission fail
-before target initialization. The claim remains held until daemon services
-stop. This is a local mutable-file authority boundary, not a multi-host or
-remote provider-account lease.
+path. The data root is treated as a contained tree; external approval/SOUL
+files also reserve their component-owned atomic temp, retained-corruption,
+backup, tombstone, migration, and lock name families. Unexpected exact,
+ancestor, derived-name, and live inode/hardlink overlap fails before target
+initialization, while ordinary disjoint siblings remain usable. Owner-controlled
+external authority files are restricted to `0600` only after claim publication;
+symlinked, foreign-owner, or non-regular trust files fail closed.
+Read-only policy and allowed-signer inputs are not lifetime-claimed, so disjoint
+daemons may share them, but one daemon cannot place either input inside or on a
+derived name of its own mutable authority footprint.
+
+An existing control path is removed only when it is an owner socket that refuses
+a stream connection. The server holds an identity descriptor for the socket it
+creates and cleanup unlinks only that same object, so delayed shutdown cannot
+remove a successor or an unrelated file. If an assistant filesystem root
+contains claimed control state or trusted policy/signer inputs, startup emits a
+visible preflight warning and the direct `fs.write` surface blocks the data tree,
+authority registry, exact trust inputs, and reserved external-file artifacts;
+legitimate changes continue through their dedicated admin routes. The daemon
+claim remains held until mutable services and listeners stop. This is a local
+mutable-file authority boundary, not a multi-host or remote provider-account
+lease.
 
 A successful handler records a terminal outcome; a failed or uncertain handler
 retains an uncertain outcome. Reserved, terminal, and uncertain records are

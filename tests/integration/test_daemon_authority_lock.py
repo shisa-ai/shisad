@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.api.transport import ControlClient
+from shisad.core.api.transport import ControlClient, ControlServer
 from shisad.core.authority import (
     AuthorityConflictError,
     AuthorityRegistryError,
@@ -532,3 +532,536 @@ async def test_f3_daemon_startup_boundary_always_releases_claim(
     finally:
         if not services.authority_claim.released:
             await services.shutdown()
+
+
+def test_f3_same_config_rejects_exact_cross_role_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = tmp_path / "shared.json"
+    monkeypatch.setenv("SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH", str(shared))
+    config = _config(tmp_path, name="data", socket_name="shared.json")
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityConflictError, match="cross-role"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+
+
+def test_f3_same_config_rejects_base_to_derived_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_path = tmp_path / "approval.json"
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    config = _config(tmp_path, name="data", socket_name="approval.json.tmp")
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityConflictError, match="derived"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+
+
+def test_f3_same_config_rejects_derived_to_derived_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(tmp_path / ".SOUL.md.stage"),
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        assistant_persona_soul_path=tmp_path / "SOUL.md",
+    )
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityConflictError, match="derived"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+
+
+@pytest.mark.parametrize("surface", ["policy", "signers"])
+def test_f3_trusted_read_input_cannot_overlap_mutable_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+) -> None:
+    approval_path = tmp_path / "approval"
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    policy_path = tmp_path / "policy.yaml"
+    signers_path = tmp_path / "allowed_signers"
+    if surface == "policy":
+        policy_path = tmp_path / "data" / "policy.yaml"
+    else:
+        signers_path = tmp_path / "approval.corrupt.allowed_signers"
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        selfmod_allowed_signers_path=signers_path,
+    )
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityConflictError, match="trusted read input"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+
+
+def test_f3_cross_claim_rejects_ancestor_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_root = tmp_path / "first"
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(first_root / "approval.json"),
+    )
+    first = DaemonConfig(
+        data_dir=first_root,
+        socket_path=tmp_path / "first.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    first_claim = acquire_daemon_authority_claim(first)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(tmp_path / "second-approval.json"),
+        )
+        second = DaemonConfig(
+            data_dir=tmp_path / "second",
+            socket_path=first_root / "nested.sock",
+            policy_path=tmp_path / "policy.yaml",
+        )
+        with pytest.raises(AuthorityConflictError, match="overlaps"):
+            second_claim = acquire_daemon_authority_claim(second)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        first_claim.release()
+
+
+def test_f3_cross_claim_rejects_derived_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_path = tmp_path / "approval.json"
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    first_claim = acquire_daemon_authority_claim(first)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(tmp_path / "second-approval.json"),
+        )
+        second = _config(
+            tmp_path,
+            name="second",
+            socket_name="approval.json.corrupt.retained",
+        )
+        with pytest.raises(AuthorityConflictError, match="overlaps"):
+            second_claim = acquire_daemon_authority_claim(second)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        first_claim.release()
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_role"),
+    [
+        ("socket", "control_socket"),
+        ("approval", "approval_factor_store"),
+        ("soul", "soul"),
+    ],
+)
+def test_f3_disjoint_data_roots_cannot_share_external_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    expected_role: str,
+) -> None:
+    shared = tmp_path / "shared"
+    first_approval = shared if role == "approval" else tmp_path / "first-approval"
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(first_approval),
+    )
+    first = DaemonConfig(
+        data_dir=tmp_path / "first",
+        socket_path=shared if role == "socket" else tmp_path / "first.sock",
+        policy_path=tmp_path / "policy.yaml",
+        assistant_persona_soul_path=tmp_path / "SOUL.md" if role == "soul" else None,
+    )
+    first_claim = acquire_daemon_authority_claim(first)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        second_approval = shared if role == "approval" else tmp_path / "second-approval"
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(second_approval),
+        )
+        second = DaemonConfig(
+            data_dir=tmp_path / "second",
+            socket_path=shared if role == "socket" else tmp_path / "second.sock",
+            policy_path=tmp_path / "policy.yaml",
+            assistant_persona_soul_path=(tmp_path / "SOUL.md" if role == "soul" else None),
+        )
+        with pytest.raises(AuthorityConflictError, match=expected_role):
+            second_claim = acquire_daemon_authority_claim(second)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        first_claim.release()
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_f3_cross_claim_rejects_derived_to_derived_in_either_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reverse: bool,
+) -> None:
+    paths = [tmp_path / "approval", tmp_path / ".approval.stage"]
+    if reverse:
+        paths.reverse()
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(paths[0]),
+    )
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    first_claim = acquire_daemon_authority_claim(first)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(paths[1]),
+        )
+        second = _config(tmp_path, name="second", socket_name="second.sock")
+        with pytest.raises(AuthorityConflictError, match="derived"):
+            second_claim = acquire_daemon_authority_claim(second)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        first_claim.release()
+
+
+def test_f3_active_claim_refreshes_replaced_inode_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_path = tmp_path / "approval.json"
+    approval_path.write_text("old", encoding="utf-8")
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    first_claim = acquire_daemon_authority_claim(first)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        replacement = tmp_path / "replacement"
+        replacement.write_text("new", encoding="utf-8")
+        os.replace(replacement, approval_path)
+        alias_path = tmp_path / "approval-alias.json"
+        os.link(approval_path, alias_path)
+
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(alias_path),
+        )
+        second = _config(tmp_path, name="second", socket_name="second.sock")
+        with pytest.raises(AuthorityConflictError, match="overlaps"):
+            second_claim = acquire_daemon_authority_claim(second)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        first_claim.release()
+
+
+def test_f3_disjoint_sibling_authorities_both_succeed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(tmp_path / "first.json"),
+    )
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    first_claim = acquire_daemon_authority_claim(first)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(tmp_path / "second.json"),
+        )
+        second = _config(tmp_path, name="second", socket_name="second.sock")
+        second_claim = acquire_daemon_authority_claim(second)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        first_claim.release()
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ["data", "socket", "policy", "approval", "soul", "signers"],
+)
+def test_f3_assistant_root_preflights_protected_control_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    surface: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    control = tmp_path / "control"
+    data_dir = control / "data"
+    socket_path = control / "control.sock"
+    policy_path = control / "policy.yaml"
+    approval_path = control / "approval.json"
+    soul_path: Path | None = None
+    signers_path = control / "allowed_signers"
+    if surface == "data":
+        data_dir = workspace / "data"
+    elif surface == "socket":
+        socket_path = workspace / "control.sock"
+    elif surface == "policy":
+        policy_path = workspace / "policy.yaml"
+    elif surface == "approval":
+        approval_path = workspace / "approval.json"
+    elif surface == "soul":
+        soul_path = workspace / "SOUL.md"
+    else:
+        signers_path = workspace / "allowed_signers"
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=socket_path,
+        policy_path=policy_path,
+        selfmod_allowed_signers_path=signers_path,
+        assistant_persona_soul_path=soul_path,
+        assistant_fs_roots=[workspace],
+    )
+    with caplog.at_level("WARNING", logger="shisad.core.authority"):
+        claim = acquire_daemon_authority_claim(config)
+    claim.release()
+    assert "direct filesystem writes must remain blocked" in caplog.text
+
+
+def test_f3_claimed_external_authorities_are_owner_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_path = tmp_path / "approval.json"
+    corrupt_path = tmp_path / "approval.json.corrupt.retained"
+    soul_path = tmp_path / "SOUL.md"
+    for path in (approval_path, corrupt_path, soul_path):
+        path.write_text("state", encoding="utf-8")
+        path.chmod(0o666)
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        assistant_persona_soul_path=soul_path,
+    )
+
+    claim = acquire_daemon_authority_claim(config)
+    try:
+        initialize_claimed_daemon_authorities(config, claim)
+        for path in (approval_path, corrupt_path, soul_path):
+            assert stat.S_IMODE(path.lstat().st_mode) == 0o600
+    finally:
+        claim.release()
+
+
+def test_f3_symlinked_external_authority_fails_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("trusted", encoding="utf-8")
+    approval_path = tmp_path / "approval.json"
+    approval_path.symlink_to(target)
+    before = target.stat()
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    config = _config(tmp_path, name="data", socket_name="control.sock")
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityRegistryError, match="symlink"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+    after = target.stat()
+    assert (after.st_ino, after.st_mode, after.st_mtime_ns, target.read_bytes()) == (
+        before.st_ino,
+        before.st_mode,
+        before.st_mtime_ns,
+        b"trusted",
+    )
+
+
+def test_f3_symlinked_external_parent_fails_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_parent = tmp_path / "target-parent"
+    target_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(target_parent, target_is_directory=True)
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(linked_parent / "approval.json"),
+    )
+    config = _config(tmp_path, name="data", socket_name="control.sock")
+
+    with pytest.raises(AuthorityRegistryError, match="symlink ancestry"):
+        acquire_daemon_authority_claim(config)
+    assert list(target_parent.iterdir()) == []
+
+
+def test_f3_symlinked_socket_parent_fails_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_parent = tmp_path / "target-parent"
+    target_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(target_parent, target_is_directory=True)
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(tmp_path / "approval.json"),
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=linked_parent / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    with pytest.raises(AuthorityRegistryError, match=r"control_socket.*symlink ancestry"):
+        acquire_daemon_authority_claim(config)
+    assert list(target_parent.iterdir()) == []
+
+
+def test_f3_external_authority_rejects_foreign_owner_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.core import authority as authority_module
+
+    approval_path = tmp_path / "approval.json"
+    approval_path.write_text("trusted", encoding="utf-8")
+    monkeypatch.setenv(
+        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+        str(approval_path),
+    )
+    config = _config(tmp_path, name="data", socket_name="control.sock")
+    current_uid = os.getuid()
+    monkeypatch.setattr(authority_module.os, "getuid", lambda: current_uid + 1)
+
+    with pytest.raises(AuthorityRegistryError, match="not owner-controlled"):
+        derive_daemon_authority_candidates(config)
+
+
+@pytest.mark.asyncio
+async def test_f3_non_socket_control_path_fails_before_data_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    socket_path = tmp_path / "control.sock"
+    socket_path.write_text("foreign path", encoding="utf-8")
+    config = _config(tmp_path, name="missing-parent/data", socket_name="control.sock")
+
+    async def _unexpected_service_build(
+        _cls: type[DaemonServices],
+        _config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
+        del authority_claim
+        raise AssertionError("service construction reached unsafe control path")
+
+    monkeypatch.setattr(
+        DaemonServices,
+        "_build_claimed",
+        classmethod(_unexpected_service_build),
+    )
+    services: DaemonServices | None = None
+    try:
+        with pytest.raises(OSError, match="not a socket"):
+            services = await DaemonServices.build(config)
+    finally:
+        if services is not None:
+            await services.shutdown()
+    assert socket_path.read_text(encoding="utf-8") == "foreign path"
+    assert not config.data_dir.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_f3_active_foreign_socket_fails_before_data_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = _config(tmp_path, name="missing-parent/data", socket_name="control.sock")
+    foreign = ControlServer(config.socket_path)
+    await foreign.start()
+    foreign_identity = config.socket_path.stat().st_dev, config.socket_path.stat().st_ino
+
+    async def _unexpected_service_build(
+        _cls: type[DaemonServices],
+        _config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
+        del authority_claim
+        raise AssertionError("service construction reached active control socket")
+
+    monkeypatch.setattr(
+        DaemonServices,
+        "_build_claimed",
+        classmethod(_unexpected_service_build),
+    )
+    services: DaemonServices | None = None
+    try:
+        with pytest.raises(OSError, match="already active"):
+            services = await DaemonServices.build(config)
+        assert (config.socket_path.stat().st_dev, config.socket_path.stat().st_ino) == (
+            foreign_identity
+        )
+        assert not config.data_dir.parent.exists()
+    finally:
+        if services is not None:
+            await services.shutdown()
+        await foreign.stop()

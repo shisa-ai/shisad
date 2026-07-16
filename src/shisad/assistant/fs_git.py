@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from shisad.assistant.boundary_helpers import _is_within, _read_limited
+from shisad.core.authority import (
+    DaemonAuthorityCandidate,
+    daemon_authority_protects_path,
+)
 
 
 @dataclass(slots=True)
@@ -19,6 +23,8 @@ class FsGitToolkit:
     max_read_bytes: int
     git_timeout_seconds: float = 10.0
     protected_write_paths: tuple[Path, ...] = field(default_factory=tuple)
+    protected_write_roots: tuple[Path, ...] = field(default_factory=tuple)
+    protected_write_authorities: tuple[DaemonAuthorityCandidate, ...] = field(default_factory=tuple)
 
     def list_dir(self, *, path: str, recursive: bool = False, limit: int = 200) -> dict[str, Any]:
         resolved = self._resolve_path(path)
@@ -193,6 +199,13 @@ class FsGitToolkit:
         return resolved
 
     def _is_protected_write_path(self, resolved: Path) -> bool:
+        for raw_root in self.protected_write_roots:
+            protected_root = Path(raw_root).expanduser().resolve(strict=False)
+            if resolved == protected_root or resolved.is_relative_to(protected_root):
+                return True
+        for candidate in self.protected_write_authorities:
+            if daemon_authority_protects_path(candidate, resolved):
+                return True
         for raw_path in self.protected_write_paths:
             protected = Path(raw_path).expanduser().resolve(strict=False)
             if resolved == protected or self._same_existing_file(resolved, protected):

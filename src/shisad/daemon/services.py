@@ -19,7 +19,7 @@ from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.state import ChannelStateStore
 from shisad.coding.manager import CodingAgentManager
-from shisad.core.api.transport import ControlServer
+from shisad.core.api.transport import ControlServer, preflight_claimed_control_socket
 from shisad.core.audit import AuditLog
 from shisad.core.authority import (
     DaemonAuthorityClaim,
@@ -671,6 +671,7 @@ class DaemonServices:
         else:
             claim = authority_claim
         try:
+            await preflight_claimed_control_socket(config.socket_path)
             initialize_task = asyncio.create_task(
                 asyncio.to_thread(initialize_claimed_daemon_authorities, config, claim)
             )

@@ -12,6 +12,7 @@ import pytest
 
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
+from shisad.core.authority import DaemonAuthorityCandidate
 
 
 class _FakeResponse:
@@ -280,6 +281,41 @@ def test_s9_fs_git_toolkit_blocks_hard_link_to_configured_soul_path(tmp_path: Pa
     assert blocked["error"] == "protected_control_plane_path"
     assert soul_path.read_text(encoding="utf-8") == "trusted persona"
     assert alias_path.read_text(encoding="utf-8") == "trusted persona"
+
+
+def test_f3_fs_git_toolkit_blocks_authority_tree_and_derived_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    data_root = workspace / ".shisad"
+    approval_path = workspace / "approval.json"
+    workspace.mkdir()
+    toolkit = FsGitToolkit(
+        roots=[workspace],
+        max_read_bytes=1024,
+        protected_write_authorities=(
+            DaemonAuthorityCandidate(role="data_root", path=data_root),
+            DaemonAuthorityCandidate(role="approval_factor_store", path=approval_path),
+        ),
+    )
+
+    blocked_tree = toolkit.write_file(
+        path=str(data_root / "audit.jsonl"),
+        content="attacker",
+        confirm=True,
+    )
+    blocked_derived = toolkit.write_file(
+        path=str(workspace / "approval.json.corrupt.retained"),
+        content="attacker",
+        confirm=True,
+    )
+    allowed = toolkit.write_file(
+        path=str(workspace / "notes.txt"),
+        content="normal",
+        confirm=True,
+    )
+
+    assert blocked_tree["error"] == "protected_control_plane_path"
+    assert blocked_derived["error"] == "protected_control_plane_path"
+    assert allowed["ok"] is True
 
 
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:

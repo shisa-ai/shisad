@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import logging
 import os
 import stat
 import uuid
@@ -16,10 +17,22 @@ from typing import Any
 
 from shisad.core.config import DaemonConfig, effective_approval_factor_store_path
 
-_REGISTRY_SCHEMA_VERSION = 1
+_REGISTRY_SCHEMA_VERSION = 2
 _CLAIM_PREFIX = "claim-"
 _CLAIM_SUFFIX = ".json"
 _MAX_CLAIM_BYTES = 256 * 1024
+_MAX_MATCHING_ARTIFACTS = 4096
+_EXTERNAL_FILE_ROLES = frozenset({"approval_factor_store", "soul"})
+_BASELINE_ROLES = frozenset({"data_root", "control_socket", *_EXTERNAL_FILE_ROLES})
+_SYMLINK_REJECT_ROLES = frozenset({"control_socket", *_EXTERNAL_FILE_ROLES})
+_ROLE_FOOTPRINT_KIND = {
+    "data_root": "tree-v1",
+    "control_socket": "exact-v1",
+    "approval_factor_store": "external-file-v1",
+    "soul": "external-file-v1",
+}
+
+logger = logging.getLogger(__name__)
 
 
 class AuthorityError(RuntimeError):
@@ -46,14 +59,31 @@ class DaemonAuthorityCandidate:
     path: Path
     device: int | None = None
     inode: int | None = None
+    artifact_identities: tuple[tuple[int, int], ...] = ()
 
     def to_record(self) -> dict[str, Any]:
         return {
             "role": self.role,
             "path": os.fspath(self.path),
+            "footprint": _ROLE_FOOTPRINT_KIND[self.role],
             "device": self.device,
             "inode": self.inode,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _SiblingPattern:
+    """Finite machine-defined sibling name family owned by one component."""
+
+    parent: Path
+    prefix: str
+    suffix: str = ""
+    exact: bool = False
+
+    def matches(self, name: str) -> bool:
+        if self.exact:
+            return name == self.prefix
+        return name.startswith(self.prefix) and name.endswith(self.suffix)
 
 
 class DaemonAuthorityClaim:
@@ -152,26 +182,150 @@ def _canonical_path(path: Path) -> Path:
     return Path(os.path.realpath(os.fspath(expanded)))
 
 
-def _candidate(role: str, path: Path) -> DaemonAuthorityCandidate:
-    canonical = _canonical_path(path)
+def _absolute_lexical_path(path: Path) -> Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    return Path(os.path.abspath(os.fspath(expanded)))
+
+
+def _reject_symlink_ancestry(role: str, path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            raise AuthorityRegistryError(
+                f"cannot inspect daemon mutable authority {role}: {path}"
+            ) from exc
+        if stat.S_ISLNK(current_stat.st_mode):
+            raise AuthorityRegistryError(
+                f"daemon mutable authority {role} has symlink ancestry: {current}"
+            )
+        if current != path and not stat.S_ISDIR(current_stat.st_mode):
+            raise AuthorityRegistryError(
+                f"daemon mutable authority {role} has non-directory ancestry: {current}"
+            )
+
+
+def _external_sibling_patterns(path: Path) -> tuple[_SiblingPattern, ...]:
+    parent = path.parent
+    name = path.name
+    return (
+        _SiblingPattern(parent, f"{name}.tmp", exact=True),
+        _SiblingPattern(parent, f"{name}.lock", exact=True),
+        _SiblingPattern(parent, f".{name}.lock", exact=True),
+        _SiblingPattern(parent, f"{name}.corrupt."),
+        _SiblingPattern(parent, f"{name}.bak."),
+        _SiblingPattern(parent, f"{name}.backup."),
+        _SiblingPattern(parent, f"{name}.tombstone."),
+        _SiblingPattern(parent, f"{name}.migrate."),
+        _SiblingPattern(parent, f".{name}.", suffix=".tmp"),
+        _SiblingPattern(parent, f".{name}.bak-"),
+        _SiblingPattern(parent, f".{name}.tombstone-"),
+        _SiblingPattern(parent, f".{name}.migrate-"),
+    )
+
+
+def _candidate_patterns(candidate: DaemonAuthorityCandidate) -> tuple[_SiblingPattern, ...]:
+    if candidate.role not in _EXTERNAL_FILE_ROLES:
+        return ()
+    return _external_sibling_patterns(candidate.path)
+
+
+def _external_artifact_paths(role: str, path: Path) -> tuple[Path, ...]:
+    if role not in _EXTERNAL_FILE_ROLES:
+        return (path,) if path.exists() else ()
+    patterns = _external_sibling_patterns(path)
+    artifacts: list[Path] = []
     try:
-        path_stat = canonical.stat()
+        base_stat = path.lstat()
     except FileNotFoundError:
-        device = None
-        inode = None
+        pass
     except OSError as exc:
         raise AuthorityRegistryError(
-            f"cannot inspect daemon mutable authority {role}: {canonical}"
+            f"cannot inspect daemon mutable authority {role}: {path}"
         ) from exc
     else:
-        device = path_stat.st_dev
-        inode = path_stat.st_ino
+        if stat.S_ISLNK(base_stat.st_mode):
+            raise AuthorityRegistryError(f"daemon mutable authority {role} is a symlink: {path}")
+        artifacts.append(path)
+
+    try:
+        with os.scandir(path.parent) as entries:
+            for entry in entries:
+                if entry.name == path.name or not any(
+                    pattern.matches(entry.name) for pattern in patterns
+                ):
+                    continue
+                artifacts.append(Path(entry.path))
+                if len(artifacts) > _MAX_MATCHING_ARTIFACTS:
+                    raise AuthorityRegistryError(
+                        f"too many derived daemon authority artifacts for {role}: {path}"
+                    )
+    except FileNotFoundError:
+        return tuple(artifacts)
+    except AuthorityRegistryError:
+        raise
+    except OSError as exc:
+        raise AuthorityRegistryError(
+            f"cannot inspect derived daemon authority artifacts for {role}: {path.parent}"
+        ) from exc
+    return tuple(sorted(artifacts, key=os.fspath))
+
+
+def _candidate_at_canonical_path(role: str, canonical: Path) -> DaemonAuthorityCandidate:
+    artifact_identities: set[tuple[int, int]] = set()
+    if role in _EXTERNAL_FILE_ROLES:
+        artifact_paths = _external_artifact_paths(role, canonical)
+    else:
+        artifact_paths = (canonical,)
+    device: int | None = None
+    inode: int | None = None
+    for artifact_path in artifact_paths:
+        try:
+            path_stat = artifact_path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise AuthorityRegistryError(
+                f"cannot inspect daemon mutable authority {role}: {artifact_path}"
+            ) from exc
+        if role in _EXTERNAL_FILE_ROLES:
+            if stat.S_ISLNK(path_stat.st_mode):
+                raise AuthorityRegistryError(
+                    f"daemon mutable authority {role} is a symlink: {artifact_path}"
+                )
+            if not stat.S_ISREG(path_stat.st_mode):
+                raise AuthorityRegistryError(
+                    f"daemon mutable authority {role} is not a regular file: {artifact_path}"
+                )
+            if path_stat.st_uid != os.getuid():
+                raise AuthorityRegistryError(
+                    f"daemon mutable authority {role} is not owner-controlled: {artifact_path}"
+                )
+        artifact_identities.add((path_stat.st_dev, path_stat.st_ino))
+        if artifact_path == canonical:
+            device = path_stat.st_dev
+            inode = path_stat.st_ino
     return DaemonAuthorityCandidate(
         role=role,
         path=canonical,
         device=device,
         inode=inode,
+        artifact_identities=tuple(sorted(artifact_identities)),
     )
+
+
+def _candidate(role: str, path: Path) -> DaemonAuthorityCandidate:
+    lexical = _absolute_lexical_path(path)
+    if role in _SYMLINK_REJECT_ROLES:
+        _reject_symlink_ancestry(role, lexical)
+    canonical = _canonical_path(lexical)
+    return _candidate_at_canonical_path(role, canonical)
 
 
 def derive_daemon_authority_candidates(
@@ -300,18 +454,28 @@ def _read_claim_record(fd: int, path: Path) -> tuple[DaemonAuthorityCandidate, .
             raise AuthorityRegistryError(f"authority claim candidate is malformed: {path}")
         role = item.get("role")
         raw_path = item.get("path")
+        footprint = item.get("footprint")
         device = item.get("device")
         inode = item.get("inode")
         if not isinstance(role, str) or not role or not isinstance(raw_path, str) or not raw_path:
             raise AuthorityRegistryError(f"authority claim candidate is malformed: {path}")
+        if role not in _BASELINE_ROLES:
+            raise AuthorityRegistryError(f"authority claim candidate role is unsupported: {path}")
+        if footprint != _ROLE_FOOTPRINT_KIND[role]:
+            raise AuthorityRegistryError(
+                f"authority claim candidate footprint is unsupported: {path}"
+            )
         if device is not None and not isinstance(device, int):
             raise AuthorityRegistryError(f"authority claim device is malformed: {path}")
         if inode is not None and not isinstance(inode, int):
             raise AuthorityRegistryError(f"authority claim inode is malformed: {path}")
+        candidate_path = Path(raw_path)
+        if not candidate_path.is_absolute() or _canonical_path(candidate_path) != candidate_path:
+            raise AuthorityRegistryError(f"authority claim candidate path is unsafe: {path}")
         candidates.append(
             DaemonAuthorityCandidate(
                 role=role,
-                path=Path(raw_path),
+                path=candidate_path,
                 device=device,
                 inode=inode,
             )
@@ -336,7 +500,16 @@ def _active_claims(root: Path) -> list[tuple[Path, tuple[DaemonAuthorityCandidat
                     raise AuthorityRegistryError(
                         f"cannot inspect authority claim lock: {path}"
                     ) from exc
-                active.append((path, _read_claim_record(fd, path)))
+                recorded = _read_claim_record(fd, path)
+                active.append(
+                    (
+                        path,
+                        tuple(
+                            _candidate_at_canonical_path(candidate.role, candidate.path)
+                            for candidate in recorded
+                        ),
+                    )
+                )
                 continue
             path_stat = path.lstat()
             fd_stat = os.fstat(fd)
@@ -349,46 +522,218 @@ def _active_claims(root: Path) -> list[tuple[Path, tuple[DaemonAuthorityCandidat
     return active
 
 
-def _same_authority(
+def _paths_structurally_overlap(left: Path, right: Path) -> bool:
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
+
+
+def _path_overlaps_pattern(path: Path, pattern: _SiblingPattern) -> bool:
+    if path == pattern.parent or pattern.parent.is_relative_to(path):
+        return True
+    if not path.is_relative_to(pattern.parent):
+        return False
+    relative = path.relative_to(pattern.parent)
+    return bool(relative.parts) and pattern.matches(relative.parts[0])
+
+
+def _patterns_intersect(left: _SiblingPattern, right: _SiblingPattern) -> bool:
+    if left.parent != right.parent:
+        if left.parent.is_relative_to(right.parent):
+            relative = left.parent.relative_to(right.parent)
+            return bool(relative.parts) and right.matches(relative.parts[0])
+        if right.parent.is_relative_to(left.parent):
+            relative = right.parent.relative_to(left.parent)
+            return bool(relative.parts) and left.matches(relative.parts[0])
+        return False
+    if left.exact:
+        return right.matches(left.prefix)
+    if right.exact:
+        return left.matches(right.prefix)
+    prefixes_compatible = left.prefix.startswith(right.prefix) or right.prefix.startswith(
+        left.prefix
+    )
+    suffixes_compatible = left.suffix.endswith(right.suffix) or right.suffix.endswith(left.suffix)
+    return prefixes_compatible and suffixes_compatible
+
+
+def _authority_overlap_kind(
     left: DaemonAuthorityCandidate,
     right: DaemonAuthorityCandidate,
+) -> str | None:
+    if set(left.artifact_identities).intersection(right.artifact_identities):
+        return "inode"
+    if _paths_structurally_overlap(left.path, right.path):
+        return "exact" if left.path == right.path else "ancestor"
+    left_patterns = _candidate_patterns(left)
+    right_patterns = _candidate_patterns(right)
+    if any(_path_overlaps_pattern(right.path, pattern) for pattern in left_patterns):
+        return "derived"
+    if any(_path_overlaps_pattern(left.path, pattern) for pattern in right_patterns):
+        return "derived"
+    if any(
+        _patterns_intersect(left_pattern, right_pattern)
+        for left_pattern in left_patterns
+        for right_pattern in right_patterns
+    ):
+        return "derived"
+    return None
+
+
+def daemon_authority_protects_path(
+    candidate: DaemonAuthorityCandidate,
+    path: Path,
 ) -> bool:
-    if left.path == right.path:
+    """Return whether a write target enters one claimed structural footprint."""
+
+    canonical = _canonical_path(path)
+    if candidate.role == "data_root":
+        return canonical == candidate.path or canonical.is_relative_to(candidate.path)
+    try:
+        refreshed = _candidate_at_canonical_path(candidate.role, candidate.path)
+        probe = _candidate_at_canonical_path("control_socket", canonical)
+    except AuthorityError:
         return True
-    return (
-        left.device is not None
-        and left.inode is not None
-        and right.device is not None
-        and right.inode is not None
-        and (left.device, left.inode) == (right.device, right.inode)
+    return _authority_overlap_kind(refreshed, probe) is not None
+
+
+def daemon_authority_registry_root() -> Path:
+    """Return the canonical same-user registry tree protected from assistant writes."""
+
+    return _canonical_path(_registry_root())
+
+
+def _candidate_is_contained_by_data_root(
+    candidate: DaemonAuthorityCandidate,
+    data_root: DaemonAuthorityCandidate,
+) -> bool:
+    if data_root.role != "data_root" or candidate.path == data_root.path:
+        return False
+    if not candidate.path.is_relative_to(data_root.path):
+        return False
+    return all(
+        pattern.parent.is_relative_to(data_root.path) for pattern in _candidate_patterns(candidate)
     )
+
+
+def _validate_same_config_candidates(
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+) -> None:
+    for index, left in enumerate(candidates):
+        for right in candidates[index + 1 :]:
+            overlap_kind = _authority_overlap_kind(left, right)
+            if overlap_kind is None:
+                continue
+            if _candidate_is_contained_by_data_root(left, right):
+                continue
+            if _candidate_is_contained_by_data_root(right, left):
+                continue
+            raise AuthorityConflictError(
+                "unexpected cross-role daemon authority overlap "
+                f"({overlap_kind}): {left.role}={left.path} and {right.role}={right.path}"
+            )
+
+
+def _validate_trusted_read_inputs(
+    config: DaemonConfig,
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+) -> None:
+    trusted_inputs = (
+        ("policy", _canonical_path(config.policy_path)),
+        ("selfmod_allowed_signers", _canonical_path(config.selfmod_allowed_signers_path)),
+    )
+    for label, path in trusted_inputs:
+        probe = _candidate_at_canonical_path("control_socket", path)
+        for candidate in candidates:
+            overlap_kind = _authority_overlap_kind(candidate, probe)
+            if overlap_kind is not None:
+                raise AuthorityConflictError(
+                    "trusted read input overlaps daemon mutable authority "
+                    f"({overlap_kind}): {label}={path} and "
+                    f"{candidate.role}={candidate.path}"
+                )
+
+
+def _validate_candidate_boundaries(
+    config: DaemonConfig,
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+    registry_root: Path,
+) -> None:
+    _validate_same_config_candidates(candidates)
+    for candidate in candidates:
+        if _candidate_overlaps_tree(candidate, registry_root):
+            raise AuthorityRegistryError(
+                "daemon mutable authority overlaps host-global registry: "
+                f"{candidate.role}={candidate.path} registry={registry_root}"
+            )
+    _validate_trusted_read_inputs(config, candidates)
+
+
+def _candidate_overlaps_tree(candidate: DaemonAuthorityCandidate, tree_root: Path) -> bool:
+    if _paths_structurally_overlap(candidate.path, tree_root):
+        return True
+    return any(
+        _path_overlaps_pattern(tree_root, pattern) for pattern in _candidate_patterns(candidate)
+    )
+
+
+def _preflight_assistant_filesystem_roots(
+    config: DaemonConfig,
+    candidates: tuple[DaemonAuthorityCandidate, ...],
+    registry_root: Path,
+) -> None:
+    protected_read_inputs = [
+        ("policy", _canonical_path(config.policy_path)),
+        ("selfmod_allowed_signers", _canonical_path(config.selfmod_allowed_signers_path)),
+    ]
+    for raw_root in config.assistant_fs_roots:
+        assistant_root = _canonical_path(raw_root)
+        for candidate in candidates:
+            if _candidate_overlaps_tree(candidate, assistant_root):
+                logger.warning(
+                    "Assistant filesystem root overlaps protected daemon control state; "
+                    "direct filesystem writes must remain blocked: root=%s authority=%s:%s",
+                    assistant_root,
+                    candidate.role,
+                    candidate.path,
+                )
+        if _paths_structurally_overlap(assistant_root, registry_root):
+            logger.warning(
+                "Assistant filesystem root overlaps protected daemon control state; "
+                "direct filesystem writes must remain blocked: root=%s authority=%s:%s",
+                assistant_root,
+                "authority_registry",
+                registry_root,
+            )
+        for label, protected_path in protected_read_inputs:
+            if _paths_structurally_overlap(assistant_root, protected_path):
+                logger.warning(
+                    "Assistant filesystem root contains protected read-only control input; "
+                    "direct filesystem writes must remain blocked: root=%s authority=%s:%s",
+                    assistant_root,
+                    label,
+                    protected_path,
+                )
 
 
 def acquire_daemon_authority_claim(config: DaemonConfig) -> DaemonAuthorityClaim:
     """Atomically reserve the config's baseline authority set without target mutation."""
 
-    candidates = derive_daemon_authority_candidates(config)
+    preliminary_candidates = derive_daemon_authority_candidates(config)
     root = _registry_root()
     canonical_root = _canonical_path(root)
-    for candidate in candidates:
-        if (
-            candidate.path == canonical_root
-            or candidate.path.is_relative_to(canonical_root)
-            or canonical_root.is_relative_to(candidate.path)
-        ):
-            raise AuthorityRegistryError(
-                "daemon mutable authority overlaps host-global registry: "
-                f"{candidate.role}={candidate.path} registry={canonical_root}"
-            )
+    _validate_candidate_boundaries(config, preliminary_candidates, canonical_root)
+    _preflight_assistant_filesystem_roots(config, preliminary_candidates, canonical_root)
     with _registry_guard(root):
+        candidates = derive_daemon_authority_candidates(config)
+        _validate_candidate_boundaries(config, candidates, canonical_root)
         for _record_path, active_candidates in _active_claims(root):
             for candidate in candidates:
                 for active in active_candidates:
-                    if _same_authority(candidate, active):
+                    overlap_kind = _authority_overlap_kind(candidate, active)
+                    if overlap_kind is not None:
                         raise AuthorityConflictError(
                             "daemon mutable authority conflict: "
                             f"{candidate.role}={candidate.path} overlaps "
-                            f"{active.role}={active.path}"
+                            f"{active.role}={active.path} ({overlap_kind})"
                         )
 
         record_path = root / f"{_CLAIM_PREFIX}{uuid.uuid4().hex}{_CLAIM_SUFFIX}"
@@ -444,9 +789,7 @@ def _ensure_owner_directory(path: Path) -> None:
             missing.append(current)
             parent = current.parent
             if parent == current:
-                raise AuthorityClaimError(
-                    f"cannot locate existing ancestor for {path}"
-                ) from None
+                raise AuthorityClaimError(f"cannot locate existing ancestor for {path}") from None
             current = parent
             continue
         if not stat.S_ISDIR(current_stat.st_mode):
@@ -470,6 +813,35 @@ def _ensure_owner_directory(path: Path) -> None:
         _fsync_directory(path)
 
 
+def _restrict_external_authority_files(candidate: DaemonAuthorityCandidate) -> None:
+    if candidate.role not in _EXTERNAL_FILE_ROLES:
+        return
+    for path in _external_artifact_paths(candidate.role, candidate.path):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            raise AuthorityClaimError(
+                f"cannot open claimed {candidate.role} authority: {path}"
+            ) from exc
+        try:
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != os.getuid():
+                raise AuthorityClaimError(
+                    f"claimed {candidate.role} authority is not an owner file: {path}"
+                )
+            if stat.S_IMODE(file_stat.st_mode) != 0o600:
+                os.fchmod(fd, 0o600)
+                os.fsync(fd)
+        except OSError as exc:
+            raise AuthorityClaimError(
+                f"cannot restrict claimed {candidate.role} authority: {path}"
+            ) from exc
+        finally:
+            os.close(fd)
+
+
 def initialize_claimed_daemon_authorities(
     config: DaemonConfig,
     claim: DaemonAuthorityClaim,
@@ -485,3 +857,5 @@ def initialize_claimed_daemon_authorities(
     if data_candidate is None:
         raise AuthorityClaimError("daemon authority claim has no data-root candidate")
     _ensure_owner_directory(data_candidate.path)
+    for candidate in candidates:
+        _restrict_external_authority_files(candidate)
