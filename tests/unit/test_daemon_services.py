@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from shisad.channels.base import InMemoryChannel
 from shisad.channels.telegram import TelegramChannel, TelegramConfig
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus, SessionCreated
 from shisad.core.evidence import ArtifactLedger
@@ -398,9 +399,7 @@ async def test_f3_corrupt_dashboard_marks_start_visible_bounded_degraded(
         assert status["dashboard"]["status"] == "degraded"
         assert status["dashboard"]["load_status"] == "corrupt"
         assert doctor["status"] == "degraded"
-        assert doctor["checks"]["dashboard"]["problems"] == [
-            "dashboard_marks_corrupt"
-        ]
+        assert doctor["checks"]["dashboard"]["problems"] == ["dashboard_marks_corrupt"]
         assert marks_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
@@ -436,9 +435,7 @@ async def test_f3_corrupt_approval_store_starts_bounded_degraded_and_is_actionab
         assert str(approval_path) == status["approvals"]["path"]
         assert "restore" in status["approvals"]["remediation"].lower()
         assert doctor["status"] == "degraded"
-        assert doctor["checks"]["approvals"]["problems"] == [
-            "approval_store_corrupt"
-        ]
+        assert doctor["checks"]["approvals"]["problems"] == ["approval_store_corrupt"]
         assert impl._confirmation_backend_registry.get_backend("software.default") is not None
         assert impl._confirmation_backend_registry.get_backend("totp.default") is None
         assert impl._confirmation_backend_registry.get_backend("approver.local_fido2") is None
@@ -479,9 +476,7 @@ async def test_f3_corrupt_skill_inventory_starts_bounded_degraded_and_is_actiona
         assert str(inventory_path) == status["skills"]["path"]
         assert "restore" in status["skills"]["remediation"].lower()
         assert doctor["status"] == "degraded"
-        assert doctor["checks"]["skills"]["problems"] == [
-            "skill_inventory_corrupt"
-        ]
+        assert doctor["checks"]["skills"]["problems"] == ["skill_inventory_corrupt"]
         assert not any(
             str(tool.name).startswith("skill.") for tool in services.registry.list_tools()
         )
@@ -532,9 +527,7 @@ async def test_f3_corrupt_selfmod_inventory_starts_bounded_degraded_and_is_actio
         assert inventory_status["fail_closed"] is True
         assert str(inventory_path) == inventory_status["path"]
         assert doctor["status"] == "degraded"
-        assert doctor["checks"]["selfmod"]["problems"] == [
-            "selfmod_inventory_corrupt"
-        ]
+        assert doctor["checks"]["selfmod"]["problems"] == ["selfmod_inventory_corrupt"]
         assert services.skill_manager.state_degraded is True
         assert inventory_path.read_bytes() == corrupt_bytes
     finally:
@@ -918,6 +911,239 @@ async def test_f3_daemon_reset_rejects_symlink_in_generic_wipe(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("link_shape", ["intermediate", "final"])
+async def test_f3_daemon_reset_rejects_symlinked_audit_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    link_shape: str,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        configured = tmp_path / "configured-audit"
+        configured.mkdir()
+        external = tmp_path / "external-audit"
+        external.mkdir()
+        sentinel = external / "audit.jsonl"
+        sentinel.write_bytes(b"external audit sentinel")
+        if link_shape == "intermediate":
+            (configured / "redirect").symlink_to(external, target_is_directory=True)
+            audit_path = configured / "redirect" / "audit.jsonl"
+        else:
+            audit_path = configured / "audit.jsonl"
+            audit_path.symlink_to(sentinel)
+        services.audit_log._log_path = audit_path
+
+        with pytest.raises((AtomicWriteError, OSError)):
+            await services.reset_test_state()
+
+        assert sentinel.read_bytes() == b"external audit sentinel"
+    finally:
+        await services.shutdown()
+
+
+def _fail_atomic_write(stage: AtomicWriteStage) -> None:
+    if stage is AtomicWriteStage.WRITE:
+        raise OSError("injected post-reset publication failure")
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_clears_scheduler_durable_task_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        old_task = services.scheduler.create_task(
+            name="pre-reset",
+            goal="must not return",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="policy-pre-reset",
+            created_by=UserId("alice"),
+        )
+
+        await services.reset_test_state()
+        services.scheduler._state_fault_injector = _fail_atomic_write
+
+        with pytest.raises(AtomicWriteError, match="failed at write"):
+            services.scheduler.create_task(
+                name="post-reset-failed",
+                goal="fail before publication",
+                schedule=Schedule.from_event("message.received"),
+                capability_snapshot={Capability.MESSAGE_SEND},
+                policy_snapshot_ref="policy-post-reset",
+                created_by=UserId("alice"),
+            )
+
+        assert services.scheduler.list_tasks() == []
+        assert services.scheduler.get_task(old_task.id) is None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_clears_scheduler_durable_pending_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        old_task = services.scheduler.create_task(
+            name="pre-reset",
+            goal="must not return",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="policy-pre-reset",
+            created_by=UserId("alice"),
+        )
+        services.scheduler.queue_confirmation(
+            old_task.id,
+            {"confirmation_id": "pre-reset-confirmation", "status": "pending"},
+        )
+
+        await services.reset_test_state()
+        new_task = services.scheduler.create_task(
+            name="post-reset",
+            goal="fresh authority",
+            schedule=Schedule.from_event("message.received"),
+            capability_snapshot={Capability.MESSAGE_SEND},
+            policy_snapshot_ref="policy-post-reset",
+            created_by=UserId("alice"),
+        )
+        services.scheduler._state_fault_injector = _fail_atomic_write
+
+        with pytest.raises(AtomicWriteError, match="failed at write"):
+            services.scheduler.queue_confirmation(
+                new_task.id,
+                {"confirmation_id": "post-reset-failed", "status": "pending"},
+            )
+
+        retained_ids = {
+            str(row.get("confirmation_id", ""))
+            for rows in services.scheduler._pending_confirmations.values()
+            for row in rows
+        }
+        assert retained_ids == set()
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_clears_approval_durable_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.credential_store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="pre-reset-factor",
+                user_id="alice",
+                method="totp",
+                principal_id="alice",
+                secret_b32="JBSWY3DPEHPK3PXP",
+            )
+        )
+
+        await services.reset_test_state()
+        services.credential_store._approval_state_fault_injector = _fail_atomic_write
+
+        with pytest.raises(AtomicWriteError, match="failed at write"):
+            services.credential_store.register_approval_factor(
+                ApprovalFactorRecord(
+                    credential_id="post-reset-factor",
+                    user_id="alice",
+                    method="totp",
+                    principal_id="alice",
+                    secret_b32="JBSWY3DPEHPK3PXP",
+                )
+            )
+
+        assert services.credential_store.list_approval_factors() == []
+        assert services.credential_store.list_signer_keys(include_revoked=True) == []
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_clears_authority_load_degradation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    skill_dir = data_dir / "skills"
+    selfmod_dir = data_dir / "selfmod"
+    skill_dir.mkdir(parents=True)
+    selfmod_dir.mkdir(parents=True)
+    data_dir.chmod(0o700)
+    (data_dir / "approval-factors.json").write_bytes(b'{"version":3,"payload":')
+    (skill_dir / "inventory.json").write_bytes(b'{"version":1,"payload":')
+    (selfmod_dir / "inventory.yaml").write_bytes(b'{"version":1,"payload":')
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert services.credential_store.approval_state_degraded is True
+        assert services.skill_manager.state_degraded is True
+        assert services.selfmod_manager.state_degraded is True
+
+        await services.reset_test_state()
+
+        assert services.credential_store.approval_state_degraded is False
+        assert services.credential_store.approval_state_load_result().status.value == "ok"
+        assert services.skill_manager.state_degraded is False
+        assert services.skill_manager.inventory_load_result().status.value == "ok"
+        assert services.selfmod_manager.state_degraded is False
+        assert services.selfmod_manager.inventory_load_result().status.value == "ok"
+
+        await services.shutdown()
+        services = await DaemonServices.build(config)
+
+        assert services.credential_store.approval_state_degraded is False
+        assert services.credential_store.list_approval_factors() == []
+        assert services.skill_manager.state_degraded is False
+        assert services.skill_manager.list_installed() == []
+        assert services.selfmod_manager.state_degraded is False
+        assert services.selfmod_manager._inventory.skills == {}
+        assert services.selfmod_manager._inventory.behavior_packs == {}
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_daemon_services_reset_test_state_clears_documented_subsystems(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1037,9 +1263,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         )
         services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
         services.skill_manager._pending_registration_events.append(object())  # type: ignore[arg-type]
-        services.skill_manager._persist_inventory_snapshot(
-            services.skill_manager._inventory
-        )
+        services.skill_manager._persist_inventory_snapshot(services.skill_manager._inventory)
 
         services.credential_store.register_approval_factor(
             ApprovalFactorRecord(
@@ -1178,9 +1402,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         )
         assert services.evidence_store.is_empty_domain() is True
         assert services.evidence_store.state_load_result().status.value == "ok"
-        reset_restarted_evidence = ArtifactLedger(
-            config.data_dir / "sessions" / "evidence"
-        )
+        reset_restarted_evidence = ArtifactLedger(config.data_dir / "sessions" / "evidence")
         assert reset_restarted_evidence.state_load_result().status.value == "ok"
         assert reset_restarted_evidence.committed_ref_count() == 0
         assert services.ingestion.artifacts_empty()

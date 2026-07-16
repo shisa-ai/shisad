@@ -359,6 +359,52 @@ class InMemoryCredentialStore:
         """Return the typed outcome of binding the durable approval authority."""
         return self._approval_load_result
 
+    def reset_approval_state(self) -> tuple[int, int, int]:
+        """Durably reset approval factors, signer keys, and rollback authority."""
+
+        factor_count = len(self._approval_factors)
+        signer_count = len(self._signer_keys)
+        path = self._approval_store_path
+        artifact_count = 0
+        corrupt_artifacts: list[Path] = []
+        if path is not None:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                artifact_count += 1
+            corrupt_artifacts = list(path.parent.glob(f"{path.name}.corrupt.*"))
+            artifact_count += len(corrupt_artifacts)
+            encoded = encode_versioned_json_snapshot(
+                {
+                    "approval_factors": [],
+                    "signer_keys": [],
+                },
+                version=_APPROVAL_STORE_VERSION,
+            )
+            try:
+                atomic_write_bytes(
+                    path,
+                    encoded,
+                    fault_injector=self._approval_state_fault_injector,
+                    require_safe_parent_ancestry=True,
+                )
+            except AtomicWriteError as exc:
+                self._approval_persistence_degradation = exc
+                raise
+
+        self._set_empty_approval_state()
+        self._approval_persistence_degradation = None
+        self._approval_load_result = StateLoadResult(
+            StateLoadStatus.OK if path is not None else StateLoadStatus.MISSING,
+            schema_version=_APPROVAL_STORE_VERSION if path is not None else None,
+        )
+        self._record_durable_approval_state()
+        for artifact in corrupt_artifacts:
+            artifact.unlink(missing_ok=True)
+        return factor_count, signer_count, artifact_count
+
     def approval_state_status(self) -> dict[str, Any]:
         """Return actionable, bounded diagnostics without exposing factor data."""
         result = self._approval_load_result
@@ -421,8 +467,7 @@ class InMemoryCredentialStore:
         factors: dict[str, ApprovalFactorRecord],
     ) -> dict[str, ApprovalFactorRecord]:
         return {
-            credential_id: factor.model_copy(deep=True)
-            for credential_id, factor in factors.items()
+            credential_id: factor.model_copy(deep=True) for credential_id, factor in factors.items()
         }
 
     @staticmethod
@@ -435,16 +480,12 @@ class InMemoryCredentialStore:
         }
 
     def _record_durable_approval_state(self) -> None:
-        self._durable_approval_factors = self._clone_approval_factors(
-            self._approval_factors
-        )
+        self._durable_approval_factors = self._clone_approval_factors(self._approval_factors)
         self._durable_signer_keys = self._clone_signer_keys(self._signer_keys)
         self._durable_local_fido2_realm_id = self._local_fido2_realm_id
 
     def _restore_durable_approval_state(self) -> None:
-        self._approval_factors = self._clone_approval_factors(
-            self._durable_approval_factors
-        )
+        self._approval_factors = self._clone_approval_factors(self._durable_approval_factors)
         self._signer_keys = self._clone_signer_keys(self._durable_signer_keys)
         self._local_fido2_realm_id = self._durable_local_fido2_realm_id
 
@@ -804,8 +845,7 @@ class InMemoryCredentialStore:
         try:
             payload: dict[str, Any] = {
                 "approval_factors": [
-                    factor.model_dump(mode="json")
-                    for factor in self.list_approval_factors()
+                    factor.model_dump(mode="json") for factor in self.list_approval_factors()
                 ],
                 "signer_keys": [
                     record.model_dump(mode="json")

@@ -10,15 +10,20 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 from collections import deque
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from shisad.core.atomic_state import (
+    atomic_write_bytes,
+    durable_append_bytes,
+    open_owned_regular_file,
+)
 from shisad.core.events import BaseEvent
 
 logger = logging.getLogger(__name__)
@@ -70,9 +75,10 @@ class AuditLog:
         self._entry_count = 0
         self._event_hashes: dict[str, str] = {}
 
-        # Resume chain from existing log if present
-        if self._log_path.exists():
-            self._resume_chain()
+        # Resume chain from an existing owner-controlled regular file only.
+        with self._open_log() as existing:
+            if existing is not None:
+                self._resume_chain(existing)
 
     @property
     def log_path(self) -> Path:
@@ -116,12 +122,10 @@ class AuditLog:
         # Compute this entry's hash (used as previous_hash for next entry)
         entry_hash = hashlib.sha256(entry_json.encode()).hexdigest()
 
-        # Append to log
-        self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_secure_permissions()
-        with self._log_path.open("a", encoding="utf-8") as f:
-            f.write(entry_json + "\n")
-        self._ensure_secure_permissions()
+        durable_append_bytes(
+            self._log_path,
+            (entry_json + "\n").encode("utf-8"),
+        )
 
         self._previous_hash = entry_hash
         self._entry_count += 1
@@ -133,15 +137,15 @@ class AuditLog:
         Returns:
             (is_valid, entries_checked, error_message)
         """
-        if not self._log_path.exists():
-            return (True, 0, "")
+        with self._open_log() as log_file:
+            if log_file is None:
+                return (True, 0, "")
 
-        previous_hash = _GENESIS_HASH
-        count = 0
+            previous_hash = _GENESIS_HASH
+            count = 0
 
-        with self._log_path.open() as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
+            for line_num, raw_line in enumerate(log_file, 1):
+                line = raw_line.decode("utf-8").strip()
                 if not line:
                     continue
 
@@ -186,18 +190,18 @@ class AuditLog:
         tail: bool = False,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
-        if not self._log_path.exists():
-            return []
+        with self._open_log() as log_file:
+            if log_file is None:
+                return []
 
-        max_results = max(1, int(limit))
-        if tail:
-            results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
-        else:
-            results = []
+            max_results = max(1, int(limit))
+            if tail:
+                results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
+            else:
+                results = []
 
-        with self._log_path.open() as f:
-            for line in f:
-                line = line.strip()
+            for raw_line in log_file:
+                line = raw_line.decode("utf-8").strip()
                 if not line:
                     continue
 
@@ -224,37 +228,50 @@ class AuditLog:
 
         return list(results)
 
-    def _resume_chain(self) -> None:
+    def reset(self) -> int:
+        """Durably reset the complete audit authority without following links."""
+
+        cleared = self._entry_count
+        atomic_write_bytes(
+            self._log_path,
+            b"",
+            require_safe_parent_ancestry=True,
+        )
+        self._previous_hash = _GENESIS_HASH
+        self._entry_count = 0
+        self._event_hashes.clear()
+        return cleared
+
+    def _open_log(self) -> AbstractContextManager[BinaryIO | None]:
+        return open_owned_regular_file(
+            self._log_path,
+            normalize_mode=0o600,
+        )
+
+    def _resume_chain(self, log_file: BinaryIO) -> None:
         """Resume the hash chain from an existing log file."""
         previous_hash = _GENESIS_HASH
         count = 0
 
-        with self._log_path.open() as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = AuditEntry.model_validate_json(line)
-                except ValidationError:
-                    entry = None
-                if entry is not None:
-                    existing_hash = self._event_hashes.get(entry.event_id)
-                    if existing_hash is not None and existing_hash != entry.data_hash:
-                        raise ValueError("audit_event_id_payload_conflict")
-                    self._event_hashes[entry.event_id] = entry.data_hash
-                previous_hash = hashlib.sha256(line.encode()).hexdigest()
-                count += 1
+        for raw_line in log_file:
+            line = raw_line.decode("utf-8").strip()
+            if not line:
+                continue
+            try:
+                entry = AuditEntry.model_validate_json(line)
+            except ValidationError:
+                entry = None
+            if entry is not None:
+                existing_hash = self._event_hashes.get(entry.event_id)
+                if existing_hash is not None and existing_hash != entry.data_hash:
+                    raise ValueError("audit_event_id_payload_conflict")
+                self._event_hashes[entry.event_id] = entry.data_hash
+            previous_hash = hashlib.sha256(line.encode()).hexdigest()
+            count += 1
 
         self._previous_hash = previous_hash
         self._entry_count = count
         logger.info("Resumed audit chain: %d entries, last hash %s…", count, previous_hash[:12])
-
-    def _ensure_secure_permissions(self) -> None:
-        """Best-effort restrictive file mode for audit logs."""
-        if not self._log_path.exists():
-            return
-        os.chmod(self._log_path, 0o600)
 
     @staticmethod
     def _derive_entry_metadata(

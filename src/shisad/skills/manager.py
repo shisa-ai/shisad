@@ -21,6 +21,7 @@ from shisad.core.atomic_state import (
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
     read_owned_regular_file,
+    remove_owner_controlled_directory_contents,
     validate_directory_ancestry,
 )
 from shisad.core.events import SkillToolRegistrationDropped
@@ -88,9 +89,7 @@ class SkillManager:
         self._storage_dir = Path(storage_dir)
         self._storage_root_invalid = False
         try:
-            self._storage_root_existed_at_start = validate_directory_ancestry(
-                self._storage_dir
-            )
+            self._storage_root_existed_at_start = validate_directory_ancestry(self._storage_dir)
             self._storage_root_was_empty_at_start = (
                 _directory_is_empty(self._storage_dir)
                 if self._storage_root_existed_at_start
@@ -146,8 +145,7 @@ class SkillManager:
                 else:
                     self._state_load_result = initial_result
         elif (
-            not self._storage_root_invalid
-            and self._state_load_result.status is StateLoadStatus.OK
+            not self._storage_root_invalid and self._state_load_result.status is StateLoadStatus.OK
         ):
             self._ensure_inventory_domain_marker()
         self._register_inventory_tools()
@@ -420,6 +418,47 @@ class SkillManager:
     def inventory_load_result(self) -> StateLoadResult:
         return self._state_load_result
 
+    def reset_state(self) -> tuple[int, int, int]:
+        """Reset installed skills and all typed inventory authority together."""
+
+        entry_count = len(self._inventory)
+        registration_count = sum(len(items) for items in self._skill_tool_map.values())
+        pending_event_count = len(self._pending_registration_events)
+        self._unregister_all_skill_tools()
+        self._pending_registration_events.clear()
+        try:
+            remove_owner_controlled_directory_contents(
+                self._storage_dir,
+                allow_nested_directories=True,
+            )
+        except OSError:
+            self._inventory = {}
+            self._external_degradation = ("skill_reset", "reset_failed")
+            raise
+
+        self._inventory = {}
+        self._storage_root_invalid = False
+        self._inventory_domain_marker_status = "missing"
+        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+        self._persistence_degradation = None
+        self._external_degradation = None
+        ensure_owner_only_directory(self._storage_dir)
+        if not self._ensure_inventory_domain_marker():
+            degradation = self._persistence_degradation
+            if degradation is not None:
+                raise degradation
+            raise RuntimeError("skill inventory reset marker publication failed")
+        try:
+            self._persist_inventory_snapshot({})
+        except AtomicWriteError as exc:
+            self._persistence_degradation = exc
+            raise
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_SKILL_INVENTORY_VERSION,
+        )
+        return entry_count, registration_count, pending_event_count
+
     def state_status(self) -> dict[str, Any]:
         load_result = self._state_load_result
         problems: list[str] = []
@@ -616,9 +655,8 @@ class SkillManager:
             inventory[entry.name] = entry
             if not legacy and "tool_schema_hashes" not in item:
                 missing_binding_map = True
-            if (
-                not entry.tool_schema_hashes_legacy
-                and any(not value.strip() for value in entry.tool_schema_hashes.values())
+            if not entry.tool_schema_hashes_legacy and any(
+                not value.strip() for value in entry.tool_schema_hashes.values()
             ):
                 invalid_binding_map = True
         if missing_binding_map:
@@ -639,8 +677,7 @@ class SkillManager:
             load_result.status,
             reason=load_result.reason,
             schema_version=load_result.schema_version,
-            legacy=legacy
-            or any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
+            legacy=legacy or any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
         )
         return inventory
 
@@ -1011,9 +1048,7 @@ def _tool_schema_bindings_complete(
     *,
     expected_hashes: dict[str, str],
 ) -> bool:
-    declared_names = {
-        str(declared_tool.name) for declared_tool in getattr(manifest, "tools", [])
-    }
+    declared_names = {str(declared_tool.name) for declared_tool in getattr(manifest, "tools", [])}
     if set(expected_hashes) != declared_names:
         return False
     return all(str(value).strip() for value in expected_hashes.values())

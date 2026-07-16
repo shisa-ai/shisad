@@ -2500,24 +2500,25 @@ class HandlerImplementation(
             "selfmod_artifacts_empty": _dir_empty(self._selfmod_manager._proposal_dir)
             and _dir_empty(self._selfmod_manager._change_dir)
             and _dir_empty(self._selfmod_manager._artifact_root)
-            and not self._selfmod_manager._inventory_path.exists()
-            and not self._selfmod_manager._incident_path.exists(),
+            and not self._selfmod_manager._incident_path.exists()
+            and not self._selfmod_manager.state_degraded
+            and self._selfmod_manager.inventory_load_result().status.value == "ok",
             "skills_empty": not self._skill_manager._inventory
             and not self._skill_manager._skill_tool_map
             and not self._skill_manager._pending_registration_events,
-            "skill_storage_empty": _dir_empty(self._skill_manager._storage_dir),
+            "skill_storage_empty": not self._skill_manager.state_degraded
+            and self._skill_manager.inventory_load_result().status.value == "ok",
             "trace_empty": not trace_dir.exists() or not any(trace_dir.iterdir()),
             "archives_empty": not archive_dir.exists() or not any(archive_dir.iterdir()),
             "approval_state_empty": not (
                 self._credential_store._approval_factors or self._credential_store._signer_keys
             )
+            and not self._credential_store.approval_state_degraded
+            and self._credential_store.approval_state_load_result().status.value == "ok"
             and (
                 approval_store_path is None
-                or (
-                    not approval_store_path.exists()
-                    and not any(
-                        approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*")
-                    )
+                or not any(
+                    approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*")
                 )
             ),
             "identity_runtime_empty": (

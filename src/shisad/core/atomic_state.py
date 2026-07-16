@@ -10,11 +10,11 @@ import json
 import os
 import stat
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 
 class AtomicWriteStage(StrEnum):
@@ -179,9 +179,7 @@ def _open_directory_chain(
                 if require_safe_ancestry:
                     owner_uid = current_stat.st_uid
                     if owner_uid not in {0, os.geteuid()}:
-                        raise PermissionError(
-                            f"unsafe parent ancestry is foreign-owned: {current}"
-                        )
+                        raise PermissionError(f"unsafe parent ancestry is foreign-owned: {current}")
                     if current_stat.st_mode & 0o022:
                         shared_sticky_ancestor = (
                             owner_uid == 0
@@ -374,18 +372,19 @@ def validate_owner_controlled_parent_ancestry(path: Path) -> None:
             os.close(parent_fd)
 
 
-def read_owned_regular_file(
+@contextlib.contextmanager
+def open_owned_regular_file(
     path: Path,
     *,
     required_mode: int | None = None,
     normalize_mode: int | None = None,
-    max_bytes: int | None = None,
-) -> bytes | None:
-    """Read an existing owner-controlled regular file through a no-follow parent."""
+) -> Iterator[BinaryIO | None]:
+    """Open an owner-controlled regular file through a no-follow parent."""
 
     absolute = _absolute_normalized_path(path)
     parent_fd = -1
     file_fd = -1
+    handle: BinaryIO | None = None
     try:
         try:
             _absolute, parent_fd, _created = _open_directory_chain(
@@ -393,13 +392,15 @@ def read_owned_regular_file(
                 create=False,
             )
         except FileNotFoundError:
-            return None
+            yield None
+            return
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
             file_fd = os.open(absolute.name, flags, dir_fd=parent_fd)
         except FileNotFoundError:
-            return None
+            yield None
+            return
         file_stat = os.fstat(file_fd)
         if not stat.S_ISREG(file_stat.st_mode):
             raise OSError(f"state target is not a regular file: {absolute}")
@@ -412,21 +413,44 @@ def read_owned_regular_file(
             )
         if normalize_mode is not None:
             os.fchmod(file_fd, normalize_mode)
+        handle = os.fdopen(file_fd, "rb", closefd=True)
+        file_fd = -1
+        yield handle
+    finally:
+        if handle is not None:
+            handle.close()
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def read_owned_regular_file(
+    path: Path,
+    *,
+    required_mode: int | None = None,
+    normalize_mode: int | None = None,
+    max_bytes: int | None = None,
+) -> bytes | None:
+    """Read an existing owner-controlled regular file through a no-follow parent."""
+
+    with open_owned_regular_file(
+        path,
+        required_mode=required_mode,
+        normalize_mode=normalize_mode,
+    ) as handle:
+        if handle is None:
+            return None
         chunks: list[bytes] = []
         bytes_read = 0
         while max_bytes is None or bytes_read < max_bytes:
             remaining = None if max_bytes is None else max_bytes - bytes_read
             read_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
-            if not (chunk := os.read(file_fd, read_size)):
+            if not (chunk := handle.read(read_size)):
                 break
             chunks.append(chunk)
             bytes_read += len(chunk)
         return b"".join(chunks)
-    finally:
-        if file_fd >= 0:
-            os.close(file_fd)
-        if parent_fd >= 0:
-            os.close(parent_fd)
 
 
 def read_owner_only_regular_file(path: Path) -> bytes | None:

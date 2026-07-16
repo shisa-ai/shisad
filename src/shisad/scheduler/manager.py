@@ -101,9 +101,9 @@ class SchedulerManager:
         }
         self._state_persistence_degradation: dict[str, AtomicWriteError] = {}
         self._durable_tasks: dict[str, ScheduledTask] = {}
-        self._durable_pending_confirmations: defaultdict[
-            str, list[dict[str, Any]]
-        ] = defaultdict(list)
+        self._durable_pending_confirmations: defaultdict[str, list[dict[str, Any]]] = defaultdict(
+            list
+        )
         if self._storage_dir is not None:
             ensure_owner_only_directory(self._storage_dir)
         self._load_tasks()
@@ -115,8 +115,7 @@ class SchedulerManager:
     @property
     def state_degraded(self) -> bool:
         return bool(self._state_persistence_degradation) or any(
-            result.status
-            in {StateLoadStatus.CORRUPT, StateLoadStatus.UNSUPPORTED_SCHEMA}
+            result.status in {StateLoadStatus.CORRUPT, StateLoadStatus.UNSUPPORTED_SCHEMA}
             for result in self._state_load_results.values()
         )
 
@@ -125,6 +124,57 @@ class SchedulerManager:
             return self._state_load_results[authority]
         except KeyError as exc:
             raise ValueError(f"unknown scheduler state authority: {authority}") from exc
+
+    def reset_state(self) -> tuple[int, int]:
+        """Durably reset scheduler authority and every rollback/load snapshot."""
+
+        task_count = len(self._tasks)
+        pending_count = sum(len(rows) for rows in self._pending_confirmations.values())
+        empty_tasks = encode_versioned_json_snapshot(
+            [],
+            version=_SCHEDULER_STATE_VERSION,
+        )
+        empty_pending = encode_versioned_json_snapshot(
+            {},
+            version=_SCHEDULER_STATE_VERSION,
+        )
+        try:
+            if self._tasks_file is not None:
+                atomic_write_bytes(
+                    self._tasks_file,
+                    empty_tasks,
+                    fault_injector=self._state_fault_injector,
+                )
+            if self._pending_file is not None:
+                atomic_write_bytes(
+                    self._pending_file,
+                    empty_pending,
+                    fault_injector=self._state_fault_injector,
+                )
+        except AtomicWriteError as exc:
+            # A partially published multi-file reset is blocked as one coupled
+            # authority until restart can validate the durable pair.
+            self._state_persistence_degradation["tasks"] = exc
+            self._state_persistence_degradation["pending_confirmations"] = exc
+            raise
+
+        self._tasks = {}
+        self._pending_confirmations = defaultdict(list)
+        self._durable_tasks = {}
+        self._durable_pending_confirmations = defaultdict(list)
+        self._state_persistence_degradation.clear()
+        reset_status = (
+            StateLoadStatus.OK if self._storage_dir is not None else StateLoadStatus.MISSING
+        )
+        schema_version = _SCHEDULER_STATE_VERSION if self._storage_dir is not None else None
+        self._state_load_results = {
+            "tasks": StateLoadResult(reset_status, schema_version=schema_version),
+            "pending_confirmations": StateLoadResult(
+                reset_status,
+                schema_version=schema_version,
+            ),
+        }
+        return task_count, pending_count
 
     def create_task(
         self,
@@ -1426,9 +1476,7 @@ class SchedulerManager:
             self._state_load_results["pending_confirmations"] = result
             return False
         if not isinstance(payload, dict):
-            self._state_load_results[
-                "pending_confirmations"
-            ] = self._semantic_corruption_result(
+            self._state_load_results["pending_confirmations"] = self._semantic_corruption_result(
                 result,
                 "invalid_pending_payload",
             )
@@ -1437,27 +1485,27 @@ class SchedulerManager:
         confirmation_ids: set[str] = set()
         for task_id, rows in payload.items():
             if not isinstance(task_id, str) or not task_id.strip():
-                self._state_load_results[
-                    "pending_confirmations"
-                ] = self._semantic_corruption_result(
-                    result,
-                    "invalid_pending_task_id",
+                self._state_load_results["pending_confirmations"] = (
+                    self._semantic_corruption_result(
+                        result,
+                        "invalid_pending_task_id",
+                    )
                 )
                 return False
             if task_id not in self._tasks:
-                self._state_load_results[
-                    "pending_confirmations"
-                ] = self._semantic_corruption_result(
-                    result,
-                    "unknown_pending_task",
+                self._state_load_results["pending_confirmations"] = (
+                    self._semantic_corruption_result(
+                        result,
+                        "unknown_pending_task",
+                    )
                 )
                 return False
             if not isinstance(rows, list):
-                self._state_load_results[
-                    "pending_confirmations"
-                ] = self._semantic_corruption_result(
-                    result,
-                    "invalid_pending_rows",
+                self._state_load_results["pending_confirmations"] = (
+                    self._semantic_corruption_result(
+                        result,
+                        "invalid_pending_rows",
+                    )
                 )
                 return False
             for item in rows:
@@ -1465,34 +1513,32 @@ class SchedulerManager:
                     item,
                     task_id=task_id,
                 ):
-                    self._state_load_results[
-                        "pending_confirmations"
-                    ] = self._semantic_corruption_result(
-                        result,
-                        "invalid_pending_row",
+                    self._state_load_results["pending_confirmations"] = (
+                        self._semantic_corruption_result(
+                            result,
+                            "invalid_pending_row",
+                        )
                     )
                     return False
                 confirmation_id = item["confirmation_id"].strip()
                 if item.get("run_outcome_recorded") is True:
-                    task_outcome = self._tasks[
-                        task_id
-                    ].confirmation_outcome_dedup.get(confirmation_id)
-                    if task_outcome is None or task_outcome is not item.get(
-                        "run_outcome_success"
-                    ):
-                        self._state_load_results[
-                            "pending_confirmations"
-                        ] = self._semantic_corruption_result(
-                            result,
-                            "invalid_pending_outcome_state",
+                    task_outcome = self._tasks[task_id].confirmation_outcome_dedup.get(
+                        confirmation_id
+                    )
+                    if task_outcome is None or task_outcome is not item.get("run_outcome_success"):
+                        self._state_load_results["pending_confirmations"] = (
+                            self._semantic_corruption_result(
+                                result,
+                                "invalid_pending_outcome_state",
+                            )
                         )
                         return False
                 if confirmation_id in confirmation_ids:
-                    self._state_load_results[
-                        "pending_confirmations"
-                    ] = self._semantic_corruption_result(
-                        result,
-                        "duplicate_pending_confirmation",
+                    self._state_load_results["pending_confirmations"] = (
+                        self._semantic_corruption_result(
+                            result,
+                            "duplicate_pending_confirmation",
+                        )
                     )
                     return False
                 confirmation_ids.add(confirmation_id)

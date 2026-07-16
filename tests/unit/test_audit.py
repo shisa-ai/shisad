@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from shisad.core.atomic_state import DurableAppendError
 from shisad.core.audit import AuditLog
 from shisad.core.events import (
     A2aIngressEvaluated,
@@ -38,6 +39,83 @@ async def _write_entries(log: AuditLog, count: int = 3) -> None:
             actor="test",
         )
         await log.persist(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link_shape", ["intermediate", "final"])
+async def test_f3_audit_append_rejects_symlink_redirect(
+    tmp_path: Path,
+    link_shape: str,
+) -> None:
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "audit.jsonl"
+    sentinel.write_bytes(b"external audit sentinel")
+
+    if link_shape == "intermediate":
+        log_path = configured / "redirect" / "audit.jsonl"
+        audit = AuditLog(log_path)
+        (configured / "redirect").symlink_to(external, target_is_directory=True)
+    else:
+        log_path = configured / "audit.jsonl"
+        audit = AuditLog(log_path)
+        log_path.symlink_to(sentinel)
+
+    with pytest.raises((DurableAppendError, OSError)):
+        await audit.persist(
+            SessionCreated(
+                session_id=SessionId("symlink-audit"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+
+    assert sentinel.read_bytes() == b"external audit sentinel"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link_shape", ["intermediate", "final"])
+@pytest.mark.parametrize("read_surface", ["resume", "verify", "query"])
+async def test_f3_audit_reads_reject_symlink_redirect(
+    tmp_path: Path,
+    link_shape: str,
+    read_surface: str,
+) -> None:
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "audit.jsonl"
+    external_audit = AuditLog(sentinel)
+    await external_audit.persist(
+        SessionCreated(
+            session_id=SessionId("external-audit"),
+            user_id=UserId("mallory"),
+            actor="external",
+        )
+    )
+    sentinel_bytes = sentinel.read_bytes()
+
+    if link_shape == "intermediate":
+        log_path = configured / "redirect" / "audit.jsonl"
+        audit = AuditLog(log_path)
+        (configured / "redirect").symlink_to(external, target_is_directory=True)
+    else:
+        log_path = configured / "audit.jsonl"
+        audit = AuditLog(log_path)
+        log_path.symlink_to(sentinel)
+
+    with pytest.raises(OSError):
+        if read_surface == "resume":
+            AuditLog(log_path)
+        elif read_surface == "verify":
+            audit.verify_chain()
+        else:
+            audit.query()
+
+    assert sentinel.read_bytes() == sentinel_bytes
 
 
 @pytest.mark.asyncio

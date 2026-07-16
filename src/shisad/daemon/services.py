@@ -641,9 +641,7 @@ class DaemonServices:
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
     identity_allowlists_baseline: dict[str, frozenset[str]]
-    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(
-        default_factory=dict
-    )
+    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(default_factory=dict)
     active_rpc_calls: int = field(default=0)
     rpc_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reset_in_progress: bool = field(default=False)
@@ -1273,16 +1271,10 @@ class DaemonServices:
             _wipe_dir_contents(self.session_manager._state_dir)
 
         # -- Scheduler --
-        cleared["scheduler_tasks"] = len(self.scheduler._tasks)
-        cleared["scheduler_pending_confirmations"] = sum(
-            len(rows) for rows in self.scheduler._pending_confirmations.values()
-        )
-        self.scheduler._tasks.clear()
-        self.scheduler._pending_confirmations.clear()
-        if self.scheduler._tasks_file is not None:
-            _unlink_if_exists(self.scheduler._tasks_file)
-        if self.scheduler._pending_file is not None:
-            _unlink_if_exists(self.scheduler._pending_file)
+        (
+            cleared["scheduler_tasks"],
+            cleared["scheduler_pending_confirmations"],
+        ) = self.scheduler.reset_state()
 
         # -- Memory --
         self._reset_memory_surfaces_for_test(cleared)
@@ -1336,58 +1328,24 @@ class DaemonServices:
         await asyncio.to_thread(self.evidence_store.reset_domain)
 
         # -- Self-modification --
-        cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
-            self.selfmod_manager._inventory.behavior_packs
-        )
-        cleared["selfmod_artifacts"] = (
-            _count_files_recursive(self.selfmod_manager._proposal_dir)
-            + _count_files_recursive(self.selfmod_manager._change_dir)
-            + _count_files_recursive(self.selfmod_manager._artifact_root)
-            + int(self.selfmod_manager._inventory_path.exists())
-            + int(self.selfmod_manager._incident_path.exists())
-        )
-        self.selfmod_manager._inventory = self.selfmod_manager._inventory.__class__()
-        _wipe_dir_contents(self.selfmod_manager._proposal_dir)
-        _wipe_dir_contents(self.selfmod_manager._change_dir)
-        _wipe_dir_contents(self.selfmod_manager._artifact_root)
-        _unlink_if_exists(self.selfmod_manager._inventory_path)
-        _unlink_if_exists(self.selfmod_manager._incident_path)
-        self.selfmod_manager._proposal_dir.mkdir(parents=True, exist_ok=True)
-        self.selfmod_manager._change_dir.mkdir(parents=True, exist_ok=True)
-        self.selfmod_manager._artifact_root.mkdir(parents=True, exist_ok=True)
-        self.selfmod_manager._apply_behavior_overlay()
+        (
+            cleared["selfmod_entries"],
+            cleared["selfmod_artifacts"],
+        ) = self.selfmod_manager.reset_state()
 
         # -- Skills --
-        cleared["skill_entries"] = len(self.skill_manager._inventory)
-        cleared["skill_tool_registrations"] = sum(
-            len(items) for items in self.skill_manager._skill_tool_map.values()
-        )
-        cleared["skill_pending_events"] = len(self.skill_manager._pending_registration_events)
-        for skill_name in list(self.skill_manager._skill_tool_map):
-            self.skill_manager._unregister_skill_tools(skill_name)
-        self.skill_manager._inventory.clear()
-        self.skill_manager._pending_registration_events.clear()
-        _wipe_dir_contents(self.skill_manager._storage_dir)
+        (
+            cleared["skill_entries"],
+            cleared["skill_tool_registrations"],
+            cleared["skill_pending_events"],
+        ) = self.skill_manager.reset_state()
 
         # -- Credentials / approvals --
-        approval_store_path = self.credential_store._approval_store_path
-        approval_store_artifacts = 0
-        if approval_store_path is not None:
-            approval_store_artifacts += int(approval_store_path.exists())
-            approval_store_artifacts += len(
-                list(approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*"))
-            )
-        cleared["approval_factors"] = len(self.credential_store._approval_factors)
-        cleared["signer_keys"] = len(self.credential_store._signer_keys)
-        cleared["approval_store_artifacts"] = approval_store_artifacts
-        self.credential_store._approval_factors.clear()
-        self.credential_store._signer_keys.clear()
-        self.credential_store._local_fido2_realm_id = None
-        if approval_store_path is not None:
-            _unlink_if_exists(approval_store_path)
-            corrupt_glob = f"{approval_store_path.name}.corrupt.*"
-            for artifact in approval_store_path.parent.glob(corrupt_glob):
-                artifact.unlink(missing_ok=True)
+        (
+            cleared["approval_factors"],
+            cleared["signer_keys"],
+            cleared["approval_store_artifacts"],
+        ) = self.credential_store.reset_approval_state()
 
         # -- Channel identity map --
         cleared["identity_bindings"] = len(self.identity_map._map)
@@ -1427,12 +1385,7 @@ class DaemonServices:
             default_risk_policy.thresholds.block_threshold
         )
 
-        from shisad.core.audit import _GENESIS_HASH
-
-        self.audit_log._previous_hash = _GENESIS_HASH
-        self.audit_log._entry_count = 0
-        if self.audit_log._log_path.exists():
-            self.audit_log._log_path.write_text("", encoding="utf-8")
+        self.audit_log.reset()
 
         logger.info("Test state reset: %s", cleared)
         return {"status": "reset", "cleared": cleared}
