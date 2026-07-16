@@ -103,6 +103,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+async def _await_task_terminal[T](
+    task: asyncio.Task[T],
+) -> tuple[T, bool]:
+    """Wait through repeated caller cancellation without cancelling *task*."""
+
+    cancellation_requested = False
+    while True:
+        try:
+            return await asyncio.shield(task), cancellation_requested
+        except asyncio.CancelledError:
+            if task.done() and task.cancelled():
+                raise
+            cancellation_requested = True
+
+
+async def _release_authority_claim_terminal(
+    claim: DaemonAuthorityClaim,
+) -> bool:
+    release_task = asyncio.create_task(asyncio.to_thread(claim.release))
+    _result, cancellation_requested = await _await_task_terminal(release_task)
+    return cancellation_requested
+
+
 def _wipe_dir_contents(directory: Path) -> None:
     """Remove all files and subdirectories inside *directory* without removing it."""
     import shutil
@@ -635,35 +659,28 @@ class DaemonServices:
     ) -> DaemonServices:
         """Admit mutable authorities before constructing runtime services."""
 
-        claim = authority_claim
-        if claim is None:
+        if authority_claim is None:
             acquire_task = asyncio.create_task(
                 asyncio.to_thread(acquire_daemon_authority_claim, config)
             )
-            try:
-                claim = await asyncio.shield(acquire_task)
-            except asyncio.CancelledError as cancellation:
-                try:
-                    late_claim = await acquire_task
-                except BaseException:
-                    raise cancellation from None
+            claim, acquisition_cancelled = await _await_task_terminal(acquire_task)
+            if acquisition_cancelled:
                 with contextlib.suppress(OSError, RuntimeError):
-                    await asyncio.to_thread(late_claim.release)
-                raise
+                    await _release_authority_claim_terminal(claim)
+                raise asyncio.CancelledError
+        else:
+            claim = authority_claim
         try:
             initialize_task = asyncio.create_task(
                 asyncio.to_thread(initialize_claimed_daemon_authorities, config, claim)
             )
-            try:
-                await asyncio.shield(initialize_task)
-            except asyncio.CancelledError:
-                with contextlib.suppress(BaseException):
-                    await initialize_task
-                raise
+            _result, initialization_cancelled = await _await_task_terminal(initialize_task)
+            if initialization_cancelled:
+                raise asyncio.CancelledError
             return await cls._build_claimed(config, authority_claim=claim)
         except BaseException:
             with contextlib.suppress(OSError, RuntimeError):
-                await asyncio.to_thread(claim.release)
+                await _release_authority_claim_terminal(claim)
             raise
 
     @classmethod
@@ -1445,6 +1462,14 @@ class DaemonServices:
             raise
 
     async def shutdown(self) -> None:
+        """Close every service and claim before propagating caller cancellation."""
+
+        shutdown_task = asyncio.create_task(self._shutdown_claimed_services())
+        _result, cancellation_requested = await _await_task_terminal(shutdown_task)
+        if cancellation_requested:
+            raise asyncio.CancelledError
+
+    async def _shutdown_claimed_services(self) -> None:
         """Close async/sync resources in reverse runtime order."""
         shutdown_ops: list[tuple[str, Any]] = []
 

@@ -340,6 +340,9 @@ async def test_f3_cancelled_service_admission_releases_late_claim(
     assert await asyncio.to_thread(entered.wait, 3)
     build_task.cancel()
     await asyncio.sleep(0)
+    build_task.cancel()
+    await asyncio.sleep(0.05)
+    assert not build_task.done()
     proceed.set()
 
     with pytest.raises(asyncio.CancelledError):
@@ -347,3 +350,185 @@ async def test_f3_cancelled_service_admission_releases_late_claim(
 
     successor_claim = acquire_daemon_authority_claim(config)
     successor_claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_repeated_cancellation_waits_for_initialization_before_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.daemon import services as services_module
+
+    config = _config(tmp_path, name="initializing", socket_name="initializing.sock")
+    entered = threading.Event()
+    allow_finish = threading.Event()
+    real_initialize = initialize_claimed_daemon_authorities
+
+    def _slow_initialize(
+        run_config: DaemonConfig,
+        claim: DaemonAuthorityClaim,
+    ) -> None:
+        entered.set()
+        assert allow_finish.wait(timeout=5)
+        real_initialize(run_config, claim)
+
+    monkeypatch.setattr(
+        services_module,
+        "initialize_claimed_daemon_authorities",
+        _slow_initialize,
+    )
+    build_task = asyncio.create_task(DaemonServices.build(config))
+    assert await asyncio.to_thread(entered.wait, 3)
+    build_task.cancel()
+    await asyncio.sleep(0)
+    build_task.cancel()
+    await asyncio.sleep(0.05)
+    assert not build_task.done()
+    allow_finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await build_task
+
+    successor_claim = acquire_daemon_authority_claim(config)
+    successor_claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_repeated_cancellation_waits_for_error_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path, name="error-release", socket_name="error-release.sock")
+    entered = threading.Event()
+    allow_release = threading.Event()
+    real_release = DaemonAuthorityClaim.release
+
+    async def _fail_build(
+        _cls: type[DaemonServices],
+        _config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
+        del authority_claim
+        raise RuntimeError("service construction failed")
+
+    def _slow_release(claim: DaemonAuthorityClaim) -> None:
+        entered.set()
+        assert allow_release.wait(timeout=5)
+        real_release(claim)
+
+    monkeypatch.setattr(DaemonServices, "_build_claimed", classmethod(_fail_build))
+    monkeypatch.setattr(DaemonAuthorityClaim, "release", _slow_release)
+    build_task = asyncio.create_task(DaemonServices.build(config))
+    assert await asyncio.to_thread(entered.wait, 3)
+    build_task.cancel()
+    await asyncio.sleep(0)
+    build_task.cancel()
+    await asyncio.sleep(0.05)
+    assert not build_task.done()
+    allow_release.set()
+
+    with pytest.raises(RuntimeError, match="service construction failed"):
+        await build_task
+
+    successor_claim = acquire_daemon_authority_claim(config)
+    successor_claim.release()
+
+
+@pytest.mark.asyncio
+async def test_f3_repeated_cancellation_waits_for_shutdown_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path, name="shutdown", socket_name="shutdown.sock")
+    claim = acquire_daemon_authority_claim(config)
+    services = object.__new__(DaemonServices)
+    services.authority_claim = claim
+    entered = threading.Event()
+    allow_release = threading.Event()
+    real_release = DaemonAuthorityClaim.release
+
+    def _slow_release(active_claim: DaemonAuthorityClaim) -> None:
+        entered.set()
+        assert allow_release.wait(timeout=5)
+        real_release(active_claim)
+
+    monkeypatch.setattr(DaemonAuthorityClaim, "release", _slow_release)
+    shutdown_task = asyncio.create_task(services.shutdown())
+    assert await asyncio.to_thread(entered.wait, 3)
+    shutdown_task.cancel()
+    await asyncio.sleep(0)
+    shutdown_task.cancel()
+    await asyncio.sleep(0.05)
+    assert not shutdown_task.done()
+    allow_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown_task
+
+    successor_claim = acquire_daemon_authority_claim(config)
+    successor_claim.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["approval", "server"])
+@pytest.mark.parametrize("outcome", ["failure", "cancellation"])
+async def test_f3_daemon_startup_boundary_always_releases_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    outcome: str,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+    config = _config(
+        tmp_path,
+        name="d",
+        socket_name="r.sock",
+    )
+    services = await DaemonServices.build(config)
+    entered = asyncio.Event()
+
+    async def _return_services(
+        _cls: type[DaemonServices],
+        _config: DaemonConfig,
+    ) -> DaemonServices:
+        return services
+
+    async def _approval_start() -> None:
+        if boundary != "approval":
+            return
+        entered.set()
+        if outcome == "failure":
+            raise RuntimeError("approval startup failed")
+        await asyncio.Event().wait()
+
+    async def _server_start() -> None:
+        if boundary != "server":
+            return
+        entered.set()
+        if outcome == "failure":
+            raise RuntimeError("server startup failed")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(DaemonServices, "build", classmethod(_return_services))
+    monkeypatch.setattr(services.approval_web, "start", _approval_start)
+    monkeypatch.setattr(services.server, "start", _server_start)
+
+    try:
+        if outcome == "failure":
+            with pytest.raises(RuntimeError, match=f"{boundary} startup failed"):
+                await run_daemon(config)
+        else:
+            daemon_task = asyncio.create_task(run_daemon(config))
+            await asyncio.wait_for(entered.wait(), timeout=3)
+            daemon_task.cancel()
+            await asyncio.sleep(0)
+            daemon_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await daemon_task
+
+        successor_claim = acquire_daemon_authority_claim(config)
+        successor_claim.release()
+    finally:
+        if not services.authority_claim.released:
+            await services.shutdown()
