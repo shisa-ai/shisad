@@ -1010,11 +1010,6 @@ class DaemonConfig(BaseSettings):
         return normalized
 
     @model_validator(mode="after")
-    def _ensure_data_dir(self) -> Self:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        return self
-
-    @model_validator(mode="after")
     def _validate_browser_hardened_scope(self) -> Self:
         if not self.browser_enabled or not self.browser_require_hardened_isolation:
             return self

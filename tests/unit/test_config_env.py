@@ -8,6 +8,47 @@ from pathlib import Path
 from shisad.core.config import DaemonConfig
 
 
+def test_f3_daemon_config_and_cli_path_derivation_are_side_effect_free(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    direct_data_dir = tmp_path / "direct-parent" / "data"
+    direct_config = DaemonConfig(data_dir=direct_data_dir)
+    assert direct_config.data_dir == direct_data_dir
+    assert not direct_data_dir.parent.exists()
+
+    env_data_dir = tmp_path / "env-parent" / "data"
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(env_data_dir))
+    env_config = DaemonConfig()
+    assert env_config.data_dir == env_data_dir
+    assert not env_data_dir.parent.exists()
+
+    cli_data_dir = tmp_path / "cli-parent" / "data"
+    monkeypatch.setenv("SHISAD_DATA_DIR", str(cli_data_dir))
+    from shisad.cli.main import _get_config
+
+    cli_config = _get_config()
+    assert cli_config.data_dir == cli_data_dir
+    assert not cli_data_dir.parent.exists()
+
+    existing_data_dir = tmp_path / "existing"
+    existing_data_dir.mkdir(mode=0o755)
+    marker = existing_data_dir / "marker"
+    marker.write_text("unchanged", encoding="utf-8")
+    before = existing_data_dir.stat()
+
+    existing_config = DaemonConfig(data_dir=existing_data_dir)
+
+    after = existing_data_dir.stat()
+    assert existing_config.data_dir == existing_data_dir
+    assert (after.st_mode, after.st_ino, after.st_mtime_ns) == (
+        before.st_mode,
+        before.st_ino,
+        before.st_mtime_ns,
+    )
+    assert marker.read_text(encoding="utf-8") == "unchanged"
+
+
 def test_gh33_web_and_browser_allowed_domains_accept_bare_env_strings(
     tmp_path: Path,
     monkeypatch,

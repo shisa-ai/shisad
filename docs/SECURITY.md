@@ -305,6 +305,16 @@ derived from the authenticated local RPC peer and fixed server route; caller
 channel metadata cannot impersonate or widen a provider scope. Missing or
 adapter-mismatched identity blocks dispatch.
 
+Configuration construction and the shared CLI config builder derive paths
+without creating or mode-repairing daemon targets. Service construction first
+publishes an owner-only, same-host lifetime claim in a registry independent of
+the target data directory. The baseline claim covers the canonical data root,
+control socket, effective approval-factor store, and configured writable SOUL
+path; exact canonical conflicts and inode aliases present at admission fail
+before target initialization. The claim remains held until daemon services
+stop. This is a local mutable-file authority boundary, not a multi-host or
+remote provider-account lease.
+
 A successful handler records a terminal outcome; a failed or uncertain handler
 retains an uncertain outcome. Reserved, terminal, and uncertain records are
 non-evicting authority, while the bounded 2,048-entry recent set is only an

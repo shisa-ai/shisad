@@ -21,6 +21,11 @@ from shisad.channels.state import ChannelStateStore
 from shisad.coding.manager import CodingAgentManager
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
+from shisad.core.authority import (
+    DaemonAuthorityClaim,
+    acquire_daemon_authority_claim,
+    initialize_claimed_daemon_authorities,
+)
 from shisad.core.config import (
     DaemonConfig,
     ModelConfig,
@@ -547,6 +552,7 @@ class DaemonServices:
     """Container for initialized daemon subsystems."""
 
     config: DaemonConfig
+    authority_claim: DaemonAuthorityClaim
     audit_log: AuditLog
     event_bus: EventBus
     policy_loader: PolicyLoader
@@ -621,7 +627,52 @@ class DaemonServices:
     reset_in_progress: bool = field(default=False)
 
     @classmethod
-    async def build(cls, config: DaemonConfig) -> DaemonServices:
+    async def build(
+        cls,
+        config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim | None = None,
+    ) -> DaemonServices:
+        """Admit mutable authorities before constructing runtime services."""
+
+        claim = authority_claim
+        if claim is None:
+            acquire_task = asyncio.create_task(
+                asyncio.to_thread(acquire_daemon_authority_claim, config)
+            )
+            try:
+                claim = await asyncio.shield(acquire_task)
+            except asyncio.CancelledError as cancellation:
+                try:
+                    late_claim = await acquire_task
+                except BaseException:
+                    raise cancellation from None
+                with contextlib.suppress(OSError, RuntimeError):
+                    await asyncio.to_thread(late_claim.release)
+                raise
+        try:
+            initialize_task = asyncio.create_task(
+                asyncio.to_thread(initialize_claimed_daemon_authorities, config, claim)
+            )
+            try:
+                await asyncio.shield(initialize_task)
+            except asyncio.CancelledError:
+                with contextlib.suppress(BaseException):
+                    await initialize_task
+                raise
+            return await cls._build_claimed(config, authority_claim=claim)
+        except BaseException:
+            with contextlib.suppress(OSError, RuntimeError):
+                await asyncio.to_thread(claim.release)
+            raise
+
+    @classmethod
+    async def _build_claimed(
+        cls,
+        config: DaemonConfig,
+        *,
+        authority_claim: DaemonAuthorityClaim,
+    ) -> DaemonServices:
         """Construct all runtime services in a deterministic order."""
         audit_log = AuditLog(config.data_dir / "audit.jsonl")
         event_bus = EventBus(persister=audit_log)
@@ -1056,6 +1107,7 @@ class DaemonServices:
             }
             services = cls(
                 config=config,
+                authority_claim=authority_claim,
                 audit_log=audit_log,
                 event_bus=event_bus,
                 policy_loader=policy_loader,
@@ -1456,13 +1508,23 @@ class DaemonServices:
             try:
                 await mcp_manager.shutdown()
             except BaseException as result:
-                if result.__class__.__name__ == "CancelledError":
-                    return
-                logger.error(
-                    "Error stopping daemon service %s",
-                    "mcp_manager",
-                    exc_info=(type(result), result, result.__traceback__),
-                )
+                if result.__class__.__name__ != "CancelledError":
+                    logger.error(
+                        "Error stopping daemon service %s",
+                        "mcp_manager",
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
+
+        authority_claim = getattr(self, "authority_claim", None)
+        if authority_claim is not None:
+            try:
+                await asyncio.to_thread(authority_claim.release)
+            except BaseException as result:
+                if result.__class__.__name__ != "CancelledError":
+                    logger.error(
+                        "Error releasing daemon mutable-authority claim",
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
 
 
 async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
