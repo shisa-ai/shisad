@@ -19,6 +19,7 @@ class ReplayEventVariant(StrEnum):
     """Typed provider event families with independent replay authority."""
 
     ORDINARY_MESSAGE = "ordinary_message"
+    DISCORD_INTERACTION = "discord_interaction"
     DIRECT_INGRESS = "direct_ingress"
     COMPATIBILITY = "compatibility"
 

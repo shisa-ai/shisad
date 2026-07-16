@@ -152,6 +152,7 @@ def _approval_interaction_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
         "approval_confirmation_id",
         "approval_decision_nonce",
         "discord_interaction_id",
+        "discord_source_message_id",
     }
     payload: dict[str, Any] = {}
     for key in allowed_keys:

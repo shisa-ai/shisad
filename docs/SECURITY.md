@@ -295,11 +295,14 @@ Channel receive pumps durably reserve a frozen provider-scoped replay identity
 before dispatch. The identity binds a non-secret account fingerprint, the raw
 provider tenant and delivery domain, an event variant, and the raw provider
 message ID. Telegram chat/topic, Slack team/channel, Discord guild/channel
-ordinary-message, and Matrix account/room scopes are derived inside their
-adapters. Direct `channel.ingest` uses a separate identity derived from the
-authenticated local RPC peer and fixed server route; caller channel metadata
-cannot impersonate or widen a provider scope. Missing or adapter-mismatched
-identity blocks dispatch.
+ordinary-message, Discord component/modal interaction, and Matrix account/room
+scopes are derived inside their adapters. Discord interactions use raw
+`interaction.id` under a distinct event variant; source-message, confirmation,
+action, nonce, and component/modal fields remain binding metadata and cannot
+manufacture replay identity. Direct `channel.ingest` uses a separate identity
+derived from the authenticated local RPC peer and fixed server route; caller
+channel metadata cannot impersonate or widen a provider scope. Missing or
+adapter-mismatched identity blocks dispatch.
 
 A successful handler records a terminal outcome; a failed or uncertain handler
 retains an uncertain outcome. Reserved, terminal, and uncertain records are
@@ -311,8 +314,7 @@ rebaseline with `shisad channel replay-rebaseline --channel <scope> --confirm`;
 it is not silently migrated. Replay snapshot/journal corruption,
 unsupported schema, or reservation persistence failure is retained and blocks
 that scope. `shisad doctor check --component channels` reports provider and
-direct-ingress replay posture. Discord component/modal interaction identity is
-a separate v0.8.1 release-close requirement and is not claimed by this boundary.
+direct-ingress replay posture.
 
 ### Context Builder (spotlighting)
 

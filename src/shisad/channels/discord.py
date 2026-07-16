@@ -110,13 +110,20 @@ class DiscordChannel(InMemoryChannel):
             account_id = str(getattr(getattr(self._client, "user", None), "id", "")).strip()
         if not account_id:
             account_id = self._config.bot_token.partition(".")[0]
+        raw_event_variant = str(message.metadata.get("discord_event_variant", "")).strip()
+        if raw_event_variant == ReplayEventVariant.DISCORD_INTERACTION.value:
+            message_id = str(message.metadata.get("discord_interaction_id", "")).strip()
+            event_variant = ReplayEventVariant.DISCORD_INTERACTION
+        else:
+            message_id = message.message_id
+            event_variant = ReplayEventVariant.ORDINARY_MESSAGE
         return ReplayIdentity(
             provider="discord",
             account_id=provider_account_fingerprint("discord", account_id),
             tenant_id=guild_id,
             delivery_id=channel_id,
-            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
-            message_id=message.message_id,
+            event_variant=event_variant,
+            message_id=message_id,
         )
 
     @property
@@ -500,22 +507,29 @@ class DiscordChannel(InMemoryChannel):
         channel_obj = getattr(interaction, "channel", None)
         channel_id = str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
         interaction_id = str(getattr(interaction, "id", "")).strip()
-        message_id = (
-            f"discord-interaction:{interaction_id}:{parsed.action}:{parsed.confirmation_id}"
-            if interaction_id
-            else ""
-        )
+        if not interaction_id:
+            return False
+        account_id = str(
+            getattr(getattr(self._client, "user", None), "id", "")
+        ).strip()
+        source_message_id = str(
+            getattr(getattr(interaction, "message", None), "id", "")
+        ).strip()
         await self._incoming.put(
             ChannelMessage(
                 channel="discord",
                 external_user_id=user_id,
                 workspace_hint=self.workspace_for_guild(guild_id),
                 content=content.strip(),
-                message_id=message_id,
+                message_id=interaction_id,
                 reply_target=channel_id,
                 metadata={
                     "discord_guild_id": guild_id,
                     "discord_channel_id": channel_id,
+                    "discord_account_id": account_id,
+                    "discord_event_variant": ReplayEventVariant.DISCORD_INTERACTION.value,
+                    "discord_interaction_id": interaction_id,
+                    "discord_source_message_id": source_message_id,
                     "addressed": True,
                     "interaction_type": interaction_type,
                     "approval_interaction_type": interaction_type,

@@ -616,6 +616,7 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
         user=SimpleNamespace(id="u-1", bot=False),
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="chan-1"),
+        message=SimpleNamespace(id="source-message-1"),
     )
 
     await channel._client.dispatch_interaction(interaction)
@@ -626,10 +627,38 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
     assert received.workspace_hint == "g-1"
     assert received.reply_target == "chan-1"
     assert received.content == "confirm c-1"
+    assert received.message_id == "i-1"
+    assert received.metadata["discord_interaction_id"] == "i-1"
+    assert received.metadata["discord_event_variant"] == "discord_interaction"
+    assert received.metadata["discord_source_message_id"] == "source-message-1"
     assert received.metadata["interaction_type"] == "approval_component"
     assert received.metadata["approval_component_action"] == "confirm"
     assert received.metadata["approval_confirmation_id"] == "c-1"
     assert received.metadata["approval_decision_nonce"] == "nonce-1"
+    replay_identity = channel.replay_identity(received)
+    assert replay_identity.event_variant == ReplayEventVariant.DISCORD_INTERACTION
+    assert replay_identity.message_id == "i-1"
+
+    changed_binding = received.model_copy(
+        update={
+            "metadata": {
+                **received.metadata,
+                "approval_interaction_type": "ordinary_message",
+                "approval_component_action": "reject",
+                "approval_confirmation_id": "different",
+                "approval_decision_nonce": "different",
+                "discord_source_message_id": "different",
+            }
+        }
+    )
+    assert channel.replay_identity(changed_binding) == replay_identity
+
+    second_interaction = interaction
+    second_interaction.id = "i-1-distinct"
+    await channel._client.dispatch_interaction(second_interaction)
+    distinct = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert channel.replay_identity(distinct) != replay_identity
+    assert distinct.metadata["discord_interaction_id"] == "i-1-distinct"
     await channel.disconnect()
 
 
@@ -692,16 +721,93 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
         user=SimpleNamespace(id="u-1", bot=False),
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="chan-1"),
+        message=SimpleNamespace(id="source-message-2"),
     )
 
     await channel._client.dispatch_interaction(interaction)
 
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert received.content == "confirm c-2 123456"
+    assert received.message_id == "i-2"
+    assert received.metadata["discord_interaction_id"] == "i-2"
+    assert received.metadata["discord_source_message_id"] == "source-message-2"
     assert received.metadata["interaction_type"] == "approval_modal"
     assert received.metadata["approval_component_action"] == "totp_submit"
     assert received.metadata["approval_confirmation_id"] == "c-2"
     assert received.metadata["approval_decision_nonce"] == "nonce-2"
+    assert (
+        channel.replay_identity(received).event_variant
+        == ReplayEventVariant.DISCORD_INTERACTION
+    )
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_rejects_interaction_without_raw_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    acknowledgements: list[str] = []
+
+    class _FakeIntents:
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeResponse:
+        async def send_message(self, _message: str, **_kwargs: object) -> None:
+            acknowledgements.append("send")
+
+        async def defer(self, **_kwargs: object) -> None:
+            acknowledgements.append("defer")
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch_interaction(self, interaction: object) -> None:
+            await self.on_interaction(interaction)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    interaction = SimpleNamespace(
+        id="   ",
+        data={
+            "custom_id": discord_approval_custom_id(
+                action="confirm",
+                confirmation_id="c-missing-id",
+                decision_nonce="nonce-missing-id",
+            )
+        },
+        user=SimpleNamespace(id="u-1", bot=False),
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="chan-1"),
+        response=_FakeResponse(),
+    )
+
+    await channel._client.dispatch_interaction(interaction)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.05)
+    assert acknowledgements == []
     await channel.disconnect()
 
 

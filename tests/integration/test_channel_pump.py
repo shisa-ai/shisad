@@ -6,12 +6,14 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from shisad.channels.base import InMemoryChannel
 from shisad.channels.discord import DiscordChannel
+from shisad.channels.discord_components import DiscordApprovalInteraction
 from shisad.channels.discord_policy import DiscordChannelRule
 from shisad.channels.matrix import MatrixChannel
 from shisad.channels.slack import SlackChannel
@@ -98,6 +100,129 @@ _CASES: tuple[_PumpCase, ...] = (
         blocked_user="slack-blocked",
     ),
 )
+
+
+@pytest.mark.asyncio
+async def test_discord_interaction_replay_identity_survives_real_daemon_restart(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connect_count = 0
+
+    def _interaction(interaction_id: str, user_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=interaction_id,
+            user=SimpleNamespace(id=user_id, bot=False),
+            guild=SimpleNamespace(id="guild-1"),
+            channel=SimpleNamespace(id="channel-1"),
+        )
+
+    async def _fake_connect(self: DiscordChannel) -> None:
+        nonlocal connect_count
+        connect_count += 1
+        await InMemoryChannel.connect(self)
+        if connect_count == 1:
+            assert await self._enqueue_approval_interaction(
+                interaction=_interaction("shared-raw-id", "initial-interaction-user"),
+                parsed=DiscordApprovalInteraction(
+                    action="confirm",
+                    confirmation_id="confirmation-1",
+                    decision_nonce="nonce-1",
+                ),
+                content="confirm confirmation-1",
+                interaction_type="approval_component",
+            )
+            return
+
+        assert await self._enqueue_approval_interaction(
+            interaction=_interaction("shared-raw-id", "exact-replay-probe"),
+            parsed=DiscordApprovalInteraction(
+                action="totp_submit",
+                confirmation_id="forged-confirmation",
+                decision_nonce="forged-nonce",
+            ),
+            content="confirm forged-confirmation 000000",
+            interaction_type="approval_modal",
+        )
+        assert await self._enqueue_approval_interaction(
+            interaction=_interaction("distinct-interaction-id", "distinct-interaction-user"),
+            parsed=DiscordApprovalInteraction(
+                action="confirm",
+                confirmation_id="confirmation-1",
+                decision_nonce="nonce-1",
+            ),
+            content="confirm confirmation-1",
+            interaction_type="approval_component",
+        )
+        await self.inject(
+            "ordinary-message-user",
+            "ordinary message with the same raw ID",
+            "guild-1",
+            message_id="shared-raw-id",
+            reply_target="channel-1",
+            metadata={
+                "discord_guild_id": "guild-1",
+                "discord_channel_id": "channel-1",
+            },
+        )
+
+    monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+
+    async def _run_until_received(expected_total: int) -> None:
+        config = DaemonConfig(
+            data_dir=tmp_path / "data",
+            socket_path=tmp_path / "control.sock",
+            policy_path=tmp_path / "policy.yaml",
+            log_level="INFO",
+            discord_enabled=True,
+            discord_bot_token="token",
+            channel_identity_allowlist={
+                "discord": [
+                    "initial-interaction-user",
+                    "exact-replay-probe",
+                    "distinct-interaction-user",
+                    "ordinary-message-user",
+                ]
+            },
+        )
+        daemon_task = asyncio.create_task(run_daemon(config))
+        client = ControlClient(config.socket_path)
+        try:
+            await _wait_for_socket(config.socket_path)
+            await client.connect()
+            received_total = 0
+            for _ in range(100):
+                received = await client.call(
+                    "audit.query",
+                    {
+                        "event_type": "SessionMessageReceived",
+                        "limit": 20,
+                    },
+                )
+                received_total = int(received.get("total", 0))
+                if received_total >= expected_total:
+                    break
+                await asyncio.sleep(0.05)
+            assert received_total == expected_total
+            if expected_total == 3:
+                replay_probe = await client.call(
+                    "audit.query",
+                    {
+                        "event_type": "SessionMessageReceived",
+                        "actor": "exact-replay-probe",
+                        "limit": 20,
+                    },
+                )
+                assert int(replay_probe.get("total", 0)) == 0
+        finally:
+            with suppress(Exception):
+                await client.call("daemon.shutdown")
+            await client.close()
+            await asyncio.wait_for(daemon_task, timeout=3)
+
+    await _run_until_received(1)
+    await _run_until_received(3)
 
 
 def _provider_coordinates(case: _PumpCase) -> dict[str, object]:
