@@ -316,6 +316,9 @@ _path_contains() {
   local ancestor descendant
   ancestor="$(_absolute_normalized_path "$1")"
   descendant="$(_absolute_normalized_path "$2")"
+  if [[ "${ancestor}" == "/" ]]; then
+    return 0
+  fi
   [[ "${descendant}" == "${ancestor}" || "${descendant}" == "${ancestor}/"* ]]
 }
 
