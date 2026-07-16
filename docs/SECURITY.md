@@ -153,6 +153,15 @@ baseline without stopping otherwise-authorized actions. `shisad status` and
 domain's typed load/degradation state while the daemon remains available for
 diagnosis.
 
+The shared atomic-snapshot and durable-append primitives descriptor-walk the
+complete parent chain without following symlinks, create missing components
+relative to held directory descriptors, and publish/open the final file
+relative to the verified parent descriptor. A symlinked intermediate below an
+admitted data root therefore fails before publication instead of redirecting a
+nested state domain. Evidence-domain root admission uses the same no-follow
+directory boundary before inspecting or initializing its salt, index, blob, or
+quarantine state.
+
 Concurrent confirmation clicks for one action are serialized by an in-memory
 per-confirmation lock while that daemon process is running. That lock is a
 local concurrency guard, not durable exactly-once evidence; the persisted
@@ -355,7 +364,14 @@ authority footprint.
 An existing control path is removed only when it is an owner socket that refuses
 a stream connection. The server holds an identity descriptor for the socket it
 creates and cleanup unlinks only that same object, so delayed shutdown cannot
-remove a successor or an unrelated file. If an assistant filesystem root
+remove a successor or an unrelated file. The runner delegates stale-socket
+decisions to that identity-safe server preflight and never unlinks a path merely
+because a status or stop RPC failed. Custom socket parents and their existing
+ancestors are walked without following symlinks; group/world-writable ancestry
+is rejected unless it is a shared sticky directory such as `/tmp`, and a
+non-sticky final parent must be owned by the current user. Clients apply the
+same parent checks, require an owner socket, and authenticate the connected
+server's peer UID before sending RPC traffic. If an assistant filesystem root
 contains claimed control state or trusted policy/signer/A2A private-key inputs,
 startup emits a visible preflight warning and the direct `fs.write` surface
 blocks the data tree, authority registry, exact trust inputs, and reserved

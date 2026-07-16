@@ -157,6 +157,108 @@ async def test_f3_control_server_creates_arbitrary_socket_parents_owner_only(
         await server.stop()
 
 
+@pytest.mark.asyncio
+async def test_f3_control_server_rejects_owner_writable_custom_socket_parent(
+    tmp_path: Path,
+) -> None:
+    socket_parent = tmp_path / "custom"
+    socket_parent.mkdir()
+    socket_parent.chmod(0o777)
+    server = ControlServer(socket_parent / "control.sock")
+
+    with pytest.raises(PermissionError, match="mode 0777"):
+        await server.start()
+
+    assert stat.S_IMODE(socket_parent.lstat().st_mode) == 0o777
+    assert not (socket_parent / "control.sock").exists()
+
+
+@pytest.mark.asyncio
+async def test_f3_control_server_rejects_writable_custom_socket_ancestor(
+    tmp_path: Path,
+) -> None:
+    writable_ancestor = tmp_path / "writable"
+    writable_ancestor.mkdir()
+    writable_ancestor.chmod(0o777)
+    socket_parent = writable_ancestor / "private"
+    socket_parent.mkdir(mode=0o700)
+    server = ControlServer(socket_parent / "control.sock")
+
+    with pytest.raises(PermissionError, match="mode 0777"):
+        await server.start()
+
+    assert not (socket_parent / "control.sock").exists()
+
+
+@pytest.mark.asyncio
+async def test_f3_control_client_rejects_owner_writable_custom_socket_parent(
+    tmp_path: Path,
+) -> None:
+    socket_parent = tmp_path / "custom"
+    socket_parent.mkdir()
+    socket_parent.chmod(0o777)
+    socket_path = socket_parent / "control.sock"
+    socket_path.write_text("spoof", encoding="utf-8")
+    client = ControlClient(socket_path)
+
+    with pytest.raises(PermissionError, match="mode 0777"):
+        await client.connect()
+
+    assert stat.S_IMODE(socket_parent.lstat().st_mode) == 0o777
+
+
+@pytest.mark.asyncio
+async def test_f3_control_client_rejects_writable_custom_socket_ancestor(
+    tmp_path: Path,
+) -> None:
+    writable_ancestor = tmp_path / "writable-client"
+    writable_ancestor.mkdir()
+    writable_ancestor.chmod(0o777)
+    socket_parent = writable_ancestor / "private"
+    socket_parent.mkdir(mode=0o700)
+    socket_path = socket_parent / "control.sock"
+    socket_path.write_text("spoof", encoding="utf-8")
+    client = ControlClient(socket_path)
+
+    with pytest.raises(PermissionError, match="mode 0777"):
+        await client.connect()
+
+
+@pytest.mark.asyncio
+async def test_f3_control_client_rejects_unowned_server_peer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket_path = tmp_path / "control.sock"
+
+    async def _close_peer(
+        _reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_unix_server(_close_peer, path=socket_path)
+    monkeypatch.setattr(
+        ControlServer,
+        "_get_peer_credentials",
+        staticmethod(
+            lambda _writer: transport.PeerCredentials(
+                uid=os.getuid() + 1,
+            )
+        ),
+    )
+    client = ControlClient(socket_path)
+    try:
+        with pytest.raises(PermissionError, match="server peer owned by uid"):
+            await client.connect()
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+        socket_path.unlink(missing_ok=True)
+
+
 def test_f3_arbitrary_socket_path_allows_foreign_owned_sticky_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

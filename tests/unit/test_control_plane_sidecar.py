@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from stat import S_IMODE
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,28 @@ async def _start_claimed_sidecar(
         claim.release()
         raise
     return handle, claim
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_socket_parent_is_owner_only_under_permissive_umask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    previous_umask = os.umask(0)
+    try:
+        handle, claim = await _start_claimed_sidecar(
+            data_dir=tmp_path / "data",
+            policy_path=tmp_path / "policy.yaml",
+        )
+    finally:
+        os.umask(previous_umask)
+    try:
+        assert S_IMODE(handle.socket_path.parent.stat().st_mode) == 0o700
+        assert S_IMODE(handle.socket_path.stat().st_mode) == 0o600
+    finally:
+        await handle.close()
+        claim.release()
 
 
 @pytest.mark.parametrize("failed_trace_write", [1, 2])
@@ -1038,7 +1061,6 @@ async def test_h1_control_plane_sidecar_rejects_client_when_parent_pid_mismatche
     claim = acquire_daemon_authority_claim(config)
     initialize_claimed_daemon_authorities(config, claim)
     socket_path = config.data_dir / "control_plane" / "sidecar.sock"
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
     lease = claim.duplicate_lease()
     try:
         process = await asyncio.create_subprocess_exec(

@@ -22,6 +22,7 @@ from shisad.core.api.transport import (
     OwnedSocketIdentity,
     PeerCredentials,
 )
+from shisad.core.atomic_state import ensure_owner_only_directory
 from shisad.core.authority import (
     DaemonAuthorityClaim,
     DaemonAuthorityLease,
@@ -840,7 +841,7 @@ async def start_control_plane_sidecar(
     spawn_cancelled = False
     try:
         verify_inherited_daemon_authority_lease(lease, data_dir=data_dir)
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_directory(socket_path.parent)
         spawn_task = asyncio.create_task(
             asyncio.create_subprocess_exec(
                 sys.executable,

@@ -164,6 +164,25 @@ def test_f3_evidence_domain_symlink_child_never_touches_external_directory(
     assert external_file.read_bytes() == b"must remain external"
 
 
+def test_f3_evidence_domain_symlinked_root_ancestor_never_touches_external_directory(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(mode=0o700)
+    external = tmp_path / "external-sessions"
+    external_root = external / "evidence"
+    external_root.mkdir(parents=True)
+    sentinel = external_root / "opaque.txt"
+    sentinel.write_bytes(b"must remain external")
+    (data_dir / "sessions").symlink_to(external, target_is_directory=True)
+
+    ledger = ArtifactLedger(data_dir / "sessions" / "evidence", salt=b"a" * 32)
+
+    _assert_degraded(ledger, reason="invalid_evidence_root")
+    assert sentinel.read_bytes() == b"must remain external"
+    assert sorted(path.name for path in external_root.iterdir()) == ["opaque.txt"]
+
+
 def test_f3_evidence_domain_missing_salt_retains_index_and_blob_without_rotation(
     tmp_path: Path,
 ) -> None:

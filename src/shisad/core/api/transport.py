@@ -73,57 +73,96 @@ def _private_socket_dirs_for(socket_path: Path) -> tuple[Path, ...]:
     return ()
 
 
+def _socket_directory_open_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    return flags | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _shared_sticky_socket_directory(directory_stat: os.stat_result) -> bool:
+    return bool(directory_stat.st_mode & stat.S_ISVTX) and bool(
+        directory_stat.st_mode & 0o002
+    )
+
+
+def _walk_custom_socket_parent(socket_path: Path, *, create: bool) -> None:
+    parent = Path(os.path.abspath(os.fspath(socket_path.parent)))
+    current = Path(parent.anchor)
+    current_fd = os.open(current, _socket_directory_open_flags())
+    creation_boundary = False
+    try:
+        for index, component in enumerate(parent.parts[1:]):
+            current /= component
+            created = False
+            try:
+                next_fd = os.open(
+                    component,
+                    _socket_directory_open_flags(),
+                    dir_fd=current_fd,
+                )
+            except FileNotFoundError:
+                if not create:
+                    return
+                creation_boundary = True
+                try:
+                    os.mkdir(component, 0o700, dir_fd=current_fd)
+                    created = True
+                except FileExistsError:
+                    pass
+                try:
+                    next_fd = os.open(
+                        component,
+                        _socket_directory_open_flags(),
+                        dir_fd=current_fd,
+                    )
+                except OSError as exc:
+                    raise PermissionError(
+                        f"Refusing to use unsafe socket ancestor {current}"
+                    ) from exc
+            except OSError as exc:
+                raise PermissionError(
+                    f"Refusing to use unsafe socket ancestor {current}: symlink or not a directory"
+                ) from exc
+
+            directory_stat = os.fstat(next_fd)
+            try:
+                if not stat.S_ISDIR(directory_stat.st_mode):
+                    raise PermissionError(
+                        f"Refusing to use unsafe socket ancestor {current}: not a directory"
+                    )
+                shared_sticky = _shared_sticky_socket_directory(directory_stat)
+                mode = stat.S_IMODE(directory_stat.st_mode)
+                is_final = index == len(parent.parts[1:]) - 1
+                if is_final and not shared_sticky and directory_stat.st_uid != _current_euid():
+                    raise PermissionError(
+                        "Refusing to use unsafe socket directory "
+                        f"{current}: owned by uid {directory_stat.st_uid}, "
+                        f"expected {_current_euid()}"
+                    )
+                if creation_boundary and directory_stat.st_uid != _current_euid():
+                    raise PermissionError(
+                        f"Created socket ancestry is not owner-controlled: {current}"
+                    )
+                if mode & 0o022 and not shared_sticky:
+                    raise PermissionError(
+                        f"Refusing to use unsafe socket directory {current}: mode {mode:04o}"
+                    )
+                if created:
+                    os.fchmod(next_fd, 0o700)
+                    os.fsync(next_fd)
+                    os.fsync(current_fd)
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+    finally:
+        os.close(current_fd)
+
+
 def _ensure_socket_parent(socket_path: Path) -> None:
     private_dirs = _private_socket_dirs_for(socket_path)
     if not private_dirs:
-        parent = socket_path.parent
-        missing: list[Path] = []
-        current = parent
-        while True:
-            try:
-                current_stat = current.lstat()
-            except FileNotFoundError:
-                missing.append(current)
-                if current.parent == current:
-                    raise PermissionError(
-                        f"Unable to locate an existing socket ancestor for {parent}"
-                    ) from None
-                current = current.parent
-                continue
-            if not stat.S_ISDIR(current_stat.st_mode):
-                raise PermissionError(
-                    f"Refusing to use unsafe socket ancestor {current}: not a directory"
-                )
-            break
-        for directory in reversed(missing):
-            created = False
-            try:
-                directory.mkdir(mode=0o700)
-                created = True
-            except FileExistsError:
-                pass
-            directory_stat = directory.lstat()
-            if not stat.S_ISDIR(directory_stat.st_mode):
-                raise PermissionError(
-                    f"Refusing to use unsafe socket directory {directory}: not a directory"
-                )
-            if directory_stat.st_uid != _current_euid():
-                raise PermissionError(
-                    "Refusing to use unsafe socket directory "
-                    f"{directory}: owned by uid {directory_stat.st_uid}, "
-                    f"expected {_current_euid()}"
-                )
-            if created:
-                directory.chmod(0o700)
-        parent_stat = parent.lstat()
-        if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
-            raise PermissionError(f"Refusing to use unsafe socket directory {parent}")
-        is_shared_sticky_parent = bool(parent_stat.st_mode & stat.S_ISVTX)
-        if parent_stat.st_uid != _current_euid() and not is_shared_sticky_parent:
-            raise PermissionError(
-                "Refusing to use unsafe socket directory "
-                f"{parent}: owned by uid {parent_stat.st_uid}, expected {_current_euid()}"
-            )
+        _walk_custom_socket_parent(socket_path, create=True)
         return
 
     for directory in private_dirs:
@@ -230,7 +269,11 @@ async def preflight_claimed_control_socket(socket_path: Path) -> None:
 
 
 def _validate_socket_parent(socket_path: Path) -> None:
-    for directory in _private_socket_dirs_for(socket_path):
+    private_dirs = _private_socket_dirs_for(socket_path)
+    if not private_dirs:
+        _walk_custom_socket_parent(socket_path, create=False)
+        return
+    for directory in private_dirs:
         try:
             directory_stat = os.lstat(directory)
         except FileNotFoundError:
@@ -851,7 +894,20 @@ class ControlClient:
     async def connect(self) -> None:
         """Connect to the daemon."""
         _validate_socket_parent(self._socket_path)
-        self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
+        socket_identity = OwnedSocketIdentity.capture(self._socket_path)
+        try:
+            reader, writer = await asyncio.open_unix_connection(str(self._socket_path))
+            peer = ControlServer._get_peer_credentials(writer)
+            if peer.uid != _current_euid():
+                writer.close()
+                raise PermissionError(
+                    "Refusing control server peer owned by uid "
+                    f"{peer.uid}, expected {_current_euid()}"
+                )
+            self._reader = reader
+            self._writer = writer
+        finally:
+            socket_identity.close()
 
     async def close(self) -> None:
         """Close the connection."""

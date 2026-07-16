@@ -40,6 +40,8 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    ensure_owner_only_directory,
+    validate_directory_ancestry,
 )
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall, SanitizationMode
@@ -922,6 +924,10 @@ class ArtifactLedger:
 
     def _probe_root(self) -> str:
         try:
+            validate_directory_ancestry(self._root_dir)
+        except OSError:
+            return "invalid"
+        try:
             root_stat = self._root_dir.lstat()
         except FileNotFoundError:
             return "missing"
@@ -962,14 +968,8 @@ class ArtifactLedger:
 
     @staticmethod
     def _ensure_owned_directory(path: Path, *, parents: bool) -> None:
-        try:
-            path_stat = path.lstat()
-        except FileNotFoundError:
-            path.mkdir(parents=parents, exist_ok=False, mode=0o700)
-        else:
-            if not stat.S_ISDIR(path_stat.st_mode):
-                raise OSError(f"evidence directory target is not a directory: {path}")
-        path.chmod(0o700)
+        del parents
+        ensure_owner_only_directory(path)
 
     def _load_existing_salt(self, configured_salt: bytes | None) -> str | None:
         if not self._salt_path.exists():

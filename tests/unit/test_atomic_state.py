@@ -128,6 +128,26 @@ def test_atomic_write_rejects_non_regular_existing_target(tmp_path: Path) -> Non
     assert raised.value.publication_may_have_committed is False
 
 
+def test_atomic_write_rejects_symlinked_existing_parent_ancestor(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside_parent = outside / "nested"
+    outside_parent.mkdir(parents=True)
+    sentinel = outside_parent / "sentinel.txt"
+    sentinel.write_bytes(b"outside")
+    (data_dir / "redirect").symlink_to(outside, target_is_directory=True)
+    target = data_dir / "redirect" / "nested" / "state.json"
+
+    with pytest.raises(AtomicWriteError) as raised:
+        atomic_write_bytes(target, b"payload")
+
+    assert raised.value.stage == AtomicWriteStage.DIRECTORY_PREPARE
+    assert raised.value.publication_may_have_committed is False
+    assert sentinel.read_bytes() == b"outside"
+    assert not (outside_parent / "state.json").exists()
+
+
 def test_atomic_write_types_target_lstat_errors_as_uncommitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -233,6 +253,26 @@ def test_durable_append_rejects_symlink_target(tmp_path: Path) -> None:
     assert raised.value.stage == DurableAppendStage.TARGET_VALIDATE
     assert raised.value.publication_may_have_committed is False
     assert outside.read_bytes() == b"outside\n"
+
+
+def test_durable_append_rejects_symlinked_existing_parent_ancestor(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside_parent = outside / "nested"
+    outside_parent.mkdir(parents=True)
+    sentinel = outside_parent / "sentinel.txt"
+    sentinel.write_bytes(b"outside")
+    (data_dir / "redirect").symlink_to(outside, target_is_directory=True)
+    target = data_dir / "redirect" / "nested" / "events.jsonl"
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"one"}\n')
+
+    assert raised.value.stage == DurableAppendStage.DIRECTORY_PREPARE
+    assert raised.value.publication_may_have_committed is False
+    assert sentinel.read_bytes() == b"outside"
+    assert not (outside_parent / "events.jsonl").exists()
 
 
 def test_durable_append_can_durably_create_an_empty_log(tmp_path: Path) -> None:

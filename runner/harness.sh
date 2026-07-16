@@ -171,8 +171,53 @@ _preflight_socket_parent() {
   socket_dir="$(dirname "${SHISAD_SOCKET_PATH}")"
 
   if ! _socket_dir_requires_private "${socket_dir}"; then
+    case "${socket_dir}" in
+      /*) ;;
+      *) _die "custom socket directory must be absolute: ${socket_dir}" ;;
+    esac
+    case "${socket_dir}" in
+      /*/../*|*/..|/*/./*|*/.)
+        _die "unsafe socket directory path components: ${socket_dir}"
+        ;;
+    esac
+    local -a ancestors=()
+    local current owner mode mode_value uid
+    current="${socket_dir}"
+    while true; do
+      ancestors=("${current}" "${ancestors[@]}")
+      [[ "${current}" == "/" ]] && break
+      current="$(dirname "${current}")"
+    done
+    uid="$(id -u)"
+    for current in "${ancestors[@]}"; do
+      if [[ -L "${current}" ]]; then
+        _die "unsafe socket directory: ${current} is a symlink"
+      fi
+      if [[ ! -e "${current}" ]]; then
+        if [[ "${create}" == true ]]; then
+          mkdir -m 700 -- "${current}" || _die "unable to create socket directory: ${current}"
+        else
+          return 0
+        fi
+      fi
+      if [[ ! -d "${current}" ]]; then
+        _die "unsafe socket directory: ${current} is not a directory"
+      fi
+      owner="$(_stat_uid "${current}")" || _die "unable to stat socket directory owner: ${current}"
+      mode="$(stat -c '%a' "${current}" 2>/dev/null || stat -f '%Lp' "${current}")"
+      mode_value=$((8#${mode}))
+      if (( (mode_value & 0022) != 0 )) \
+        && ! (( (mode_value & 01000) != 0 && (mode_value & 0002) != 0 )); then
+        _die "unsafe socket directory: ${current} has mode ${mode}"
+      fi
+      if [[ "${current}" == "${socket_dir}" ]] \
+        && ! (( (mode_value & 01000) != 0 && (mode_value & 0002) != 0 )) \
+        && [[ "${owner}" != "${uid}" ]]; then
+        _die "unsafe socket directory: ${current} is owned by uid ${owner}, expected ${uid}"
+      fi
+    done
     if [[ "${create}" == true ]]; then
-      mkdir -p "${socket_dir}"
+      chmod 700 -- "${socket_dir}" || _die "unable to restrict socket directory: ${socket_dir}"
     fi
     return 0
   fi
@@ -542,10 +587,6 @@ _cmd_start() {
     return 0
   fi
 
-  if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
-    rm -f "${SHISAD_SOCKET_PATH}" || true
-  fi
-
   if [[ "${fg}" == true ]]; then
     printf '%s\n' "Starting shisad in foreground (debug=${debug})"
     printf '%s\n' "  socket   : ${SHISAD_SOCKET_PATH}"
@@ -628,10 +669,6 @@ _cmd_stop() {
   fi
 
   rm -f "${pid_path}" || true
-
-  if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
-    rm -f "${SHISAD_SOCKET_PATH}" || true
-  fi
 
   printf '%s\n' "Daemon stop requested."
 }

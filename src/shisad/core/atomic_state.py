@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import hmac
 import json
@@ -119,31 +120,120 @@ class StatePersistenceDegradedError(RuntimeError):
         )
 
 
-def _missing_directory_chain(path: Path) -> list[Path]:
-    """Return missing directories from the requested leaf toward an existing root."""
+def _absolute_normalized_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
 
-    missing: list[Path] = []
-    current = path
-    while True:
-        try:
-            current_stat = current.lstat()
-        except FileNotFoundError:
-            missing.append(current)
-            parent = current.parent
-            if parent == current:
-                break
-            current = parent
-            continue
-        if not stat.S_ISDIR(current_stat.st_mode):
-            raise OSError("state parent is not a directory")
-        break
-    return missing
+
+def _directory_open_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    return flags | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _open_directory_chain(
+    path: Path,
+    *,
+    create: bool,
+) -> tuple[Path, int, list[Path]]:
+    """Descriptor-walk *path* without following any directory symlink."""
+
+    absolute = _absolute_normalized_path(path)
+    components = absolute.parts[1:]
+    current = Path(absolute.anchor)
+    current_fd = os.open(current, _directory_open_flags())
+    created_directories: list[Path] = []
+    creation_boundary = False
+    try:
+        for component in components:
+            current /= component
+            created = False
+            try:
+                next_fd = os.open(component, _directory_open_flags(), dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                creation_boundary = True
+                try:
+                    os.mkdir(component, 0o700, dir_fd=current_fd)
+                    created = True
+                except FileExistsError:
+                    pass
+                try:
+                    next_fd = os.open(component, _directory_open_flags(), dir_fd=current_fd)
+                except OSError as exc:
+                    raise OSError(
+                        errno.ELOOP,
+                        f"state path cannot be opened without symlink traversal: {current}",
+                    ) from exc
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise OSError(
+                        errno.ELOOP,
+                        f"state path has symlink or non-directory ancestry: {current}",
+                    ) from exc
+                raise
+            current_stat = os.fstat(next_fd)
+            try:
+                if not stat.S_ISDIR(current_stat.st_mode):
+                    raise OSError(f"state path ancestor is not a directory: {current}")
+                if creation_boundary and current_stat.st_uid != os.geteuid():
+                    raise PermissionError(
+                        f"created state ancestry is not owner-controlled: {current}"
+                    )
+                if creation_boundary and current_stat.st_mode & 0o022:
+                    raise PermissionError(
+                        f"created state ancestry is writable by another uid: {current}"
+                    )
+                if created:
+                    os.fchmod(next_fd, 0o700)
+                    os.fsync(next_fd)
+                    os.fsync(current_fd)
+                    created_directories.append(current)
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        return absolute, current_fd, created_directories
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def validate_directory_ancestry(path: Path) -> bool:
+    """Return whether *path* exists as a no-follow directory chain.
+
+    Missing paths are valid for later secure creation. Symlinked or
+    non-directory ancestry raises ``OSError`` instead of being treated as
+    missing authority.
+    """
+
+    directory_fd = -1
+    try:
+        _absolute, directory_fd, _created = _open_directory_chain(path, create=False)
+    except FileNotFoundError:
+        return False
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+    return True
+
+
+def ensure_owner_only_directory(path: Path) -> None:
+    """Securely create/admit a directory and restrict its final inode to 0700."""
+
+    absolute, directory_fd, _created = _open_directory_chain(path, create=True)
+    try:
+        directory_stat = os.fstat(directory_fd)
+        if directory_stat.st_uid != os.geteuid():
+            raise PermissionError(f"state directory is not owner-controlled: {absolute}")
+        os.fchmod(directory_fd, 0o700)
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _fsync_directory_path(path: Path) -> None:
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    directory_flags |= getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(path, directory_flags)
+    _absolute, fd, _created = _open_directory_chain(path, create=False)
     try:
         os.fsync(fd)
     finally:
@@ -313,23 +403,46 @@ def atomic_write_bytes(
 
     target = Path(path)
     _validate_existing_target(target)
-    parent = target.parent
+    absolute_target = _absolute_normalized_path(target)
+    parent = absolute_target.parent
+    target_name = absolute_target.name
     missing_directories: list[Path] = []
+    parent_fd = -1
     try:
-        missing_directories = _missing_directory_chain(parent)
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for created_directory in missing_directories:
-            created_directory.chmod(0o700)
+        _absolute_parent, parent_fd, created_directories = _open_directory_chain(
+            parent,
+            create=True,
+        )
+        missing_directories = list(reversed(created_directories))
+        try:
+            target_stat = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target_stat = None
+        if target_stat is not None and not stat.S_ISREG(target_stat.st_mode):
+            raise AtomicWriteError(
+                path=target,
+                stage=AtomicWriteStage.TARGET_VALIDATE,
+                publication_may_have_committed=False,
+            )
         if not preserve_existing_parent_mode or missing_directories:
-            parent.chmod(0o700)
+            parent_stat = os.fstat(parent_fd)
+            if parent_stat.st_uid != os.geteuid():
+                raise PermissionError(f"state parent is not owner-controlled: {parent}")
+            os.fchmod(parent_fd, 0o700)
+    except AtomicWriteError:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        raise
     except OSError as exc:
+        if parent_fd >= 0:
+            os.close(parent_fd)
         raise AtomicWriteError(
             path=target,
             stage=AtomicWriteStage.DIRECTORY_PREPARE,
             publication_may_have_committed=False,
         ) from exc
 
-    temp_path = parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    temp_name = f".{target_name}.{uuid.uuid4().hex}.tmp"
     file_fd = -1
     replaced = False
     stage = AtomicWriteStage.TEMP_OPEN
@@ -338,7 +451,7 @@ def atomic_write_bytes(
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
-        file_fd = os.open(temp_path, flags, 0o600)
+        file_fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
         os.fchmod(file_fd, 0o600)
 
         stage = AtomicWriteStage.WRITE
@@ -358,7 +471,12 @@ def atomic_write_bytes(
 
         stage = AtomicWriteStage.REPLACE
         _inject_fault(fault_injector, stage)
-        os.replace(temp_path, target)
+        os.replace(
+            temp_name,
+            target_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
         replaced = True
 
         stage = AtomicWriteStage.PARENT_FSYNC
@@ -380,7 +498,8 @@ def atomic_write_bytes(
                 os.close(file_fd)
         if not replaced:
             with contextlib.suppress(OSError):
-                temp_path.unlink()
+                os.unlink(temp_name, dir_fd=parent_fd)
+        os.close(parent_fd)
 
 
 def durable_append_bytes(
@@ -398,9 +517,13 @@ def durable_append_bytes(
     """
 
     target = Path(path)
+    absolute_target = _absolute_normalized_path(target)
+    parent = absolute_target.parent
+    target_name = absolute_target.name
     target_existed = False
+    parent_fd = -1
     try:
-        target_stat = target.lstat()
+        preliminary_stat = target.lstat()
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -410,25 +533,62 @@ def durable_append_bytes(
             publication_may_have_committed=False,
         ) from exc
     else:
-        if not stat.S_ISREG(target_stat.st_mode):
+        if not stat.S_ISREG(preliminary_stat.st_mode):
             raise DurableAppendError(
                 path=target,
                 stage=DurableAppendStage.TARGET_VALIDATE,
                 publication_may_have_committed=False,
             )
-        target_existed = True
 
-    parent = target.parent
-    missing_directories: list[Path] = []
     try:
         if fault_injector is not None:
             fault_injector(DurableAppendStage.DIRECTORY_PREPARE)
-        missing_directories = _missing_directory_chain(parent)
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for created_directory in missing_directories:
-            created_directory.chmod(0o700)
-        parent.chmod(0o700)
+        _absolute_parent, parent_fd, created_directories = _open_directory_chain(
+            parent,
+            create=True,
+        )
     except OSError as exc:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        raise DurableAppendError(
+            path=target,
+            stage=DurableAppendStage.DIRECTORY_PREPARE,
+            publication_may_have_committed=False,
+        ) from exc
+
+    try:
+        try:
+            target_stat = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target_stat = None
+        if target_stat is None:
+            pass
+        elif not stat.S_ISREG(target_stat.st_mode):
+            raise DurableAppendError(
+                path=target,
+                stage=DurableAppendStage.TARGET_VALIDATE,
+                publication_may_have_committed=False,
+            )
+        else:
+            target_existed = True
+    except DurableAppendError:
+        os.close(parent_fd)
+        raise
+    except OSError as exc:
+        os.close(parent_fd)
+        raise DurableAppendError(
+            path=target,
+            stage=DurableAppendStage.TARGET_VALIDATE,
+            publication_may_have_committed=False,
+        ) from exc
+    missing_directories = list(reversed(created_directories))
+    try:
+        parent_stat = os.fstat(parent_fd)
+        if parent_stat.st_uid != os.geteuid():
+            raise PermissionError(f"state parent is not owner-controlled: {parent}")
+        os.fchmod(parent_fd, 0o700)
+    except OSError as exc:
+        os.close(parent_fd)
         raise DurableAppendError(
             path=target,
             stage=DurableAppendStage.DIRECTORY_PREPARE,
@@ -449,7 +609,7 @@ def durable_append_bytes(
             flags |= os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
-        file_fd = os.open(target, flags, 0o600)
+        file_fd = os.open(target_name, flags, 0o600, dir_fd=parent_fd)
         created_file = not target_existed
         opened_stat = os.fstat(file_fd)
         if not stat.S_ISREG(opened_stat.st_mode):
@@ -495,7 +655,11 @@ def durable_append_bytes(
         if created_file and not wrote_payload and not completed:
             current_stat: os.stat_result | None
             try:
-                current_stat = target.lstat()
+                current_stat = os.stat(
+                    target_name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
             except OSError:
                 current_stat = None
             if current_stat is not None and opened_identity == (
@@ -503,16 +667,7 @@ def durable_append_bytes(
                 current_stat.st_ino,
             ):
                 with contextlib.suppress(OSError):
-                    target.unlink()
-            cleanup_parent_fd = -1
-            try:
-                directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                directory_flags |= getattr(os, "O_CLOEXEC", 0)
-                cleanup_parent_fd = os.open(parent, directory_flags)
-                os.fsync(cleanup_parent_fd)
-            except OSError:
-                pass
-            finally:
-                if cleanup_parent_fd >= 0:
-                    with contextlib.suppress(OSError):
-                        os.close(cleanup_parent_fd)
+                    os.unlink(target_name, dir_fd=parent_fd)
+            with contextlib.suppress(OSError):
+                os.fsync(parent_fd)
+        os.close(parent_fd)

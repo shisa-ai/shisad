@@ -7,6 +7,7 @@ secret loading, policy bootstrapping, and daemon lifecycle.
 from __future__ import annotations
 
 import os
+import socket
 import stat
 import subprocess
 import tempfile
@@ -565,3 +566,124 @@ def test_gh50_harness_socket_falls_back_to_user_tmp_default() -> None:
 
     assert f"SHISAD_SOCKET_PATH=/tmp/shisad-{os.getuid()}/control.sock" in output
     assert "/run/shisad" not in output
+
+
+def test_f3_harness_start_and_stop_preserve_unproven_control_paths(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_tmux = fake_bin / "tmux"
+    fake_tmux.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_tmux.chmod(0o700)
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text("version: '1'\n", encoding="utf-8")
+    policy_path.chmod(0o600)
+
+    for action in ("_cmd_start --no-debug", "_cmd_stop"):
+        for path_kind in ("regular", "socket"):
+            control_path = tmp_path / f"{action.split()[0]}-{path_kind}.sock"
+            live_socket: socket.socket | None = None
+            if path_kind == "regular":
+                control_path.write_text("unrelated", encoding="utf-8")
+            else:
+                live_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                live_socket.bind(str(control_path))
+                live_socket.listen()
+            before = control_path.lstat()
+            env = {k: v for k, v in os.environ.items() if k != "SHISAD_ENV_FILE"}
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:{env['PATH']}",
+                    "RUNNER_INHERIT_SHISAD_ENV": "1",
+                    "RUNNER_TMUX_SOCKET_NAME": "f3-unproven-path",
+                    "RUNNER_TMUX_SESSION_NAME": "f3-unproven-path",
+                    "SHISAD_DATA_DIR": str(tmp_path / "data"),
+                    "SHISAD_SOCKET_PATH": str(control_path),
+                    "SHISAD_POLICY_PATH": str(policy_path),
+                    "SHISAD_MODEL_PLANNER_REMOTE_ENABLED": "false",
+                }
+            )
+            try:
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        "source runner/harness.sh >/dev/null\n"
+                        "uv() { return 1; }\n"
+                        "_tmux() { return 0; }\n"
+                        f"{action}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(Path.cwd()),
+                    env=env,
+                )
+
+                assert result.returncode == 0, result.stderr
+                after = control_path.lstat()
+                assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+                if path_kind == "regular":
+                    assert control_path.read_text(encoding="utf-8") == "unrelated"
+            finally:
+                if live_socket is not None:
+                    live_socket.close()
+                if control_path.exists() or control_path.is_symlink():
+                    control_path.unlink()
+
+
+def test_f3_harness_rejects_writable_custom_socket_ancestor(tmp_path: Path) -> None:
+    writable_ancestor = tmp_path / "writable"
+    writable_ancestor.mkdir()
+    writable_ancestor.chmod(0o777)
+    socket_parent = writable_ancestor / "private"
+    socket_parent.mkdir(mode=0o700)
+    env = {k: v for k, v in os.environ.items() if k != "SHISAD_ENV_FILE"}
+    env.update(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "SHISAD_SOCKET_PATH": str(socket_parent / "control.sock"),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source runner/harness.sh >/dev/null\n"
+            "_runner_env\n_preflight_socket_parent false",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe socket directory" in result.stderr
+    assert "mode 777" in result.stderr
+
+
+def test_f3_harness_rejects_relative_custom_socket_path() -> None:
+    env = {k: v for k, v in os.environ.items() if k != "SHISAD_ENV_FILE"}
+    env.update(
+        {
+            "RUNNER_INHERIT_SHISAD_ENV": "1",
+            "SHISAD_SOCKET_PATH": "relative/control.sock",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source runner/harness.sh >/dev/null\n"
+            "_runner_env\n_preflight_socket_parent false",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+        timeout=2,
+    )
+
+    assert result.returncode != 0
+    assert "absolute" in result.stderr
