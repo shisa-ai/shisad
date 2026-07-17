@@ -4673,28 +4673,44 @@ class HandlerImplementation(
             }
             return
         if not load_result.legacy:
-            confirmation_ids: set[str] = set()
+            claimed_confirmation_ids: set[str] = set()
+            admission_failure = ""
             for item in raw:
                 confirmation_id = item.get("confirmation_id") if isinstance(item, dict) else None
                 normalized_confirmation_id = (
                     confirmation_id.strip() if isinstance(confirmation_id, str) else ""
                 )
-                if (
-                    not normalized_confirmation_id
-                    or normalized_confirmation_id in confirmation_ids
-                ):
-                    self._pending_state_load_result = StateLoadResult(
-                        StateLoadStatus.CORRUPT,
-                        reason="invalid_pending_action_row",
-                        schema_version=load_result.schema_version,
-                    )
-                    self._pending_state_degradation = {
-                        "transition": "load",
-                        "stage": "load",
-                        "reason": "invalid_pending_action_row",
-                    }
-                    return
-                confirmation_ids.add(normalized_confirmation_id)
+                if not normalized_confirmation_id:
+                    admission_failure = "invalid_pending_action_row"
+                    break
+                identity = item.get("identity") if isinstance(item, dict) else None
+                nested_confirmation_id = (
+                    identity.get("confirmation_id") if isinstance(identity, Mapping) else None
+                )
+                normalized_nested_confirmation_id = (
+                    nested_confirmation_id.strip()
+                    if isinstance(nested_confirmation_id, str)
+                    else ""
+                )
+                row_confirmation_ids = {normalized_confirmation_id}
+                if normalized_nested_confirmation_id:
+                    row_confirmation_ids.add(normalized_nested_confirmation_id)
+                if claimed_confirmation_ids.intersection(row_confirmation_ids):
+                    admission_failure = "duplicate_pending_action_identity"
+                    break
+                claimed_confirmation_ids.update(row_confirmation_ids)
+            if admission_failure:
+                self._pending_state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason=admission_failure,
+                    schema_version=load_result.schema_version,
+                )
+                self._pending_state_degradation = {
+                    "transition": "load",
+                    "stage": "load",
+                    "reason": admission_failure,
+                }
+                return
         self._pending_state_load_result = load_result
         self._pending_state_degradation = {}
         sensitive_pending_groups: set[tuple[str, str]] = set()
@@ -6539,10 +6555,12 @@ class HandlerImplementation(
             "reason": reason,
             "requested_at": datetime.now(UTC).isoformat(),
         }
-        durable_append_bytes(
+        artifact_identity = durable_append_bytes(
             self._pairing_requests_file,
             (json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n").encode("utf-8"),
+            expected_identity=self._pairing_request_artifact_identity,
         )
+        self._pairing_request_artifact_identity = artifact_identity
 
     def _inspect_pairing_request_publication_state(self) -> dict[str, str] | None:
         path = self._pairing_requests_file

@@ -278,14 +278,96 @@ def test_durable_append_is_owner_only_and_preserves_complete_rows(
     target = tmp_path / "channels" / "pairing_requests.jsonl"
     previous_umask = os.umask(0)
     try:
-        durable_append_bytes(target, b'{"id":"one"}\n')
-        durable_append_bytes(target, b'{"id":"two"}\n')
+        identity = durable_append_bytes(target, b'{"id":"one"}\n')
+        repeated_identity = durable_append_bytes(
+            target,
+            b'{"id":"two"}\n',
+            expected_identity=identity,
+        )
     finally:
         os.umask(previous_umask)
 
+    target_stat = target.stat()
+    assert identity == (target_stat.st_dev, target_stat.st_ino)
+    assert repeated_identity == identity
     assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert target.read_bytes() == b'{"id":"one"}\n{"id":"two"}\n'
+
+
+def test_durable_append_rejects_unexpected_existing_identity_before_write(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+    replacement = tmp_path / "replacement.jsonl"
+    replacement_bytes = b'{"id":"replacement"}\n'
+    replacement.write_bytes(replacement_bytes)
+    replacement.chmod(0o600)
+    replacement.replace(target)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            expected_identity=expected_identity,
+        )
+
+    assert raised.value.stage is DurableAppendStage.FILE_OPEN
+    assert raised.value.publication_may_have_committed is False
+    assert target.read_bytes() == replacement_bytes
+
+
+def test_durable_append_rejects_target_replacement_before_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    detached = tmp_path / "detached.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+    replacement_bytes = b'{"id":"replacement"}\n'
+    replacement.write_bytes(replacement_bytes)
+    replacement.chmod(0o600)
+
+    def _replace_target(stage: DurableAppendStage) -> None:
+        if stage is not DurableAppendStage.PARENT_FSYNC:
+            return
+        target.rename(detached)
+        replacement.replace(target)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"opened"}\n',
+            fault_injector=_replace_target,
+        )
+
+    assert raised.value.stage is DurableAppendStage.PARENT_FSYNC
+    assert raised.value.publication_may_have_committed is True
+    assert detached.read_bytes() == b'{"id":"opened"}\n'
+    assert target.read_bytes() == replacement_bytes
+
+
+def test_durable_append_rejects_hardlink_created_before_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    external = tmp_path / "external.jsonl"
+
+    def _create_hardlink(stage: DurableAppendStage) -> None:
+        if stage is DurableAppendStage.PARENT_FSYNC:
+            os.link(target, external)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"opened"}\n',
+            fault_injector=_create_hardlink,
+        )
+
+    assert raised.value.stage is DurableAppendStage.PARENT_FSYNC
+    assert raised.value.publication_may_have_committed is True
+    assert target.read_bytes() == b'{"id":"opened"}\n'
+    assert external.read_bytes() == b'{"id":"opened"}\n'
 
 
 def test_durable_append_fsyncs_each_new_parent_directory_entry(

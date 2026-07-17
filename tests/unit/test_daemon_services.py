@@ -1996,11 +1996,14 @@ async def test_f3_pending_action_legacy_owner_file_is_normalized_and_loaded(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "invalid_payload",
+    ("invalid_payload", "expected_reason"),
     [
-        [{}],
-        ["not-a-row"],
-        [{"confirmation_id": "duplicate"}, {"confirmation_id": " duplicate "}],
+        ([{}], "invalid_pending_action_row"),
+        (["not-a-row"], "invalid_pending_action_row"),
+        (
+            [{"confirmation_id": "duplicate"}, {"confirmation_id": " duplicate "}],
+            "duplicate_pending_action_identity",
+        ),
     ],
     ids=["identity-less", "non-dict", "duplicate-identity"],
 )
@@ -2008,6 +2011,7 @@ async def test_f3_current_pending_envelope_rejects_invalid_rows_without_rewrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     invalid_payload: list[object],
+    expected_reason: str,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     config = DaemonConfig(
@@ -2026,7 +2030,7 @@ async def test_f3_current_pending_envelope_rejects_invalid_rows_without_rewrite(
 
         status = impl._pending_action_state_status()
         assert status["status"] == "degraded"
-        assert status["reason"] == "invalid_pending_action_row"
+        assert status["reason"] == expected_reason
         assert status["fail_closed"] is True
         assert impl._pending_actions == {}
         assert pending_path.read_bytes() == retained_bytes
@@ -2040,6 +2044,51 @@ async def test_f3_current_pending_envelope_rejects_invalid_rows_without_rewrite(
                 reason="requires_confirmation",
                 capabilities={Capability.MEMORY_WRITE},
             )
+        assert pending_path.read_bytes() == retained_bytes
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collision_kind", ["nested", "scheduler-shadow"])
+async def test_f3_current_pending_envelope_rejects_canonical_identity_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    collision_kind: str,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    if collision_kind == "nested":
+        invalid_payload: list[object] = [
+            {"confirmation_id": "direct-a", "identity": {"confirmation_id": "shared"}},
+            {"confirmation_id": "direct-b", "identity": {"confirmation_id": "shared"}},
+        ]
+    else:
+        services.scheduler._pending_confirmations["task-shadow"] = [
+            {"confirmation_id": "shared"}
+        ]
+        invalid_payload = [
+            {"confirmation_id": "direct-a", "identity": {"confirmation_id": "shared"}},
+            {"confirmation_id": "shared", "identity": {"confirmation_id": "nested-b"}},
+        ]
+    pending_path = config.data_dir / "pending_actions.json"
+    retained_bytes = encode_versioned_json_snapshot(invalid_payload, version=1)
+    pending_path.write_bytes(retained_bytes)
+    pending_path.chmod(0o600)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        status = impl._pending_action_state_status()
+        assert status["status"] == "degraded"
+        assert status["reason"] == "duplicate_pending_action_identity"
+        assert status["fail_closed"] is True
+        assert impl._pending_actions == {}
         assert pending_path.read_bytes() == retained_bytes
     finally:
         await services.shutdown()

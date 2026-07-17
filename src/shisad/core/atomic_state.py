@@ -868,13 +868,15 @@ def durable_append_bytes(
     payload: bytes,
     *,
     fault_injector: DurableAppendFaultInjector | None = None,
-) -> None:
-    """Append owner-only bytes and fsync before acknowledging publication.
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[int, int]:
+    """Append owner-only bytes, returning the exact acknowledged file identity.
 
     The containing directory is fsynced before every acknowledgement, including
     retries that may be recovering a first publication. Append failures after
     any byte is written are typed as commit-uncertain; the caller must not assume
-    it is safe to retry an effect-bearing record.
+    it is safe to retry an effect-bearing record. When ``expected_identity`` is
+    provided, reject a different opened inode before writing.
     """
 
     target = Path(path)
@@ -982,6 +984,8 @@ def durable_append_bytes(
         if opened_stat.st_nlink != 1:
             raise PermissionError("durable append target must have exactly one link")
         opened_identity = (opened_stat.st_dev, opened_stat.st_ino)
+        if expected_identity is not None and opened_identity != expected_identity:
+            raise PermissionError("durable append target identity changed")
         os.fchmod(file_fd, 0o600)
 
         stage = DurableAppendStage.WRITE
@@ -1006,6 +1010,19 @@ def durable_append_bytes(
         os.fsync(parent_fd)
         for created_directory in reversed(missing_directories):
             _fsync_directory_path(created_directory.parent)
+        published_stat = os.stat(
+            target_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            opened_identity != (published_stat.st_dev, published_stat.st_ino)
+            or not stat.S_ISREG(published_stat.st_mode)
+            or published_stat.st_uid != os.geteuid()
+            or published_stat.st_nlink != 1
+            or stat.S_IMODE(published_stat.st_mode) != 0o600
+        ):
+            raise OSError("durable append target identity changed before acknowledgement")
         _verify_directory_path_identity(parent, expected=parent_identity)
         completed = True
     except DurableAppendError:
@@ -1039,3 +1056,6 @@ def durable_append_bytes(
             with contextlib.suppress(OSError):
                 os.fsync(parent_fd)
         os.close(parent_fd)
+    if opened_identity is None:
+        raise AssertionError("durable append completed without an opened identity")
+    return opened_identity
