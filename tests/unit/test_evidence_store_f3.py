@@ -29,6 +29,10 @@ from shisad.core.evidence import (
 )
 from shisad.core.types import SessionId, TaintLabel
 
+_ORDINARY_ATOMIC_WRITE_STAGES = [
+    stage for stage in AtomicWriteStage if stage is not AtomicWriteStage.CLEANUP
+]
+
 
 def _store(
     ledger: ArtifactLedger,
@@ -398,7 +402,7 @@ def test_f3_evidence_domain_rejects_authenticated_but_forged_ref_id(tmp_path: Pa
     _assert_degraded(restarted, reason="ref_id_auth_mismatch")
 
 
-@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+@pytest.mark.parametrize("stage", _ORDINARY_ATOMIC_WRITE_STAGES)
 def test_f3_evidence_blob_publication_fault_never_publishes_dangling_ref(
     tmp_path: Path,
     stage: AtomicWriteStage,
@@ -420,7 +424,7 @@ def test_f3_evidence_blob_publication_fault_never_publishes_dangling_ref(
     assert ledger.cleanup_allowed is False
 
 
-@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+@pytest.mark.parametrize("stage", _ORDINARY_ATOMIC_WRITE_STAGES)
 def test_f3_evidence_index_publication_fault_keeps_prior_committed_view(
     tmp_path: Path,
     stage: AtomicWriteStage,
@@ -447,7 +451,7 @@ def test_f3_evidence_index_publication_fault_keeps_prior_committed_view(
         assert (tmp_path / "evidence" / "refs_index.json").read_bytes() == committed_index
 
 
-@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+@pytest.mark.parametrize("stage", _ORDINARY_ATOMIC_WRITE_STAGES)
 def test_f3_evidence_endorsement_index_fault_keeps_prior_ref(
     tmp_path: Path,
     stage: AtomicWriteStage,
@@ -480,7 +484,7 @@ def test_f3_evidence_endorsement_index_fault_keeps_prior_ref(
         assert (evidence_root / "refs_index.json").read_bytes() == committed_index
 
 
-@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+@pytest.mark.parametrize("stage", _ORDINARY_ATOMIC_WRITE_STAGES)
 def test_f3_evidence_eviction_index_fault_restores_ref_marker_and_blob(
     tmp_path: Path,
     stage: AtomicWriteStage,
@@ -516,7 +520,7 @@ def test_f3_evidence_eviction_index_fault_restores_ref_marker_and_blob(
         assert (evidence_root / "refs_index.json").read_bytes() == committed_index
 
 
-@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+@pytest.mark.parametrize("stage", _ORDINARY_ATOMIC_WRITE_STAGES)
 def test_f3_evidence_lazy_drop_index_fault_restores_ref_and_marker(
     tmp_path: Path,
     stage: AtomicWriteStage,
@@ -833,6 +837,29 @@ def test_f3_evidence_legacy_quarantine_migration_uses_new_time_not_mtime(tmp_pat
     assert entries[0].read_bytes() == b"legacy quarantine"
 
 
+@pytest.mark.parametrize("entry_kind", ["orphan", "legacy_quarantine"])
+def test_f3_evidence_quarantine_never_follows_symlinked_file_entries(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    ArtifactLedger(evidence_root, salt=b"a" * 32)
+    external = tmp_path / "external.txt"
+    external.write_bytes(b"must remain external")
+    if entry_kind == "orphan":
+        entry = evidence_root / "blobs" / f"{'d' * 64}.txt"
+    else:
+        entry = evidence_root / "quarantine" / f"{'e' * 64}.txt"
+    entry.symlink_to(external)
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason="quarantine_publication_failed")
+    assert entry.is_symlink() is True
+    assert external.read_bytes() == b"must remain external"
+    assert not list((evidence_root / "quarantine").glob("v1.*.txt"))
+
+
 def test_f3_evidence_prune_uses_parseable_quarantine_time_and_fsyncs_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -937,7 +964,7 @@ def test_f3_evidence_reset_create_failure_restores_old_domain(
     assert restarted.read(SessionId("sess-a"), ref.ref_id) == "evidence"
 
 
-@pytest.mark.parametrize("stage", list(AtomicWriteStage))
+@pytest.mark.parametrize("stage", _ORDINARY_ATOMIC_WRITE_STAGES)
 def test_f3_evidence_reset_atomic_create_fault_restores_old_domain(
     tmp_path: Path,
     stage: AtomicWriteStage,

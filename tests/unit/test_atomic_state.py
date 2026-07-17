@@ -21,6 +21,7 @@ from shisad.core.atomic_state import (
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
+    open_owned_regular_file,
 )
 from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
@@ -135,7 +136,6 @@ def test_atomic_write_fsyncs_each_new_parent_directory_entry(
     atomic_write_bytes(target, b"payload")
 
     assert fsynced == [
-        target.parent,
         tmp_path,
         tmp_path / "channels",
     ]
@@ -192,6 +192,31 @@ def test_atomic_write_rejects_symlinked_existing_parent_ancestor(tmp_path: Path)
     assert raised.value.publication_may_have_committed is False
     assert sentinel.read_bytes() == b"outside"
     assert not (outside_parent / "state.json").exists()
+
+
+def test_atomic_write_rejects_parent_directory_replacement_before_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "state"
+    parent.mkdir()
+    target = parent / "state.json"
+    detached = tmp_path / "detached-state"
+    replacement = tmp_path / "replacement-state"
+
+    def _replace_parent(stage: AtomicWriteStage) -> None:
+        if stage is not AtomicWriteStage.PARENT_FSYNC:
+            return
+        parent.rename(detached)
+        replacement.mkdir()
+        replacement.rename(parent)
+
+    with pytest.raises(AtomicWriteError) as raised:
+        atomic_write_bytes(target, b"new", fault_injector=_replace_parent)
+
+    assert raised.value.stage is AtomicWriteStage.PARENT_FSYNC
+    assert raised.value.publication_may_have_committed is True
+    assert (detached / target.name).read_bytes() == b"new"
+    assert not target.exists()
 
 
 def test_atomic_write_types_target_lstat_errors_as_uncommitted(
@@ -280,7 +305,6 @@ def test_durable_append_fsyncs_each_new_parent_directory_entry(
     durable_append_bytes(target, b'{"id":"one"}\n')
 
     assert fsynced == [
-        target.parent,
         tmp_path,
         tmp_path / "channels",
     ]
@@ -319,6 +343,67 @@ def test_durable_append_rejects_symlinked_existing_parent_ancestor(tmp_path: Pat
     assert raised.value.publication_may_have_committed is False
     assert sentinel.read_bytes() == b"outside"
     assert not (outside_parent / "events.jsonl").exists()
+
+
+def test_durable_append_rejects_parent_directory_replacement_before_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "control"
+    parent.mkdir()
+    target = parent / "events.jsonl"
+    detached = tmp_path / "detached-control"
+    replacement = tmp_path / "replacement-control"
+
+    def _replace_parent(stage: DurableAppendStage) -> None:
+        if stage is not DurableAppendStage.PARENT_FSYNC:
+            return
+        parent.rename(detached)
+        replacement.mkdir()
+        replacement.rename(parent)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"one"}\n', fault_injector=_replace_parent)
+
+    assert raised.value.stage is DurableAppendStage.PARENT_FSYNC
+    assert raised.value.publication_may_have_committed is True
+    assert (detached / target.name).read_bytes() == b'{"id":"one"}\n'
+    assert not target.exists()
+
+
+def test_durable_append_rejects_hardlinked_target_without_mutating_external(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external.jsonl"
+    external.write_bytes(b"external\n")
+    external.chmod(0o640)
+    target = tmp_path / "control" / "events.jsonl"
+    target.parent.mkdir()
+    os.link(external, target)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"one"}\n')
+
+    assert raised.value.stage is DurableAppendStage.FILE_OPEN
+    assert raised.value.publication_may_have_committed is False
+    assert external.read_bytes() == b"external\n"
+    assert stat.S_IMODE(external.stat().st_mode) == 0o640
+
+
+def test_owned_reader_rejects_hardlink_before_mode_normalization(tmp_path: Path) -> None:
+    external = tmp_path / "external.json"
+    external.write_bytes(b"external")
+    external.chmod(0o640)
+    target = tmp_path / "state.json"
+    os.link(external, target)
+
+    with (
+        pytest.raises(PermissionError),
+        open_owned_regular_file(target, normalize_mode=0o600),
+    ):
+        pass
+
+    assert external.read_bytes() == b"external"
+    assert stat.S_IMODE(external.stat().st_mode) == 0o640
 
 
 def test_durable_append_can_durably_create_an_empty_log(tmp_path: Path) -> None:

@@ -416,13 +416,20 @@ def open_owned_regular_file(
     *,
     required_mode: int | None = None,
     normalize_mode: int | None = None,
+    unlink_on_success: bool = False,
 ) -> Iterator[BinaryIO | None]:
-    """Open an owner-controlled regular file through a no-follow parent."""
+    """Open an owner-controlled regular file through a no-follow parent.
+
+    When ``unlink_on_success`` is set, remove only the exact opened inode through
+    the held parent descriptor after the context body returns successfully.
+    """
 
     absolute = _absolute_normalized_path(path)
     parent_fd = -1
     file_fd = -1
     handle: BinaryIO | None = None
+    parent_identity = (-1, -1)
+    file_identity = (-1, -1)
     try:
         try:
             _absolute, parent_fd, _created = _open_directory_chain(
@@ -432,6 +439,8 @@ def open_owned_regular_file(
         except FileNotFoundError:
             yield None
             return
+        parent_stat = os.fstat(parent_fd)
+        parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
@@ -444,6 +453,9 @@ def open_owned_regular_file(
             raise OSError(f"state target is not a regular file: {absolute}")
         if file_stat.st_uid != os.geteuid():
             raise PermissionError(f"state target is not owner-controlled: {absolute}")
+        if file_stat.st_nlink != 1:
+            raise PermissionError(f"state target must have exactly one link: {absolute}")
+        file_identity = (file_stat.st_dev, file_stat.st_ino)
         if required_mode is not None and stat.S_IMODE(file_stat.st_mode) != required_mode:
             raise PermissionError(
                 f"state target must have mode {required_mode:04o}: {absolute} "
@@ -454,6 +466,17 @@ def open_owned_regular_file(
         handle = os.fdopen(file_fd, "rb", closefd=True)
         file_fd = -1
         yield handle
+        if unlink_on_success:
+            current_stat = os.stat(
+                absolute.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (current_stat.st_dev, current_stat.st_ino) != file_identity:
+                raise OSError(f"state target identity changed: {absolute}")
+            os.unlink(absolute.name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            _verify_directory_path_identity(absolute.parent, expected=parent_identity)
     finally:
         if handle is not None:
             handle.close()
@@ -756,10 +779,7 @@ def atomic_write_bytes(
 
         stage = AtomicWriteStage.PARENT_FSYNC
         _inject_fault(fault_injector, stage)
-        if cleanup_sibling_prefix is None:
-            _fsync_directory_path(parent)
-        else:
-            os.fsync(parent_fd)
+        os.fsync(parent_fd)
         for created_directory in reversed(missing_directories):
             _fsync_directory_path(created_directory.parent)
 
@@ -770,7 +790,7 @@ def atomic_write_bytes(
                 parent_fd,
                 name_prefix=cleanup_sibling_prefix,
             )
-            _verify_directory_path_identity(parent, expected=parent_identity)
+        _verify_directory_path_identity(parent, expected=parent_identity)
     except AtomicWriteError:
         raise
     except OSError as exc:
@@ -870,11 +890,13 @@ def durable_append_bytes(
             publication_may_have_committed=False,
         ) from exc
     missing_directories = list(reversed(created_directories))
+    parent_identity = (-1, -1)
     try:
         parent_stat = os.fstat(parent_fd)
         if parent_stat.st_uid != os.geteuid():
             raise PermissionError(f"state parent is not owner-controlled: {parent}")
         os.fchmod(parent_fd, 0o700)
+        parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
     except OSError as exc:
         os.close(parent_fd)
         raise DurableAppendError(
@@ -902,6 +924,10 @@ def durable_append_bytes(
         opened_stat = os.fstat(file_fd)
         if not stat.S_ISREG(opened_stat.st_mode):
             raise OSError("durable append target is not a regular file")
+        if opened_stat.st_uid != os.geteuid():
+            raise PermissionError("durable append target is not owner-controlled")
+        if opened_stat.st_nlink != 1:
+            raise PermissionError("durable append target must have exactly one link")
         opened_identity = (opened_stat.st_dev, opened_stat.st_ino)
         os.fchmod(file_fd, 0o600)
 
@@ -924,9 +950,10 @@ def durable_append_bytes(
         stage = DurableAppendStage.PARENT_FSYNC
         if fault_injector is not None:
             fault_injector(stage)
-        _fsync_directory_path(parent)
+        os.fsync(parent_fd)
         for created_directory in reversed(missing_directories):
             _fsync_directory_path(created_directory.parent)
+        _verify_directory_path_identity(parent, expected=parent_identity)
         completed = True
     except DurableAppendError:
         raise

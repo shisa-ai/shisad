@@ -41,6 +41,7 @@ from shisad.core.atomic_state import (
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
+    open_owned_regular_file,
     validate_directory_ancestry,
 )
 from shisad.core.types import SessionId, TaintLabel
@@ -1336,10 +1337,11 @@ class ArtifactLedger:
             f"v1.{time.time_ns()}.{uuid4().hex}.{content_hash}.txt"
         )
         try:
-            payload = source.read_bytes()
-            self._atomic_write(destination, payload)
-            source.unlink()
-            self._fsync_directory(source.parent)
+            with open_owned_regular_file(source, unlink_on_success=True) as handle:
+                if handle is None:
+                    raise FileNotFoundError(source)
+                payload = handle.read()
+                self._atomic_write(destination, payload)
         except (AtomicWriteError, OSError):
             logger.warning("Failed to quarantine evidence blob %s", source, exc_info=True)
             self._mark_runtime_degraded("quarantine_publication_failed")
