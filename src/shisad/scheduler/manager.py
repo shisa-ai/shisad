@@ -234,27 +234,36 @@ class SchedulerManager:
         self._require_state_writable("tasks", transition="create")
         self._validate_schedule(schedule)
         capability_snapshot_frozen = frozenset(capability_snapshot)
-        owner = str(created_by or "unknown")
+        owner_user_id = str(created_by)
+        owner = owner_user_id or "unknown"
         workspace = str(workspace_id or WorkspaceId(""))
         orchestrator_provenance = f"scheduler:{owner}:{workspace}"
+        task_envelope = TaskEnvelope(
+            capability_snapshot=capability_snapshot_frozen,
+            parent_session_id="",
+            orchestrator_provenance=orchestrator_provenance,
+            owner_user_id=owner_user_id,
+            workspace_id=workspace,
+            audit_trail_ref="",
+            policy_snapshot_ref=policy_snapshot_ref,
+            lockdown_state_inheritance="inherit_runtime_restrictions",
+            credential_refs=tuple(credential_refs or ()),
+            resource_scope_ids=tuple(resource_scope_ids or ()),
+            resource_scope_prefixes=tuple(resource_scope_prefixes or ()),
+            untrusted_payload_action=untrusted_payload_action,
+        )
         task = ScheduledTask(
             name=name,
             goal=goal,
             schedule=schedule,
             capability_snapshot=capability_snapshot_frozen,
             policy_snapshot_ref=policy_snapshot_ref,
-            task_envelope=TaskEnvelope(
-                capability_snapshot=capability_snapshot_frozen,
-                parent_session_id="",
-                orchestrator_provenance=orchestrator_provenance,
-                audit_trail_ref="",
-                policy_snapshot_ref=policy_snapshot_ref,
-                lockdown_state_inheritance="inherit_runtime_restrictions",
-                credential_refs=tuple(credential_refs or ()),
-                resource_scope_ids=tuple(resource_scope_ids or ()),
-                resource_scope_prefixes=tuple(resource_scope_prefixes or ()),
-                untrusted_payload_action=untrusted_payload_action,
-            ),
+            task_envelope=task_envelope,
+            credential_refs=task_envelope.credential_refs,
+            resource_scope_ids=task_envelope.resource_scope_ids,
+            resource_scope_prefixes=task_envelope.resource_scope_prefixes,
+            resource_scope_authority=task_envelope.resource_scope_authority,
+            untrusted_payload_action=task_envelope.untrusted_payload_action,
             allowed_recipients=allowed_recipients or [],
             allowed_domains=allowed_domains or [],
             delivery_target=dict(delivery_target or {}),
@@ -262,6 +271,8 @@ class SchedulerManager:
             workspace_id=workspace_id or WorkspaceId(""),
             max_runs=max(0, int(max_runs)),
         )
+        if mismatch_reason := task.envelope_binding_mismatch_reason():
+            raise ValueError(mismatch_reason)
         self._tasks[task.id] = task
         self._persist_tasks()
         self._audit("task.create", {"task_id": task.id, "name": name, "max_runs": task.max_runs})
@@ -1379,6 +1390,12 @@ class SchedulerManager:
                 self._state_load_results["tasks"] = self._semantic_corruption_result(
                     result,
                     "invalid_task_row",
+                )
+                return
+            if mismatch_reason := task.envelope_binding_mismatch_reason():
+                self._state_load_results["tasks"] = self._semantic_corruption_result(
+                    result,
+                    mismatch_reason,
                 )
                 return
             try:

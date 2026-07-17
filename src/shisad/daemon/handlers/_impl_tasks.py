@@ -183,6 +183,21 @@ class TasksImplMixin(HandlerMixinBase):
                 return existing
 
         task_envelope = getattr(task, "task_envelope", None)
+        task_user_id = str(
+            getattr(task_envelope, "owner_user_id", "")
+            or getattr(task, "created_by", "")
+        )
+        task_workspace_id = str(
+            getattr(task_envelope, "workspace_id", "")
+            or getattr(task, "workspace_id", "")
+        )
+        task_capabilities = set(
+            getattr(
+                task_envelope,
+                "capability_snapshot",
+                getattr(task, "capability_snapshot", set()),
+            )
+        )
         parent_session_id = None
         if task_envelope is not None:
             raw_parent_session_id = str(getattr(task_envelope, "parent_session_id", "")).strip()
@@ -191,11 +206,11 @@ class TasksImplMixin(HandlerMixinBase):
 
         session = self._session_manager.create_subagent_session(
             channel="scheduler",
-            user_id=UserId(str(getattr(task, "created_by", ""))),
-            workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
+            user_id=UserId(task_user_id),
+            workspace_id=WorkspaceId(task_workspace_id),
             parent_session_id=parent_session_id,
             mode=SessionMode.DEFAULT,
-            capabilities=set(getattr(task, "capability_snapshot", set())),
+            capabilities=task_capabilities,
             metadata={
                 "trust_level": "internal",
                 "background_task_id": str(getattr(task, "id", "")),
@@ -216,8 +231,8 @@ class TasksImplMixin(HandlerMixinBase):
     ) -> Origin:
         return Origin(
             session_id=str(session.id),
-            user_id=str(getattr(task, "created_by", "")),
-            workspace_id=str(getattr(task, "workspace_id", "")),
+            user_id=str(getattr(session, "user_id", "")),
+            workspace_id=str(getattr(session, "workspace_id", "")),
             task_id=str(getattr(task, "id", "")),
             actor="scheduler",
             channel=str(getattr(session, "channel", "scheduler")),

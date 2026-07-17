@@ -19,7 +19,7 @@ from shisad.core.atomic_state import (
     encode_versioned_json_snapshot,
 )
 from shisad.core.audit import AuditLog
-from shisad.core.types import Capability, UserId
+from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.engine import ControlPlaneEngine
@@ -230,6 +230,76 @@ def test_scheduler_versioned_snapshot_detects_checksum_tampering(tmp_path: Path)
     assert tasks_path.read_bytes() == tampered_bytes
     with pytest.raises(StatePersistenceDegradedError, match=r"scheduler\.tasks"):
         restarted.get_task("missing")
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "capability",
+        "policy",
+        "owner",
+        "workspace",
+        "provenance",
+        "credential",
+        "resource_ids",
+        "resource_prefixes",
+        "resource_authority",
+        "untrusted_payload_action",
+    ],
+)
+def test_f3_scheduler_rejects_retained_task_envelope_binding_mismatch(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    scheduler.create_task(
+        name="bound-task",
+        goal="send the retained report",
+        schedule=Schedule.from_event("report.ready"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="policy-v1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        credential_refs=["credential:mail"],
+        resource_scope_ids=["thread:ops"],
+        resource_scope_prefixes=["artifact:report:"],
+    )
+    tasks_path = storage / "tasks.json"
+    snapshot = json.loads(tasks_path.read_text(encoding="utf-8"))
+    task_row = snapshot["payload"][0]
+    if binding == "capability":
+        task_row["capability_snapshot"] = []
+    elif binding == "policy":
+        task_row["policy_snapshot_ref"] = "policy-other"
+    elif binding == "owner":
+        task_row["created_by"] = "mallory"
+    elif binding == "workspace":
+        task_row["workspace_id"] = "ws-other"
+    elif binding == "provenance":
+        task_row["task_envelope"]["orchestrator_provenance"] = "scheduler:mallory:ws1"
+    elif binding == "credential":
+        task_row["credential_refs"] = ["credential:other"]
+    elif binding == "resource_ids":
+        task_row["resource_scope_ids"] = ["thread:other"]
+    elif binding == "resource_prefixes":
+        task_row["resource_scope_prefixes"] = ["artifact:other:"]
+    elif binding == "resource_authority":
+        task_row["resource_scope_authority"] = "command_clean"
+    else:
+        task_row["untrusted_payload_action"] = "reject"
+    mismatched_bytes = encode_versioned_json_snapshot(snapshot["payload"])
+    tasks_path.write_bytes(mismatched_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("tasks")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == f"task_envelope_{binding}_mismatch"
+    assert restarted._tasks == {}
+    with pytest.raises(StatePersistenceDegradedError, match=r"scheduler\.tasks"):
+        restarted.list_tasks()
+    assert tasks_path.read_bytes() == mismatched_bytes
 
 
 def test_scheduler_unsupported_schema_is_typed_and_retained(tmp_path: Path) -> None:

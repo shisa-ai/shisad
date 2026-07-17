@@ -798,6 +798,12 @@ class SessionManager:
             raise SessionRehydrateError("invalid_task_envelope_payload") from exc
         if set(session.capabilities) != set(task_envelope.capability_snapshot):
             raise SessionRehydrateError("task_envelope_capability_mismatch")
+        envelope_owner = task_envelope.owner_user_id.strip()
+        if envelope_owner and str(session.user_id) != envelope_owner:
+            raise SessionRehydrateError("task_envelope_owner_mismatch")
+        envelope_workspace = task_envelope.workspace_id.strip()
+        if envelope_workspace and str(session.workspace_id) != envelope_workspace:
+            raise SessionRehydrateError("task_envelope_workspace_mismatch")
         metadata_parent = str(session.metadata.get("parent_session_id", "")).strip()
         envelope_parent = str(task_envelope.parent_session_id).strip()
         if metadata_parent and envelope_parent and metadata_parent != envelope_parent:

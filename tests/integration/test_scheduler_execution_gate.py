@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from shisad.core.api.transport import ControlClient
+from shisad.core.atomic_state import encode_versioned_json_snapshot
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
@@ -690,14 +691,15 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
         await _shutdown_daemon(daemon_task, client)
 
     pending_actions_file = tmp_path / "data" / "pending_actions.json"
-    pending_actions = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    pending_actions = _state_snapshot_payload(pending_actions_file)
+    assert isinstance(pending_actions, list)
     for row in pending_actions:
         if str(row.get("confirmation_id", "")) == confirmation_id:
             row["created_at"] = (datetime.now(UTC) - timedelta(days=10)).isoformat()
             break
     else:
         raise AssertionError(f"Pending action not found: {confirmation_id}")
-    pending_actions_file.write_text(json.dumps(pending_actions, indent=2), encoding="utf-8")
+    pending_actions_file.write_bytes(encode_versioned_json_snapshot(pending_actions))
 
     daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:

@@ -1133,11 +1133,21 @@ def test_m1_scheduler_persists_task_envelope_snapshot(tmp_path: Path) -> None:
         policy_snapshot_ref="p1",
         created_by=UserId("alice"),
         workspace_id=WorkspaceId("ws1"),
+        credential_refs=["credential:mail"],
+        resource_scope_ids=["thread:ops"],
+        resource_scope_prefixes=["artifact:report:"],
     )
 
     assert created.task_envelope.capability_snapshot == frozenset({Capability.MESSAGE_SEND})
     assert created.task_envelope.policy_snapshot_ref == "p1"
     assert created.task_envelope.orchestrator_provenance == "scheduler:alice:ws1"
+    assert created.task_envelope.owner_user_id == "alice"
+    assert created.task_envelope.workspace_id == "ws1"
+    assert created.credential_refs == created.task_envelope.credential_refs == ("credential:mail",)
+    assert created.resource_scope_ids == created.task_envelope.resource_scope_ids == ("thread:ops",)
+    assert created.resource_scope_prefixes == created.task_envelope.resource_scope_prefixes == (
+        "artifact:report:",
+    )
 
     with pytest.raises((TypeError, ValueError)):
         created.task_envelope.policy_snapshot_ref = "changed"
@@ -1148,6 +1158,13 @@ def test_m1_scheduler_persists_task_envelope_snapshot(tmp_path: Path) -> None:
     assert loaded.task_envelope.capability_snapshot == frozenset({Capability.MESSAGE_SEND})
     assert loaded.task_envelope.policy_snapshot_ref == "p1"
     assert loaded.task_envelope.orchestrator_provenance == "scheduler:alice:ws1"
+    assert loaded.task_envelope.owner_user_id == "alice"
+    assert loaded.task_envelope.workspace_id == "ws1"
+    assert loaded.credential_refs == loaded.task_envelope.credential_refs == ("credential:mail",)
+    assert loaded.resource_scope_ids == loaded.task_envelope.resource_scope_ids == ("thread:ops",)
+    assert loaded.resource_scope_prefixes == loaded.task_envelope.resource_scope_prefixes == (
+        "artifact:report:",
+    )
 
 
 def test_g3_scheduler_prunes_resolved_confirmation_backlog(tmp_path: Path) -> None:
