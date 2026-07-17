@@ -4680,10 +4680,8 @@ class HandlerImplementation(
         admission_failure = ""
         for item in raw:
             if not isinstance(item, dict):
-                if not load_result.legacy:
-                    admission_failure = "invalid_pending_action_row"
-                    break
-                continue
+                admission_failure = "invalid_pending_action_row"
+                break
             confirmation_id = item.get("confirmation_id")
             normalized_confirmation_id = (
                 confirmation_id.strip() if isinstance(confirmation_id, str) else ""
@@ -4712,7 +4710,8 @@ class HandlerImplementation(
             if normalized_nested_confirmation_id:
                 row_confirmation_ids.add(normalized_nested_confirmation_id)
             if not row_confirmation_ids:
-                continue
+                admission_failure = "invalid_pending_action_row"
+                break
             if claimed_confirmation_ids.intersection(row_confirmation_ids):
                 admission_failure = "duplicate_pending_action_identity"
                 break
