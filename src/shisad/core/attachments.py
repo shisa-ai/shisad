@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import struct
 import wave
 from dataclasses import dataclass
@@ -11,7 +12,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from shisad.assistant.boundary_helpers import _is_within, _read_limited
+from shisad.assistant.boundary_helpers import (
+    _is_within,
+    _open_nofollow_regular_file,
+    _read_limited,
+)
 from shisad.core.evidence import ArtifactLedger, ArtifactLifecycleState
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall
@@ -79,8 +84,8 @@ class AttachmentIngestor:
         hint = self._kind_hint(declared_mime=declared_mime, filename=display_filename)
         byte_limit = self._byte_limit(kind_hint=hint, max_bytes=max_bytes)
         try:
-            size_bytes = resolved.stat().st_size
-            with resolved.open("rb") as handle:
+            with _open_nofollow_regular_file(resolved) as handle:
+                size_bytes = os.fstat(handle.fileno()).st_size
                 payload, truncated = _read_limited(handle, limit=byte_limit)
         except OSError:
             return self._error("read_failed", path=str(resolved))

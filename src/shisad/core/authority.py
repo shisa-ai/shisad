@@ -18,7 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shisad.core.atomic_state import validate_owner_controlled_parent_ancestry
+from shisad.core.atomic_state import (
+    atomic_write_temp_prefix,
+    validate_owner_controlled_parent_ancestry,
+)
 from shisad.core.config import DaemonConfig, effective_approval_factor_store_path
 
 _REGISTRY_SCHEMA_VERSION = 2
@@ -374,6 +377,7 @@ def _external_sibling_patterns(path: Path) -> tuple[_SiblingPattern, ...]:
         _SiblingPattern(parent, f"{name}.tombstone."),
         _SiblingPattern(parent, f"{name}.migrate."),
         _SiblingPattern(parent, f".{name}.", suffix=".tmp"),
+        _SiblingPattern(parent, atomic_write_temp_prefix(name), suffix=".tmp"),
         _SiblingPattern(parent, f".{name}.bak-"),
         _SiblingPattern(parent, f".{name}.tombstone-"),
         _SiblingPattern(parent, f".{name}.migrate-"),
@@ -500,26 +504,36 @@ def derive_daemon_authority_candidates(
     """Derive the complete baseline mutable-authority set without mutation."""
 
     data_dir = _absolute_lexical_path(config.data_dir)
+    data_candidate = _candidate("data_root", config.data_dir)
+
+    def _map_contained(path: Path) -> tuple[Path, bool]:
+        lexical = _absolute_lexical_path(path)
+        if lexical.is_relative_to(data_dir):
+            relative = lexical.relative_to(data_dir)
+            return data_candidate.path / relative, True
+        return path, False
+
+    control_path, _control_contained = _map_contained(config.socket_path)
     candidates = [
-        _candidate("data_root", config.data_dir),
-        _candidate("control_socket", config.socket_path),
+        data_candidate,
+        _candidate("control_socket", control_path),
     ]
     approval_path = effective_approval_factor_store_path(data_dir=config.data_dir)
-    approval_lexical = _absolute_lexical_path(approval_path)
+    approval_path, approval_contained = _map_contained(approval_path)
     candidates.append(
         _candidate(
             "approval_factor_store",
             approval_path,
-            validate_external_parent=not approval_lexical.is_relative_to(data_dir),
+            validate_external_parent=not approval_contained,
         )
     )
     if config.assistant_persona_soul_path is not None:
-        soul_lexical = _absolute_lexical_path(config.assistant_persona_soul_path)
+        soul_path, soul_contained = _map_contained(config.assistant_persona_soul_path)
         candidates.append(
             _candidate(
                 "soul",
-                config.assistant_persona_soul_path,
-                validate_external_parent=not soul_lexical.is_relative_to(data_dir),
+                soul_path,
+                validate_external_parent=not soul_contained,
             )
         )
     return tuple(sorted(candidates, key=lambda item: (os.fspath(item.path), item.role)))

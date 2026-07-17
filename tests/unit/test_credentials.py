@@ -275,6 +275,26 @@ class TestApprovalFactorStore:
         assert entries[0].principal_id == "ops-laptop"
         assert entries[0].recovery_codes[0].code_hash == "recovery-hash"
 
+    def test_approval_factor_store_supports_long_valid_basename(self, tmp_path) -> None:
+        store_path = tmp_path / ("a" * 240)
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="totp-long-name",
+                user_id="alice",
+                method="totp",
+                principal_id="ops-laptop",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+
+        assert store_path.exists()
+        assert [item.credential_id for item in store.list_approval_factors()] == [
+            "totp-long-name"
+        ]
+
     def test_approval_factor_revoke_filters_by_user_and_method(self, tmp_path) -> None:
         store = InMemoryCredentialStore()
         store.set_approval_store_path(tmp_path / "credentials.json")

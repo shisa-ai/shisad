@@ -8,6 +8,8 @@ import wave
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.evidence import ArtifactLedger, ArtifactLifecycleState
 from shisad.core.types import SessionId, TaintLabel
@@ -72,6 +74,44 @@ def test_attachment_ingest_accepts_png_with_bounded_header_parse(tmp_path: Path)
     assert ref is not None
     assert ref.artifact_kind == "attachment"
     assert ref.lifecycle_state == ArtifactLifecycleState.ACTIVE
+
+
+def test_f3_attachment_parent_swap_cannot_escape_allowlisted_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    safe_parent = workspace / "safe"
+    outside_parent = tmp_path / "outside"
+    safe_parent.mkdir(parents=True)
+    outside_parent.mkdir()
+    (safe_parent / "photo.png").write_bytes(_png_bytes(width=5, height=7))
+    (outside_parent / "photo.png").write_bytes(_png_bytes(width=101, height=103))
+    ingestor = _ingestor(workspace)
+    original_resolve = AttachmentIngestor._resolve_path
+    moved_parent = workspace / "safe-before-swap"
+
+    def _resolve_then_swap(
+        self: AttachmentIngestor,
+        value: str,
+    ) -> Path | dict[str, object]:
+        resolved = original_resolve(self, value)
+        if not isinstance(resolved, dict):
+            safe_parent.rename(moved_parent)
+            safe_parent.symlink_to(outside_parent, target_is_directory=True)
+        return resolved
+
+    monkeypatch.setattr(AttachmentIngestor, "_resolve_path", _resolve_then_swap)
+
+    result = ingestor.ingest_path(
+        session_id=SessionId("s-parent-swap"),
+        path="safe/photo.png",
+        declared_mime_type="image/png",
+    )
+
+    if result["ok"]:
+        assert result["metadata"]["width"] == 5
+        assert result["metadata"]["height"] == 7
 
 
 def test_attachment_ingest_quarantines_oversized_image_without_exposing_blob(

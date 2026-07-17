@@ -372,6 +372,78 @@ def test_f3_fs_git_toolkit_write_supports_long_valid_basename(tmp_path: Path) ->
     assert target.read_text(encoding="utf-8") == "updated"
 
 
+@pytest.mark.parametrize("operation", ["list", "read", "write", "git"])
+def test_f3_fs_git_toolkit_parent_swap_cannot_escape_allowlisted_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    safe_parent = workspace / "safe"
+    outside_parent = tmp_path / "outside"
+    safe_parent.mkdir(parents=True)
+    outside_parent.mkdir()
+    (safe_parent / "target.txt").write_text("safe", encoding="utf-8")
+    (outside_parent / "target.txt").write_text("outside", encoding="utf-8")
+    (outside_parent / "outside-only.txt").write_text("outside", encoding="utf-8")
+    for repo, message in ((safe_parent, "safe-commit"), (outside_parent, "outside-commit")):
+        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "target.txt"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", message],
+            check=True,
+            capture_output=True,
+        )
+
+    toolkit = FsGitToolkit(roots=[workspace], max_read_bytes=1024)
+    original_resolve = FsGitToolkit._resolve_path
+    moved_parent = workspace / "safe-before-swap"
+    swapped = False
+
+    def _resolve_then_swap(self: FsGitToolkit, value: str) -> Path | dict[str, object]:
+        nonlocal swapped
+        resolved = original_resolve(self, value)
+        if not swapped and not isinstance(resolved, dict):
+            safe_parent.rename(moved_parent)
+            safe_parent.symlink_to(outside_parent, target_is_directory=True)
+            swapped = True
+        return resolved
+
+    monkeypatch.setattr(FsGitToolkit, "_resolve_path", _resolve_then_swap)
+
+    if operation == "list":
+        result = toolkit.list_dir(path="safe")
+        if result["ok"]:
+            assert "outside-only.txt" not in {row["name"] for row in result["entries"]}
+    elif operation == "read":
+        result = toolkit.read_file(path="safe/target.txt")
+        if result["ok"]:
+            assert result["content"] == "safe"
+    elif operation == "write":
+        result = toolkit.write_file(path="safe/target.txt", content="updated", confirm=True)
+        assert outside_parent.joinpath("target.txt").read_text(encoding="utf-8") == "outside"
+    else:
+        result = toolkit.git_log(repo_path="safe", limit=1)
+        if result["ok"]:
+            assert "outside-commit" not in result["output"]
+
+    assert swapped is True
+
+
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)

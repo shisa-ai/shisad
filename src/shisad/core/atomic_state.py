@@ -667,6 +667,13 @@ def _snapshot_integrity_bytes(*, version: int, payload: Any) -> bytes:
     return _canonical_json_bytes({"payload": payload, "version": version})
 
 
+def atomic_write_temp_prefix(target_name: str) -> str:
+    """Return the bounded, target-specific atomic staging prefix."""
+
+    target_token = hashlib.sha256(target_name.encode("utf-8")).hexdigest()[:16]
+    return f".shisad-state-{target_token}-"
+
+
 def encode_versioned_json_snapshot(payload: Any, *, version: int = 1) -> bytes:
     """Encode a deterministic checksum-bound JSON snapshot envelope."""
 
@@ -704,6 +711,8 @@ def decode_versioned_json_snapshot(
     except (UnicodeError, json.JSONDecodeError, RecursionError):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
     if not isinstance(raw, dict):
+        return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_envelope"), None
+    if set(raw) != {"version", "checksum", "payload"}:
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_envelope"), None
     version = raw.get("version")
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
@@ -837,7 +846,7 @@ def _atomic_write_bytes(
             publication_may_have_committed=False,
         ) from exc
 
-    temp_name = f".{target_name}.{uuid.uuid4().hex}.tmp"
+    temp_name = f"{atomic_write_temp_prefix(target_name)}{uuid.uuid4().hex}.tmp"
     file_fd = -1
     replaced = False
     removed_siblings = 0

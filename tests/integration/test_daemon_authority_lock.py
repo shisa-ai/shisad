@@ -137,6 +137,28 @@ def test_f3_authority_candidates_are_complete_and_side_effect_free(
     assert not soul_path.parent.exists()
 
 
+def test_f3_alias_contained_authorities_use_canonical_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH", raising=False)
+    canonical_root = tmp_path / "canonical-data"
+    canonical_root.mkdir(mode=0o700)
+    alias = tmp_path / "data-alias"
+    alias.symlink_to(canonical_root, target_is_directory=True)
+    config = DaemonConfig(
+        data_dir=alias,
+        socket_path=alias / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    candidates = {item.role: item for item in derive_daemon_authority_candidates(config)}
+
+    assert candidates["data_root"].path == canonical_root
+    assert candidates["control_socket"].path == canonical_root / "control.sock"
+    assert candidates["approval_factor_store"].path == canonical_root / "approval-factors.json"
+
+
 @pytest.mark.parametrize("overlap", ["exact", "ancestor", "socket"])
 def test_f3_candidate_cannot_overlap_host_global_registry(
     tmp_path: Path,
@@ -306,10 +328,6 @@ async def test_f3_daemon_build_binds_runtime_to_admitted_canonical_data_root(
     attacker_root.mkdir(mode=0o700)
     alias = tmp_path / "data-alias"
     alias.symlink_to(safe_root, target_is_directory=True)
-    monkeypatch.setenv(
-        "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
-        str(tmp_path / "external-approval" / "factors.json"),
-    )
     config = _config(tmp_path, name="unused", socket_name="retarget.sock").model_copy(
         update={"data_dir": alias}
     )
@@ -352,6 +370,12 @@ async def test_f3_daemon_build_binds_runtime_to_admitted_canonical_data_root(
         assert (safe_root / "runtime-marker").read_bytes() == b"claimed"
         assert not (attacker_root / "runtime-marker").exists()
         assert built_claim is not None
+        approval_candidate = next(
+            candidate
+            for candidate in built_claim.candidates
+            if candidate.role == "approval_factor_store"
+        )
+        assert approval_candidate.path == safe_root / "approval-factors.json"
     finally:
         if built_claim is not None:
             built_claim.release()

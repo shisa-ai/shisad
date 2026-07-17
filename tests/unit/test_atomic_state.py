@@ -776,6 +776,25 @@ def test_versioned_json_snapshot_round_trips_with_checksum() -> None:
     assert payload == {"rows": [{"id": "one"}]}
 
 
+def test_versioned_json_snapshot_rejects_checksum_exempt_envelope_fields() -> None:
+    envelope = json.loads(encode_versioned_json_snapshot({"rows": []}).decode("utf-8"))
+    envelope["unchecked"] = {"state": "must-not-be-discarded"}
+
+    result, payload = decode_versioned_json_snapshot(json.dumps(envelope).encode("utf-8"))
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_envelope"
+    assert payload is None
+
+
+def test_atomic_write_supports_long_valid_basename(tmp_path: Path) -> None:
+    target = tmp_path / ("s" * 240)
+
+    atomic_write_bytes(target, b"persisted")
+
+    assert target.read_bytes() == b"persisted"
+
+
 def test_versioned_json_snapshot_reports_unsupported_schema_before_payload_use() -> None:
     result, payload = decode_versioned_json_snapshot(
         b'{"version":2,"checksum":"unused","payload":{"unsafe":true}}'
