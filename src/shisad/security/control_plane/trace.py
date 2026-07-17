@@ -21,6 +21,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     read_owner_only_regular_file,
@@ -506,14 +507,8 @@ class ExecutionTraceVerifier:
         normalized_execution_key = execution_idempotency_key.strip()
         if bool(normalized_correlation) != bool(normalized_execution_key):
             raise ValueError("stage2 correlation execution-key mismatch")
-        if (
-            normalized_correlation
-            and current.amendment_correlation_id == normalized_correlation
-        ):
-            if (
-                normalized_previous_hash
-                and current.amendment_of != normalized_previous_hash
-            ):
+        if normalized_correlation and current.amendment_correlation_id == normalized_correlation:
+            if normalized_previous_hash and current.amendment_of != normalized_previous_hash:
                 raise ValueError("stage2 correlation previous-plan mismatch")
             if current.amendment_execution_idempotency_key != normalized_execution_key:
                 raise ValueError("stage2 correlation execution-key mismatch")
@@ -591,9 +586,7 @@ class ExecutionTraceVerifier:
             stage=stage,
             amendment_of=amendment_of,
             amendment_correlation_id=amendment_correlation_id,
-            amendment_execution_idempotency_key=(
-                amendment_execution_idempotency_key
-            ),
+            amendment_execution_idempotency_key=(amendment_execution_idempotency_key),
             executed_actions=0,
         )
 
@@ -630,9 +623,7 @@ class ExecutionTraceVerifier:
         if amendment_correlation_id:
             payload["amendment_correlation_id"] = amendment_correlation_id
         if amendment_execution_idempotency_key:
-            payload["amendment_execution_idempotency_key"] = (
-                amendment_execution_idempotency_key
-            )
+            payload["amendment_execution_idempotency_key"] = amendment_execution_idempotency_key
         encoded = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -801,10 +792,7 @@ class ExecutionTraceVerifier:
         return normalize_workspace_path(token, workspace_roots=self._workspace_roots)
 
     def _copy_plans(self) -> dict[str, CommittedPlan]:
-        return {
-            session_id: plan.model_copy(deep=True)
-            for session_id, plan in self._plans.items()
-        }
+        return {session_id: plan.model_copy(deep=True) for session_id, plan in self._plans.items()}
 
     def _commit_candidate(self, candidate: dict[str, CommittedPlan]) -> None:
         previous = self._plans
@@ -851,13 +839,9 @@ class ExecutionTraceVerifier:
             return
         if raw_bytes is None:
             return
-        try:
-            raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_json",
-            )
+        document_result, raw_payload = decode_json_document(raw_bytes)
+        if document_result.status is not StateLoadStatus.OK:
+            self._state_load_result = document_result
             return
         if not isinstance(raw_payload, dict):
             self._state_load_result = StateLoadResult(
@@ -930,9 +914,7 @@ class ExecutionTraceVerifier:
                 stage=plan.stage,
                 amendment_of=plan.amendment_of,
                 amendment_correlation_id=plan.amendment_correlation_id,
-                amendment_execution_idempotency_key=(
-                    plan.amendment_execution_idempotency_key
-                ),
+                amendment_execution_idempotency_key=(plan.amendment_execution_idempotency_key),
             )
             if plan.plan_hash != expected_plan_hash:
                 self._state_load_result = StateLoadResult(

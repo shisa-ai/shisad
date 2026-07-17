@@ -443,8 +443,7 @@ def test_channel_replay_envelope_candidate_never_downgrades_to_legacy(
 
     store = ChannelStateStore(root)
 
-    expected = StateLoadStatus.CORRUPT if version == 1 else StateLoadStatus.UNSUPPORTED_SCHEMA
-    assert store.state_load_result("discord").status == expected
+    assert store.state_load_result("discord").status == StateLoadStatus.CORRUPT
     with pytest.raises(StatePersistenceDegradedError):
         store.reserve(channel="discord", message_id="m-new")
     assert state_path.read_bytes() == raw

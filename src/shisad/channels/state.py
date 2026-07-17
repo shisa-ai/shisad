@@ -28,6 +28,7 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     atomic_write_bytes,
     atomic_write_bytes_with_identity,
+    decode_json_document,
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
@@ -238,8 +239,7 @@ class ChannelStateStore:
                 status = {"status": "degraded", **degradation}
                 if degradation["reason"] == "legacy_scope_ambiguous_rebaseline_required":
                     status["remediation"] = (
-                        "shisad channel replay-rebaseline "
-                        f"--channel {channel} --confirm"
+                        f"shisad channel replay-rebaseline --channel {channel} --confirm"
                     )
                 return status
             return {
@@ -295,12 +295,9 @@ class ChannelStateStore:
             degradation = self._degradation.get(channel)
             if (
                 degradation is None
-                or degradation.get("reason")
-                != "legacy_scope_ambiguous_rebaseline_required"
+                or degradation.get("reason") != "legacy_scope_ambiguous_rebaseline_required"
             ):
-                raise ValueError(
-                    "replay rebaseline is only available for ambiguous legacy state"
-                )
+                raise ValueError("replay rebaseline is only available for ambiguous legacy state")
             expected_root_identity = self._loaded_root_identities.get(channel)
             if expected_root_identity is None:
                 self._degrade(
@@ -527,10 +524,7 @@ class ChannelStateStore:
             return decoded, rows, recent, set()
 
         if self._is_envelope_candidate(raw):
-            if (
-                decoded.status == StateLoadStatus.UNSUPPORTED_SCHEMA
-                and decoded.schema_version == 1
-            ):
+            if decoded.status == StateLoadStatus.UNSUPPORTED_SCHEMA and decoded.schema_version == 1:
                 old_decoded, old_payload = decode_versioned_json_snapshot(
                     raw,
                     supported_version=1,
@@ -745,9 +739,8 @@ class ChannelStateStore:
         return None
 
     def _parse_legacy_snapshot(self, raw: bytes, *, channel: str) -> list[str] | None:
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
+        result, payload = decode_json_document(raw)
+        if result.status is not StateLoadStatus.OK:
             return None
         if (
             not isinstance(payload, dict)
@@ -770,9 +763,8 @@ class ChannelStateStore:
 
     @staticmethod
     def _is_envelope_candidate(raw: bytes) -> bool:
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
+        result, payload = decode_json_document(raw)
+        if result.status is not StateLoadStatus.OK:
             return False
         return isinstance(payload, dict) and bool(
             {"version", "checksum", "payload"}.intersection(payload)

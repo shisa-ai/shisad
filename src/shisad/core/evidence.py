@@ -38,6 +38,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
@@ -501,9 +502,7 @@ class ArtifactLedger:
             if not self._metadata_path.is_file() or not self._salt_path.is_file():
                 return False
             try:
-                return not any(self._blob_dir.iterdir()) and not any(
-                    self._quarantine_dir.iterdir()
-                )
+                return not any(self._blob_dir.iterdir()) and not any(self._quarantine_dir.iterdir())
             except OSError:
                 return False
 
@@ -769,9 +768,7 @@ class ArtifactLedger:
             new_salt = os.urandom(32)
             try:
                 if self._path_exists(self._root_dir):
-                    detached_tombstone = parent / (
-                        f".{self._root_dir.name}.reset-{uuid4().hex}"
-                    )
+                    detached_tombstone = parent / (f".{self._root_dir.name}.reset-{uuid4().hex}")
                     os.replace(self._root_dir, detached_tombstone)
                     self._fsync_directory(parent)
                 self._create_domain_files(new_salt)
@@ -779,9 +776,7 @@ class ArtifactLedger:
                 rollback_ok = True
                 try:
                     self._remove_path(self._root_dir)
-                    if detached_tombstone is not None and self._path_exists(
-                        detached_tombstone
-                    ):
+                    if detached_tombstone is not None and self._path_exists(detached_tombstone):
                         os.replace(detached_tombstone, self._root_dir)
                         self._fsync_directory(parent)
                 except OSError:
@@ -826,14 +821,10 @@ class ArtifactLedger:
         if root_status == "invalid":
             self._set_load_failure(StateLoadStatus.CORRUPT, "invalid_evidence_root")
             return
-        reset_siblings = list(
-            self._root_dir.parent.glob(f".{self._root_dir.name}.reset-*")
-        )
+        reset_siblings = list(self._root_dir.parent.glob(f".{self._root_dir.name}.reset-*"))
         if reset_siblings:
             reason = (
-                "reset_recovery_required"
-                if root_status == "missing"
-                else "reset_cleanup_required"
+                "reset_recovery_required" if root_status == "missing" else "reset_cleanup_required"
             )
             self._set_load_failure(StateLoadStatus.CORRUPT, reason)
             return
@@ -992,10 +983,9 @@ class ArtifactLedger:
         return None
 
     def _decode_index(self, raw_bytes: bytes) -> tuple[StateLoadResult, object | None]:
-        try:
-            raw = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
+        document_result, raw = decode_json_document(raw_bytes)
+        if document_result.status is not StateLoadStatus.OK:
+            return document_result, None
         envelope_candidate = isinstance(raw, dict) and bool(
             {"version", "checksum", "payload"}.intersection(raw)
         )
@@ -1333,9 +1323,11 @@ class ArtifactLedger:
                 break
 
     def _quarantine_blob(self, source: Path) -> bool:
-        content_hash = source.stem if len(source.stem) == 64 else hashlib.sha256(
-            source.name.encode("utf-8")
-        ).hexdigest()
+        content_hash = (
+            source.stem
+            if len(source.stem) == 64
+            else hashlib.sha256(source.name.encode("utf-8")).hexdigest()
+        )
         destination = self._quarantine_dir / (
             f"v1.{time.time_ns()}.{uuid4().hex}.{content_hash}.txt"
         )

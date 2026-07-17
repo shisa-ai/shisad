@@ -19,6 +19,7 @@ from shisad.core.atomic_state import (
     DurableAppendStage,
     StateLoadStatus,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
@@ -797,6 +798,14 @@ def test_versioned_json_snapshot_rejects_duplicate_envelope_members() -> None:
     ).encode()
 
     result, payload = decode_versioned_json_snapshot(raw_bytes)
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    assert payload is None
+
+
+def test_json_document_decoder_rejects_nested_duplicate_members() -> None:
+    result, payload = decode_json_document(b'{"legacy":{"enabled":false,"enabled":true}}')
 
     assert result.status == StateLoadStatus.CORRUPT
     assert result.reason == "invalid_json"

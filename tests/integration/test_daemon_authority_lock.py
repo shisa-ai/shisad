@@ -429,8 +429,7 @@ def test_f3_fresh_config_union_claim_narrows_without_admission_gap(
         authority.narrow_daemon_authority_claim(refreshed, claim)
 
         assert tuple((item.role, item.path) for item in claim.candidates) == tuple(
-            (item.role, item.path)
-            for item in derive_daemon_authority_candidates(refreshed)
+            (item.role, item.path) for item in derive_daemon_authority_candidates(refreshed)
         )
         prior_successor = acquire_daemon_authority_claim(prior)
         with pytest.raises(AuthorityConflictError):
@@ -872,9 +871,7 @@ async def test_f3_live_daemon_rejects_shared_external_authority_without_disturbi
     winner_config = _config(tmp_path, name="winner", socket_name="winner.sock")
     loser_config = _config(tmp_path, name="loser", socket_name="loser.sock")
     if surface == "socket":
-        loser_config = loser_config.model_copy(
-            update={"socket_path": winner_config.socket_path}
-        )
+        loser_config = loser_config.model_copy(update={"socket_path": winner_config.socket_path})
     elif surface == "approval":
         monkeypatch.setenv(
             "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
@@ -885,9 +882,7 @@ async def test_f3_live_daemon_rejects_shared_external_authority_without_disturbi
         winner_config = winner_config.model_copy(
             update={"assistant_persona_soul_path": shared_soul}
         )
-        loser_config = loser_config.model_copy(
-            update={"assistant_persona_soul_path": shared_soul}
-        )
+        loser_config = loser_config.model_copy(update={"assistant_persona_soul_path": shared_soul})
 
     winner_task = asyncio.create_task(run_daemon(winner_config))
     client = ControlClient(winner_config.socket_path)
@@ -1501,6 +1496,26 @@ def test_f3_authority_namespace_replacement_fails_closed(
             detached.rename(registry_root)
 
 
+def test_f3_recursive_authority_claim_json_fails_through_typed_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    claim = acquire_daemon_authority_claim(first)
+    try:
+        recursive_bytes = b"[" * 10_000 + b"]" * 10_000
+        claim._record_path.write_bytes(recursive_bytes)
+        claim._record_path.chmod(0o600)
+        second = _config(tmp_path, name="second", socket_name="second.sock")
+
+        with pytest.raises(AuthorityRegistryError, match="claim record is corrupt"):
+            acquire_daemon_authority_claim(second)
+    finally:
+        claim.release()
+
+
 def test_f3_registry_replacement_during_acquisition_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1517,9 +1532,7 @@ def test_f3_registry_replacement_during_acquisition_fails_closed(
 
     monkeypatch.setattr(authority, "_publish_claim", _replace_then_publish)
     with pytest.raises(AuthorityRegistryError, match="namespace identity changed"):
-        acquire_daemon_authority_claim(
-            _config(tmp_path, name="raced", socket_name="raced.sock")
-        )
+        acquire_daemon_authority_claim(_config(tmp_path, name="raced", socket_name="raced.sock"))
 
     for path in registry_root.iterdir():
         path.unlink()

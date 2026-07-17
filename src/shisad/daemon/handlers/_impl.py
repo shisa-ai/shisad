@@ -79,6 +79,7 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     atomic_write_bytes,
     atomic_write_bytes_with_identity,
+    decode_json_document,
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
@@ -2053,9 +2054,7 @@ def _ensure_trusted_recovery_event_identity_marker(pending: PendingAction) -> No
     ):
         pending.recovery_anonymous_accounting_id = uuid.uuid4().hex
     pending.recovery_event_identity_trusted_at = pending.recovery_event_identity_untrusted_at
-    pending.recovery_anonymous_accounting_id_trusted = (
-        pending.recovery_anonymous_accounting_id
-    )
+    pending.recovery_anonymous_accounting_id_trusted = pending.recovery_anonymous_accounting_id
 
 
 def _unauthenticated_recovery_event_identity_fields() -> dict[str, Any]:
@@ -2088,10 +2087,7 @@ def _neutralize_untrusted_scheduler_accounting_intent(
             pending.scheduler_accounting_pending
             or (
                 accounting_mode
-                and not (
-                    accounting_mode == "ambiguous"
-                    and pending.recovery_scheduler_accounted
-                )
+                and not (accounting_mode == "ambiguous" and pending.recovery_scheduler_accounted)
             )
         )
         if intent_present is None
@@ -2205,9 +2201,7 @@ class HandlerImplementation(
         self._internal_ingress_marker = services.internal_ingress_marker
         self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
         self._pairing_request_artifact_identity: tuple[int, int] | None = None
-        self._pairing_publication_degradation = (
-            self._inspect_pairing_request_publication_state()
-        )
+        self._pairing_publication_degradation = self._inspect_pairing_request_publication_state()
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
@@ -2529,8 +2523,7 @@ class HandlerImplementation(
                 or self._rate_limiter._by_session
                 or self._rate_limiter._by_tool_burst
             ),
-            "audit_empty": self._audit_log.entry_count == 0
-            and not self._audit_log.state_degraded,
+            "audit_empty": self._audit_log.entry_count == 0 and not self._audit_log.state_degraded,
             "checkpoints_empty": not any(self._checkpoint_store._dir.iterdir()),
             "channel_state_empty": self._services.channel_state_store.runtime_cache_empty(),
             "channel_state_disk_empty": _dir_empty(channel_state_root),
@@ -2562,9 +2555,7 @@ class HandlerImplementation(
             and self._credential_store.approval_state_load_result().status.value == "ok"
             and (
                 approval_store_path is None
-                or not any(
-                    approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*")
-                )
+                or not any(approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*"))
             ),
             "identity_runtime_empty": (
                 not self._identity_map._map
@@ -3945,11 +3936,7 @@ class HandlerImplementation(
             if start_executing
             else ""
         )
-        result_id = (
-            result_id.strip() or f"result-{uuid.uuid4().hex}"
-            if start_executing
-            else ""
-        )
+        result_id = result_id.strip() or f"result-{uuid.uuid4().hex}" if start_executing else ""
         requirement = (
             confirmation_requirement.model_copy(deep=True)
             if confirmation_requirement is not None
@@ -4643,13 +4630,14 @@ class HandlerImplementation(
         if raw_bytes is None:
             self._pending_state_load_result = StateLoadResult(StateLoadStatus.MISSING)
             return
-        try:
-            raw_json = json.loads(raw_bytes)
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            raw_json = None
-        if isinstance(raw_json, list):
+        document_result, raw_json = decode_json_document(raw_bytes)
+        raw: Any
+        if document_result.status is not StateLoadStatus.OK:
+            load_result = document_result
+            raw = None
+        elif isinstance(raw_json, list):
             load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            raw: Any = raw_json
+            raw = raw_json
         else:
             load_result, raw = decode_versioned_json_snapshot(
                 raw_bytes,
@@ -4691,14 +4679,9 @@ class HandlerImplementation(
                 identity.get("confirmation_id") if isinstance(identity, Mapping) else None
             )
             normalized_nested_confirmation_id = (
-                nested_confirmation_id.strip()
-                if isinstance(nested_confirmation_id, str)
-                else ""
+                nested_confirmation_id.strip() if isinstance(nested_confirmation_id, str) else ""
             )
-            if (
-                isinstance(nested_confirmation_id, str)
-                and not normalized_nested_confirmation_id
-            ):
+            if isinstance(nested_confirmation_id, str) and not normalized_nested_confirmation_id:
                 admission_failure = "invalid_pending_action_row"
                 break
             if not normalized_confirmation_id and not load_result.legacy:
@@ -4798,18 +4781,16 @@ class HandlerImplementation(
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            raw_started_authority_present = (
-                _loaded_pending_payload_has_started_execution_authority(item)
+            raw_started_authority_present = _loaded_pending_payload_has_started_execution_authority(
+                item
             )
             raw_recovery_event_identity_marker_present = (
                 _loaded_pending_payload_has_recovery_event_identity_marker(item)
             )
             raw_scheduler_accounting_mode = item.get("scheduler_accounting_mode", "")
-            raw_terminal_scheduler_shadow = (
-                _loaded_pending_has_terminal_scheduler_shadow(
-                    getattr(self, "_scheduler", None),
-                    item,
-                )
+            raw_terminal_scheduler_shadow = _loaded_pending_has_terminal_scheduler_shadow(
+                getattr(self, "_scheduler", None),
+                item,
             )
             raw_scheduler_accounting_intent_present = (
                 item.get("scheduler_accounting_pending", False) is not False
@@ -4828,10 +4809,7 @@ class HandlerImplementation(
                 continue
             item = sanitized_item
             item, identity_binding_invalid = self._canonicalize_loaded_pending_identity(item)
-            if (
-                raw_recovery_event_identity_marker_present
-                and not raw_started_authority_present
-            ):
+            if raw_recovery_event_identity_marker_present and not raw_started_authority_present:
                 item["recovery_event_identity_untrusted"] = False
                 item["recovery_event_identity_untrusted_at"] = ""
                 item["recovery_anonymous_accounting_id"] = ""
@@ -5058,8 +5036,7 @@ class HandlerImplementation(
                 ) = _loaded_state_text(item.get("recovery_anonymous_accounting_id", ""))
                 recovery_anonymous_accounting_id_valid = (
                     recovery_anonymous_accounting_id_valid
-                    and recovery_event_identity_untrusted
-                    == bool(recovery_anonymous_accounting_id)
+                    and recovery_event_identity_untrusted == bool(recovery_anonymous_accounting_id)
                 )
                 recovery_scheduler_accounted, recovery_scheduler_accounted_valid = (
                     _loaded_state_bool(item.get("recovery_scheduler_accounted", False))
@@ -6140,9 +6117,7 @@ class HandlerImplementation(
     ) -> dict[str, Any]:
         evidence = pending.confirmation_evidence if authority_authenticated else None
         approval_timestamp = (
-            self._recovery_event_timestamp(pending).isoformat()
-            if authority_authenticated
-            else ""
+            self._recovery_event_timestamp(pending).isoformat() if authority_authenticated else ""
         )
         return {
             **(
@@ -6437,8 +6412,7 @@ class HandlerImplementation(
                 or not task_id
                 or not confirmation_id
                 or pending.scheduler_accounting_mode.strip()
-                or terminal_status
-                not in {"failed", "rejected", "cancelled", "superseded"}
+                or terminal_status not in {"failed", "rejected", "cancelled", "superseded"}
             ):
                 continue
             recorded_outcome = (
@@ -6681,9 +6655,7 @@ class HandlerImplementation(
         return {
             "status": "degraded" if degradation is not None else "ok",
             "problems": (
-                ["pairing_request_persistence_degraded"]
-                if degradation is not None
-                else []
+                ["pairing_request_persistence_degraded"] if degradation is not None else []
             ),
             "path": str(self._pairing_requests_file),
             "stage": str((degradation or {}).get("stage", "")),
@@ -6803,9 +6775,7 @@ class HandlerImplementation(
                 task_id=task_id,
                 preflight_action=execution_action,
                 merged_policy=merged_policy,
-                strip_direct_tool_execute_envelope_keys=(
-                    strip_direct_tool_execute_envelope_keys
-                ),
+                strip_direct_tool_execute_envelope_keys=(strip_direct_tool_execute_envelope_keys),
                 origin_turn_id=origin_turn_id,
                 action_id=action_id,
                 execution_attempt_id=execution_attempt_id,
@@ -7074,9 +7044,7 @@ class HandlerImplementation(
                     tool_name=tool_name,
                     success=success,
                     error=error,
-                    details=(
-                        {"outcome_unknown": True} if provider_outcome_unknown else {}
-                    ),
+                    details=({"outcome_unknown": True} if provider_outcome_unknown else {}),
                     **approval_event_fields,
                 )
             )

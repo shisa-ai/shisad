@@ -16,6 +16,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     read_owned_regular_file,
@@ -265,10 +266,10 @@ class SecurityDashboard:
                 reason="marks_read_failed",
             )
             return
-        try:
-            raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            raw_payload = None
+        document_result, raw_payload = decode_json_document(raw_bytes)
+        if document_result.status is not StateLoadStatus.OK:
+            self._state_load_result = document_result
+            return
         legacy_candidate = isinstance(raw_payload, dict) and all(
             isinstance(key, str)
             and bool(key.strip())

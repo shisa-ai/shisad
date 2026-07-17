@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import stat
 from pathlib import Path
@@ -17,6 +16,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
@@ -585,10 +585,10 @@ class SkillManager:
             return {}
 
         legacy = False
-        try:
-            raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            raw_payload = None
+        document_result, raw_payload = decode_json_document(raw_bytes)
+        if document_result.status is not StateLoadStatus.OK:
+            self._state_load_result = document_result
+            return {}
         if isinstance(raw_payload, list):
             payload: Any = raw_payload
             load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)

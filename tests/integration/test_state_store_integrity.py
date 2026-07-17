@@ -306,9 +306,7 @@ def test_scheduler_unsupported_schema_is_typed_and_retained(tmp_path: Path) -> N
     storage = tmp_path / "scheduler"
     storage.mkdir(parents=True)
     tasks_path = storage / "tasks.json"
-    unsupported_bytes = json.dumps(
-        {"version": 99, "checksum": "unused", "payload": []}
-    ).encode()
+    unsupported_bytes = json.dumps({"version": 99, "checksum": "unused", "payload": []}).encode()
     tasks_path.write_bytes(unsupported_bytes)
     tasks_path.chmod(0o600)
 
@@ -451,10 +449,7 @@ def test_corrupt_pending_confirmation_snapshot_never_becomes_fresh(
 
     restarted = SchedulerManager(storage_dir=storage)
 
-    assert (
-        restarted.state_load_result("pending_confirmations").status
-        == StateLoadStatus.CORRUPT
-    )
+    assert restarted.state_load_result("pending_confirmations").status == StateLoadStatus.CORRUPT
     with pytest.raises(
         StatePersistenceDegradedError,
         match=r"scheduler\.pending_confirmations",
@@ -556,9 +551,7 @@ def test_pending_confirmation_recorded_outcome_requires_matching_task_tombstone(
         tasks_path = storage / "tasks.json"
         tasks_envelope = json.loads(tasks_path.read_text(encoding="utf-8"))
         tasks_payload = tasks_envelope["payload"]
-        tasks_payload[0]["_confirmation_outcome_dedup"] = {
-            "confirm-recorded": task_tombstone
-        }
+        tasks_payload[0]["_confirmation_outcome_dedup"] = {"confirm-recorded": task_tombstone}
         tasks_path.write_bytes(encode_versioned_json_snapshot(tasks_payload))
     pending_path = storage / "pending_confirmations.json"
     pending_envelope = json.loads(pending_path.read_text(encoding="utf-8"))
@@ -608,6 +601,34 @@ def test_legacy_pending_confirmation_rejects_string_boolean(tmp_path: Path) -> N
     assert result.reason == "invalid_pending_row"
     assert result.legacy is True
     assert pending_path.read_bytes() == invalid_bytes
+
+
+def test_legacy_scheduler_tasks_reject_duplicate_members_before_execution(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    tasks_path = storage / "tasks.json"
+    envelope = json.loads(tasks_path.read_text(encoding="utf-8"))
+    row_json = json.dumps(envelope["payload"][0], separators=(",", ":"))
+    duplicated_row = row_json.replace(
+        '"enabled":true',
+        '"enabled":false,"enabled":true',
+        1,
+    )
+    assert duplicated_row != row_json
+    ambiguous_bytes = f"[{duplicated_row}]".encode()
+    tasks_path.write_bytes(ambiguous_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("tasks")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    with pytest.raises(StatePersistenceDegradedError, match="invalid_json"):
+        restarted.get_task(task_id)
+    assert tasks_path.read_bytes() == ambiguous_bytes
 
 
 @pytest.mark.parametrize(
@@ -667,15 +688,13 @@ def test_pending_confirmation_fault_is_old_or_new_and_never_fresh(
         )
 
     live_ids = {
-        str(row.get("confirmation_id", ""))
-        for row in scheduler._pending_confirmations[task_id]
+        str(row.get("confirmation_id", "")) for row in scheduler._pending_confirmations[task_id]
     }
     assert ("confirm-2" in live_ids) is published_second_confirmation
 
     restarted = SchedulerManager(storage_dir=storage)
     durable_ids = {
-        str(row.get("confirmation_id", ""))
-        for row in restarted.pending_confirmations(task_id)
+        str(row.get("confirmation_id", "")) for row in restarted.pending_confirmations(task_id)
     }
     assert ("confirm-2" in durable_ids) is published_second_confirmation
     assert "confirm-1" in durable_ids
@@ -705,8 +724,7 @@ def test_pending_confirmation_serialization_failure_restores_durable_view(
         )
 
     live_ids = {
-        str(row.get("confirmation_id", ""))
-        for row in scheduler._pending_confirmations[task_id]
+        str(row.get("confirmation_id", "")) for row in scheduler._pending_confirmations[task_id]
     }
     assert live_ids == {"confirm-1"}
     assert pending_path.read_bytes() == durable_bytes
@@ -883,10 +901,7 @@ def test_control_plane_state_corruption_is_typed_aggregated_and_retained(
 
     assert status["status"] == "degraded"
     assert status["fail_closed"] is True
-    assert {
-        name: domain["load_status"]
-        for name, domain in status["domains"].items()
-    } == {
+    assert {name: domain["load_status"] for name, domain in status["domains"].items()} == {
         "history": "corrupt",
         "trace": "corrupt",
         "network": "corrupt",

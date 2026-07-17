@@ -32,6 +32,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
@@ -1062,16 +1063,13 @@ class SelfModificationManager:
             return _Inventory()
 
         legacy = False
-        try:
-            json_payload = json.loads(raw_bytes.decode("utf-8"))
-        except RecursionError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_json",
-            )
+        document_result, json_payload = decode_json_document(raw_bytes)
+        if (
+            document_result.status is not StateLoadStatus.OK
+            and raw_bytes.lstrip().startswith((b"{", b"["))
+        ):
+            self._state_load_result = document_result
             return _Inventory()
-        except (UnicodeError, json.JSONDecodeError):
-            json_payload = None
         envelope_candidate = (
             isinstance(json_payload, dict)
             and bool({"version", "checksum", "payload"}.intersection(json_payload))
@@ -1444,10 +1442,7 @@ class SelfModificationManager:
                 reason="record_read_failed",
             )
             return None
-        try:
-            raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            raw_payload = None
+        document_result, raw_payload = decode_json_document(raw_bytes)
         envelope_candidate = (
             isinstance(raw_payload, dict)
             and (
@@ -1463,6 +1458,12 @@ class SelfModificationManager:
             load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
             payload: Any = raw_payload
         else:
+            if (
+                document_result.status is not StateLoadStatus.OK
+                and not raw_bytes.lstrip().startswith(b"{")
+            ):
+                self._record_load_results[record_kind] = document_result
+                return None
             load_result, payload = decode_versioned_json_snapshot(
                 raw_bytes,
                 supported_version=1,

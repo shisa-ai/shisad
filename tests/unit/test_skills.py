@@ -1064,6 +1064,37 @@ def test_f3_legacy_skill_inventory_loads_and_migrates_on_revoke(tmp_path: Path) 
     assert envelope["payload"][0]["state"] == "revoked"
 
 
+def test_f3_legacy_skill_inventory_rejects_duplicate_members(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    skill = _f3_skill_with_tool(tmp_path)
+    legacy = InstalledSkill(
+        name="durable-skill",
+        version="1.0.0",
+        path=str(skill),
+        manifest_hash="legacy-hash",
+        state=ArtifactState.PUBLISHED,
+        author="trusted-dev",
+    )
+    row_json = json.dumps(legacy.model_dump(mode="json"), separators=(",", ":"))
+    duplicated_row = row_json.replace(
+        '"state":"published"',
+        '"state":"revoked","state":"published"',
+        1,
+    )
+    assert duplicated_row != row_json
+    inventory_path = storage / "inventory.json"
+    ambiguous_bytes = f"[{duplicated_row}]".encode()
+    _write_owner_only_bytes(inventory_path, ambiguous_bytes)
+
+    manager = SkillManager(storage_dir=storage)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    assert inventory_path.read_bytes() == ambiguous_bytes
+
+
 def test_f3_unrelated_mutation_preserves_hashless_legacy_tool_binding_marker(
     tmp_path: Path,
 ) -> None:
@@ -1092,9 +1123,7 @@ def test_f3_unrelated_mutation_preserves_hashless_legacy_tool_binding_marker(
     manager.revoke(skill_name="legacy-first", reason="unrelated")
 
     envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
-    second_row = next(
-        row for row in envelope["payload"] if row["name"] == "legacy-second"
-    )
+    second_row = next(row for row in envelope["payload"] if row["name"] == "legacy-second")
     assert second_row["tool_schema_hashes_legacy"] is True
     registry = ToolRegistry()
     restarted = SkillManager(storage_dir=storage, tool_registry=registry)

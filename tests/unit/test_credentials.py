@@ -291,9 +291,7 @@ class TestApprovalFactorStore:
         )
 
         assert store_path.exists()
-        assert [item.credential_id for item in store.list_approval_factors()] == [
-            "totp-long-name"
-        ]
+        assert [item.credential_id for item in store.list_approval_factors()] == ["totp-long-name"]
 
     def test_approval_factor_revoke_filters_by_user_and_method(self, tmp_path) -> None:
         store = InMemoryCredentialStore()
@@ -432,9 +430,28 @@ class TestApprovalFactorStore:
         envelope = json.loads(store_path.read_text(encoding="utf-8"))
         assert envelope["version"] == 3
         assert "checksum" in envelope
-        assert envelope["payload"]["approval_factors"][0]["credential_id"] == (
-            "factor-migrated"
+        assert envelope["payload"]["approval_factors"][0]["credential_id"] == ("factor-migrated")
+
+    def test_f3_legacy_approval_store_rejects_duplicate_members(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        ambiguous_bytes = (
+            b'{"schema_version":"shisad.approval_factor_store.v2",'
+            b'"approval_factors":[],"approval_factors":[{'
+            b'"credential_id":"attacker-factor","user_id":"alice",'
+            b'"method":"totp","principal_id":"device",'
+            b'"secret_b32":"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"}],'
+            b'"signer_keys":[]}'
         )
+        store_path.write_bytes(ambiguous_bytes)
+        store_path.chmod(0o600)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "invalid_json"
+        assert store_path.read_bytes() == ambiguous_bytes
 
     def test_f3_approval_store_checksum_tamper_is_retained_and_fail_closed(
         self,
@@ -744,17 +761,15 @@ class TestApprovalFactorStore:
             with pytest.raises(StatePersistenceDegradedError):
                 store.list_approval_factors()
         else:
-            assert [
-                item.credential_id for item in store.list_approval_factors()
-            ] == ["factor-old"]
+            assert [item.credential_id for item in store.list_approval_factors()] == ["factor-old"]
         assert list(store_path.parent.glob(f".{store_path.name}.*.tmp")) == []
         assert not store_path.with_suffix(f"{store_path.suffix}.tmp").exists()
 
         restarted = InMemoryCredentialStore()
         restarted.set_approval_store_path(store_path)
-        assert [
-            item.credential_id for item in restarted.list_approval_factors()
-        ] == (["factor-old", "factor-new"] if published_new else ["factor-old"])
+        assert [item.credential_id for item in restarted.list_approval_factors()] == (
+            ["factor-old", "factor-new"] if published_new else ["factor-old"]
+        )
 
     @pytest.mark.parametrize(
         "fault_stage",
@@ -867,9 +882,7 @@ class TestApprovalFactorStore:
                 )
             )
 
-        assert [
-            item.credential_id for item in store.list_approval_factors()
-        ] == ["factor-old"]
+        assert [item.credential_id for item in store.list_approval_factors()] == ["factor-old"]
 
     def test_f3_signer_serialization_failure_restores_durable_view(
         self,
@@ -942,6 +955,4 @@ class TestApprovalFactorStore:
 
         assert raised.value.stage == AtomicWriteStage.TARGET_VALIDATE
         assert raised.value.publication_may_have_committed is False
-        assert [
-            item.credential_id for item in store.list_approval_factors()
-        ] == ["factor-old"]
+        assert [item.credential_id for item in store.list_approval_factors()] == ["factor-old"]

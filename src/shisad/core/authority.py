@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any
 
 from shisad.core.atomic_state import (
+    StateLoadStatus,
     atomic_write_temp_prefix,
+    decode_json_document,
     validate_owner_controlled_parent_ancestry,
 )
 from shisad.core.config import DaemonConfig, effective_approval_factor_store_path
@@ -33,9 +35,7 @@ _NAMESPACE_GUARD_TIMEOUT_SECONDS = 5.0
 _EXTERNAL_FILE_ROLES = frozenset({"approval_factor_store", "soul"})
 _TREE_ROLES = frozenset({"config_backup_root", "data_root"})
 _BASELINE_ROLES = frozenset({*_TREE_ROLES, "control_socket", *_EXTERNAL_FILE_ROLES})
-_SYMLINK_REJECT_ROLES = frozenset(
-    {"config_backup_root", "control_socket", *_EXTERNAL_FILE_ROLES}
-)
+_SYMLINK_REJECT_ROLES = frozenset({"config_backup_root", "control_socket", *_EXTERNAL_FILE_ROLES})
 _ROLE_FOOTPRINT_KIND = {
     "config_backup_root": "tree-v1",
     "data_root": "tree-v1",
@@ -295,10 +295,10 @@ class DaemonAuthorityClaim:
                         if not inherited_holder:
                             probe_stat = os.fstat(probe_fd)
                             current_stat = self._record_path.lstat()
-                            if (
-                                (probe_stat.st_dev, probe_stat.st_ino) != record_identity
-                                or (current_stat.st_dev, current_stat.st_ino) != record_identity
-                            ):
+                            if (probe_stat.st_dev, probe_stat.st_ino) != record_identity or (
+                                current_stat.st_dev,
+                                current_stat.st_ino,
+                            ) != record_identity:
                                 raise AuthorityRegistryError(
                                     "daemon authority claim record identity changed during release"
                                 )
@@ -598,9 +598,7 @@ def _active_namespace_markers(root: Path) -> set[tuple[str, str]]:
     try:
         rows = proc_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise AuthorityRegistryError(
-            "cannot inspect non-detachable authority namespace"
-        ) from exc
+        raise AuthorityRegistryError("cannot inspect non-detachable authority namespace") from exc
     markers: set[tuple[str, str]] = set()
     for row in rows:
         fields = row.split()
@@ -641,9 +639,7 @@ def _validate_namespace_markers(root: Path) -> None:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            raise AuthorityRegistryError(
-                "cannot inspect authority claim namespace"
-            ) from exc
+            raise AuthorityRegistryError("cannot inspect authority claim namespace") from exc
         try:
             path_stat = path.lstat()
             fd_stat = os.fstat(fd)
@@ -796,10 +792,9 @@ def _read_claim_record(fd: int, path: Path) -> tuple[DaemonAuthorityCandidate, .
         total += len(chunk)
         if total > _MAX_CLAIM_BYTES:
             raise AuthorityRegistryError(f"authority claim record is oversized: {path}")
-    try:
-        payload = json.loads(b"".join(chunks))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AuthorityRegistryError(f"authority claim record is corrupt: {path}") from exc
+    load_result, payload = decode_json_document(b"".join(chunks))
+    if load_result.status is not StateLoadStatus.OK:
+        raise AuthorityRegistryError(f"authority claim record is corrupt: {path}")
     if not isinstance(payload, dict) or payload.get("version") != _REGISTRY_SCHEMA_VERSION:
         raise AuthorityRegistryError(f"authority claim record schema is unsupported: {path}")
     raw_candidates = payload.get("candidates")
@@ -1416,9 +1411,7 @@ def _ensure_owner_directory(path: Path) -> None:
                         raise AuthorityClaimError(
                             f"created daemon data directory is not owner-controlled: {current}"
                         )
-                    if current_stat.st_mode & 0o022 and not _shared_sticky_directory(
-                        current_stat
-                    ):
+                    if current_stat.st_mode & 0o022 and not _shared_sticky_directory(current_stat):
                         raise AuthorityClaimError(
                             f"daemon data directory is writable by another uid: {current}"
                         )

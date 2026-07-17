@@ -22,6 +22,7 @@ from shisad.core.atomic_state import (
     StateLoadResult,
     StateLoadStatus,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     read_owner_only_regular_file,
@@ -189,8 +190,7 @@ class BaselineDatabase:
         key = self.key_for(metadata.origin, metadata.destination_host)
         current = self._entries.get(key)
         candidate = {
-            entry_key: entry.model_copy(deep=True)
-            for entry_key, entry in self._entries.items()
+            entry_key: entry.model_copy(deep=True) for entry_key, entry in self._entries.items()
         }
         if current is None:
             candidate[key] = BaselineEntry(
@@ -208,9 +208,8 @@ class BaselineDatabase:
         candidate_current.count += 1
         alpha = self._learning_rate
         candidate_current.average_request_size = (
-            (1.0 - alpha) * candidate_current.average_request_size
-            + alpha * float(metadata.request_size)
-        )
+            1.0 - alpha
+        ) * candidate_current.average_request_size + alpha * float(metadata.request_size)
         if self._persist(candidate):
             self._entries = candidate
 
@@ -266,13 +265,9 @@ class BaselineDatabase:
             return
         if raw_bytes is None:
             return
-        try:
-            raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_json",
-            )
+        document_result, raw_payload = decode_json_document(raw_bytes)
+        if document_result.status is not StateLoadStatus.OK:
+            self._state_load_result = document_result
             return
         if not isinstance(raw_payload, dict):
             self._state_load_result = StateLoadResult(

@@ -676,6 +676,19 @@ def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, An
     return decoded
 
 
+def decode_json_document(raw_bytes: bytes) -> tuple[StateLoadResult, Any | None]:
+    """Decode one strict JSON document into a typed non-throwing result."""
+
+    try:
+        raw = json.loads(
+            raw_bytes.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_members,
+        )
+    except (UnicodeError, json.JSONDecodeError, _DuplicateJsonMemberError, RecursionError):
+        return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
+    return StateLoadResult(StateLoadStatus.OK), raw
+
+
 def _snapshot_integrity_bytes(*, version: int, payload: Any) -> bytes:
     return _canonical_json_bytes({"payload": payload, "version": version})
 
@@ -719,13 +732,9 @@ def decode_versioned_json_snapshot(
 ) -> tuple[StateLoadResult, Any | None]:
     """Decode a checksum-bound envelope into a typed non-throwing load result."""
 
-    try:
-        raw = json.loads(
-            raw_bytes.decode("utf-8"),
-            object_pairs_hook=_reject_duplicate_json_members,
-        )
-    except (UnicodeError, json.JSONDecodeError, _DuplicateJsonMemberError, RecursionError):
-        return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
+    document_result, raw = decode_json_document(raw_bytes)
+    if document_result.status is not StateLoadStatus.OK:
+        return document_result, None
     if not isinstance(raw, dict):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_envelope"), None
     if set(raw) != {"version", "checksum", "payload"}:
@@ -1109,9 +1118,7 @@ def durable_append_bytes(
             path=target,
             stage=DurableAppendStage.DIRECTORY_PREPARE,
             publication_may_have_committed=False,
-            authority_changed=(
-                expected_identity is not None and _authority_path_departed(exc)
-            ),
+            authority_changed=(expected_identity is not None and _authority_path_departed(exc)),
         ) from exc
 
     try:

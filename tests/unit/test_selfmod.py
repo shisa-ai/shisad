@@ -739,9 +739,7 @@ def test_f3_selfmod_future_proposal_is_retained_and_not_missing(tmp_path: Path) 
     assert result.applied is False
     assert result.reason == "proposal_unsupported_schema"
     assert path.read_bytes() == snapshot
-    assert manager.status()["records"]["proposal"]["load_status"] == (
-        "unsupported_schema"
-    )
+    assert manager.status()["records"]["proposal"]["load_status"] == ("unsupported_schema")
 
 
 def test_f3_selfmod_legacy_raw_proposal_with_artifact_version_remains_readable(
@@ -765,6 +763,37 @@ def test_f3_selfmod_legacy_raw_proposal_with_artifact_version_remains_readable(
 
     assert preview.requires_confirmation is True
     assert manager.status()["records"]["proposal"]["legacy"] is True
+
+
+def test_f3_selfmod_legacy_proposal_rejects_duplicate_members(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+    proposal_path = manager._proposal_path(proposal.proposal_id)
+    payload = json.loads(proposal_path.read_text(encoding="utf-8"))["payload"]
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    duplicated_payload = payload_json.replace(
+        '"artifact_type":"skill_bundle"',
+        '"artifact_type":"behavior_pack","artifact_type":"skill_bundle"',
+        1,
+    )
+    assert duplicated_payload != payload_json
+    ambiguous_bytes = duplicated_payload.encode()
+    _write_owner_only_bytes(proposal_path, ambiguous_bytes)
+
+    result = manager.apply(proposal.proposal_id, confirm=False)
+
+    assert result.applied is False
+    assert result.reason == "proposal_corrupt"
+    assert manager.status()["records"]["proposal"]["reason"] == "invalid_json"
+    assert proposal_path.read_bytes() == ambiguous_bytes
 
 
 @pytest.mark.parametrize(

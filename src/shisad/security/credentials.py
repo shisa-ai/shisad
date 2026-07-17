@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import logging
 import secrets
 from collections.abc import Iterable
@@ -30,6 +29,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     read_owner_only_regular_file,
@@ -765,12 +765,9 @@ class InMemoryCredentialStore:
             )
             return
 
-        try:
-            raw_payload = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            self._set_approval_load_failure(
-                StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json")
-            )
+        document_result, raw_payload = decode_json_document(raw_bytes)
+        if document_result.status is not StateLoadStatus.OK:
+            self._set_approval_load_failure(document_result)
             return
 
         has_legacy_marker = isinstance(raw_payload, dict) and "schema_version" in raw_payload
@@ -787,9 +784,9 @@ class InMemoryCredentialStore:
                 )
             )
             return
-        legacy = has_legacy_marker
+        payload: Any
         allow_missing_signer_keys = False
-        if legacy:
+        if isinstance(raw_payload, dict) and has_legacy_marker:
             schema = str(raw_payload.get("schema_version", "")).strip()
             if schema not in _LEGACY_APPROVAL_STORE_SCHEMAS:
                 version: int | None = None

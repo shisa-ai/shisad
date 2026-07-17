@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -20,6 +19,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_json_document,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
@@ -146,11 +146,7 @@ class SchedulerManager:
         degraded = any(domain["status"] == "degraded" for domain in domains.values())
         return {
             "status": "degraded" if degraded else "ok",
-            "problems": [
-                problem
-                for domain in domains.values()
-                for problem in domain["problems"]
-            ],
+            "problems": [problem for domain in domains.values() for problem in domain["problems"]],
             "fail_closed": degraded,
             "domains": domains,
             "remediation": (
@@ -1361,13 +1357,13 @@ class SchedulerManager:
             self._state_load_results["tasks"] = StateLoadResult(StateLoadStatus.MISSING)
             self._durable_tasks = {}
             return
-        try:
-            raw = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            raw = None
+        document_result, raw = decode_json_document(raw_bytes)
         result: StateLoadResult
         payload: Any
-        if isinstance(raw, list):
+        if document_result.status is not StateLoadStatus.OK:
+            result = document_result
+            payload = None
+        elif isinstance(raw, list):
             result = StateLoadResult(StateLoadStatus.OK, legacy=True)
             payload = raw
         else:
@@ -1531,13 +1527,13 @@ class SchedulerManager:
             )
             self._durable_pending_confirmations = defaultdict(list)
             return False
-        try:
-            raw = json.loads(raw_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError, RecursionError):
-            raw = None
+        document_result, raw = decode_json_document(raw_bytes)
         result: StateLoadResult
         payload: Any
-        if isinstance(raw, dict) and not {
+        if document_result.status is not StateLoadStatus.OK:
+            result = document_result
+            payload = None
+        elif isinstance(raw, dict) and not {
             "version",
             "checksum",
             "payload",
