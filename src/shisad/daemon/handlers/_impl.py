@@ -81,6 +81,7 @@ from shisad.core.atomic_state import (
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
+    open_owned_regular_file,
     read_owned_regular_file,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
@@ -2202,6 +2203,7 @@ class HandlerImplementation(
         self._classifier_mode = services.firewall.classifier_mode
         self._internal_ingress_marker = services.internal_ingress_marker
         self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
+        self._pairing_request_artifact_identity: tuple[int, int] | None = None
         self._pairing_publication_degradation = (
             self._inspect_pairing_request_publication_state()
         )
@@ -2489,6 +2491,7 @@ class HandlerImplementation(
         )
         self._pending_state_degradation = {}
         self._pairing_publication_degradation = None
+        self._pairing_request_artifact_identity = None
         lockout_state_path = self._confirmation_failure_tracker._state_path
         if lockout_state_path is not None:
             lockout_state_path.unlink(missing_ok=True)
@@ -3410,12 +3413,31 @@ class HandlerImplementation(
     ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
         rows: list[dict[str, str]] = []
         invalid: list[dict[str, Any]] = []
-        if not self._pairing_requests_file.exists():
-            return rows, invalid
+        self._require_pairing_request_publication(transition="propose_pairing")
         try:
-            lines = self._pairing_requests_file.read_text(encoding="utf-8").splitlines()
+            payload, identity = self._read_pairing_request_artifact_snapshot(
+                expected_identity=self._pairing_request_artifact_identity,
+            )
         except OSError as exc:
-            invalid.append({"error": f"artifact_read_failed:{exc.__class__.__name__}"})
+            degradation = {
+                "stage": "proposal_read",
+                "reason": f"artifact_read_failed:{exc.__class__.__name__}",
+                "path": str(self._pairing_requests_file),
+            }
+            self._pairing_publication_degradation = degradation
+            raise StatePersistenceDegradedError(
+                authority="pairing_requests",
+                transition="propose_pairing",
+                stage=degradation["stage"],
+                reason=degradation["reason"],
+            ) from exc
+        if payload is None:
+            return rows, invalid
+        self._pairing_request_artifact_identity = identity
+        try:
+            lines = payload.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            invalid.append({"error": "artifact_decode_failed:UnicodeDecodeError"})
             return rows, invalid
         for index, line in enumerate(lines, start=1):
             if not line.strip():
@@ -3902,7 +3924,7 @@ class HandlerImplementation(
         start_executing: bool = False,
     ) -> PendingAction:
         degradation = getattr(self, "_pending_state_degradation", None)
-        if isinstance(degradation, Mapping):
+        if isinstance(degradation, Mapping) and degradation:
             raise StatePersistenceDegradedError(
                 authority="pending_actions",
                 transition=str(degradation.get("transition", "")),
@@ -4575,7 +4597,7 @@ class HandlerImplementation(
     def _pending_action_state_status(self) -> dict[str, Any]:
         load_result = self._pending_state_load_result
         degradation = self._pending_state_degradation
-        degraded = degradation is not None or load_result.status in {
+        degraded = bool(degradation) or load_result.status in {
             StateLoadStatus.CORRUPT,
             StateLoadStatus.UNSUPPORTED_SCHEMA,
         }
@@ -4650,6 +4672,29 @@ class HandlerImplementation(
                 "reason": "invalid_pending_actions_payload",
             }
             return
+        if not load_result.legacy:
+            confirmation_ids: set[str] = set()
+            for item in raw:
+                confirmation_id = item.get("confirmation_id") if isinstance(item, dict) else None
+                normalized_confirmation_id = (
+                    confirmation_id.strip() if isinstance(confirmation_id, str) else ""
+                )
+                if (
+                    not normalized_confirmation_id
+                    or normalized_confirmation_id in confirmation_ids
+                ):
+                    self._pending_state_load_result = StateLoadResult(
+                        StateLoadStatus.CORRUPT,
+                        reason="invalid_pending_action_row",
+                        schema_version=load_result.schema_version,
+                    )
+                    self._pending_state_degradation = {
+                        "transition": "load",
+                        "stage": "load",
+                        "reason": "invalid_pending_action_row",
+                    }
+                    return
+                confirmation_ids.add(normalized_confirmation_id)
         self._pending_state_load_result = load_result
         self._pending_state_degradation = {}
         sensitive_pending_groups: set[tuple[str, str]] = set()
@@ -6502,13 +6547,16 @@ class HandlerImplementation(
     def _inspect_pairing_request_publication_state(self) -> dict[str, str] | None:
         path = self._pairing_requests_file
         try:
-            payload = read_owned_regular_file(path, normalize_mode=0o600)
+            payload, identity = self._read_pairing_request_artifact_snapshot(
+                normalize_permissions=True,
+            )
         except OSError as exc:
             return {
                 "stage": "startup_inspect",
                 "reason": f"artifact_read_failed:{exc.__class__.__name__}",
                 "path": str(path),
             }
+        self._pairing_request_artifact_identity = identity
         if payload is None or payload == b"":
             return None
         if payload[-1:] != b"\n":
@@ -6518,6 +6566,31 @@ class HandlerImplementation(
                 "path": str(path),
             }
         return None
+
+    def _read_pairing_request_artifact_snapshot(
+        self,
+        *,
+        expected_identity: tuple[int, int] | None = None,
+        normalize_permissions: bool = False,
+    ) -> tuple[bytes | None, tuple[int, int] | None]:
+        with open_owned_regular_file(
+            self._pairing_requests_file,
+            required_mode=None if normalize_permissions else 0o600,
+            normalize_mode=0o600 if normalize_permissions else None,
+        ) as handle:
+            if handle is None:
+                if expected_identity is not None:
+                    raise OSError(
+                        f"pairing request artifact disappeared: {self._pairing_requests_file}"
+                    )
+                return None, None
+            file_stat = os.fstat(handle.fileno())
+            identity = (file_stat.st_dev, file_stat.st_ino)
+            if expected_identity is not None and identity != expected_identity:
+                raise OSError(
+                    f"pairing request artifact identity changed: {self._pairing_requests_file}"
+                )
+            return handle.read(), identity
 
     def _mark_pairing_publication_uncertain(self, error: DurableAppendError) -> None:
         self._pairing_publication_degradation = {
@@ -6547,13 +6620,17 @@ class HandlerImplementation(
             ),
         }
 
-    def _require_pairing_request_publication(self) -> None:
+    def _require_pairing_request_publication(
+        self,
+        *,
+        transition: str = "record_pairing_request",
+    ) -> None:
         degradation = self._pairing_publication_degradation
         if degradation is None:
             return
         raise StatePersistenceDegradedError(
             authority="pairing_requests",
-            transition="record_pairing_request",
+            transition=transition,
             stage=str(degradation.get("stage", "")),
             reason=str(degradation.get("reason", "pairing_request_persistence_degraded")),
         )

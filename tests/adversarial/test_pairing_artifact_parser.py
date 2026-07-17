@@ -177,6 +177,66 @@ async def test_m3_pairing_artifact_parser_rejects_json_escaped_control_chars(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_kind", ["symlink", "hardlink", "swap"])
+async def test_f3_pairing_proposal_rejects_replaced_artifact_authority(
+    model_env: None,
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = _owner_only_pairing_artifact_path(data_dir)
+    artifact_file.write_text(
+        '{"channel":"discord","external_user_id":"original-user"}\n',
+        encoding="utf-8",
+    )
+    artifact_file.chmod(0o600)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    crafted = tmp_path / "crafted-pairing-requests.jsonl"
+    crafted_bytes = b'{"channel":"discord","external_user_id":"crafted-user"}\n'
+    crafted.write_bytes(crafted_bytes)
+    crafted.chmod(0o600)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        artifact_file.unlink()
+        if invalid_kind == "symlink":
+            artifact_file.symlink_to(crafted)
+        elif invalid_kind == "hardlink":
+            artifact_file.hardlink_to(crafted)
+        else:
+            crafted.replace(artifact_file)
+
+        with pytest.raises(RuntimeError, match="State authority unavailable"):
+            await client.call(
+                "channel.pairing_propose",
+                {"channel": "discord", "limit": 25},
+            )
+
+        doctor = await client.call("doctor.check", {"component": "channels"})
+        pairing_status = doctor["checks"]["channels"]["pairing_requests"]
+        assert pairing_status["status"] == "degraded"
+        assert pairing_status["stage"] == "proposal_read"
+        assert pairing_status["fail_closed"] is True
+        assert not (data_dir / "proposals" / "channel_pairing").exists()
+        if invalid_kind != "swap":
+            assert crafted.read_bytes() == crafted_bytes
+        else:
+            assert artifact_file.read_bytes() == crafted_bytes
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_f3_pairing_request_append_rejects_symlink_target(
     model_env: None,
     tmp_path: Path,

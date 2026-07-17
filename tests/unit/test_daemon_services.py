@@ -21,6 +21,7 @@ from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
     StateLoadStatus,
+    StatePersistenceDegradedError,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
 )
@@ -161,6 +162,15 @@ async def test_daemon_services_builds_with_local_provider(
     services = await DaemonServices.build(config)
     try:
         impl = HandlerImplementation(services=services)
+        pending = impl._queue_pending_action(
+            session_id=SessionId("clean-actions"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("workspace"),
+            tool_name=ToolName("note.create"),
+            arguments={"content": "safe"},
+            reason="requires_confirmation",
+            capabilities={Capability.MEMORY_WRITE},
+        )
         status = await impl.do_daemon_status({})
         doctor = await impl.do_doctor_check({"component": "approvals"})
         skill_doctor = await impl.do_doctor_check({"component": "skills"})
@@ -183,7 +193,7 @@ async def test_daemon_services_builds_with_local_provider(
         assert status["pairing_requests"]["status"] == "ok"
         assert status["scheduler"]["status"] == "ok"
         assert status["actions"]["status"] == "ok"
-        assert status["actions"]["load_status"] == "missing"
+        assert status["actions"]["load_status"] == "ok"
         assert status["control_plane"]["status"] == "ok"
         assert "pairing_requests" not in status["channels"]
         assert channels_doctor["status"] == "ok"
@@ -210,9 +220,10 @@ async def test_daemon_services_builds_with_local_provider(
         assert dashboard_doctor["status"] == "ok"
         assert dashboard_doctor["checks"]["dashboard"]["load_status"] == "missing"
         assert scheduler_doctor["checks"]["scheduler"]["status"] == "ok"
-        assert actions_doctor["checks"]["actions"]["load_status"] == "missing"
+        assert actions_doctor["checks"]["actions"]["load_status"] == "ok"
         assert control_plane_doctor["status"] == "ok"
         assert control_plane_doctor["checks"]["control_plane"]["status"] == "ok"
+        assert pending.confirmation_id in impl._pending_actions
     finally:
         await services.shutdown()
 
@@ -1979,6 +1990,57 @@ async def test_f3_pending_action_legacy_owner_file_is_normalized_and_loaded(
         assert impl._pending_action_state_status()["status"] == "ok"
         assert impl._pending_state_load_result.legacy is True
         assert pending_path.stat().st_mode & 0o777 == 0o600
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_payload",
+    [
+        [{}],
+        ["not-a-row"],
+        [{"confirmation_id": "duplicate"}, {"confirmation_id": " duplicate "}],
+    ],
+    ids=["identity-less", "non-dict", "duplicate-identity"],
+)
+async def test_f3_current_pending_envelope_rejects_invalid_rows_without_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_payload: list[object],
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    pending_path = config.data_dir / "pending_actions.json"
+    retained_bytes = encode_versioned_json_snapshot(invalid_payload, version=1)
+    pending_path.write_bytes(retained_bytes)
+    pending_path.chmod(0o600)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        status = impl._pending_action_state_status()
+        assert status["status"] == "degraded"
+        assert status["reason"] == "invalid_pending_action_row"
+        assert status["fail_closed"] is True
+        assert impl._pending_actions == {}
+        assert pending_path.read_bytes() == retained_bytes
+        with pytest.raises(StatePersistenceDegradedError):
+            impl._queue_pending_action(
+                session_id=SessionId("blocked-actions"),
+                user_id=UserId("alice"),
+                workspace_id=WorkspaceId("workspace"),
+                tool_name=ToolName("note.create"),
+                arguments={"content": "blocked"},
+                reason="requires_confirmation",
+                capabilities={Capability.MEMORY_WRITE},
+            )
+        assert pending_path.read_bytes() == retained_bytes
     finally:
         await services.shutdown()
 

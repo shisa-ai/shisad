@@ -1051,7 +1051,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
     def _pending_state_degradation_fields(self) -> dict[str, str]:
         degradation = getattr(self, "_pending_state_degradation", None)
-        if not isinstance(degradation, Mapping):
+        if not isinstance(degradation, Mapping) or not degradation:
             return {}
         return {
             "persistence_status": "degraded",
