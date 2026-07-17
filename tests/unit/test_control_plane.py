@@ -3343,7 +3343,10 @@ def test_f3_control_plane_history_corruption_is_retained_and_blocks_append(
     assert path.read_bytes() == corrupt_bytes
 
 
-@pytest.mark.parametrize("corruption_kind", ["duplicate", "extra", "naive_timestamp"])
+@pytest.mark.parametrize(
+    "corruption_kind",
+    ["duplicate", "extra", "nested_origin_extra", "naive_timestamp"],
+)
 def test_f3_control_plane_history_rejects_ambiguous_or_noncanonical_rows(
     tmp_path: Path,
     corruption_kind: str,
@@ -3366,6 +3369,8 @@ def test_f3_control_plane_history_rejects_ambiguous_or_noncanonical_rows(
         payload = json.loads(row)
         if corruption_kind == "extra":
             payload["unexpected_authority"] = "ignored"
+        elif corruption_kind == "nested_origin_extra":
+            payload["origin"]["unexpected_authority"] = "ignored"
         else:
             payload["timestamp"] = valid.timestamp.replace(tzinfo=None).isoformat()
         row = json.dumps(payload, separators=(",", ":"))
@@ -3377,6 +3382,11 @@ def test_f3_control_plane_history_rejects_ambiguous_or_noncanonical_rows(
     assert history.state_load_result.status == StateLoadStatus.CORRUPT
     assert history.all_for_session("s-history") == []
     assert path.read_bytes() == retained
+
+
+def test_f3_control_plane_origin_rejects_unexpected_authority_fields() -> None:
+    with pytest.raises(ValueError):
+        Origin(session_id="s-history", unexpected_authority="ignored")
 
 
 def test_f3_control_plane_history_blank_row_is_retained_and_blocks_append(

@@ -526,11 +526,12 @@ class ArtifactLedger:
             session_key = self._session_key(session_id)
             blob_path = self._blob_path(content_hash)
             existing = self._refs.get(session_key, {}).get(ref_id)
+            blob_owner = existing or self._find_ref_by_content_hash(content_hash)
             rewrote_blob = False
-            if existing is not None:
-                blob_load = self._load_validated_blob_content(existing)
+            if blob_owner is not None:
+                blob_load = self._load_validated_blob_content(blob_owner)
                 rewrote_blob = blob_load.content is None and blob_load.drop_ref
-            if existing is None or not blob_path.exists() or rewrote_blob:
+            if blob_owner is None or not blob_path.exists() or rewrote_blob:
                 try:
                     self._atomic_write(blob_path, self._blob_codec.encode(content))
                 except (ArtifactBlobCodecError, AtomicWriteError):
@@ -1291,10 +1292,16 @@ class ArtifactLedger:
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
 
-    def _delete_blob_if_unreferenced(self, content_hash: str) -> bool:
+    def _find_ref_by_content_hash(self, content_hash: str) -> EvidenceRef | None:
         for session_refs in self._refs.values():
-            if any(ref.content_hash == content_hash for ref in session_refs.values()):
-                return True
+            for ref in session_refs.values():
+                if ref.content_hash == content_hash:
+                    return ref
+        return None
+
+    def _delete_blob_if_unreferenced(self, content_hash: str) -> bool:
+        if self._find_ref_by_content_hash(content_hash) is not None:
+            return True
         path = self._blob_path(content_hash)
         if not path.exists():
             return True

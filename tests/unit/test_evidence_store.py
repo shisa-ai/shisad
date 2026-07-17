@@ -573,6 +573,85 @@ def test_artifact_ledger_kms_store_replaces_unindexed_blob_before_publishing_ref
         assert blob_path.read_bytes() != b"orphaned incompatible ciphertext"
 
 
+def test_artifact_ledger_reuses_owned_blob_across_sessions_without_republication(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    content = "shared retained artifact body"
+    first_sid = SessionId("sess-a")
+    second_sid = SessionId("sess-b")
+    first = ledger.store(
+        first_sid,
+        content,
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="shared retained artifact body",
+    )
+
+    original_atomic_write = ledger._atomic_write
+
+    def _fail_republication(path: Path, payload: bytes) -> None:
+        if path.parent == tmp_path / "evidence" / "blobs":
+            raise AssertionError("owned blob must not be republished")
+        original_atomic_write(path, payload)
+
+    monkeypatch.setattr(ledger, "_atomic_write", _fail_republication)
+    second = ledger.store(
+        second_sid,
+        content,
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="shared retained artifact body",
+    )
+
+    assert first.ref_id != second.ref_id
+    assert ledger.read(first_sid, first.ref_id) == content
+    assert ledger.read(second_sid, second.ref_id) == content
+
+
+def test_artifact_ledger_kms_reuses_owned_blob_across_sessions_without_republication(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    content = "shared encrypted retained artifact body"
+    first_sid = SessionId("sess-a")
+    second_sid = SessionId("sess-b")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        first = ledger.store(
+            first_sid,
+            content,
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="shared encrypted retained artifact body",
+        )
+
+        def _fail_republication(
+            _codec: KmsArtifactBlobCodec,
+            _content: str,
+        ) -> bytes:
+            raise AssertionError("owned KMS blob must not be re-encoded")
+
+        monkeypatch.setattr(KmsArtifactBlobCodec, "encode", _fail_republication)
+        second = ledger.store(
+            second_sid,
+            content,
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="shared encrypted retained artifact body",
+        )
+
+        assert first.ref_id != second.ref_id
+        assert ledger.read(first_sid, first.ref_id) == content
+        assert ledger.read(second_sid, second.ref_id) == content
+
+
 def test_artifact_ledger_kms_blob_codec_round_trips_and_restarts(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")

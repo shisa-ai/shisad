@@ -541,9 +541,10 @@ class InMemoryCredentialStore:
     def update_approval_factor(self, factor: ApprovalFactorRecord) -> None:
         """Persist an updated approval factor record."""
         self._require_approval_state_available(transition="update_factor")
-        if factor.credential_id not in self._approval_factors:
-            raise KeyError(f"Unknown approval factor: {factor.credential_id}")
-        self._approval_factors[factor.credential_id] = factor.model_copy(deep=True)
+        validated = ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
+        if validated.credential_id not in self._approval_factors:
+            raise KeyError(f"Unknown approval factor: {validated.credential_id}")
+        self._approval_factors[validated.credential_id] = validated
         self._persist_approval_factors()
 
     def revoke_approval_factor(

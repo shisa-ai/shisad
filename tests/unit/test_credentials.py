@@ -510,6 +510,39 @@ class TestApprovalFactorStore:
             store.register_approval_factor(bypassed)
         assert store.list_approval_factors() == []
 
+    @pytest.mark.parametrize("invalid_kind", ["mutated", "constructed"])
+    def test_f3_approval_factor_update_revalidates_webauthn_sign_count(
+        self,
+        tmp_path,
+        invalid_kind: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        original = ApprovalFactorRecord(
+            credential_id="webauthn-1",
+            user_id="alice",
+            method="webauthn",
+            principal_id="ops-key",
+            webauthn_sign_count=7,
+        )
+        store.register_approval_factor(original)
+        if invalid_kind == "mutated":
+            invalid = original.model_copy(deep=True)
+            invalid.webauthn_sign_count = -1
+        else:
+            payload = original.model_dump(mode="python")
+            payload["webauthn_sign_count"] = -1
+            invalid = ApprovalFactorRecord.model_construct(**payload)
+
+        with pytest.raises(ValueError):
+            store.update_approval_factor(invalid)
+
+        assert store.get_approval_factor("webauthn-1") == original
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+        assert restarted.get_approval_factor("webauthn-1") == original
+
     def test_f3_approval_store_checksum_tamper_is_retained_and_fail_closed(
         self,
         tmp_path,
