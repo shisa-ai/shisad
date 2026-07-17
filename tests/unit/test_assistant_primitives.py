@@ -318,6 +318,43 @@ def test_f3_fs_git_toolkit_blocks_authority_tree_and_derived_paths(tmp_path: Pat
     assert allowed["ok"] is True
 
 
+@pytest.mark.parametrize("protection_kind", ["authority", "configured_root"])
+def test_f3_fs_git_toolkit_hardlink_write_preserves_protected_tree_inode(
+    tmp_path: Path,
+    protection_kind: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    protected_root = workspace / ".shisad"
+    protected_root.mkdir(parents=True)
+    protected_path = protected_root / "claim.json"
+    protected_path.write_text("trusted claim", encoding="utf-8")
+    alias_path = workspace / "claim-alias.json"
+    os.link(protected_path, alias_path)
+    original_inode = protected_path.stat().st_ino
+    kwargs: dict[str, object]
+    if protection_kind == "authority":
+        kwargs = {
+            "protected_write_authorities": (
+                DaemonAuthorityCandidate(role="data_root", path=protected_root),
+            )
+        }
+    else:
+        kwargs = {"protected_write_roots": (protected_root,)}
+    toolkit = FsGitToolkit(roots=[workspace], max_read_bytes=1024, **kwargs)
+
+    result = toolkit.write_file(
+        path=str(alias_path),
+        content="authorized alias update",
+        confirm=True,
+    )
+
+    assert result["ok"] is True
+    assert protected_path.read_text(encoding="utf-8") == "trusted claim"
+    assert protected_path.stat().st_ino == original_inode
+    assert alias_path.read_text(encoding="utf-8") == "authorized alias update"
+    assert alias_path.stat().st_ino != original_inode
+
+
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)

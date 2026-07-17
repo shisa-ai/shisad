@@ -3539,6 +3539,49 @@ def test_f3_control_plane_trace_rejects_negative_persisted_counters(
     assert path.read_bytes() == raw_bytes
 
 
+@pytest.mark.parametrize("versioned", [False, True])
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("allowed_actions", "trace_plan_hash_mismatch:s-retained-trace"),
+        ("cancelled", "invalid_trace_plan:s-retained-trace"),
+    ],
+)
+def test_f3_control_plane_trace_revalidates_retained_plan_commitment(
+    tmp_path: Path,
+    versioned: bool,
+    mutation: str,
+    expected_reason: str,
+) -> None:
+    source = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    plan = source.begin_precontent_plan(
+        session_id="s-retained-trace",
+        goal="read a file",
+        origin=_origin("s-retained-trace"),
+    )
+    plan_payload = plan.model_dump(mode="json")
+    if mutation == "allowed_actions":
+        plan_payload["allowed_actions"].append(ActionKind.SHELL_EXEC.value)
+    else:
+        plan_payload["cancelled"] = "false"
+    payload = {"s-retained-trace": plan_payload}
+    raw_bytes = (
+        encode_versioned_json_snapshot(payload)
+        if versioned
+        else (json.dumps(payload, sort_keys=True) + "\n").encode()
+    )
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    _write_owner_only_bytes(path, raw_bytes)
+
+    trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+
+    assert trace.state_load_result.status == StateLoadStatus.CORRUPT
+    assert trace.state_load_result.reason == expected_reason
+    assert trace.active_plan("s-retained-trace") is None
+    assert path.read_bytes() == raw_bytes
+
+
 def test_f3_control_plane_network_corruption_disables_learning_without_authority(
     tmp_path: Path,
 ) -> None:

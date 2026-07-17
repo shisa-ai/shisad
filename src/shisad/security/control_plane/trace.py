@@ -162,7 +162,7 @@ class CommittedPlan(BaseModel):
     amendment_of: str = ""
     amendment_correlation_id: str = ""
     amendment_execution_idempotency_key: str = ""
-    cancelled: bool = False
+    cancelled: bool = Field(default=False, strict=True)
     cancelled_reason: str = ""
     executed_actions: int = Field(default=0, ge=0, strict=True)
     recorded_dependency_keys: set[str] = Field(default_factory=set)
@@ -562,6 +562,58 @@ class ExecutionTraceVerifier:
         amendment_correlation_id: str = "",
         amendment_execution_idempotency_key: str = "",
     ) -> CommittedPlan:
+        plan_hash = self._plan_commitment_hash(
+            session_id=session_id,
+            allowed_actions=allowed_actions,
+            allowed_resources=allowed_resources,
+            goal_resource_patterns=goal_resource_patterns,
+            declared_resource_roots=declared_resource_roots,
+            forbidden_actions=forbidden_actions,
+            max_actions=max_actions,
+            committed_at=committed_at,
+            expires_at=expires_at,
+            stage=stage,
+            amendment_of=amendment_of,
+            amendment_correlation_id=amendment_correlation_id,
+            amendment_execution_idempotency_key=amendment_execution_idempotency_key,
+        )
+        return CommittedPlan(
+            session_id=session_id,
+            plan_hash=plan_hash,
+            allowed_actions=set(allowed_actions),
+            allowed_resources=set(allowed_resources),
+            goal_resource_patterns=set(goal_resource_patterns),
+            declared_resource_roots=set(declared_resource_roots),
+            forbidden_actions=set(forbidden_actions),
+            max_actions=max_actions,
+            committed_at=committed_at,
+            expires_at=expires_at,
+            stage=stage,
+            amendment_of=amendment_of,
+            amendment_correlation_id=amendment_correlation_id,
+            amendment_execution_idempotency_key=(
+                amendment_execution_idempotency_key
+            ),
+            executed_actions=0,
+        )
+
+    @staticmethod
+    def _plan_commitment_hash(
+        *,
+        session_id: str,
+        allowed_actions: set[ActionKind],
+        allowed_resources: set[str],
+        goal_resource_patterns: set[str],
+        declared_resource_roots: set[str],
+        forbidden_actions: set[ActionKind],
+        max_actions: int,
+        committed_at: datetime,
+        expires_at: datetime,
+        stage: str,
+        amendment_of: str,
+        amendment_correlation_id: str = "",
+        amendment_execution_idempotency_key: str = "",
+    ) -> str:
         payload: dict[str, Any] = {
             "session_id": session_id,
             "allowed_actions": sorted(item.value for item in allowed_actions),
@@ -582,26 +634,7 @@ class ExecutionTraceVerifier:
                 amendment_execution_idempotency_key
             )
         encoded = json.dumps(payload, sort_keys=True)
-        plan_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        return CommittedPlan(
-            session_id=session_id,
-            plan_hash=plan_hash,
-            allowed_actions=set(allowed_actions),
-            allowed_resources=set(allowed_resources),
-            goal_resource_patterns=set(goal_resource_patterns),
-            declared_resource_roots=set(declared_resource_roots),
-            forbidden_actions=set(forbidden_actions),
-            max_actions=max_actions,
-            committed_at=committed_at,
-            expires_at=expires_at,
-            stage=stage,
-            amendment_of=amendment_of,
-            amendment_correlation_id=amendment_correlation_id,
-            amendment_execution_idempotency_key=(
-                amendment_execution_idempotency_key
-            ),
-            executed_actions=0,
-        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _strict_stage1_actions() -> set[ActionKind]:
@@ -880,6 +913,31 @@ class ExecutionTraceVerifier:
                 self._state_load_result = StateLoadResult(
                     StateLoadStatus.CORRUPT,
                     reason=f"trace_session_mismatch:{key}",
+                    schema_version=load_result.schema_version,
+                    legacy=legacy,
+                )
+                return
+            expected_plan_hash = self._plan_commitment_hash(
+                session_id=plan.session_id,
+                allowed_actions=plan.allowed_actions,
+                allowed_resources=plan.allowed_resources,
+                goal_resource_patterns=plan.goal_resource_patterns,
+                declared_resource_roots=plan.declared_resource_roots,
+                forbidden_actions=plan.forbidden_actions,
+                max_actions=plan.max_actions,
+                committed_at=plan.committed_at,
+                expires_at=plan.expires_at,
+                stage=plan.stage,
+                amendment_of=plan.amendment_of,
+                amendment_correlation_id=plan.amendment_correlation_id,
+                amendment_execution_idempotency_key=(
+                    plan.amendment_execution_idempotency_key
+                ),
+            )
+            if plan.plan_hash != expected_plan_hash:
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason=f"trace_plan_hash_mismatch:{key}",
                     schema_version=load_result.schema_version,
                     legacy=legacy,
                 )

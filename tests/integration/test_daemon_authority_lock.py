@@ -558,6 +558,32 @@ def test_f3_fresh_config_union_timeout_mutates_neither_tree(
         active.release()
 
 
+def test_f3_fresh_config_union_rejects_preexisting_backup_symlink(
+    tmp_path: Path,
+) -> None:
+    prior = _config(tmp_path, name="prior", socket_name="prior.sock")
+    refreshed = _config(tmp_path, name="refreshed", socket_name="refreshed.sock")
+    prior.data_dir.mkdir(parents=True)
+    prior.data_dir.chmod(0o700)
+    outside = tmp_path / "outside-backups"
+    outside.mkdir()
+    (prior.data_dir / "config-backups").symlink_to(outside, target_is_directory=True)
+
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityRegistryError, match=r"config_backup_root.*symlink"):
+            claim = authority.acquire_fresh_config_authority_claim(
+                prior,
+                refreshed,
+                timeout_seconds=0,
+            )
+    finally:
+        if claim is not None:
+            claim.release()
+
+    assert list(outside.iterdir()) == []
+
+
 def test_f3_fresh_config_same_root_deduplicates_then_narrows(
     tmp_path: Path,
 ) -> None:

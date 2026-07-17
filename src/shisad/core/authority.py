@@ -30,7 +30,9 @@ _NAMESPACE_GUARD_TIMEOUT_SECONDS = 5.0
 _EXTERNAL_FILE_ROLES = frozenset({"approval_factor_store", "soul"})
 _TREE_ROLES = frozenset({"config_backup_root", "data_root"})
 _BASELINE_ROLES = frozenset({*_TREE_ROLES, "control_socket", *_EXTERNAL_FILE_ROLES})
-_SYMLINK_REJECT_ROLES = frozenset({"control_socket", *_EXTERNAL_FILE_ROLES})
+_SYMLINK_REJECT_ROLES = frozenset(
+    {"config_backup_root", "control_socket", *_EXTERNAL_FILE_ROLES}
+)
 _ROLE_FOOTPRINT_KIND = {
     "config_backup_root": "tree-v1",
     "data_root": "tree-v1",
@@ -1241,9 +1243,10 @@ def _derive_fresh_config_union_candidates(
     prior_config: DaemonConfig,
     refreshed_config: DaemonConfig,
 ) -> tuple[DaemonAuthorityCandidate, ...]:
+    prior_data_root = _candidate("data_root", prior_config.data_dir)
     candidates = [
-        _candidate("data_root", prior_config.data_dir),
-        _candidate("config_backup_root", prior_config.data_dir / "config-backups"),
+        prior_data_root,
+        _candidate("config_backup_root", prior_data_root.path / "config-backups"),
         *derive_daemon_authority_candidates(refreshed_config),
     ]
     unique = {(candidate.role, candidate.path): candidate for candidate in candidates}

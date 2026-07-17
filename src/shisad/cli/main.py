@@ -111,6 +111,7 @@ from shisad.core.api.schema import (
     WebFetchResult,
     WebSearchResult,
 )
+from shisad.core.atomic_state import ensure_owner_only_directory
 from shisad.core.authority import (
     DaemonAuthorityClaim,
     acquire_fresh_config_authority_claim,
@@ -860,54 +861,64 @@ def _run_daemon_foreground(
     )
 
 
-def _fsync_directory(path: Path) -> None:
+def _backup_directory_open_flags() -> int:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(path, flags)
+    return flags | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _verify_claimed_backup_directory(data_root_fd: int, backup_fd: int) -> None:
+    entry_stat = os.stat("config-backups", dir_fd=data_root_fd, follow_symlinks=False)
+    opened_stat = os.fstat(backup_fd)
+    if (
+        not stat.S_ISDIR(entry_stat.st_mode)
+        or not stat.S_ISDIR(opened_stat.st_mode)
+        or entry_stat.st_uid != os.getuid()
+        or opened_stat.st_uid != os.getuid()
+        or (entry_stat.st_dev, entry_stat.st_ino)
+        != (opened_stat.st_dev, opened_stat.st_ino)
+    ):
+        raise OSError("fresh-config backup directory identity changed")
+
+
+def _ensure_claimed_backup_directory(data_root: Path, backup_dir: Path) -> tuple[int, int]:
+    if backup_dir != data_root / "config-backups":
+        raise OSError("fresh-config backup directory escaped the claimed data root")
+    ensure_owner_only_directory(data_root)
+    data_root_fd = os.open(data_root, _backup_directory_open_flags())
+    backup_fd = -1
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _ensure_claimed_backup_directory(data_root: Path, backup_dir: Path) -> None:
-    missing: list[Path] = []
-    current = backup_dir
-    while True:
         try:
-            current_stat = current.lstat()
+            backup_fd = os.open(
+                "config-backups",
+                _backup_directory_open_flags(),
+                dir_fd=data_root_fd,
+            )
         except FileNotFoundError:
-            missing.append(current)
-            if current.parent == current:
-                raise OSError(f"cannot locate existing ancestor for {backup_dir}") from None
-            current = current.parent
-            continue
-        if not stat.S_ISDIR(current_stat.st_mode):
-            raise OSError(f"fresh-config backup ancestor is not a directory: {current}")
-        if (current == data_root or current.is_relative_to(data_root)) and (
-            current_stat.st_uid != os.getuid()
-        ):
-            raise OSError(f"fresh-config backup directory is not owner-controlled: {current}")
-        break
+            with suppress(FileExistsError):
+                os.mkdir("config-backups", 0o700, dir_fd=data_root_fd)
+            backup_fd = os.open(
+                "config-backups",
+                _backup_directory_open_flags(),
+                dir_fd=data_root_fd,
+            )
+            os.fsync(data_root_fd)
+        opened_stat = os.fstat(backup_fd)
+        if not stat.S_ISDIR(opened_stat.st_mode) or opened_stat.st_uid != os.getuid():
+            raise OSError("fresh-config backup directory is not owner-controlled")
+        if stat.S_IMODE(opened_stat.st_mode) != 0o700:
+            os.fchmod(backup_fd, 0o700)
+            os.fsync(backup_fd)
+        _verify_claimed_backup_directory(data_root_fd, backup_fd)
+        return data_root_fd, backup_fd
+    except BaseException:
+        if backup_fd >= 0:
+            os.close(backup_fd)
+        os.close(data_root_fd)
+        raise
 
-    for directory in reversed(missing):
-        with suppress(FileExistsError):
-            directory.mkdir(mode=0o700)
-        directory_stat = directory.lstat()
-        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
-            raise OSError(f"fresh-config backup directory is not owner-controlled: {directory}")
-        if stat.S_IMODE(directory_stat.st_mode) != 0o700:
-            directory.chmod(0o700)
-        _fsync_directory(directory)
-        _fsync_directory(directory.parent)
 
-    for directory in (data_root, backup_dir):
-        directory_stat = directory.lstat()
-        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
-            raise OSError(f"fresh-config backup directory is not owner-controlled: {directory}")
-        if stat.S_IMODE(directory_stat.st_mode) != 0o700:
-            directory.chmod(0o700)
-            _fsync_directory(directory)
-            _fsync_directory(directory.parent)
+def _fsync_backup_publication(backup_fd: int) -> None:
+    os.fsync(backup_fd)
 
 
 def _write_all(fd: int, payload: bytes) -> None:
@@ -937,15 +948,15 @@ def _backup_config_snapshot(
         )
         + "\n"
     ).encode("utf-8")
-    _ensure_claimed_backup_directory(data_root, backup_dir)
-
+    data_root_fd, backup_fd = _ensure_claimed_backup_directory(data_root, backup_dir)
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    stage_path = backup_dir / f".{timestamp}.{uuid.uuid4().hex}.tmp"
+    stage_name = f".{timestamp}.{uuid.uuid4().hex}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     published = False
     try:
-        fd = os.open(stage_path, flags, 0o600)
+        _verify_claimed_backup_directory(data_root_fd, backup_fd)
+        fd = os.open(stage_name, flags, 0o600, dir_fd=backup_fd)
         try:
             os.fchmod(fd, 0o600)
             _write_all(fd, payload)
@@ -957,23 +968,33 @@ def _backup_config_snapshot(
             if counter > 4096:
                 raise OSError("exhausted fresh-config backup filename candidates")
             suffix = "" if counter == 0 else f"-{counter}"
-            backup_path = backup_dir / f"{timestamp}{suffix}.json"
+            backup_name = f"{timestamp}{suffix}.json"
             try:
-                os.link(stage_path, backup_path, follow_symlinks=False)
+                _verify_claimed_backup_directory(data_root_fd, backup_fd)
+                os.link(
+                    stage_name,
+                    backup_name,
+                    src_dir_fd=backup_fd,
+                    dst_dir_fd=backup_fd,
+                    follow_symlinks=False,
+                )
                 break
             except FileExistsError:
                 counter += 1
         published = True
-        _fsync_directory(backup_dir)
-        stage_path.unlink()
-        _fsync_directory(backup_dir)
-        return backup_path
+        _fsync_backup_publication(backup_fd)
+        os.unlink(stage_name, dir_fd=backup_fd)
+        _fsync_backup_publication(backup_fd)
+        return backup_dir / backup_name
     except BaseException:
         if not published:
             with suppress(OSError):
-                stage_path.unlink()
-                _fsync_directory(backup_dir)
+                os.unlink(stage_name, dir_fd=backup_fd)
+                _fsync_backup_publication(backup_fd)
         raise
+    finally:
+        os.close(backup_fd)
+        os.close(data_root_fd)
 
 
 def _single_line_status_value(value: object) -> str:

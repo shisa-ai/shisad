@@ -23,6 +23,7 @@ from shisad.core.authority import (
     AuthorityClaimError,
     AuthorityConflictError,
     acquire_daemon_authority_claim,
+    acquire_fresh_config_authority_claim,
 )
 from shisad.core.config import DaemonConfig
 
@@ -69,6 +70,19 @@ def _audit_entry(
         "previous_event_hash": "0" * 64,
         "previous_hash": "0" * 64,
     }
+
+
+def _audit_snapshot(*entries: dict[str, object]) -> str:
+    previous_hash = hashlib.sha256(b"shisad-audit-genesis").hexdigest()
+    rows: list[str] = []
+    for raw_entry in entries:
+        entry = dict(raw_entry)
+        entry["previous_event_hash"] = previous_hash
+        entry["previous_hash"] = previous_hash
+        encoded = json.dumps(entry)
+        rows.append(encoded)
+        previous_hash = hashlib.sha256(encoded.encode()).hexdigest()
+    return "\n".join(rows) + "\n"
 
 
 def test_cli_commands_route_through_rpc_wrapper(
@@ -2684,12 +2698,10 @@ def test_m9_audit_query_defaults_to_current_session_cache(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-other", "s-other"))
-        + "\n"
-        + json.dumps(_entry("e-cache", "s-cache"))
-        + "\n",
+        _audit_snapshot(_entry("e-other", "s-other"), _entry("e-cache", "s-cache")),
         encoding="utf-8",
     )
+    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
     runner = CliRunner()
@@ -2712,19 +2724,18 @@ def test_gh18_audit_query_json_defaults_to_current_session_cache(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-other", "s-other"))
-        + "\n"
-        + json.dumps(
+        _audit_snapshot(
+            _audit_entry("e-other", "s-other"),
             _audit_entry(
                 "e-cache",
                 "s-cache",
                 event_type="ToolRejected",
                 data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
-            )
-        )
-        + "\n",
+            ),
+        ),
         encoding="utf-8",
     )
+    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
     runner = CliRunner()
@@ -2767,9 +2778,10 @@ def test_m9_audit_query_all_preserves_unfiltered_mode(
         }
 
     audit_path.write_text(
-        json.dumps(_entry("e-one", "s-one")) + "\n" + json.dumps(_entry("e-two", "s-two")) + "\n",
+        _audit_snapshot(_entry("e-one", "s-one"), _entry("e-two", "s-two")),
         encoding="utf-8",
     )
+    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -2788,19 +2800,18 @@ def test_gh18_audit_query_json_preserves_type_and_all_filters(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        json.dumps(_audit_entry("e-one", "s-one"))
-        + "\n"
-        + json.dumps(
+        _audit_snapshot(
+            _audit_entry("e-one", "s-one"),
             _audit_entry(
                 "e-alert",
                 "s-two",
                 event_type="OutputFirewallAlert",
                 data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
-            )
-        )
-        + "\n",
+            ),
+        ),
         encoding="utf-8",
     )
+    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -2827,7 +2838,8 @@ def test_gh18_audit_query_json_empty_results_are_array(
     config = _config(tmp_path)
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_path.write_text(json.dumps(_audit_entry("e-one", "s-one")) + "\n", encoding="utf-8")
+    audit_path.write_text(_audit_snapshot(_audit_entry("e-one", "s-one")), encoding="utf-8")
+    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -4001,6 +4013,38 @@ def test_backup_config_snapshot_rejects_claim_for_another_data_tree(
     assert not config.data_dir.exists()
 
 
+def test_backup_config_snapshot_rejects_backup_directory_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path).model_copy(update={"discord_bot_token": "secret-token"})
+    refreshed = config.model_copy(
+        update={
+            "data_dir": tmp_path / "refreshed-data",
+            "socket_path": tmp_path / "refreshed.sock",
+        }
+    )
+    outside = tmp_path / "outside-backups"
+    outside.mkdir()
+    claim = acquire_fresh_config_authority_claim(config, refreshed, timeout_seconds=0)
+    original_ensure = cli_main._ensure_claimed_backup_directory
+
+    def _swap_after_open(data_root: Path, backup_dir: Path):
+        opened = original_ensure(data_root, backup_dir)
+        backup_dir.rename(outside / "displaced")
+        backup_dir.symlink_to(outside, target_is_directory=True)
+        return opened
+
+    monkeypatch.setattr(cli_main, "_ensure_claimed_backup_directory", _swap_after_open)
+    try:
+        with pytest.raises((AuthorityClaimError, OSError)):
+            cli_main._backup_config_snapshot(config, claim)
+    finally:
+        claim.release()
+
+    assert not any(item.is_file() for item in outside.rglob("*"))
+
+
 @pytest.mark.parametrize("fault", ["write", "publish"])
 def test_backup_config_snapshot_cleans_unpublished_stage(
     tmp_path: Path,
@@ -4046,8 +4090,8 @@ def test_backup_config_snapshot_retains_owner_only_recovery_after_publish_uncert
     claim = acquire_daemon_authority_claim(config)
     monkeypatch.setattr(
         cli_main,
-        "_fsync_directory",
-        lambda _path: (_ for _ in ()).throw(OSError("directory fsync failed")),
+        "_fsync_backup_publication",
+        lambda _fd: (_ for _ in ()).throw(OSError("directory fsync failed")),
     )
 
     try:
@@ -6239,7 +6283,9 @@ def test_audit_query_reads_override_data_dir(
     override_dir = tmp_path / "daemon-dir"
     default_dir.mkdir()
     override_dir.mkdir()
-    (override_dir / "audit.jsonl").write_text("")
+    override_audit = override_dir / "audit.jsonl"
+    override_audit.write_text("")
+    override_audit.chmod(0o600)
 
     config = DaemonConfig(
         data_dir=default_dir,

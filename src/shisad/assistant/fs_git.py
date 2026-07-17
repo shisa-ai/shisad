@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import subprocess
+import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -105,7 +109,7 @@ class FsGitToolkit:
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             payload = content.encode("utf-8")
-            resolved.write_bytes(payload)
+            self._replace_file_bytes(resolved, payload)
         except OSError:
             return {
                 "ok": False,
@@ -123,6 +127,39 @@ class FsGitToolkit:
             "bytes_written": len(payload),
             "error": "",
         }
+
+    @staticmethod
+    def _replace_file_bytes(path: Path, payload: bytes) -> None:
+        mode = 0o666
+        try:
+            current_stat = path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISREG(current_stat.st_mode):
+                mode = stat.S_IMODE(current_stat.st_mode)
+        temp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = -1
+        try:
+            fd = os.open(temp_path, flags, mode)
+            if mode != 0o666:
+                os.fchmod(fd, mode)
+            view = memoryview(payload)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short filesystem write")
+                view = view[written:]
+            os.close(fd)
+            fd = -1
+            os.replace(temp_path, path)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            with suppress(FileNotFoundError):
+                temp_path.unlink()
 
     def git_status(self, *, repo_path: str) -> dict[str, Any]:
         return self._run_git(repo_path=repo_path, args=["status", "--short", "--branch"])
