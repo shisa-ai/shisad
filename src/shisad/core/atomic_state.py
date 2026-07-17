@@ -684,7 +684,7 @@ def decode_json_document(raw_bytes: bytes) -> tuple[StateLoadResult, Any | None]
             raw_bytes.decode("utf-8"),
             object_pairs_hook=_reject_duplicate_json_members,
         )
-    except (UnicodeError, json.JSONDecodeError, _DuplicateJsonMemberError, RecursionError):
+    except (UnicodeError, ValueError, RecursionError):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
     return StateLoadResult(StateLoadStatus.OK), raw
 

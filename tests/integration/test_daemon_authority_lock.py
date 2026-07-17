@@ -1516,6 +1516,26 @@ def test_f3_recursive_authority_claim_json_fails_through_typed_boundary(
         claim.release()
 
 
+def test_f3_oversized_integer_claim_json_fails_through_typed_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    claim = acquire_daemon_authority_claim(first)
+    try:
+        ambiguous_bytes = b'{"version":2,"candidates":[],"unchecked":' + b"9" * 5000 + b"}"
+        claim._record_path.write_bytes(ambiguous_bytes)
+        claim._record_path.chmod(0o600)
+        second = _config(tmp_path, name="second", socket_name="second.sock")
+
+        with pytest.raises(AuthorityRegistryError, match="claim record is corrupt"):
+            acquire_daemon_authority_claim(second)
+    finally:
+        claim.release()
+
+
 def test_f3_registry_replacement_during_acquisition_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
