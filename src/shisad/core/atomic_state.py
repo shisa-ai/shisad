@@ -930,6 +930,39 @@ def atomic_write_bytes_with_identity(
     return published_identity
 
 
+def _authority_path_departed(exc: OSError) -> bool:
+    return exc.errno in {
+        errno.ENOENT,
+        errno.ENOTDIR,
+        errno.ELOOP,
+        getattr(errno, "ESTALE", -1),
+    }
+
+
+def _expected_append_target_departed(
+    *,
+    parent_fd: int,
+    target_name: str,
+    expected_identity: tuple[int, int],
+) -> bool:
+    try:
+        target_stat = os.stat(
+            target_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        return _authority_path_departed(exc)
+    return (
+        expected_identity != (target_stat.st_dev, target_stat.st_ino)
+        or not stat.S_ISREG(target_stat.st_mode)
+        or target_stat.st_uid != os.geteuid()
+        or target_stat.st_nlink != 1
+    )
+
+
 def durable_append_bytes(
     path: Path,
     payload: bytes,
@@ -1004,6 +1037,9 @@ def durable_append_bytes(
             path=target,
             stage=DurableAppendStage.DIRECTORY_PREPARE,
             publication_may_have_committed=False,
+            authority_changed=(
+                expected_identity is not None and _authority_path_departed(exc)
+            ),
         ) from exc
 
     try:
@@ -1076,13 +1112,19 @@ def durable_append_bytes(
             flags |= os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
         try:
             file_fd = os.open(target_name, flags, 0o600, dir_fd=parent_fd)
         except FileExistsError:
             authority_changed = require_missing
             raise
         except OSError:
-            authority_changed = expected_identity is not None
+            if expected_identity is not None:
+                authority_changed = _expected_append_target_departed(
+                    parent_fd=parent_fd,
+                    target_name=target_name,
+                    expected_identity=expected_identity,
+                )
             raise
         created_file = not target_existed
         opened_stat = os.fstat(file_fd)

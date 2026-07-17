@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -427,6 +428,109 @@ def test_durable_append_expected_identity_marks_added_hardlink_as_authority_chan
     assert raised.value.authority_changed is True
     assert target.read_bytes() == b'{"id":"original"}\n'
     assert external.read_bytes() == b'{"id":"original"}\n'
+
+
+def test_durable_append_expected_identity_uses_nonblocking_open_for_fifo_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+    real_open = atomic_state.os.open
+
+    def _replace_with_fifo_and_fail_open(
+        path: str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == target.name and dir_fd is not None:
+            target.unlink()
+            os.mkfifo(target, 0o600)
+            assert flags & os.O_NONBLOCK
+            raise OSError(errno.ENXIO, "FIFO has no reader")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(atomic_state.os, "open", _replace_with_fifo_and_fail_open)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            expected_identity=expected_identity,
+        )
+
+    assert raised.value.stage is DurableAppendStage.FILE_OPEN
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert stat.S_ISFIFO(target.lstat().st_mode)
+
+
+def test_durable_append_expected_identity_keeps_transient_open_failure_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+    real_open = atomic_state.os.open
+
+    def _fail_target_open(
+        path: str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == target.name and dir_fd is not None:
+            raise OSError(errno.EMFILE, "injected descriptor exhaustion")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(atomic_state.os, "open", _fail_target_open)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            expected_identity=expected_identity,
+        )
+
+    target_stat = target.stat()
+    assert raised.value.stage is DurableAppendStage.FILE_OPEN
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is False
+    assert expected_identity == (target_stat.st_dev, target_stat.st_ino)
+    assert target.read_bytes() == b'{"id":"original"}\n'
+
+
+def test_durable_append_expected_identity_marks_parent_ancestry_replacement(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "channels"
+    detached_parent = tmp_path / "detached-channels"
+    target = parent / "pairing_requests.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+
+    def _replace_parent(stage: DurableAppendStage) -> None:
+        if stage is DurableAppendStage.DIRECTORY_PREPARE:
+            parent.rename(detached_parent)
+            parent.symlink_to(detached_parent, target_is_directory=True)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            fault_injector=_replace_parent,
+            expected_identity=expected_identity,
+        )
+
+    detached_target = detached_parent / target.name
+    detached_stat = detached_target.stat()
+    assert raised.value.stage is DurableAppendStage.DIRECTORY_PREPARE
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert expected_identity == (detached_stat.st_dev, detached_stat.st_ino)
+    assert detached_target.read_bytes() == b'{"id":"original"}\n'
 
 
 def test_durable_append_rejects_target_replacement_before_acknowledgement(
