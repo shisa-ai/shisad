@@ -267,6 +267,42 @@ async def test_f3_audit_rejects_same_path_replacement_before_append(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["replacement", "disappearance", "unsafe"])
+async def test_f3_audit_query_rejects_departed_authority(
+    audit_path: Path,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    audit = AuditLog(audit_path)
+    await _write_entries(audit, count=1)
+    if mutation == "replacement":
+        replacement = tmp_path / "replacement-query-audit.jsonl"
+        replacement.write_bytes(b"")
+        replacement.chmod(0o600)
+        replacement.replace(audit_path)
+    elif mutation == "disappearance":
+        audit_path.unlink()
+    else:
+        audit_path.unlink()
+        audit_path.symlink_to(tmp_path)
+
+    if mutation == "unsafe":
+        with pytest.raises(OSError):
+            audit.query()
+    else:
+        assert audit.query() == []
+    assert audit.state_degraded is True
+    with pytest.raises(StatePersistenceDegradedError, match="audit_log"):
+        await audit.persist(
+            SessionCreated(
+                session_id=SessionId("blocked-departed-query-authority"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "corruption_kind",
     ["invalid-row", "chain-break", "data-hash", "unterminated"],

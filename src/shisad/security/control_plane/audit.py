@@ -19,7 +19,6 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     atomic_write_bytes_with_identity,
     durable_append_bytes,
-    read_owner_only_regular_file,
     read_owner_only_regular_file_with_identity,
 )
 from shisad.security.control_plane.schema import sanitize_metadata_payload
@@ -152,12 +151,9 @@ class ControlPlaneAuditLog:
         self._state_load_result = StateLoadResult(StateLoadStatus.OK)
 
     def verify_chain(self) -> tuple[bool, int, str]:
-        try:
-            raw_bytes = read_owner_only_regular_file(self._path)
-        except OSError as exc:
-            return (False, 0, f"read failed ({exc})")
+        raw_bytes, error = self._read_bound_bytes()
         if raw_bytes is None:
-            return (True, 0, "")
+            return (False, 0, error) if error else (True, 0, "")
         return self._verify_chain_bytes(raw_bytes)
 
     @staticmethod
@@ -197,17 +193,8 @@ class ControlPlaneAuditLog:
     ) -> list[dict[str, Any]]:
         if self.state_degraded:
             return []
-        try:
-            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._path)
-        except OSError:
-            return []
+        raw_bytes, _error = self._read_bound_bytes()
         if raw_bytes is None:
-            return []
-        if self._file_identity is not None and file_identity != self._file_identity:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="audit_authority_identity_changed",
-            )
             return []
         rows: list[dict[str, Any]] = []
         for raw in raw_bytes.splitlines():
@@ -224,6 +211,25 @@ class ControlPlaneAuditLog:
                 continue
             rows.append(entry.model_dump(mode="json"))
         return rows
+
+    def _read_bound_bytes(self) -> tuple[bytes | None, str]:
+        try:
+            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._path)
+        except OSError:
+            reason = "audit_read_failed"
+            self._state_load_result = StateLoadResult(StateLoadStatus.CORRUPT, reason=reason)
+            return None, reason
+        if raw_bytes is None:
+            if self._file_identity is None:
+                return None, ""
+            reason = "audit_authority_disappeared"
+            self._state_load_result = StateLoadResult(StateLoadStatus.CORRUPT, reason=reason)
+            return None, reason
+        if self._file_identity is None or file_identity != self._file_identity:
+            reason = "audit_authority_identity_changed"
+            self._state_load_result = StateLoadResult(StateLoadStatus.CORRUPT, reason=reason)
+            return None, reason
+        return raw_bytes, ""
 
     def _resume(self) -> None:
         try:

@@ -141,3 +141,33 @@ def test_f3_control_plane_audit_rejects_same_path_replacement_before_append(
 
     assert log.state_degraded is True
     assert path.read_bytes() == b""
+
+
+@pytest.mark.parametrize("read_surface", ["verify", "query"])
+@pytest.mark.parametrize("mutation", ["replacement", "disappearance", "unsafe"])
+def test_f3_control_plane_audit_reads_reject_departed_authority(
+    tmp_path: Path,
+    read_surface: str,
+    mutation: str,
+) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    log = ControlPlaneAuditLog(path)
+    log.append(event_type="retained", session_id="s", actor="a", data={"id": 1})
+    if mutation == "replacement":
+        replacement = tmp_path / "replacement-control-plane-read.jsonl"
+        replacement.write_bytes(b"")
+        replacement.chmod(0o600)
+        replacement.replace(path)
+    elif mutation == "disappearance":
+        path.unlink()
+    else:
+        path.unlink()
+        path.symlink_to(tmp_path)
+
+    if read_surface == "verify":
+        assert log.verify_chain()[0] is False
+    else:
+        assert log.query() == []
+    assert log.state_degraded is True
+    with pytest.raises(StatePersistenceDegradedError, match="control_plane_audit"):
+        log.append(event_type="blocked", session_id="s", actor="a", data={"id": 2})

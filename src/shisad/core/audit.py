@@ -12,10 +12,9 @@ import json
 import logging
 import re
 from collections import deque
-from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 
 from pydantic import BaseModel, ValidationError, model_validator
 
@@ -29,7 +28,6 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     atomic_write_bytes_with_identity,
     durable_append_bytes,
-    open_owned_regular_file,
     read_owner_only_regular_file_with_identity,
 )
 from shisad.core.events import BaseEvent
@@ -186,15 +184,10 @@ class AuditLog:
         Returns:
             (is_valid, entries_checked, error_message)
         """
-        raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._log_path)
+        raw_bytes = self._read_bound_bytes()
         if raw_bytes is None:
-            return (
-                (False, 0, "audit authority disappeared")
-                if self._file_identity is not None
-                else (True, 0, "")
-            )
-        if self._file_identity is not None and file_identity != self._file_identity:
-            return (False, 0, "audit authority identity changed")
+            reason = self._state_load_result.reason
+            return (False, 0, reason) if self.state_degraded else (True, 0, "")
         ok, count, error, _previous, _event_hashes = self._validate_chain_bytes(raw_bytes)
         return ok, count, error
 
@@ -211,41 +204,41 @@ class AuditLog:
         """Query audit log entries with filters."""
         if self.state_degraded:
             return []
-        with self._open_log() as log_file:
-            if log_file is None:
-                return []
+        raw_bytes = self._read_bound_bytes()
+        if raw_bytes is None:
+            return []
 
-            max_results = max(1, int(limit))
-            if tail:
-                results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
-            else:
-                results = []
+        max_results = max(1, int(limit))
+        if tail:
+            results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
+        else:
+            results = []
 
-            for raw_line in log_file:
-                line = raw_line.decode("utf-8").strip()
-                if not line:
+        for raw_line in raw_bytes.splitlines():
+            line = raw_line.decode("utf-8").strip()
+            if not line:
+                continue
+
+            entry = AuditEntry.model_validate_json(line)
+
+            # Apply filters
+            if event_type is not None and entry.event_type != event_type:
+                continue
+            if session_id is not None and entry.session_id != session_id:
+                continue
+            if actor is not None and entry.actor != actor:
+                continue
+            if since is not None:
+                entry_time = datetime.fromisoformat(entry.timestamp)
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=UTC)
+                if entry_time < since:
                     continue
 
-                entry = AuditEntry.model_validate_json(line)
+            results.append(entry.model_dump())
 
-                # Apply filters
-                if event_type is not None and entry.event_type != event_type:
-                    continue
-                if session_id is not None and entry.session_id != session_id:
-                    continue
-                if actor is not None and entry.actor != actor:
-                    continue
-                if since is not None:
-                    entry_time = datetime.fromisoformat(entry.timestamp)
-                    if entry_time.tzinfo is None:
-                        entry_time = entry_time.replace(tzinfo=UTC)
-                    if entry_time < since:
-                        continue
-
-                results.append(entry.model_dump())
-
-                if not tail and len(results) >= max_results:
-                    break
+            if not tail and len(results) >= max_results:
+                break
 
         return list(results)
 
@@ -272,11 +265,31 @@ class AuditLog:
         self._persistence_degradation = None
         return cleared
 
-    def _open_log(self) -> AbstractContextManager[BinaryIO | None]:
-        return open_owned_regular_file(
-            self._log_path,
-            normalize_mode=0o600,
-        )
+    def _read_bound_bytes(self) -> bytes | None:
+        try:
+            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(
+                self._log_path
+            )
+        except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="audit_read_failed",
+            )
+            raise
+        if raw_bytes is None:
+            if self._file_identity is not None:
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="audit_authority_disappeared",
+                )
+            return None
+        if self._file_identity is None or file_identity != self._file_identity:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="audit_authority_identity_changed",
+            )
+            return None
+        return raw_bytes
 
     def _resume_chain(self, raw_bytes: bytes) -> None:
         """Publish a retained chain only after complete-domain validation."""

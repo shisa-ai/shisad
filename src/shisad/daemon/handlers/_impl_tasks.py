@@ -179,7 +179,10 @@ class TasksImplMixin(HandlerMixinBase):
         existing_id = str(getattr(task, "execution_session_id", "")).strip()
         if existing_id:
             existing = self._session_manager.get(SessionId(existing_id))
-            if existing is not None:
+            if existing is not None and self._task_execution_session_matches(
+                task=task,
+                session=existing,
+            ):
                 return existing
 
         task_envelope = getattr(task, "task_envelope", None)
@@ -221,6 +224,29 @@ class TasksImplMixin(HandlerMixinBase):
         )
         self._scheduler.attach_execution_session(str(getattr(task, "id", "")), str(session.id))
         return session
+
+    @staticmethod
+    def _task_execution_session_matches(*, task: Any, session: Any) -> bool:
+        task_envelope = getattr(task, "task_envelope", None)
+        if task_envelope is None:
+            return False
+        metadata = getattr(session, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return False
+        return bool(
+            getattr(session, "state", None) == SessionState.ACTIVE
+            and getattr(session, "role", None) == SessionRole.SUBAGENT
+            and getattr(session, "mode", None) == SessionMode.DEFAULT
+            and str(getattr(session, "channel", "")) == "scheduler"
+            and str(getattr(session, "user_id", "")) == task_envelope.owner_user_id
+            and str(getattr(session, "workspace_id", "")) == task_envelope.workspace_id
+            and set(getattr(session, "capabilities", set()))
+            == set(task_envelope.capability_snapshot)
+            and str(metadata.get("background_task_id", "")) == str(getattr(task, "id", ""))
+            and metadata.get("task_envelope") == task_envelope.model_dump(mode="json")
+            and str(metadata.get("trust_level", "")) == "internal"
+            and str(metadata.get("capability_sync_mode", "")) == "manual_override"
+        )
 
     @staticmethod
     def _task_origin_for(

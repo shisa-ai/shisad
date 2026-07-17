@@ -746,6 +746,104 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_f3_scheduler_restart_rejects_cross_wired_execution_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        first = await client.call(
+            "task.create",
+            {
+                "name": "first-bound-task",
+                "goal": "send the first report",
+                "schedule": {
+                    "kind": "event",
+                    "expression": "first.ready",
+                    "event_type": "first.ready",
+                },
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "first-room"},
+            },
+        )
+        second = await client.call(
+            "task.create",
+            {
+                "name": "second-bound-task",
+                "goal": "send the second report",
+                "schedule": {
+                    "kind": "event",
+                    "expression": "second.ready",
+                    "event_type": "second.ready",
+                },
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "bob",
+                "workspace_id": "ws2",
+                "delivery_target": {"channel": "discord", "recipient": "second-room"},
+            },
+        )
+        await client.call(
+            "task.trigger_event",
+            {"event_type": "first.ready", "payload": "first payload"},
+        )
+        await _wait_for_task_pending_confirmation(client, task_id=str(first["id"]))
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    tasks_path = tmp_path / "data" / "tasks" / "tasks.json"
+    task_rows = _state_snapshot_payload(tasks_path)
+    assert isinstance(task_rows, list)
+    first_row = next(row for row in task_rows if row["id"] == first["id"])
+    first_session_id = str(first_row["execution_session_id"])
+    assert first_session_id
+    second_row = next(row for row in task_rows if row["id"] == second["id"])
+    second_row["execution_session_id"] = first_session_id
+    tasks_path.write_bytes(encode_versioned_json_snapshot(task_rows))
+
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        await client.call(
+            "task.trigger_event",
+            {"event_type": "second.ready", "payload": "second payload"},
+        )
+        await _wait_for_task_pending_confirmation(client, task_id=str(second["id"]))
+        sessions = await client.call("session.list", {})
+        rebound = next(
+            row
+            for row in sessions["sessions"]
+            if row["user_id"] == "bob" and row["workspace_id"] == "ws2"
+        )
+        second_session_id = str(rebound["id"])
+        assert second_session_id != first_session_id
+        assert rebound["user_id"] == "bob"
+        assert rebound["workspace_id"] == "ws2"
+        assert rebound["channel"] == "scheduler"
+        assert rebound["role"] == "subagent"
+        assert rebound["capabilities"] == ["message.send"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    rebound_task_rows = _state_snapshot_payload(tasks_path)
+    assert isinstance(rebound_task_rows, list)
+    rebound_task = next(row for row in rebound_task_rows if row["id"] == second["id"])
+    assert rebound_task["execution_session_id"] == second_session_id
+    session_path = (
+        tmp_path / "data" / "sessions" / "state" / f"{second_session_id}.json"
+    )
+    session_record = json.loads(session_path.read_text(encoding="utf-8"))
+    session_payload = session_record["session"]
+    assert session_payload["metadata"]["background_task_id"] == second["id"]
+    assert (
+        session_payload["metadata"]["task_envelope"]["envelope_id"]
+        == second["task_envelope"]["envelope_id"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_g3_due_run_with_capability_mismatch_stays_non_confirmable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
