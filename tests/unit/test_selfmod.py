@@ -462,6 +462,58 @@ def test_f3_selfmod_inventory_shape_failures_are_typed_and_retained(
     assert inventory_path.read_bytes() == snapshot
 
 
+@pytest.mark.parametrize("snapshot_kind", ["legacy", "versioned"])
+@pytest.mark.parametrize("artifact_kind", ["skill", "behavior_pack"])
+def test_f3_selfmod_inventory_requires_native_enabled_boolean(
+    tmp_path: Path,
+    snapshot_kind: str,
+    artifact_kind: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_kind == "skill":
+        artifact = _write_signed_skill_bundle(tmp_path / "artifact", key_path=key_path)
+        bucket = "skills"
+        name = "calendar-helper"
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "artifact",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+        bucket = "behavior_packs"
+        name = "operator-tone"
+    assert manager.apply(manager.propose(artifact).proposal_id, confirm=True).applied is True
+    inventory_path = manager._inventory_path
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    payload[bucket][name]["enabled"] = "yes"
+    if snapshot_kind == "legacy":
+        retained = yaml.safe_dump(payload, sort_keys=True).encode()
+    else:
+        retained = encode_versioned_json_snapshot(payload, version=1)
+    _write_owner_only_bytes(inventory_path, retained)
+
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.inventory_load_result().reason == "invalid_inventory_entry"
+    assert restarted_planner.defaults == []
+    assert restarted._skill_manager._tool_registry.list_tools() == []
+    assert inventory_path.read_bytes() == retained
+
+
 def test_f3_selfmod_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> None:
     root = tmp_path / "selfmod"
     root.mkdir()
@@ -794,6 +846,87 @@ def test_f3_selfmod_semantically_invalid_change_is_retained_as_corrupt(
     assert result.rolled_back is False
     assert result.reason == "change_corrupt"
     assert path.read_bytes() == snapshot
+
+
+@pytest.mark.parametrize("record_kind", ["legacy", "versioned"])
+def test_f3_selfmod_proposal_requires_native_valid_boolean(
+    tmp_path: Path,
+    record_kind: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "artifact", key_path=key_path)
+    proposal = manager.propose(artifact)
+    path = manager._proposal_path(proposal.proposal_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))["payload"]
+    payload["valid"] = "yes"
+    retained = (
+        json.dumps(payload, sort_keys=True).encode()
+        if record_kind == "legacy"
+        else encode_versioned_json_snapshot(payload, version=1)
+    )
+    _write_owner_only_bytes(path, retained)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "proposal_corrupt"
+    assert manager._skill_manager._tool_registry.list_tools() == []
+    assert path.read_bytes() == retained
+
+
+@pytest.mark.parametrize("record_kind", ["legacy", "versioned"])
+def test_f3_selfmod_change_requires_native_previous_enabled_boolean(
+    tmp_path: Path,
+    record_kind: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    stable = _write_signed_behavior_pack(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    candidate = _write_signed_behavior_pack(
+        tmp_path / "candidate",
+        key_path=key_path,
+        version="1.0.1",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    applied = manager.apply(manager.propose(candidate).proposal_id, confirm=True)
+    assert applied.applied is True
+    path = manager._change_path(applied.change_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))["payload"]
+    payload["previous_enabled"] = "yes"
+    retained = (
+        json.dumps(payload, sort_keys=True).encode()
+        if record_kind == "legacy"
+        else encode_versioned_json_snapshot(payload, version=1)
+    )
+    _write_owner_only_bytes(path, retained)
+
+    result = manager.rollback(applied.change_id)
+
+    assert result.rolled_back is False
+    assert result.reason == "change_corrupt"
+    assert planner.defaults[-1] == ("strict", "Stay strict.")
+    assert path.read_bytes() == retained
 
 
 @pytest.mark.parametrize("artifact_kind", ["skill", "behavior"])

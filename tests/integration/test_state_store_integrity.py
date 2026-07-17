@@ -850,6 +850,7 @@ def test_auxiliary_state_corruption_is_visible_and_retained(tmp_path: Path) -> N
     marks_path.parent.mkdir(parents=True)
     corrupt_bytes = b'{"version":1,"checksum":"bad","payload":{"evt":"known"}}\n'
     marks_path.write_bytes(corrupt_bytes)
+    marks_path.chmod(0o600)
 
     dashboard = SecurityDashboard(
         audit_log=AuditLog(tmp_path / "audit.jsonl"),

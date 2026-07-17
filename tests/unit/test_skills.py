@@ -924,6 +924,29 @@ def test_f3_current_skill_inventory_requires_exact_nonblank_declared_tool_bindin
     assert inventory_path.read_bytes() == snapshot
 
 
+def test_f3_current_skill_inventory_requires_native_legacy_marker_boolean(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    SkillManager(storage_dir=storage).activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+    envelope["payload"][0]["tool_schema_hashes_legacy"] = "yes"
+    retained = encode_versioned_json_snapshot(envelope["payload"], version=1)
+    _write_owner_only_bytes(inventory_path, retained)
+    registry = ToolRegistry()
+
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_inventory_entry"
+    assert manager.state_degraded is True
+    assert registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+    assert inventory_path.read_bytes() == retained
+
+
 @pytest.mark.parametrize(
     ("snapshot", "status", "reason"),
     [

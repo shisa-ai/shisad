@@ -252,7 +252,7 @@ class SecurityDashboard:
             )
             return
         try:
-            raw_bytes = read_owned_regular_file(self._marks_path)
+            raw_bytes = read_owned_regular_file(self._marks_path, required_mode=0o600)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,

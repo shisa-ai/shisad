@@ -121,7 +121,7 @@ class SelfModificationRollbackResult(BaseModel):
 class _InventoryEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = Field(default=False, strict=True)
     active_version: str = ""
 
 
@@ -136,6 +136,7 @@ class _ProposalRecord(SelfModificationProposal):
     model_config = ConfigDict(extra="forbid")
 
     artifact_type: Literal["skill_bundle", "behavior_pack"]
+    valid: bool = Field(strict=True)
     manifest: ArtifactManifest
 
     @model_validator(mode="after")
@@ -165,7 +166,7 @@ class _ChangeRecord(BaseModel):
     artifact_type: Literal["skill_bundle", "behavior_pack"]
     name: str
     previous_active_version: str = ""
-    previous_enabled: bool = False
+    previous_enabled: bool = Field(default=False, strict=True)
     new_active_version: str
     applied_at: str
 

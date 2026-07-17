@@ -148,6 +148,7 @@ def test_f3_dashboard_corrupt_marks_are_retained_and_block_mutation(tmp_path: Pa
     path.parent.mkdir(parents=True)
     corrupt_bytes = b'{"version":1,"payload":'
     path.write_bytes(corrupt_bytes)
+    path.chmod(0o600)
 
     dashboard = SecurityDashboard(audit_log=AuditLog(tmp_path / "audit.jsonl"), marks_path=path)
 
@@ -164,6 +165,7 @@ def test_f3_dashboard_future_marks_are_typed_and_retained(tmp_path: Path) -> Non
     path.parent.mkdir(parents=True)
     future_bytes = encode_versioned_json_snapshot({"evt-1": "known"}, version=99)
     path.write_bytes(future_bytes)
+    path.chmod(0o600)
 
     dashboard = SecurityDashboard(audit_log=AuditLog(tmp_path / "audit.jsonl"), marks_path=path)
 
@@ -171,6 +173,34 @@ def test_f3_dashboard_future_marks_are_typed_and_retained(tmp_path: Path) -> Non
     assert dashboard.state_load_result.schema_version == 99
     assert dashboard.state_degraded is True
     assert path.read_bytes() == future_bytes
+
+
+@pytest.mark.parametrize("snapshot_kind", ["legacy", "versioned"])
+def test_f3_dashboard_permissive_marks_are_retained_and_fail_closed(
+    tmp_path: Path,
+    snapshot_kind: str,
+) -> None:
+    path = tmp_path / "dashboard" / "false_positives.json"
+    path.parent.mkdir(parents=True)
+    payload = {"evt-1": "reviewed"}
+    retained = (
+        json.dumps(payload, sort_keys=True).encode()
+        if snapshot_kind == "legacy"
+        else encode_versioned_json_snapshot(payload, version=1)
+    )
+    path.write_bytes(retained)
+    path.chmod(0o644)
+
+    dashboard = SecurityDashboard(audit_log=AuditLog(tmp_path / "audit.jsonl"), marks_path=path)
+
+    assert dashboard.state_load_result.status == StateLoadStatus.CORRUPT
+    assert dashboard.state_load_result.reason == "marks_read_failed"
+    assert dashboard._marks == {}
+    assert dashboard.state_status()["status"] == "degraded"
+    with pytest.raises(StatePersistenceDegradedError, match="dashboard_marks"):
+        dashboard.mark_false_positive(event_id="evt-2", reason="known")
+    assert path.read_bytes() == retained
+    assert path.stat().st_mode & 0o777 == 0o644
 
 
 def test_f3_dashboard_marks_symlink_is_rejected_without_overwrite(tmp_path: Path) -> None:
@@ -217,6 +247,7 @@ def test_f3_dashboard_legacy_marks_migrate_on_next_mutation(tmp_path: Path) -> N
     path = tmp_path / "dashboard" / "false_positives.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"evt-1": "legacy"}), encoding="utf-8")
+    path.chmod(0o600)
 
     dashboard = SecurityDashboard(audit_log=AuditLog(tmp_path / "audit.jsonl"), marks_path=path)
 
@@ -236,6 +267,7 @@ def test_f3_dashboard_reserved_event_ids_remain_valid_legacy_marks(
     path = tmp_path / "dashboard" / "false_positives.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({legacy_event_id: "legacy"}), encoding="utf-8")
+    path.chmod(0o600)
 
     dashboard = SecurityDashboard(audit_log=AuditLog(tmp_path / "audit.jsonl"), marks_path=path)
 

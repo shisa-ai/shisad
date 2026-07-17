@@ -410,6 +410,7 @@ async def test_f3_corrupt_dashboard_marks_start_visible_bounded_degraded(
     data_dir.chmod(0o700)
     corrupt_bytes = b'{"version":1,"payload":'
     marks_path.write_bytes(corrupt_bytes)
+    marks_path.chmod(0o600)
     config = DaemonConfig(
         data_dir=data_dir,
         socket_path=tmp_path / "control.sock",

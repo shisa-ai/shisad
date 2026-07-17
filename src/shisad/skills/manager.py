@@ -71,7 +71,7 @@ class InstalledSkill(BaseModel):
     state: ArtifactState
     author: str
     tool_schema_hashes: dict[str, str] = Field(default_factory=dict)
-    tool_schema_hashes_legacy: bool = False
+    tool_schema_hashes_legacy: bool = Field(default=False, strict=True)
 
 
 class SkillManager:
