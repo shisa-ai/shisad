@@ -4717,6 +4717,33 @@ class HandlerImplementation(
                 break
             claimed_confirmation_ids.update(row_confirmation_ids)
         if admission_failure:
+            scheduler = getattr(self, "_scheduler", None)
+            has_terminal_shadow = getattr(
+                scheduler,
+                "has_any_terminal_confirmation_shadow",
+                None,
+            )
+            disable_task = getattr(scheduler, "disable_task", None)
+            if callable(has_terminal_shadow) and callable(disable_task):
+                for item in raw:
+                    if not isinstance(item, Mapping):
+                        continue
+                    task_id, task_id_valid = _loaded_state_text(item.get("task_id", ""))
+                    identity = item.get("identity")
+                    if isinstance(identity, Mapping):
+                        nested_task_id, nested_task_id_valid = _loaded_state_text(
+                            identity.get("task_id", "")
+                        )
+                        task_binding_exact = (
+                            task_id_valid
+                            and nested_task_id_valid
+                            and bool(task_id)
+                            and task_id == nested_task_id
+                        )
+                    else:
+                        task_binding_exact = load_result.legacy and task_id_valid and bool(task_id)
+                    if task_binding_exact and has_terminal_shadow(task_id):
+                        disable_task(task_id)
             self._pending_state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason=admission_failure,

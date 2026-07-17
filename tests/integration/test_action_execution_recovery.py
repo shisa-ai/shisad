@@ -1917,7 +1917,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             ),
             max_runs=1,
         )
-        if "task_mismatch" in corruption_parts:
+        if corruption in {"task_mismatch", "confirmation_both_missing"}:
             decoy = services.scheduler.create_task(
                 name=f"terminal-corruption-decoy-{producer}",
                 goal="Do not account the original effect here",

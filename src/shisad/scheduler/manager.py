@@ -781,6 +781,24 @@ class SchedulerManager:
             }
         return False
 
+    def has_any_terminal_confirmation_shadow(self, task_id: str) -> bool:
+        """Return whether a task has any independently retained terminal shadow."""
+
+        self._require_state_readable(
+            "pending_confirmations",
+            transition="terminal_confirmation_shadow",
+        )
+        return any(
+            str(row.get("status", "pending") or "pending").strip().lower()
+            in {
+                "executing",
+                "approved",
+                "failed",
+                "outcome_unknown",
+            }
+            for row in self._pending_confirmations.get(task_id, [])
+        )
+
     def task_ids_for_confirmation(self, confirmation_id: str) -> list[str]:
         self._require_state_readable(
             "pending_confirmations",
