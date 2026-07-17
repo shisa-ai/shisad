@@ -397,6 +397,35 @@ async def test_f3_audit_resume_rejects_complete_domain_corruption(
     assert audit_path.read_bytes() == corrupt_bytes
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption_kind", ["duplicate", "extra"])
+async def test_f3_audit_resume_rejects_ambiguous_rows(
+    audit_path: Path,
+    corruption_kind: str,
+) -> None:
+    first = AuditLog(audit_path)
+    await _write_entries(first, count=1)
+    row = audit_path.read_text(encoding="utf-8").strip()
+    if corruption_kind == "duplicate":
+        row = row.replace(
+            '"actor":"test"',
+            '"actor":"attacker","actor":"test"',
+            1,
+        )
+    else:
+        payload = json.loads(row)
+        payload["unexpected_authority"] = "ignored"
+        row = json.dumps(payload, separators=(",", ":"))
+    retained = (row + "\n").encode()
+    audit_path.write_bytes(retained)
+
+    restarted = AuditLog(audit_path)
+
+    assert restarted.state_degraded is True
+    assert restarted.entry_count == 0
+    assert audit_path.read_bytes() == retained
+
+
 class TestAuditHashChainInsertion:
     """M0.T6: audit log hash-chain detects insertion."""
 

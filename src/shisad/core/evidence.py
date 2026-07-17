@@ -530,7 +530,7 @@ class ArtifactLedger:
             if existing is not None:
                 blob_load = self._load_validated_blob_content(existing)
                 rewrote_blob = blob_load.content is None and blob_load.drop_ref
-            if not blob_path.exists() or rewrote_blob:
+            if existing is None or not blob_path.exists() or rewrote_blob:
                 try:
                     self._atomic_write(blob_path, self._blob_codec.encode(content))
                 except (ArtifactBlobCodecError, AtomicWriteError):

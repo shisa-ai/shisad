@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -30,6 +30,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes_with_identity,
+    decode_json_document,
     durable_append_bytes,
     open_owned_regular_file,
     read_owner_only_regular_file_with_identity,
@@ -44,6 +45,8 @@ _GENESIS_HASH = hashlib.sha256(b"shisad-audit-genesis").hexdigest()
 
 class AuditEntry(BaseModel):
     """A single entry in the audit log."""
+
+    model_config = ConfigDict(extra="forbid")
 
     event_id: str
     timestamp: str
@@ -223,7 +226,21 @@ class AuditLog:
                 if not line:
                     continue
 
-                entry = AuditEntry.model_validate_json(line)
+                document_result, payload = decode_json_document(raw_line.strip())
+                if document_result.status is not StateLoadStatus.OK:
+                    self._state_load_result = StateLoadResult(
+                        StateLoadStatus.CORRUPT,
+                        reason="audit_query_invalid_entry",
+                    )
+                    return []
+                try:
+                    entry = AuditEntry.model_validate(payload)
+                except (TypeError, ValueError, ValidationError):
+                    self._state_load_result = StateLoadResult(
+                        StateLoadStatus.CORRUPT,
+                        reason="audit_query_invalid_entry",
+                    )
+                    return []
 
                 # Apply filters
                 if event_type is not None and entry.event_type != event_type:
@@ -360,9 +377,12 @@ class AuditLog:
         for line_num, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
                 return False, count, f"line {line_num}: blank audit row", previous_hash, {}
+            document_result, payload = decode_json_document(line.encode("utf-8"))
             try:
-                entry = AuditEntry.model_validate_json(line)
-            except ValidationError as exc:
+                if document_result.status is not StateLoadStatus.OK:
+                    raise ValueError("invalid_json")
+                entry = AuditEntry.model_validate(payload)
+            except (TypeError, ValueError, ValidationError) as exc:
                 return (
                     False,
                     count,

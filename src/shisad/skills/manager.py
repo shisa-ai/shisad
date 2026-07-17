@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -64,6 +64,8 @@ class SkillInstallDecision(BaseModel):
 
 
 class InstalledSkill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     version: str
     path: str

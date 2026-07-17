@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -521,6 +522,55 @@ def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
     loaded = ledger.get_ref(sid, ref.ref_id)
     assert loaded is not None
     assert loaded.storage_codec == "reverse"
+
+
+def test_artifact_ledger_store_replaces_unindexed_blob_before_publishing_ref(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    sid = SessionId("sess-a")
+    content = "retained artifact body"
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    blob_path = evidence_root / "blobs" / f"{content_hash}.txt"
+    blob_path.write_bytes(b"orphaned attacker bytes")
+
+    ref = ledger.store(
+        sid,
+        content,
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="retained artifact body",
+    )
+
+    assert ledger.read(sid, ref.ref_id) == content
+    assert blob_path.read_bytes() == content.encode()
+
+
+def test_artifact_ledger_kms_store_replaces_unindexed_blob_before_publishing_ref(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    content = "encrypted retained artifact body"
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        blob_path = evidence_root / "blobs" / f"{content_hash}.txt"
+        blob_path.write_bytes(b"orphaned incompatible ciphertext")
+
+        ref = ledger.store(
+            sid,
+            content,
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted retained artifact body",
+        )
+
+        assert ledger.read(sid, ref.ref_id) == content
+        assert blob_path.read_bytes() != b"orphaned incompatible ciphertext"
 
 
 def test_artifact_ledger_kms_blob_codec_round_trips_and_restarts(tmp_path) -> None:

@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -19,6 +19,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes_with_identity,
+    decode_json_document,
     durable_append_bytes,
     read_owner_only_regular_file_with_identity,
 )
@@ -57,8 +58,10 @@ def execution_action_surface_hash(action: ControlPlaneAction) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-class ActionHistoryRecord(BaseModel, frozen=True):
+class ActionHistoryRecord(BaseModel):
     """Append-only metadata record used by control-plane analyzers."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     session_id: str
@@ -74,6 +77,13 @@ class ActionHistoryRecord(BaseModel, frozen=True):
     idempotency_key: str = ""
     trace_plan_hash: str = ""
     execution_action_surface_hash: str = ""
+
+    @field_validator("timestamp")
+    @classmethod
+    def _require_timezone_aware_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value
 
 
 class SessionActionHistoryStore:
@@ -359,9 +369,12 @@ class SessionActionHistoryStore:
                     reason=f"blank_history_record:{line_number}",
                 )
                 return
+            document_result, payload = decode_json_document(text.encode("utf-8"))
             try:
-                record = ActionHistoryRecord.model_validate_json(text)
-            except ValidationError:
+                if document_result.status is not StateLoadStatus.OK:
+                    raise ValueError("invalid_json")
+                record = ActionHistoryRecord.model_validate(payload)
+            except (TypeError, ValueError, ValidationError):
                 logger.warning(
                     "control-plane history: retained malformed record line %s",
                     line_number,

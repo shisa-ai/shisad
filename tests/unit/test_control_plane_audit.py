@@ -105,6 +105,34 @@ def test_f3_control_plane_audit_corruption_is_retained_and_blocks_append(
     assert path.read_bytes() == corrupt_bytes
 
 
+@pytest.mark.parametrize("corruption_kind", ["duplicate", "extra", "naive_timestamp"])
+def test_f3_control_plane_audit_rejects_ambiguous_or_noncanonical_rows(
+    tmp_path: Path,
+    corruption_kind: str,
+) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    first = ControlPlaneAuditLog(path)
+    first.append(event_type="retained", session_id="s", actor="a", data={"id": 1})
+    row = path.read_text(encoding="utf-8").strip()
+    if corruption_kind == "duplicate":
+        row = row.replace('"actor":"a"', '"actor":"attacker","actor":"a"', 1)
+    else:
+        payload = json.loads(row)
+        if corruption_kind == "extra":
+            payload["unexpected_authority"] = "ignored"
+        else:
+            payload["timestamp"] = payload["timestamp"].replace("Z", "")
+        row = json.dumps(payload, separators=(",", ":"))
+    retained = (row + "\n").encode()
+    path.write_bytes(retained)
+
+    restarted = ControlPlaneAuditLog(path)
+
+    assert restarted.state_load_result.status == StateLoadStatus.CORRUPT
+    assert restarted.entry_count == 0
+    assert path.read_bytes() == retained
+
+
 def test_f3_control_plane_audit_blank_row_is_retained_and_blocks_append(
     tmp_path: Path,
 ) -> None:

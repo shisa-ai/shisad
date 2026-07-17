@@ -3343,6 +3343,42 @@ def test_f3_control_plane_history_corruption_is_retained_and_blocks_append(
     assert path.read_bytes() == corrupt_bytes
 
 
+@pytest.mark.parametrize("corruption_kind", ["duplicate", "extra", "naive_timestamp"])
+def test_f3_control_plane_history_rejects_ambiguous_or_noncanonical_rows(
+    tmp_path: Path,
+    corruption_kind: str,
+) -> None:
+    path = tmp_path / "control_plane" / "history.jsonl"
+    path.parent.mkdir(parents=True)
+    valid = ActionHistoryRecord(
+        session_id="s-history",
+        action_kind=ActionKind.FS_READ,
+        tool_name="file.read",
+    )
+    row = valid.model_dump_json()
+    if corruption_kind == "duplicate":
+        row = row.replace(
+            '"session_id":"s-history"',
+            '"session_id":"attacker","session_id":"s-history"',
+            1,
+        )
+    else:
+        payload = json.loads(row)
+        if corruption_kind == "extra":
+            payload["unexpected_authority"] = "ignored"
+        else:
+            payload["timestamp"] = valid.timestamp.replace(tzinfo=None).isoformat()
+        row = json.dumps(payload, separators=(",", ":"))
+    retained = (row + "\n").encode()
+    _write_owner_only_bytes(path, retained)
+
+    history = SessionActionHistoryStore(path)
+
+    assert history.state_load_result.status == StateLoadStatus.CORRUPT
+    assert history.all_for_session("s-history") == []
+    assert path.read_bytes() == retained
+
+
 def test_f3_control_plane_history_blank_row_is_retained_and_blocks_append(
     tmp_path: Path,
 ) -> None:

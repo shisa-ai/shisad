@@ -1095,6 +1095,43 @@ def test_f3_legacy_skill_inventory_rejects_duplicate_members(tmp_path: Path) -> 
     assert inventory_path.read_bytes() == ambiguous_bytes
 
 
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+def test_f3_skill_inventory_rejects_unexpected_entry_members(
+    tmp_path: Path,
+    snapshot_kind: str,
+) -> None:
+    storage = tmp_path / "state"
+    storage.mkdir()
+    skill = _f3_skill_with_tool(tmp_path)
+    inventory_path = storage / "inventory.json"
+    if snapshot_kind == "current":
+        SkillManager(storage_dir=storage).activate_bundle(skill)
+        envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
+        row = envelope["payload"][0]
+        row["unexpected_authority"] = "ignored"
+        retained = encode_versioned_json_snapshot([row], version=1)
+    else:
+        row = InstalledSkill(
+            name="durable-skill",
+            version="1.0.0",
+            path=str(skill),
+            manifest_hash="legacy-hash",
+            state=ArtifactState.PUBLISHED,
+            author="trusted-dev",
+        ).model_dump(mode="json")
+        row["unexpected_authority"] = "ignored"
+        retained = json.dumps([row]).encode()
+    _write_owner_only_bytes(inventory_path, retained)
+
+    manager = SkillManager(storage_dir=storage)
+
+    result = manager.inventory_load_result()
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_inventory_entry"
+    assert manager.state_degraded is True
+    assert inventory_path.read_bytes() == retained
+
+
 def test_f3_unrelated_mutation_preserves_hashless_legacy_tool_binding_marker(
     tmp_path: Path,
 ) -> None:

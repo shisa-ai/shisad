@@ -120,7 +120,7 @@ class ApprovalFactorRecord(BaseModel):
     principal_id: str
     secret_b32: str = ""
     webauthn_attested_credential_data_b64: str = ""
-    webauthn_sign_count: int = 0
+    webauthn_sign_count: int = Field(default=0, ge=0, strict=True)
     webauthn_rp_id: str = ""
     webauthn_transports: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -509,7 +509,8 @@ class InMemoryCredentialStore:
     def register_approval_factor(self, factor: ApprovalFactorRecord) -> None:
         """Persist a newly enrolled approval factor."""
         self._require_approval_state_available(transition="register_factor")
-        self._approval_factors[factor.credential_id] = factor.model_copy(deep=True)
+        validated = ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
+        self._approval_factors[validated.credential_id] = validated
         self._persist_approval_factors()
 
     def list_approval_factors(

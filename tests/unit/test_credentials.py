@@ -453,6 +453,63 @@ class TestApprovalFactorStore:
         assert result.reason == "invalid_json"
         assert store_path.read_bytes() == ambiguous_bytes
 
+    @pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+    def test_f3_approval_store_rejects_negative_webauthn_sign_count(
+        self,
+        tmp_path,
+        snapshot_kind: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        factor = {
+            "credential_id": "webauthn-1",
+            "user_id": "alice",
+            "method": "webauthn",
+            "principal_id": "ops-key",
+            "webauthn_sign_count": -1,
+        }
+        if snapshot_kind == "current":
+            retained = encode_versioned_json_snapshot(
+                {"approval_factors": [factor], "signer_keys": []},
+                version=3,
+            )
+        else:
+            retained = json.dumps(
+                {
+                    "schema_version": "shisad.approval_factor_store.v2",
+                    "approval_factors": [factor],
+                    "signer_keys": [],
+                }
+            ).encode()
+        store_path.write_bytes(retained)
+        store_path.chmod(0o600)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "invalid_approval_factors"
+        assert store_path.read_bytes() == retained
+
+    def test_f3_approval_factor_model_rejects_invalid_webauthn_sign_counts(self) -> None:
+        base = {
+            "credential_id": "webauthn-1",
+            "user_id": "alice",
+            "method": "webauthn",
+            "principal_id": "ops-key",
+        }
+
+        with pytest.raises(ValueError):
+            ApprovalFactorRecord(**base, webauthn_sign_count=-1)
+        with pytest.raises(ValueError):
+            ApprovalFactorRecord(**base, webauthn_sign_count="1")
+
+        store = InMemoryCredentialStore()
+        bypassed = ApprovalFactorRecord.model_construct(**base, webauthn_sign_count=-1)
+        with pytest.raises(ValueError):
+            store.register_approval_factor(bypassed)
+        assert store.list_approval_factors() == []
+
     def test_f3_approval_store_checksum_tamper_is_retained_and_fail_closed(
         self,
         tmp_path,

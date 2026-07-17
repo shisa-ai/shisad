@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -18,6 +18,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes_with_identity,
+    decode_json_document,
     durable_append_bytes,
     read_owner_only_regular_file_with_identity,
 )
@@ -26,7 +27,9 @@ from shisad.security.control_plane.schema import sanitize_metadata_payload
 _GENESIS_HASH = hashlib.sha256(b"shisad-control-plane-audit-genesis").hexdigest()
 
 
-class ControlPlaneAuditEntry(BaseModel, frozen=True):
+class ControlPlaneAuditEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     event_type: str
     session_id: str = ""
@@ -34,6 +37,13 @@ class ControlPlaneAuditEntry(BaseModel, frozen=True):
     data: dict[str, Any] = Field(default_factory=dict)
     data_hash: str
     previous_hash: str
+
+    @field_validator("timestamp")
+    @classmethod
+    def _require_timezone_aware_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value
 
 
 class ControlPlaneAuditLog:
@@ -170,9 +180,12 @@ class ControlPlaneAuditLog:
                 payload = payload[:-1]
             if not payload.strip():
                 return (False, count, f"line {index}: blank entry")
+            document_result, document = decode_json_document(payload.encode("utf-8"))
             try:
-                entry = ControlPlaneAuditEntry.model_validate_json(payload)
-            except ValidationError as exc:
+                if document_result.status is not StateLoadStatus.OK:
+                    raise ValueError("invalid_json")
+                entry = ControlPlaneAuditEntry.model_validate(document)
+            except (TypeError, ValueError, ValidationError) as exc:
                 return (False, count, f"line {index}: invalid entry ({exc})")
             if entry.previous_hash != previous:
                 return (False, count, f"line {index}: chain break")
@@ -201,10 +214,13 @@ class ControlPlaneAuditLog:
             text = raw.strip()
             if not text:
                 continue
+            document_result, document = decode_json_document(text)
             try:
-                entry = ControlPlaneAuditEntry.model_validate_json(text)
-            except ValidationError:
-                continue
+                if document_result.status is not StateLoadStatus.OK:
+                    raise ValueError("invalid_json")
+                entry = ControlPlaneAuditEntry.model_validate(document)
+            except (TypeError, ValueError, ValidationError):
+                return []
             if event_type and entry.event_type != event_type:
                 continue
             if session_id and entry.session_id != session_id:
