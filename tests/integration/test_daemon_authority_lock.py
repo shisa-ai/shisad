@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 import os
 import queue
@@ -1533,6 +1534,38 @@ def test_f3_oversized_integer_claim_json_fails_through_typed_boundary(
         with pytest.raises(AuthorityRegistryError, match="claim record is corrupt"):
             acquire_daemon_authority_claim(second)
     finally:
+        claim.release()
+
+
+@pytest.mark.parametrize("mutation", ["record_extra", "candidate_extra", "invalid_pid"])
+def test_f3_authority_claim_rejects_unknown_members_and_invalid_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    claim = acquire_daemon_authority_claim(first)
+    original = claim._record_path.read_bytes()
+    try:
+        payload = json.loads(original)
+        if mutation == "record_extra":
+            payload["unexpected_authority"] = "ignored"
+        elif mutation == "candidate_extra":
+            payload["candidates"][0]["unexpected_authority"] = "ignored"
+        else:
+            payload["pid"] = "123"
+        retained = json.dumps(payload, sort_keys=True).encode()
+        claim._record_path.write_bytes(retained)
+        claim._record_path.chmod(0o600)
+        with pytest.raises(AuthorityRegistryError, match="claim"):
+            authority._read_claim_record(claim._fd, claim._record_path)
+
+        assert claim._record_path.read_bytes() == retained
+    finally:
+        claim._record_path.write_bytes(original)
+        claim._record_path.chmod(0o600)
         claim.release()
 
 

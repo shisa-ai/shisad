@@ -319,6 +319,55 @@ def test_scheduler_unsupported_schema_is_typed_and_retained(tmp_path: Path) -> N
     assert tasks_path.read_bytes() == unsupported_bytes
 
 
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "task_extra",
+        "task_internal_alias",
+        "envelope_extra",
+        "schedule_extra",
+        "created_at",
+        "last_triggered_at",
+    ],
+)
+def test_scheduler_rejects_unknown_or_naive_retained_task_fields(
+    tmp_path: Path,
+    snapshot_kind: str,
+    mutation: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    _create_scheduler_task(scheduler)
+    tasks_path = storage / "tasks.json"
+    payload = json.loads(tasks_path.read_text(encoding="utf-8"))["payload"]
+    row = payload[0]
+    if mutation == "task_extra":
+        row["unexpected_authority"] = "ignored"
+    elif mutation == "task_internal_alias":
+        row["confirmation_outcome_dedup"] = {"confirmation-1": True}
+    elif mutation == "envelope_extra":
+        row["task_envelope"]["unexpected_authority"] = "ignored"
+    elif mutation == "schedule_extra":
+        row["schedule"]["unexpected_authority"] = "ignored"
+    else:
+        row[mutation] = datetime.now(UTC).replace(tzinfo=None).isoformat()
+    retained = (
+        encode_versioned_json_snapshot(payload)
+        if snapshot_kind == "current"
+        else json.dumps(payload, sort_keys=True).encode()
+    )
+    tasks_path.write_bytes(retained)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("tasks")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_task_row"
+    assert restarted._tasks == {}
+    assert tasks_path.read_bytes() == retained
+
+
 def test_checksum_valid_semantically_invalid_task_row_is_corrupt(tmp_path: Path) -> None:
     storage = tmp_path / "scheduler"
     scheduler = SchedulerManager(storage_dir=storage)

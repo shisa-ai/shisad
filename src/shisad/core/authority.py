@@ -797,12 +797,19 @@ def _read_claim_record(fd: int, path: Path) -> tuple[DaemonAuthorityCandidate, .
         raise AuthorityRegistryError(f"authority claim record is corrupt: {path}")
     if not isinstance(payload, dict) or payload.get("version") != _REGISTRY_SCHEMA_VERSION:
         raise AuthorityRegistryError(f"authority claim record schema is unsupported: {path}")
+    if set(payload) != {"version", "pid", "candidates"}:
+        raise AuthorityRegistryError(f"authority claim record is malformed: {path}")
+    pid = payload["pid"]
+    if type(pid) is not int or pid <= 0:
+        raise AuthorityRegistryError(f"authority claim pid is malformed: {path}")
     raw_candidates = payload.get("candidates")
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise AuthorityRegistryError(f"authority claim record has no candidates: {path}")
     candidates: list[DaemonAuthorityCandidate] = []
     for item in raw_candidates:
         if not isinstance(item, dict):
+            raise AuthorityRegistryError(f"authority claim candidate is malformed: {path}")
+        if set(item) != {"role", "path", "footprint", "device", "inode"}:
             raise AuthorityRegistryError(f"authority claim candidate is malformed: {path}")
         role = item.get("role")
         raw_path = item.get("path")
@@ -817,9 +824,9 @@ def _read_claim_record(fd: int, path: Path) -> tuple[DaemonAuthorityCandidate, .
             raise AuthorityRegistryError(
                 f"authority claim candidate footprint is unsupported: {path}"
             )
-        if device is not None and not isinstance(device, int):
+        if device is not None and (type(device) is not int or device < 0):
             raise AuthorityRegistryError(f"authority claim device is malformed: {path}")
-        if inode is not None and not isinstance(inode, int):
+        if inode is not None and (type(inode) is not int or inode < 0):
             raise AuthorityRegistryError(f"authority claim inode is malformed: {path}")
         candidate_path = Path(raw_path)
         if not candidate_path.is_absolute() or _canonical_path(candidate_path) != candidate_path:

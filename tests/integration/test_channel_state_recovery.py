@@ -119,6 +119,62 @@ def test_unscoped_v1_state_blocks_unknown_identity_until_explicit_rebaseline(
     assert store.reserve(identity=_identity(message_id="unknown")) is False
 
 
+@pytest.mark.parametrize(
+    "retained_shape",
+    ["current_snapshot", "current_journal", "v1_snapshot", "v1_journal"],
+)
+def test_f3_replay_state_rejects_unknown_snapshot_and_journal_members(
+    tmp_path: Path,
+    retained_shape: str,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    identity = _identity()
+    if retained_shape.startswith("current"):
+        row = {
+            "channel": "discord",
+            "identity": identity.model_dump(mode="json"),
+            "outcome": "terminal",
+            "unexpected_authority": "ignored",
+        }
+        version = 2
+        snapshot = {
+            "channel": "discord",
+            "records": [row],
+            "recent_identity_keys": [],
+        }
+    else:
+        row = {
+            "channel": "discord",
+            "message_id": "m-1",
+            "outcome": "terminal",
+            "unexpected_authority": "ignored",
+        }
+        version = 1
+        snapshot = {
+            "channel": "discord",
+            "records": [row],
+            "recent_message_ids": ["m-1"],
+        }
+    if retained_shape.endswith("snapshot"):
+        retained_path = root / "discord.state.json"
+        retained_path.write_bytes(encode_versioned_json_snapshot(snapshot, version=version))
+    else:
+        row["outcome"] = "reserved"
+        retained_path = root / "discord.state.journal"
+        retained_path.write_bytes(encode_versioned_json_snapshot(row, version=version) + b"\n")
+    retained_path.chmod(0o600)
+    retained = retained_path.read_bytes()
+    store = ChannelStateStore(root)
+
+    result = store.state_load_result("discord")
+
+    assert result.status == StateLoadStatus.CORRUPT
+    with pytest.raises(StatePersistenceDegradedError):
+        store.reserve(identity=identity)
+    assert retained_path.read_bytes() == retained
+
+
 @pytest.mark.parametrize("replacement_kind", ["symlink", "real_directory"])
 def test_rebaseline_rejects_replay_root_replacement_without_touching_external_state(
     tmp_path: Path,

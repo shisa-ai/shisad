@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -148,6 +148,8 @@ def trace_reason_requires_confirmation(reason_code: str) -> bool:
 
 
 class CommittedPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: str
     plan_hash: str
     allowed_actions: set[ActionKind] = Field(default_factory=set)
@@ -168,6 +170,13 @@ class CommittedPlan(BaseModel):
     executed_actions: int = Field(default=0, ge=0, strict=True)
     recorded_dependency_keys: set[str] = Field(default_factory=set)
     recorded_action_keys: set[str] = Field(default_factory=set)
+
+    @field_validator("committed_at", "expires_at")
+    @classmethod
+    def _require_aware_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("plan timestamps must be timezone-aware")
+        return value
 
 
 class PlanVerificationResult(BaseModel, frozen=True):

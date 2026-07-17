@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -106,13 +106,24 @@ class CredentialEntry(BaseModel):
 class RecoveryCodeRecord(BaseModel):
     """Single recovery code entry for an approval factor."""
 
+    model_config = ConfigDict(extra="forbid")
+
     code_hash: str
     consumed_at: datetime | None = None
     consumed_confirmation_id: str = ""
 
+    @field_validator("consumed_at")
+    @classmethod
+    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("recovery-code timestamps must be timezone-aware")
+        return value
+
 
 class ApprovalFactorRecord(BaseModel):
     """Durable approval-factor state stored in the control-plane factor store."""
+
+    model_config = ConfigDict(extra="forbid")
 
     credential_id: str
     user_id: str
@@ -129,9 +140,18 @@ class ApprovalFactorRecord(BaseModel):
     used_time_steps: dict[str, str] = Field(default_factory=dict)
     recovery_codes: list[RecoveryCodeRecord] = Field(default_factory=list)
 
+    @field_validator("created_at", "last_verified_at", "last_used_at")
+    @classmethod
+    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("approval-factor timestamps must be timezone-aware")
+        return value
+
 
 class SignerKeyRecord(BaseModel):
     """Durable signer-key metadata stored alongside approval factors."""
+
+    model_config = ConfigDict(extra="forbid")
 
     credential_id: str
     user_id: str
@@ -145,6 +165,13 @@ class SignerKeyRecord(BaseModel):
     last_verified_at: datetime | None = None
     last_used_at: datetime | None = None
     revoked_at: datetime | None = None
+
+    @field_validator("created_at", "last_verified_at", "last_used_at", "revoked_at")
+    @classmethod
+    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("signer-key timestamps must be timezone-aware")
+        return value
 
 
 class CredentialStore(Protocol):
@@ -654,12 +681,22 @@ class InMemoryCredentialStore:
         payload: Any,
         *,
         allow_missing_signer_keys: bool = False,
+        allow_legacy_schema_marker: bool = False,
     ) -> tuple[
         dict[str, ApprovalFactorRecord],
         dict[str, SignerKeyRecord],
         str | None,
     ]:
         if not isinstance(payload, dict):
+            raise _ApprovalStorePayloadError("invalid_payload")
+        allowed_payload_fields = {
+            "approval_factors",
+            "signer_keys",
+            "local_fido2_realm_id",
+        }
+        if allow_legacy_schema_marker:
+            allowed_payload_fields.add("schema_version")
+        if not set(payload).issubset(allowed_payload_fields):
             raise _ApprovalStorePayloadError("invalid_payload")
         if "approval_factors" not in payload:
             raise _ApprovalStorePayloadError("missing_approval_factors")
@@ -695,15 +732,21 @@ class InMemoryCredentialStore:
         except ValidationError as exc:
             raise _ApprovalStorePayloadError("invalid_signer_keys") from exc
 
-        local_fido2_realm_id_raw = str(payload.get("local_fido2_realm_id", "")).strip()
+        local_fido2_realm_value = payload.get("local_fido2_realm_id", "")
+        if "local_fido2_realm_id" in payload and not isinstance(local_fido2_realm_value, str):
+            raise _ApprovalStorePayloadError("invalid_local_fido2_realm")
+        local_fido2_realm_id_raw = str(local_fido2_realm_value).strip()
         realm_id: str | None
         try:
+            derived_realm_id = InMemoryCredentialStore._derive_local_fido2_realm_id_from_records(
+                loaded.values()
+            )
             if local_fido2_realm_id_raw:
                 realm_id = _normalize_local_fido2_realm_id(local_fido2_realm_id_raw)
+                if derived_realm_id is not None and realm_id != derived_realm_id:
+                    raise ValueError("stored local_fido2 realm does not match retained factors")
             else:
-                realm_id = InMemoryCredentialStore._derive_local_fido2_realm_id_from_records(
-                    loaded.values()
-                )
+                realm_id = derived_realm_id
         except ValueError as exc:
             raise _ApprovalStorePayloadError("invalid_local_fido2_realm") from exc
         return loaded, signer_keys, realm_id
@@ -819,6 +862,7 @@ class InMemoryCredentialStore:
             loaded, signer_keys, realm_id = self._decode_approval_payload(
                 payload,
                 allow_missing_signer_keys=allow_missing_signer_keys,
+                allow_legacy_schema_marker=has_legacy_marker,
             )
         except _ApprovalStorePayloadError as exc:
             self._set_approval_load_failure(

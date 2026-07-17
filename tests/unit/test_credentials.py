@@ -453,6 +453,128 @@ class TestApprovalFactorStore:
         assert result.reason == "invalid_json"
         assert store_path.read_bytes() == ambiguous_bytes
 
+    @pytest.mark.parametrize("snapshot_kind", ["current", "v1", "v2"])
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "payload_extra",
+            "factor_extra",
+            "recovery_extra",
+            "signer_extra",
+            "factor_naive",
+            "recovery_naive",
+            "signer_naive",
+        ],
+    )
+    def test_f3_approval_store_rejects_unknown_or_naive_retained_fields(
+        self,
+        tmp_path,
+        snapshot_kind: str,
+        mutation: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        factor = {
+            "credential_id": "factor-1",
+            "user_id": "alice",
+            "method": "totp",
+            "principal_id": "device",
+            "created_at": datetime.now(UTC).isoformat(),
+            "recovery_codes": [{"code_hash": "hash-1"}],
+        }
+        signer = {
+            "credential_id": "signer-1",
+            "user_id": "alice",
+            "backend": "local",
+            "principal_id": "device",
+            "algorithm": "ed25519",
+            "device_type": "software",
+            "public_key_pem": "public-key",
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        payload: dict[str, object] = {
+            "approval_factors": [factor],
+            "signer_keys": [signer],
+        }
+        if mutation == "payload_extra":
+            payload["unexpected_authority"] = "ignored"
+        elif mutation == "factor_extra":
+            factor["unexpected_authority"] = "ignored"
+        elif mutation == "recovery_extra":
+            factor["recovery_codes"][0]["unexpected_authority"] = "ignored"
+        elif mutation == "signer_extra":
+            signer["unexpected_authority"] = "ignored"
+        elif mutation == "factor_naive":
+            factor["created_at"] = datetime.now(UTC).replace(tzinfo=None).isoformat()
+        elif mutation == "recovery_naive":
+            factor["recovery_codes"][0]["consumed_at"] = (
+                datetime.now(UTC).replace(tzinfo=None).isoformat()
+            )
+        else:
+            signer["revoked_at"] = datetime.now(UTC).replace(tzinfo=None).isoformat()
+        if snapshot_kind == "current":
+            retained = encode_versioned_json_snapshot(payload, version=3)
+        else:
+            legacy_payload = {
+                "schema_version": f"shisad.approval_factor_store.{snapshot_kind}",
+                **payload,
+            }
+            retained = json.dumps(legacy_payload, sort_keys=True).encode()
+        store_path.write_bytes(retained)
+        store_path.chmod(0o600)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        assert store.approval_state_load_result().status == StateLoadStatus.CORRUPT
+        assert store_path.read_bytes() == retained
+
+    @pytest.mark.parametrize(
+        ("realm_value", "rp_realms"),
+        [
+            (123, ["realmone"]),
+            ("realmone", ["realmtwo"]),
+            ("realmone", ["realmone", "realmtwo"]),
+            ("realmone", ["malformed.example"]),
+        ],
+    )
+    def test_f3_current_approval_store_binds_native_realm_to_all_local_fido2_factors(
+        self,
+        tmp_path,
+        realm_value: object,
+        rp_realms: list[str],
+    ) -> None:  # type: ignore[no-untyped-def]
+        factors = []
+        for index, realm in enumerate(rp_realms):
+            rp_id = realm if realm.endswith(".example") else f"{realm}.approver.shisad.invalid"
+            factors.append(
+                {
+                    "credential_id": f"local-fido2-{index}",
+                    "user_id": "alice",
+                    "method": "local_fido2",
+                    "principal_id": f"device-{index}",
+                    "webauthn_rp_id": rp_id,
+                }
+            )
+        retained = encode_versioned_json_snapshot(
+            {
+                "approval_factors": factors,
+                "signer_keys": [],
+                "local_fido2_realm_id": realm_value,
+            },
+            version=3,
+        )
+        store_path = tmp_path / "approval-factors.json"
+        store_path.write_bytes(retained)
+        store_path.chmod(0o600)
+        store = InMemoryCredentialStore()
+
+        store.set_approval_store_path(store_path)
+
+        result = store.approval_state_load_result()
+        assert result.status == StateLoadStatus.CORRUPT
+        assert result.reason == "invalid_local_fido2_realm"
+        assert store_path.read_bytes() == retained
+
     @pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
     def test_f3_approval_store_rejects_negative_webauthn_sign_count(
         self,

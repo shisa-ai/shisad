@@ -3553,6 +3553,58 @@ def test_f3_control_plane_trace_legacy_migrates_and_fault_retains_live_view(
     assert trace.state_status()["stage"] == "parent_fsync"
 
 
+@pytest.mark.parametrize("versioned", [False, True])
+@pytest.mark.parametrize("mutation", ["extra", "committed_at", "expires_at"])
+def test_f3_control_plane_trace_rejects_unknown_or_naive_plan_fields(
+    tmp_path: Path,
+    versioned: bool,
+    mutation: str,
+) -> None:
+    source = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    plan = source.begin_precontent_plan(
+        session_id="s-strict-trace",
+        goal="read a file",
+        origin=_origin("s-strict-trace"),
+    )
+    plan_payload = plan.model_dump(mode="json")
+    if mutation == "extra":
+        plan_payload["unexpected_authority"] = "ignored"
+    else:
+        naive_timestamp = getattr(plan, mutation).replace(tzinfo=None)
+        plan_payload[mutation] = naive_timestamp.isoformat()
+        plan_payload["plan_hash"] = source._plan_commitment_hash(
+            session_id=plan.session_id,
+            allowed_actions=plan.allowed_actions,
+            allowed_resources=plan.allowed_resources,
+            goal_resource_patterns=plan.goal_resource_patterns,
+            declared_resource_roots=plan.declared_resource_roots,
+            forbidden_actions=plan.forbidden_actions,
+            max_actions=plan.max_actions,
+            committed_at=(naive_timestamp if mutation == "committed_at" else plan.committed_at),
+            expires_at=(naive_timestamp if mutation == "expires_at" else plan.expires_at),
+            stage=plan.stage,
+            amendment_of=plan.amendment_of,
+            amendment_correlation_id=plan.amendment_correlation_id,
+            amendment_execution_idempotency_key=plan.amendment_execution_idempotency_key,
+        )
+    payload = {"s-strict-trace": plan_payload}
+    retained = (
+        encode_versioned_json_snapshot(payload)
+        if versioned
+        else json.dumps(payload, sort_keys=True).encode()
+    )
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    _write_owner_only_bytes(path, retained)
+
+    restarted = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+
+    assert restarted.state_load_result.status == StateLoadStatus.CORRUPT
+    assert restarted.state_load_result.reason == "invalid_trace_plan:s-strict-trace"
+    assert restarted.active_plan("s-strict-trace") is None
+    assert path.read_bytes() == retained
+
+
 @pytest.mark.parametrize("field", ["max_actions", "executed_actions"])
 @pytest.mark.parametrize("versioned", [False, True])
 def test_f3_control_plane_trace_rejects_negative_persisted_counters(

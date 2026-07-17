@@ -1388,6 +1388,16 @@ class SchedulerManager:
                     "invalid_task_row",
                 )
                 return
+            retained_task_fields = (
+                set(ScheduledTask.model_fields)
+                - {"confirmation_outcome_dedup", "recovery_containment_token"}
+            ) | {"_confirmation_outcome_dedup", "_recovery_containment_token"}
+            if not set(item).issubset(retained_task_fields):
+                self._state_load_results["tasks"] = self._semantic_corruption_result(
+                    result,
+                    "invalid_task_row",
+                )
+                return
             counter_fields = ("trigger_count", "success_count", "failure_count", "max_runs")
             if any(
                 type(item.get(field, 0)) is not int or item.get(field, 0) < 0
@@ -1405,7 +1415,17 @@ class SchedulerManager:
                 )
                 return
             try:
-                task = ScheduledTask.model_validate(item)
+                task = ScheduledTask.model_validate(
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key
+                        not in {
+                            "_confirmation_outcome_dedup",
+                            "_recovery_containment_token",
+                        }
+                    }
+                )
             except ValidationError:
                 self._state_load_results["tasks"] = self._semantic_corruption_result(
                     result,

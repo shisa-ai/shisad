@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shisad.core.types import Capability, UserId, WorkspaceId
 
@@ -20,6 +20,8 @@ class ScheduleKind(StrEnum):
 
 
 class Schedule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     kind: ScheduleKind
     expression: str
     event_type: str | None = None
@@ -37,6 +39,8 @@ class Schedule(BaseModel):
 
 class TaskEnvelope(BaseModel):
     """Immutable task-execution boundary metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     envelope_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset)
@@ -87,10 +91,10 @@ class TaskEnvelope(BaseModel):
         payload["untrusted_payload_action"] = action
         return payload
 
-    model_config = {"frozen": True}
-
 
 class ScheduledTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str
     schedule: Schedule
@@ -128,6 +132,13 @@ class ScheduledTask(BaseModel):
         repr=False,
         description="Internal ownership token for temporary recovery containment",
     )
+
+    @field_validator("created_at", "last_triggered_at")
+    @classmethod
+    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("scheduled task timestamps must be timezone-aware")
+        return value
 
     @model_validator(mode="before")
     @classmethod

@@ -396,6 +396,43 @@ def test_f3_evidence_domain_valid_legacy_index_migrates_only_after_full_validati
     assert migrated["payload"] == legacy_payload
 
 
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+@pytest.mark.parametrize("mutation", ["extra", "created_at", "endorsed_at"])
+def test_f3_evidence_rejects_unknown_or_naive_retained_ref_fields(
+    tmp_path: Path,
+    snapshot_kind: str,
+    mutation: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    payload = _index_payload(evidence_root / "refs_index.json")
+    session_payload = payload["sess-a"]
+    assert isinstance(session_payload, dict)
+    raw_ref = session_payload[ref.ref_id]
+    assert isinstance(raw_ref, dict)
+    if mutation == "extra":
+        raw_ref["unexpected_authority"] = "ignored"
+    else:
+        values = ref.model_dump(mode="python")
+        values[mutation] = ref.created_at.replace(tzinfo=None)
+        constructed = EvidenceRef.model_construct(**values)
+        raw_ref = constructed.model_dump(mode="json")
+        raw_ref["metadata_mac"] = first._make_metadata_mac("sess-a", constructed)
+        session_payload[ref.ref_id] = raw_ref
+    retained = (
+        encode_versioned_json_snapshot(payload, version=1)
+        if snapshot_kind == "current"
+        else json.dumps(payload, ensure_ascii=True, sort_keys=True).encode()
+    )
+    (evidence_root / "refs_index.json").write_bytes(retained)
+
+    restarted = ArtifactLedger(evidence_root)
+
+    _assert_degraded(restarted, reason="invalid_ref_payload")
+    assert (evidence_root / "refs_index.json").read_bytes() == retained
+
+
 def test_f3_evidence_domain_rejects_content_hash_path_before_blob_access(
     tmp_path: Path,
 ) -> None:

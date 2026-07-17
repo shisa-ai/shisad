@@ -660,7 +660,11 @@ class ChannelStateStore:
         *,
         channel: str,
     ) -> tuple[list[_ReplayRecord], list[str]] | None:
-        if not isinstance(payload, dict) or payload.get("channel") != channel:
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"channel", "records", "recent_identity_keys"}
+            or payload.get("channel") != channel
+        ):
             return None
         raw_records = payload.get("records")
         raw_recent = payload.get("recent_identity_keys")
@@ -688,7 +692,11 @@ class ChannelStateStore:
         *,
         channel: str,
     ) -> _ReplayRecord | None:
-        if not isinstance(payload, dict) or payload.get("channel") != channel:
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"channel", "identity", "outcome"}
+            or payload.get("channel") != channel
+        ):
             return None
         raw_identity = payload.get("identity")
         raw_outcome = payload.get("outcome")
@@ -705,7 +713,11 @@ class ChannelStateStore:
         return None
 
     def _parse_v1_snapshot_payload(self, payload: Any, *, channel: str) -> set[str] | None:
-        if not isinstance(payload, dict) or payload.get("channel") != channel:
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"channel", "records", "recent_message_ids"}
+            or payload.get("channel") != channel
+        ):
             return None
         raw_records = payload.get("records")
         raw_recent = payload.get("recent_message_ids")
@@ -727,7 +739,11 @@ class ChannelStateStore:
         return message_ids
 
     def _parse_v1_journal_payload(self, payload: Any, *, channel: str) -> str | None:
-        if not isinstance(payload, dict) or payload.get("channel") != channel:
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"channel", "message_id", "outcome"}
+            or payload.get("channel") != channel
+        ):
             return None
         raw_message_id = payload.get("message_id")
         raw_outcome = payload.get("outcome")

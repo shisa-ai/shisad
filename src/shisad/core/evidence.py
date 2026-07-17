@@ -28,7 +28,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -202,7 +202,7 @@ class KmsArtifactBlobCodec:
 class EvidenceRef(BaseModel):
     """Opaque reference to tainted content stored out-of-band."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     ref_id: str
     content_hash: str
@@ -219,6 +219,13 @@ class EvidenceRef(BaseModel):
     endorsed_by: str = ""
     storage_codec: str = "plaintext"
     metadata_mac: str = ""
+
+    @field_validator("created_at", "endorsed_at")
+    @classmethod
+    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("evidence timestamps must be timezone-aware")
+        return value
 
     def model_copy(
         self,
