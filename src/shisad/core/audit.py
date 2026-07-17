@@ -10,11 +10,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from pydantic import BaseModel, ValidationError, model_validator
 
@@ -28,6 +31,7 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     atomic_write_bytes_with_identity,
     durable_append_bytes,
+    open_owned_regular_file,
     read_owner_only_regular_file_with_identity,
 )
 from shisad.core.events import BaseEvent
@@ -204,41 +208,41 @@ class AuditLog:
         """Query audit log entries with filters."""
         if self.state_degraded:
             return []
-        raw_bytes = self._read_bound_bytes()
-        if raw_bytes is None:
-            return []
+        with self._open_bound_stream() as log_file:
+            if log_file is None:
+                return []
 
-        max_results = max(1, int(limit))
-        if tail:
-            results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
-        else:
-            results = []
+            max_results = max(1, int(limit))
+            if tail:
+                results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
+            else:
+                results = []
 
-        for raw_line in raw_bytes.splitlines():
-            line = raw_line.decode("utf-8").strip()
-            if not line:
-                continue
-
-            entry = AuditEntry.model_validate_json(line)
-
-            # Apply filters
-            if event_type is not None and entry.event_type != event_type:
-                continue
-            if session_id is not None and entry.session_id != session_id:
-                continue
-            if actor is not None and entry.actor != actor:
-                continue
-            if since is not None:
-                entry_time = datetime.fromisoformat(entry.timestamp)
-                if entry_time.tzinfo is None:
-                    entry_time = entry_time.replace(tzinfo=UTC)
-                if entry_time < since:
+            for raw_line in log_file:
+                line = raw_line.decode("utf-8").strip()
+                if not line:
                     continue
 
-            results.append(entry.model_dump())
+                entry = AuditEntry.model_validate_json(line)
 
-            if not tail and len(results) >= max_results:
-                break
+                # Apply filters
+                if event_type is not None and entry.event_type != event_type:
+                    continue
+                if session_id is not None and entry.session_id != session_id:
+                    continue
+                if actor is not None and entry.actor != actor:
+                    continue
+                if since is not None:
+                    entry_time = datetime.fromisoformat(entry.timestamp)
+                    if entry_time.tzinfo is None:
+                        entry_time = entry_time.replace(tzinfo=UTC)
+                    if entry_time < since:
+                        continue
+
+                results.append(entry.model_dump())
+
+                if not tail and len(results) >= max_results:
+                    break
 
         return list(results)
 
@@ -264,6 +268,39 @@ class AuditLog:
         self._state_load_result = StateLoadResult(StateLoadStatus.OK)
         self._persistence_degradation = None
         return cleared
+
+    @contextmanager
+    def _open_bound_stream(self) -> Iterator[BinaryIO | None]:
+        try:
+            with open_owned_regular_file(
+                self._log_path,
+                required_mode=0o600,
+                verify_path_identity_on_success=True,
+            ) as handle:
+                if handle is None:
+                    if self._file_identity is not None:
+                        self._state_load_result = StateLoadResult(
+                            StateLoadStatus.CORRUPT,
+                            reason="audit_authority_disappeared",
+                        )
+                    yield None
+                    return
+                file_stat = os.fstat(handle.fileno())
+                file_identity = (file_stat.st_dev, file_stat.st_ino)
+                if self._file_identity is None or file_identity != self._file_identity:
+                    self._state_load_result = StateLoadResult(
+                        StateLoadStatus.CORRUPT,
+                        reason="audit_authority_identity_changed",
+                    )
+                    yield None
+                    return
+                yield handle
+        except OSError:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="audit_read_failed",
+            )
+            raise
 
     def _read_bound_bytes(self) -> bytes | None:
         try:

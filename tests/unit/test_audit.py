@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import shisad.core.audit as audit_module
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
     DurableAppendError,
     DurableAppendStage,
     StatePersistenceDegradedError,
+    open_owned_regular_file,
 )
 from shisad.core.audit import AuditLog
 from shisad.core.events import (
@@ -300,6 +305,51 @@ async def test_f3_audit_query_rejects_departed_authority(
                 actor="test",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_f3_audit_non_tail_limit_streams_only_required_rows(
+    audit_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audit = AuditLog(audit_path)
+    await _write_entries(audit, count=3)
+    lines_read = 0
+
+    class _CountingHandle:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+
+        def __iter__(self) -> _CountingHandle:
+            return self
+
+        def __next__(self) -> bytes:
+            nonlocal lines_read
+            lines_read += 1
+            if lines_read > 1:
+                raise AssertionError("non-tail audit query read beyond its satisfied limit")
+            return next(self._handle)
+
+        def fileno(self) -> int:
+            return self._handle.fileno()
+
+    @contextmanager
+    def _counting_open(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        with open_owned_regular_file(*args, **kwargs) as handle:
+            assert handle is not None
+            yield _CountingHandle(handle)
+
+    monkeypatch.setattr(
+        audit_module,
+        "open_owned_regular_file",
+        _counting_open,
+        raising=False,
+    )
+
+    rows = audit.query(limit=1)
+
+    assert len(rows) == 1
+    assert lines_read == 1
 
 
 @pytest.mark.asyncio
