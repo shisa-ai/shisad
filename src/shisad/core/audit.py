@@ -24,10 +24,13 @@ from shisad.core.atomic_state import (
     AtomicWriteFaultInjector,
     DurableAppendError,
     DurableAppendFaultInjector,
+    StateLoadResult,
+    StateLoadStatus,
     StatePersistenceDegradedError,
-    atomic_write_bytes,
+    atomic_write_bytes_with_identity,
     durable_append_bytes,
     open_owned_regular_file,
+    read_owner_only_regular_file_with_identity,
 )
 from shisad.core.events import BaseEvent
 
@@ -79,14 +82,16 @@ class AuditLog:
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
         self._event_hashes: dict[str, str] = {}
+        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
         self._persistence_degradation: DurableAppendError | AtomicWriteError | None = None
+        self._file_identity: tuple[int, int] | None = None
         self._append_fault_injector: DurableAppendFaultInjector | None = None
         self._reset_fault_injector: AtomicWriteFaultInjector | None = None
 
-        # Resume chain from an existing owner-controlled regular file only.
-        with self._open_log() as existing:
-            if existing is not None:
-                self._resume_chain(existing)
+        raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._log_path)
+        if raw_bytes is not None:
+            self._file_identity = file_identity
+            self._resume_chain(raw_bytes)
 
     @property
     def log_path(self) -> Path:
@@ -98,17 +103,28 @@ class AuditLog:
 
     @property
     def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None
+        return self._persistence_degradation is not None or self._state_load_result.status in {
+            StateLoadStatus.CORRUPT,
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+        }
+
+    @property
+    def state_load_result(self) -> StateLoadResult:
+        return self._state_load_result
 
     def _require_available(self, *, transition: str) -> None:
         degradation = self._persistence_degradation
-        if degradation is None:
+        if not self.state_degraded:
             return
         raise StatePersistenceDegradedError(
             authority="audit_log",
             transition=transition,
-            stage=degradation.stage.value,
-            reason="publication_commit_uncertain",
+            stage=degradation.stage.value if degradation is not None else "load",
+            reason=(
+                "publication_commit_uncertain"
+                if degradation is not None
+                else self._state_load_result.reason or self._state_load_result.status.value
+            ),
         )
 
     async def persist(self, event: BaseEvent) -> None:
@@ -147,19 +163,22 @@ class AuditLog:
         entry_hash = hashlib.sha256(entry_json.encode()).hexdigest()
 
         try:
-            durable_append_bytes(
+            self._file_identity = durable_append_bytes(
                 self._log_path,
                 (entry_json + "\n").encode("utf-8"),
                 fault_injector=self._append_fault_injector,
+                expected_identity=self._file_identity,
+                require_missing=self._file_identity is None,
             )
         except DurableAppendError as exc:
-            if exc.publication_may_have_committed:
+            if exc.publication_may_have_committed or exc.authority_changed:
                 self._persistence_degradation = exc
             raise
 
         self._previous_hash = entry_hash
         self._entry_count += 1
         self._event_hashes[event_id] = data_hash
+        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
 
     def verify_chain(self) -> tuple[bool, int, str]:
         """Verify the integrity of the entire audit log chain.
@@ -167,47 +186,17 @@ class AuditLog:
         Returns:
             (is_valid, entries_checked, error_message)
         """
-        with self._open_log() as log_file:
-            if log_file is None:
-                return (True, 0, "")
-
-            previous_hash = _GENESIS_HASH
-            count = 0
-
-            for line_num, raw_line in enumerate(log_file, 1):
-                line = raw_line.decode("utf-8").strip()
-                if not line:
-                    continue
-
-                try:
-                    entry = AuditEntry.model_validate_json(line)
-                except ValidationError as e:
-                    return (False, count, f"Line {line_num}: invalid entry: {e}")
-
-                # Check chain link
-                if entry.previous_event_hash != previous_hash:
-                    return (
-                        False,
-                        count,
-                        f"Line {line_num}: chain break — expected previous_hash "
-                        f"{previous_hash[:12]}…, got {entry.previous_event_hash[:12]}…",
-                    )
-
-                # Check data integrity
-                data_json = json.dumps(entry.data, sort_keys=True)
-                expected_data_hash = hashlib.sha256(data_json.encode()).hexdigest()
-                if entry.data_hash != expected_data_hash:
-                    return (
-                        False,
-                        count,
-                        f"Line {line_num}: data hash mismatch for event {entry.event_id}",
-                    )
-
-                # Compute this entry's hash for the next link
-                previous_hash = hashlib.sha256(line.encode()).hexdigest()
-                count += 1
-
-        return (True, count, "")
+        raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._log_path)
+        if raw_bytes is None:
+            return (
+                (False, 0, "audit authority disappeared")
+                if self._file_identity is not None
+                else (True, 0, "")
+            )
+        if self._file_identity is not None and file_identity != self._file_identity:
+            return (False, 0, "audit authority identity changed")
+        ok, count, error, _previous, _event_hashes = self._validate_chain_bytes(raw_bytes)
+        return ok, count, error
 
     def query(
         self,
@@ -220,6 +209,8 @@ class AuditLog:
         tail: bool = False,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
+        if self.state_degraded:
+            return []
         with self._open_log() as log_file:
             if log_file is None:
                 return []
@@ -263,7 +254,7 @@ class AuditLog:
 
         cleared = self._entry_count
         try:
-            atomic_write_bytes(
+            reset_identity = atomic_write_bytes_with_identity(
                 self._log_path,
                 b"",
                 fault_injector=self._reset_fault_injector,
@@ -276,6 +267,8 @@ class AuditLog:
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
         self._event_hashes.clear()
+        self._file_identity = reset_identity
+        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
         self._persistence_degradation = None
         return cleared
 
@@ -285,30 +278,65 @@ class AuditLog:
             normalize_mode=0o600,
         )
 
-    def _resume_chain(self, log_file: BinaryIO) -> None:
-        """Resume the hash chain from an existing log file."""
-        previous_hash = _GENESIS_HASH
-        count = 0
+    def _resume_chain(self, raw_bytes: bytes) -> None:
+        """Publish a retained chain only after complete-domain validation."""
 
-        for raw_line in log_file:
-            line = raw_line.decode("utf-8").strip()
-            if not line:
-                continue
-            try:
-                entry = AuditEntry.model_validate_json(line)
-            except ValidationError:
-                entry = None
-            if entry is not None:
-                existing_hash = self._event_hashes.get(entry.event_id)
-                if existing_hash is not None and existing_hash != entry.data_hash:
-                    raise ValueError("audit_event_id_payload_conflict")
-                self._event_hashes[entry.event_id] = entry.data_hash
-            previous_hash = hashlib.sha256(line.encode()).hexdigest()
-            count += 1
-
+        ok, count, error, previous_hash, event_hashes = self._validate_chain_bytes(raw_bytes)
+        if not ok:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason=error,
+            )
+            return
         self._previous_hash = previous_hash
         self._entry_count = count
+        self._event_hashes = event_hashes
+        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
         logger.info("Resumed audit chain: %d entries, last hash %s…", count, previous_hash[:12])
+
+    @staticmethod
+    def _validate_chain_bytes(
+        raw_bytes: bytes,
+    ) -> tuple[bool, int, str, str, dict[str, str]]:
+        if raw_bytes and not raw_bytes.endswith(b"\n"):
+            return False, 0, "audit_unterminated_row", _GENESIS_HASH, {}
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeError:
+            return False, 0, "audit_invalid_encoding", _GENESIS_HASH, {}
+        previous_hash = _GENESIS_HASH
+        event_hashes: dict[str, str] = {}
+        count = 0
+        for line_num, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                return False, count, f"line {line_num}: blank audit row", previous_hash, {}
+            try:
+                entry = AuditEntry.model_validate_json(line)
+            except ValidationError as exc:
+                return (
+                    False,
+                    count,
+                    f"line {line_num}: invalid entry ({exc})",
+                    previous_hash,
+                    {},
+                )
+            if (
+                entry.previous_event_hash != previous_hash
+                or entry.previous_hash != previous_hash
+            ):
+                return False, count, f"line {line_num}: chain break", previous_hash, {}
+            expected_data_hash = hashlib.sha256(
+                json.dumps(entry.data, sort_keys=True).encode()
+            ).hexdigest()
+            if entry.data_hash != expected_data_hash:
+                return False, count, f"line {line_num}: data hash mismatch", previous_hash, {}
+            existing_hash = event_hashes.get(entry.event_id)
+            if existing_hash is not None and existing_hash != entry.data_hash:
+                return False, count, "audit_event_id_payload_conflict", previous_hash, {}
+            event_hashes[entry.event_id] = entry.data_hash
+            previous_hash = hashlib.sha256(line.encode()).hexdigest()
+            count += 1
+        return True, count, "", previous_hash, event_hashes
 
     @staticmethod
     def _derive_entry_metadata(

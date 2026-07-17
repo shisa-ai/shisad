@@ -27,11 +27,13 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    atomic_write_bytes_with_identity,
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
     read_owned_regular_file,
+    read_owned_regular_file_with_identity,
     remove_owner_controlled_directory_contents,
     remove_owner_controlled_file_entries,
     validate_directory_ancestry,
@@ -79,6 +81,7 @@ class ChannelStateStore:
         self._load_results: dict[str, StateLoadResult] = {}
         self._degradation: dict[str, dict[str, str]] = {}
         self._loaded_root_identities: dict[str, tuple[int, int]] = {}
+        self._journal_identities: dict[str, tuple[int, int]] = {}
         self._lock = RLock()
         self._append_fault_injector: DurableAppendFaultInjector | None = None
         self._snapshot_fault_injector: AtomicWriteFaultInjector | None = None
@@ -349,6 +352,7 @@ class ChannelStateStore:
         self._load_results.clear()
         self._degradation.clear()
         self._loaded_root_identities.clear()
+        self._journal_identities.clear()
 
     def _clear_channel_cache_locked(self, channel: str) -> None:
         self._records.pop(channel, None)
@@ -361,6 +365,7 @@ class ChannelStateStore:
         self._load_results.pop(channel, None)
         self._degradation.pop(channel, None)
         self._loaded_root_identities.pop(channel, None)
+        self._journal_identities.pop(channel, None)
 
     def _record_outcome(
         self,
@@ -425,7 +430,7 @@ class ChannelStateStore:
             self._state_path(channel),
             channel=channel,
         )
-        journal_result, journal_rows, journal_legacy = self._load_journal(
+        journal_result, journal_rows, journal_legacy, journal_identity = self._load_journal(
             self._journal_path(channel),
             channel=channel,
         )
@@ -450,6 +455,7 @@ class ChannelStateStore:
             recent_set=recent_set,
             journal_lines=len(journal_rows),
             load_result=load_result,
+            journal_identity=journal_identity,
         )
         if load_result.status not in {StateLoadStatus.OK, StateLoadStatus.MISSING}:
             self._degrade(
@@ -480,6 +486,7 @@ class ChannelStateStore:
         recent_set: set[str],
         journal_lines: int,
         load_result: StateLoadResult,
+        journal_identity: tuple[int, int] | None = None,
     ) -> None:
         self._records[channel] = records
         self._legacy_message_ids[channel] = legacy_message_ids
@@ -488,6 +495,8 @@ class ChannelStateStore:
         self._journal_appends_since_compaction[channel] = journal_lines
         self._load_results[channel] = load_result
         self._loaded_channels.add(channel)
+        if journal_identity is not None:
+            self._journal_identities[channel] = journal_identity
         if self._root_dir.exists():
             root_stat = self._root_dir.stat(follow_symlinks=False)
             self._loaded_root_identities[channel] = (root_stat.st_dev, root_stat.st_ino)
@@ -562,17 +571,18 @@ class ChannelStateStore:
         path: Path,
         *,
         channel: str,
-    ) -> tuple[StateLoadResult, list[_ReplayRecord], set[str]]:
-        file_result, raw = self._read_private_bytes(path)
+    ) -> tuple[StateLoadResult, list[_ReplayRecord], set[str], tuple[int, int] | None]:
+        file_result, raw, file_identity = self._read_private_bytes_with_identity(path)
         if file_result.status != StateLoadStatus.OK or raw is None:
-            return file_result, [], set()
+            return file_result, [], set(), file_identity
         if not raw:
-            return StateLoadResult(StateLoadStatus.OK), [], set()
+            return StateLoadResult(StateLoadStatus.OK), [], set(), file_identity
         if not raw.endswith(b"\n"):
             return (
                 StateLoadResult(StateLoadStatus.CORRUPT, reason="truncated_journal"),
                 [],
                 set(),
+                file_identity,
             )
         rows: list[_ReplayRecord] = []
         legacy_message_ids: set[str] = set()
@@ -598,7 +608,7 @@ class ChannelStateStore:
                         channel=channel,
                     )
                     if old_decoded.status != StateLoadStatus.OK:
-                        return old_decoded, [], set()
+                        return old_decoded, [], set(), file_identity
                     if legacy_value is None:
                         return (
                             StateLoadResult(
@@ -607,11 +617,12 @@ class ChannelStateStore:
                             ),
                             [],
                             set(),
+                            file_identity,
                         )
                     legacy_message_ids.add(legacy_value)
                     continue
                 if decoded.status != StateLoadStatus.OK:
-                    return decoded, [], set()
+                    return decoded, [], set(), file_identity
                 parsed = self._parse_journal_payload(payload, channel=channel)
                 if parsed is None:
                     return (
@@ -621,6 +632,7 @@ class ChannelStateStore:
                         ),
                         [],
                         set(),
+                        file_identity,
                     )
                 rows.append(parsed)
                 continue
@@ -630,12 +642,14 @@ class ChannelStateStore:
                     StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_journal"),
                     [],
                     set(),
+                    file_identity,
                 )
             legacy_message_ids.add(legacy_value)
         return (
             StateLoadResult(StateLoadStatus.OK, legacy=bool(legacy_message_ids)),
             rows,
             legacy_message_ids,
+            file_identity,
         )
 
     def _parse_snapshot_payload(
@@ -790,6 +804,25 @@ class ChannelStateStore:
             return StateLoadResult(StateLoadStatus.CORRUPT, reason="state_read_failed"), None
         return StateLoadResult(StateLoadStatus.OK), raw_bytes
 
+    def _read_private_bytes_with_identity(
+        self,
+        path: Path,
+    ) -> tuple[StateLoadResult, bytes | None, tuple[int, int] | None]:
+        try:
+            raw_bytes, file_identity = read_owned_regular_file_with_identity(
+                path,
+                normalize_mode=0o600,
+            )
+        except OSError:
+            return (
+                StateLoadResult(StateLoadStatus.CORRUPT, reason="state_read_failed"),
+                None,
+                None,
+            )
+        if raw_bytes is None:
+            return StateLoadResult(StateLoadStatus.MISSING), None, None
+        return StateLoadResult(StateLoadStatus.OK), raw_bytes, file_identity
+
     def _validate_existing_root(self) -> StateLoadResult:
         try:
             root_stat = self._root_dir.lstat()
@@ -843,10 +876,13 @@ class ChannelStateStore:
             ).encode("utf-8")
             + b"\n"
         )
-        durable_append_bytes(
+        expected_identity = self._journal_identities.get(channel)
+        self._journal_identities[channel] = durable_append_bytes(
             self._journal_path(channel),
             encoded,
             fault_injector=self._append_fault_injector,
+            expected_identity=expected_identity,
+            require_missing=expected_identity is None,
         )
 
     def _after_journal_append(self, channel: str) -> None:
@@ -901,7 +937,7 @@ class ChannelStateStore:
         )
 
     def _truncate_journal(self, channel: str) -> None:
-        atomic_write_bytes(
+        self._journal_identities[channel] = atomic_write_bytes_with_identity(
             self._journal_path(channel),
             b"",
             fault_injector=self._truncate_fault_injector,

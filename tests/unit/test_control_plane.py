@@ -3375,6 +3375,38 @@ def test_f3_control_plane_history_commit_uncertainty_retains_live_view(
         )
 
 
+def test_f3_control_plane_history_rejects_same_path_replacement_before_append(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "history.jsonl"
+    history = SessionActionHistoryStore(path)
+    history.append(
+        ActionHistoryRecord(
+            session_id="s-history",
+            action_kind=ActionKind.FS_READ,
+            tool_name="file.read",
+            idempotency_key="retained-history",
+        )
+    )
+    replacement = tmp_path / "replacement-history.jsonl"
+    replacement.write_bytes(b"")
+    replacement.chmod(0o600)
+    replacement.replace(path)
+
+    with pytest.raises(DurableAppendError):
+        history.append(
+            ActionHistoryRecord(
+                session_id="s-history",
+                action_kind=ActionKind.FS_READ,
+                tool_name="file.read",
+                idempotency_key="blocked-history",
+            )
+        )
+
+    assert history.state_degraded is True
+    assert path.read_bytes() == b""
+
+
 def test_f3_control_plane_trace_corruption_and_future_schema_fail_closed(
     tmp_path: Path,
 ) -> None:

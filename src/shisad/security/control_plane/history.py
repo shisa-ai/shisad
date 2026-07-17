@@ -18,9 +18,9 @@ from shisad.core.atomic_state import (
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
-    atomic_write_bytes,
+    atomic_write_bytes_with_identity,
     durable_append_bytes,
-    read_owner_only_regular_file,
+    read_owner_only_regular_file_with_identity,
 )
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin
 
@@ -87,6 +87,7 @@ class SessionActionHistoryStore:
             StateLoadStatus.OK if storage_path is None else StateLoadStatus.MISSING
         )
         self._persistence_degradation: AtomicWriteError | DurableAppendError | None = None
+        self._file_identity: tuple[int, int] | None = None
         self._state_fault_injector: DurableAppendFaultInjector | None = None
         self._load()
 
@@ -128,12 +129,14 @@ class SessionActionHistoryStore:
         cleared = sum(len(records) for records in self._records.values())
         if self._storage_path is not None:
             try:
-                atomic_write_bytes(self._storage_path, b"")
+                reset_identity = atomic_write_bytes_with_identity(self._storage_path, b"")
             except AtomicWriteError as exc:
                 self._persistence_degradation = exc
                 raise
         self._records.clear()
         self._idempotent_records.clear()
+        if self._storage_path is not None:
+            self._file_identity = reset_identity
         self._persistence_degradation = None
         self._state_load_result = StateLoadResult(StateLoadStatus.OK)
         return cleared
@@ -169,13 +172,15 @@ class SessionActionHistoryStore:
                 self._idempotent_records[idempotency_key] = record
             return True
         try:
-            durable_append_bytes(
+            self._file_identity = durable_append_bytes(
                 self._storage_path,
                 (record.model_dump_json() + "\n").encode("utf-8"),
                 fault_injector=self._state_fault_injector,
+                expected_identity=self._file_identity,
+                require_missing=self._file_identity is None,
             )
         except DurableAppendError as exc:
-            if exc.publication_may_have_committed:
+            if exc.publication_may_have_committed or exc.authority_changed:
                 self._persistence_degradation = exc
             raise
         self._records.setdefault(session_id, []).append(record)
@@ -317,7 +322,9 @@ class SessionActionHistoryStore:
         if self._storage_path is None:
             return
         try:
-            raw_bytes = read_owner_only_regular_file(self._storage_path)
+            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(
+                self._storage_path
+            )
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
@@ -326,6 +333,7 @@ class SessionActionHistoryStore:
             return
         if raw_bytes is None:
             return
+        self._file_identity = file_identity
         if raw_bytes and not raw_bytes.endswith(b"\n"):
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,

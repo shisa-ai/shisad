@@ -468,6 +468,7 @@ def open_owned_regular_file(
     required_mode: int | None = None,
     normalize_mode: int | None = None,
     unlink_on_success: bool = False,
+    verify_path_identity_on_success: bool = False,
 ) -> Iterator[BinaryIO | None]:
     """Open an owner-controlled regular file through a no-follow parent.
 
@@ -517,14 +518,21 @@ def open_owned_regular_file(
         handle = os.fdopen(file_fd, "rb", closefd=True)
         file_fd = -1
         yield handle
-        if unlink_on_success:
+        if unlink_on_success or verify_path_identity_on_success:
             current_stat = os.stat(
                 absolute.name,
                 dir_fd=parent_fd,
                 follow_symlinks=False,
             )
-            if (current_stat.st_dev, current_stat.st_ino) != file_identity:
+            if (
+                (current_stat.st_dev, current_stat.st_ino) != file_identity
+                or not stat.S_ISREG(current_stat.st_mode)
+                or current_stat.st_uid != os.geteuid()
+                or current_stat.st_nlink != 1
+            ):
                 raise OSError(f"state target identity changed: {absolute}")
+            _verify_directory_path_identity(absolute.parent, expected=parent_identity)
+        if unlink_on_success:
             os.unlink(absolute.name, dir_fd=parent_fd)
             os.fsync(parent_fd)
             _verify_directory_path_identity(absolute.parent, expected=parent_identity)
@@ -569,6 +577,45 @@ def read_owner_only_regular_file(path: Path) -> bytes | None:
     """Read an existing mode-0600 owner-controlled regular file."""
 
     return read_owned_regular_file(path, required_mode=0o600)
+
+
+def read_owned_regular_file_with_identity(
+    path: Path,
+    *,
+    required_mode: int | None = None,
+    normalize_mode: int | None = None,
+    max_bytes: int | None = None,
+) -> tuple[bytes | None, tuple[int, int] | None]:
+    """Read and bind an exact restart-visible owner-controlled file identity."""
+
+    with open_owned_regular_file(
+        path,
+        required_mode=required_mode,
+        normalize_mode=normalize_mode,
+        verify_path_identity_on_success=True,
+    ) as handle:
+        if handle is None:
+            return None, None
+        file_stat = os.fstat(handle.fileno())
+        identity = (file_stat.st_dev, file_stat.st_ino)
+        chunks: list[bytes] = []
+        bytes_read = 0
+        while max_bytes is None or bytes_read < max_bytes:
+            remaining = None if max_bytes is None else max_bytes - bytes_read
+            read_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
+            if not (chunk := handle.read(read_size)):
+                break
+            chunks.append(chunk)
+            bytes_read += len(chunk)
+        return b"".join(chunks), identity
+
+
+def read_owner_only_regular_file_with_identity(
+    path: Path,
+) -> tuple[bytes | None, tuple[int, int] | None]:
+    """Read and bind an exact mode-0600 owner-controlled file identity."""
+
+    return read_owned_regular_file_with_identity(path, required_mode=0o600)
 
 
 def _fsync_directory_path(path: Path) -> None:

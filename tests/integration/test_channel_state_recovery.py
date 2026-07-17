@@ -323,6 +323,25 @@ def test_channel_replay_snapshot_failure_keeps_durable_journal_authority(
     assert restarted.reserve(channel="discord", message_id="m-1") is True
 
 
+def test_f3_channel_replay_rejects_same_path_journal_replacement(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    store = ChannelStateStore(root, journal_compact_every=128)
+    assert store.reserve(channel="discord", message_id="retained") is False
+    journal_path = root / "discord.state.journal"
+    replacement = tmp_path / "replacement-channel-journal"
+    replacement.write_bytes(b"")
+    replacement.chmod(0o600)
+    replacement.replace(journal_path)
+
+    with pytest.raises(StatePersistenceDegradedError):
+        store.reserve(channel="discord", message_id="blocked")
+
+    assert store.state_status("discord")["status"] == "degraded"
+    assert journal_path.read_bytes() == b""
+
+
 @pytest.mark.parametrize(
     "stage",
     [

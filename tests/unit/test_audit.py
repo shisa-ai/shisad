@@ -240,6 +240,77 @@ async def test_recovery_event_id_is_idempotent_across_audit_restart(
     assert restarted.verify_chain() == (True, 1, "")
 
 
+@pytest.mark.asyncio
+async def test_f3_audit_rejects_same_path_replacement_before_append(
+    audit_path: Path,
+) -> None:
+    audit = AuditLog(audit_path)
+    await _write_entries(audit, count=1)
+    retained_bytes = audit_path.read_bytes()
+    replacement = audit_path.with_name("replacement-audit.jsonl")
+    replacement.write_bytes(b"")
+    replacement.chmod(0o600)
+    replacement.replace(audit_path)
+
+    with pytest.raises(DurableAppendError):
+        await audit.persist(
+            SessionCreated(
+                session_id=SessionId("blocked-replacement"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+
+    assert audit.state_degraded is True
+    assert audit_path.read_bytes() == b""
+    assert retained_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption_kind",
+    ["invalid-row", "chain-break", "data-hash", "unterminated"],
+)
+async def test_f3_audit_resume_rejects_complete_domain_corruption(
+    audit_path: Path,
+    corruption_kind: str,
+) -> None:
+    first = AuditLog(audit_path)
+    await _write_entries(first, count=2)
+    rows = audit_path.read_text(encoding="utf-8").splitlines()
+    if corruption_kind == "invalid-row":
+        rows[1] = "{not-json}"
+        corrupt_bytes = ("\n".join(rows) + "\n").encode()
+    elif corruption_kind == "chain-break":
+        row = json.loads(rows[1])
+        row["previous_event_hash"] = "broken"
+        row["previous_hash"] = "broken"
+        rows[1] = json.dumps(row, separators=(",", ":"))
+        corrupt_bytes = ("\n".join(rows) + "\n").encode()
+    elif corruption_kind == "data-hash":
+        row = json.loads(rows[0])
+        row["data_hash"] = "broken"
+        rows[0] = json.dumps(row, separators=(",", ":"))
+        corrupt_bytes = ("\n".join(rows) + "\n").encode()
+    else:
+        corrupt_bytes = "\n".join(rows).encode()
+    audit_path.write_bytes(corrupt_bytes)
+
+    restarted = AuditLog(audit_path)
+
+    assert restarted.state_degraded is True
+    assert restarted.entry_count == 0
+    with pytest.raises(StatePersistenceDegradedError, match="audit_log"):
+        await restarted.persist(
+            SessionCreated(
+                session_id=SessionId("blocked-corrupt-resume"),
+                user_id=UserId("alice"),
+                actor="test",
+            )
+        )
+    assert audit_path.read_bytes() == corrupt_bytes
+
+
 class TestAuditHashChainInsertion:
     """M0.T6: audit log hash-chain detects insertion."""
 

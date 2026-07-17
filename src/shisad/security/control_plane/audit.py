@@ -17,9 +17,10 @@ from shisad.core.atomic_state import (
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
-    atomic_write_bytes,
+    atomic_write_bytes_with_identity,
     durable_append_bytes,
     read_owner_only_regular_file,
+    read_owner_only_regular_file_with_identity,
 )
 from shisad.security.control_plane.schema import sanitize_metadata_payload
 
@@ -45,6 +46,7 @@ class ControlPlaneAuditLog:
         self._entry_count = 0
         self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
         self._persistence_degradation: AtomicWriteError | DurableAppendError | None = None
+        self._file_identity: tuple[int, int] | None = None
         self._state_fault_injector: DurableAppendFaultInjector | None = None
         self._resume()
 
@@ -85,12 +87,13 @@ class ControlPlaneAuditLog:
 
         cleared = self._entry_count
         try:
-            atomic_write_bytes(self._path, b"")
+            reset_identity = atomic_write_bytes_with_identity(self._path, b"")
         except AtomicWriteError as exc:
             self._persistence_degradation = exc
             raise
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
+        self._file_identity = reset_identity
         self._persistence_degradation = None
         self._state_load_result = StateLoadResult(StateLoadStatus.OK)
         return cleared
@@ -133,13 +136,15 @@ class ControlPlaneAuditLog:
         )
         payload = entry.model_dump_json()
         try:
-            durable_append_bytes(
+            self._file_identity = durable_append_bytes(
                 self._path,
                 (payload + "\n").encode("utf-8"),
                 fault_injector=self._state_fault_injector,
+                expected_identity=self._file_identity,
+                require_missing=self._file_identity is None,
             )
         except DurableAppendError as exc:
-            if exc.publication_may_have_committed:
+            if exc.publication_may_have_committed or exc.authority_changed:
                 self._persistence_degradation = exc
             raise
         self._previous_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -193,10 +198,16 @@ class ControlPlaneAuditLog:
         if self.state_degraded:
             return []
         try:
-            raw_bytes = read_owner_only_regular_file(self._path)
+            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._path)
         except OSError:
             return []
         if raw_bytes is None:
+            return []
+        if self._file_identity is not None and file_identity != self._file_identity:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="audit_authority_identity_changed",
+            )
             return []
         rows: list[dict[str, Any]] = []
         for raw in raw_bytes.splitlines():
@@ -216,7 +227,7 @@ class ControlPlaneAuditLog:
 
     def _resume(self) -> None:
         try:
-            raw_bytes = read_owner_only_regular_file(self._path)
+            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._path)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
@@ -225,6 +236,7 @@ class ControlPlaneAuditLog:
             return
         if raw_bytes is None:
             return
+        self._file_identity = file_identity
         if raw_bytes and not raw_bytes.endswith(b"\n"):
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
