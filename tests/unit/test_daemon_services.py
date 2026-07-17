@@ -2102,6 +2102,40 @@ async def test_f3_pending_snapshot_rejects_canonical_identity_collisions(
 
 
 @pytest.mark.asyncio
+async def test_f3_legacy_pending_snapshot_rejects_nested_only_identity_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    invalid_payload = [
+        {"identity": {"confirmation_id": "shared"}},
+        {"confirmation_id": "", "identity": {"confirmation_id": "shared"}},
+    ]
+    pending_path = config.data_dir / "pending_actions.json"
+    retained_bytes = json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
+    pending_path.write_bytes(retained_bytes)
+    pending_path.chmod(0o600)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        status = impl._pending_action_state_status()
+        assert status["status"] == "degraded"
+        assert status["reason"] == "duplicate_pending_action_identity"
+        assert status["fail_closed"] is True
+        assert impl._pending_actions == {}
+        assert pending_path.read_bytes() == retained_bytes
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
 async def test_f3_pending_snapshot_rejects_blank_nested_confirmation_identity(
     tmp_path: Path,

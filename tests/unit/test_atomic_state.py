@@ -356,6 +356,79 @@ def test_durable_append_expected_identity_rejects_missing_authority_without_recr
     assert not target.exists()
 
 
+def test_durable_append_expected_identity_marks_symlink_replacement_as_authority_change(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(b"outside\n")
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+
+    def _replace_with_symlink(stage: DurableAppendStage) -> None:
+        if stage is DurableAppendStage.DIRECTORY_PREPARE:
+            target.unlink()
+            target.symlink_to(outside)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            fault_injector=_replace_with_symlink,
+            expected_identity=expected_identity,
+        )
+
+    assert raised.value.stage is DurableAppendStage.TARGET_VALIDATE
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert outside.read_bytes() == b"outside\n"
+
+
+def test_durable_append_expected_identity_marks_preopen_disappearance_as_authority_change(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+
+    def _remove_before_open(stage: DurableAppendStage) -> None:
+        if stage is DurableAppendStage.FILE_OPEN:
+            target.unlink()
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            fault_injector=_remove_before_open,
+            expected_identity=expected_identity,
+        )
+
+    assert raised.value.stage is DurableAppendStage.FILE_OPEN
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert not target.exists()
+
+
+def test_durable_append_expected_identity_marks_added_hardlink_as_authority_change(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    external = tmp_path / "external.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+    os.link(target, external)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            expected_identity=expected_identity,
+        )
+
+    assert raised.value.stage is DurableAppendStage.FILE_OPEN
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert target.read_bytes() == b'{"id":"original"}\n'
+    assert external.read_bytes() == b'{"id":"original"}\n'
+
+
 def test_durable_append_rejects_target_replacement_before_acknowledgement(
     tmp_path: Path,
 ) -> None:
@@ -383,6 +456,43 @@ def test_durable_append_rejects_target_replacement_before_acknowledgement(
     assert raised.value.publication_may_have_committed is True
     assert detached.read_bytes() == b'{"id":"opened"}\n'
     assert target.read_bytes() == replacement_bytes
+
+
+def test_atomic_write_with_identity_returns_exact_published_inode(tmp_path: Path) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+
+    identity = atomic_state.atomic_write_bytes_with_identity(target, b"")
+
+    target_stat = target.stat()
+    assert identity == (target_stat.st_dev, target_stat.st_ino)
+    assert stat.S_IMODE(target_stat.st_mode) == 0o600
+
+
+def test_atomic_write_with_identity_rejects_replacement_before_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    detached = tmp_path / "detached.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b"")
+    replacement.chmod(0o600)
+
+    def _replace_target(stage: AtomicWriteStage) -> None:
+        if stage is AtomicWriteStage.PARENT_FSYNC:
+            target.rename(detached)
+            replacement.replace(target)
+
+    with pytest.raises(AtomicWriteError) as raised:
+        atomic_state.atomic_write_bytes_with_identity(
+            target,
+            b"",
+            fault_injector=_replace_target,
+        )
+
+    assert raised.value.stage is AtomicWriteStage.PARENT_FSYNC
+    assert raised.value.publication_may_have_committed is True
+    assert detached.read_bytes() == b""
+    assert target.read_bytes() == b""
 
 
 def test_durable_append_rejects_hardlink_created_before_acknowledgement(

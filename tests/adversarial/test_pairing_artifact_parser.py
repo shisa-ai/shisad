@@ -12,7 +12,11 @@ import pytest
 
 import shisad.daemon.handlers._impl as impl_module
 from shisad.core.api.transport import ControlClient
-from shisad.core.atomic_state import DurableAppendError, DurableAppendStage
+from shisad.core.atomic_state import (
+    AtomicWriteStage,
+    DurableAppendError,
+    DurableAppendStage,
+)
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
@@ -397,6 +401,64 @@ async def test_f3_pairing_reset_rebaseline_rejects_later_replacement(
 
         assert artifact_file.read_bytes() == crafted_bytes
         assert not (data_dir / "proposals" / "channel_pairing").exists()
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_f3_pairing_reset_rejects_replacement_before_identity_acknowledgement(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    detached = tmp_path / "detached-reset.jsonl"
+    replacement = tmp_path / "replacement-reset.jsonl"
+    replacement.write_bytes(b"")
+    replacement.chmod(0o600)
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        test_mode=True,
+    )
+    real_write = impl_module.atomic_write_bytes_with_identity
+
+    def _replace_before_ack(path: Path, payload: bytes) -> tuple[int, int]:
+        def _inject(stage: AtomicWriteStage) -> None:
+            if stage is AtomicWriteStage.PARENT_FSYNC:
+                artifact_file.rename(detached)
+                replacement.replace(artifact_file)
+
+        return real_write(path, payload, fault_injector=_inject)
+
+    monkeypatch.setattr(
+        impl_module,
+        "atomic_write_bytes_with_identity",
+        _replace_before_ack,
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        with pytest.raises(RuntimeError):
+            await client.call("daemon.reset")
+
+        doctor = await client.call("doctor.check", {"component": "channels"})
+        pairing_status = doctor["checks"]["channels"]["pairing_requests"]
+        assert pairing_status["status"] == "degraded"
+        assert pairing_status["stage"] == "parent_fsync"
+        assert pairing_status["reason"] == "reset_failed"
+        assert pairing_status["fail_closed"] is True
+        assert detached.read_bytes() == b""
+        assert artifact_file.read_bytes() == b""
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

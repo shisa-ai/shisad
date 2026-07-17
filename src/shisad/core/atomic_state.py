@@ -726,7 +726,7 @@ def decode_versioned_json_snapshot(
     )
 
 
-def atomic_write_bytes(
+def _atomic_write_bytes(
     path: Path,
     payload: bytes,
     *,
@@ -734,8 +734,8 @@ def atomic_write_bytes(
     preserve_existing_parent_mode: bool = False,
     require_safe_parent_ancestry: bool = False,
     cleanup_sibling_prefix: str | None = None,
-) -> int:
-    """Publish owner-only bytes old-or-new and fsync the containing directory.
+) -> tuple[int, tuple[int, int]]:
+    """Publish owner-only bytes and return cleanup count plus exact identity.
 
     Existing daemon-owned parents are restricted by default. Arbitrary-path
     callers may preserve an existing parent mode; newly created parents remain
@@ -794,6 +794,7 @@ def atomic_write_bytes(
     file_fd = -1
     replaced = False
     removed_siblings = 0
+    published_identity = (-1, -1)
     stage = AtomicWriteStage.TEMP_OPEN
     try:
         _inject_fault(fault_injector, stage)
@@ -802,6 +803,8 @@ def atomic_write_bytes(
         flags |= getattr(os, "O_NOFOLLOW", 0)
         file_fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
         os.fchmod(file_fd, 0o600)
+        temp_stat = os.fstat(file_fd)
+        published_identity = (temp_stat.st_dev, temp_stat.st_ino)
 
         stage = AtomicWriteStage.WRITE
         _inject_fault(fault_injector, stage)
@@ -833,7 +836,6 @@ def atomic_write_bytes(
         os.fsync(parent_fd)
         for created_directory in reversed(missing_directories):
             _fsync_directory_path(created_directory.parent)
-
         if cleanup_sibling_prefix is not None:
             stage = AtomicWriteStage.CLEANUP
             _inject_fault(fault_injector, stage)
@@ -841,6 +843,19 @@ def atomic_write_bytes(
                 parent_fd,
                 name_prefix=cleanup_sibling_prefix,
             )
+        published_stat = os.stat(
+            target_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            published_identity != (published_stat.st_dev, published_stat.st_ino)
+            or not stat.S_ISREG(published_stat.st_mode)
+            or published_stat.st_uid != os.geteuid()
+            or published_stat.st_nlink != 1
+            or stat.S_IMODE(published_stat.st_mode) != 0o600
+        ):
+            raise OSError("atomic write target identity changed before acknowledgement")
         _verify_directory_path_identity(
             parent,
             expected=parent_identity,
@@ -862,7 +877,57 @@ def atomic_write_bytes(
             with contextlib.suppress(OSError):
                 os.unlink(temp_name, dir_fd=parent_fd)
         os.close(parent_fd)
+    return removed_siblings, published_identity
+
+
+def atomic_write_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    fault_injector: AtomicWriteFaultInjector | None = None,
+    preserve_existing_parent_mode: bool = False,
+    require_safe_parent_ancestry: bool = False,
+    cleanup_sibling_prefix: str | None = None,
+) -> int:
+    """Publish owner-only bytes old-or-new and fsync the containing directory.
+
+    Existing daemon-owned parents are restricted by default. Arbitrary-path
+    callers may preserve an existing parent mode; newly created parents remain
+    owner-only. Optional sibling cleanup shares the publication's held parent
+    descriptor and returns the number of removed entries.
+    """
+
+    removed_siblings, _published_identity = _atomic_write_bytes(
+        path,
+        payload,
+        fault_injector=fault_injector,
+        preserve_existing_parent_mode=preserve_existing_parent_mode,
+        require_safe_parent_ancestry=require_safe_parent_ancestry,
+        cleanup_sibling_prefix=cleanup_sibling_prefix,
+    )
     return removed_siblings
+
+
+def atomic_write_bytes_with_identity(
+    path: Path,
+    payload: bytes,
+    *,
+    fault_injector: AtomicWriteFaultInjector | None = None,
+    preserve_existing_parent_mode: bool = False,
+    require_safe_parent_ancestry: bool = False,
+    cleanup_sibling_prefix: str | None = None,
+) -> tuple[int, int]:
+    """Publish owner-only bytes and return the exact acknowledged file identity."""
+
+    _removed_siblings, published_identity = _atomic_write_bytes(
+        path,
+        payload,
+        fault_injector=fault_injector,
+        preserve_existing_parent_mode=preserve_existing_parent_mode,
+        require_safe_parent_ancestry=require_safe_parent_ancestry,
+        cleanup_sibling_prefix=cleanup_sibling_prefix,
+    )
+    return published_identity
 
 
 def durable_append_bytes(
@@ -922,6 +987,7 @@ def durable_append_bytes(
                 path=target,
                 stage=DurableAppendStage.TARGET_VALIDATE,
                 publication_may_have_committed=False,
+                authority_changed=expected_identity is not None,
             )
 
     try:
@@ -965,6 +1031,7 @@ def durable_append_bytes(
                 path=target,
                 stage=DurableAppendStage.TARGET_VALIDATE,
                 publication_may_have_committed=False,
+                authority_changed=expected_identity is not None,
             )
         else:
             target_existed = True
@@ -1014,13 +1081,19 @@ def durable_append_bytes(
         except FileExistsError:
             authority_changed = require_missing
             raise
+        except OSError:
+            authority_changed = expected_identity is not None
+            raise
         created_file = not target_existed
         opened_stat = os.fstat(file_fd)
         if not stat.S_ISREG(opened_stat.st_mode):
+            authority_changed = expected_identity is not None
             raise OSError("durable append target is not a regular file")
         if opened_stat.st_uid != os.geteuid():
+            authority_changed = expected_identity is not None
             raise PermissionError("durable append target is not owner-controlled")
         if opened_stat.st_nlink != 1:
+            authority_changed = expected_identity is not None
             raise PermissionError("durable append target must have exactly one link")
         opened_identity = (opened_stat.st_dev, opened_stat.st_ino)
         if expected_identity is not None and opened_identity != expected_identity:

@@ -78,6 +78,7 @@ from shisad.core.atomic_state import (
     StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    atomic_write_bytes_with_identity,
     decode_versioned_json_snapshot,
     durable_append_bytes,
     encode_versioned_json_snapshot,
@@ -2470,7 +2471,10 @@ class HandlerImplementation(
             }
             raise
         try:
-            atomic_write_bytes(self._pairing_requests_file, b"")
+            reset_pairing_identity = atomic_write_bytes_with_identity(
+                self._pairing_requests_file,
+                b"",
+            )
         except AtomicWriteError as exc:
             self._pairing_publication_degradation = {
                 "stage": exc.stage.value,
@@ -2478,24 +2482,6 @@ class HandlerImplementation(
                 "path": str(exc.path),
             }
             raise
-        try:
-            reset_pairing_payload, reset_pairing_identity = (
-                self._read_pairing_request_artifact_snapshot()
-            )
-            if reset_pairing_payload != b"" or reset_pairing_identity is None:
-                raise OSError("pairing request reset authority is not the published empty file")
-        except OSError as exc:
-            self._pairing_publication_degradation = {
-                "stage": "reset_rebaseline",
-                "reason": "reset_rebaseline_failed",
-                "path": str(self._pairing_requests_file),
-            }
-            raise StatePersistenceDegradedError(
-                authority="pairing_requests",
-                transition="reset",
-                stage="reset_rebaseline",
-                reason="reset_rebaseline_failed",
-            ) from exc
         self._pending_actions.clear()
         self._pending_by_session.clear()
         self._monitor_reject_counts.clear()
@@ -4702,11 +4688,6 @@ class HandlerImplementation(
             normalized_confirmation_id = (
                 confirmation_id.strip() if isinstance(confirmation_id, str) else ""
             )
-            if not normalized_confirmation_id:
-                if not load_result.legacy:
-                    admission_failure = "invalid_pending_action_row"
-                    break
-                continue
             identity = item.get("identity")
             nested_confirmation_id = (
                 identity.get("confirmation_id") if isinstance(identity, Mapping) else None
@@ -4722,9 +4703,16 @@ class HandlerImplementation(
             ):
                 admission_failure = "invalid_pending_action_row"
                 break
-            row_confirmation_ids = {normalized_confirmation_id}
+            if not normalized_confirmation_id and not load_result.legacy:
+                admission_failure = "invalid_pending_action_row"
+                break
+            row_confirmation_ids: set[str] = set()
+            if normalized_confirmation_id:
+                row_confirmation_ids.add(normalized_confirmation_id)
             if normalized_nested_confirmation_id:
                 row_confirmation_ids.add(normalized_nested_confirmation_id)
+            if not row_confirmation_ids:
+                continue
             if claimed_confirmation_ids.intersection(row_confirmation_ids):
                 admission_failure = "duplicate_pending_action_identity"
                 break
