@@ -138,7 +138,7 @@ class FsGitToolkit:
         else:
             if stat.S_ISREG(current_stat.st_mode):
                 mode = stat.S_IMODE(current_stat.st_mode)
-        temp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        temp_path = path.parent / f".shisad-write-{uuid.uuid4().hex}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         fd = -1

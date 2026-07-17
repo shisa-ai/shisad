@@ -355,6 +355,23 @@ def test_f3_fs_git_toolkit_hardlink_write_preserves_protected_tree_inode(
     assert alias_path.stat().st_ino != original_inode
 
 
+def test_f3_fs_git_toolkit_write_supports_long_valid_basename(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / ("n" * 240)
+    target.write_text("original", encoding="utf-8")
+    toolkit = FsGitToolkit(roots=[workspace], max_read_bytes=1024)
+
+    result = toolkit.write_file(
+        path=str(target),
+        content="updated",
+        confirm=True,
+    )
+
+    assert result["ok"] is True
+    assert target.read_text(encoding="utf-8") == "updated"
+
+
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)
