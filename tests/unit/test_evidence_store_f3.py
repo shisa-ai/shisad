@@ -90,6 +90,49 @@ def test_f3_evidence_domain_new_root_is_durable_versioned_and_owner_only(tmp_pat
     assert S_IMODE((evidence_root / "refs_index.json").stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("file_kind", ["salt", "index", "blob"])
+@pytest.mark.parametrize("unsafe_shape", ["permissive", "hardlink", "symlink"])
+def test_f3_evidence_domain_reopen_rejects_unsafe_retained_files(
+    tmp_path: Path,
+    file_kind: str,
+    unsafe_shape: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    ref = _store(first)
+    target = {
+        "salt": evidence_root / "evidence_salt",
+        "index": evidence_root / "refs_index.json",
+        "blob": evidence_root / "blobs" / f"{ref.content_hash}.txt",
+    }[file_kind]
+    retained_bytes = target.read_bytes()
+    external = tmp_path / f"external-{file_kind}"
+    if unsafe_shape == "permissive":
+        target.chmod(0o644)
+    elif unsafe_shape == "hardlink":
+        external.hardlink_to(target)
+    else:
+        target.replace(external)
+        target.symlink_to(external)
+
+    restarted = ArtifactLedger(evidence_root)
+
+    expected_reason = {
+        "salt": "salt_read_failed",
+        "index": "index_read_failed",
+        "blob": "blob_unreadable",
+    }[file_kind]
+    _assert_degraded(restarted, reason=expected_reason)
+    retained = external if unsafe_shape == "symlink" else target
+    assert retained.read_bytes() == retained_bytes
+    if unsafe_shape == "permissive":
+        assert S_IMODE(target.stat().st_mode) == 0o644
+    elif unsafe_shape == "hardlink":
+        assert target.stat().st_nlink == 2
+    else:
+        assert target.is_symlink() is True
+
+
 def test_f3_evidence_domain_first_create_fsyncs_root_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

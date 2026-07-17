@@ -42,6 +42,7 @@ from shisad.core.atomic_state import (
     encode_versioned_json_snapshot,
     ensure_owner_only_directory,
     open_owned_regular_file,
+    read_owner_only_regular_file_with_identity,
     validate_directory_ancestry,
 )
 from shisad.core.types import SessionId, TaintLabel
@@ -866,16 +867,15 @@ class ArtifactLedger:
         if salt_result is not None:
             self._set_load_failure(StateLoadStatus.CORRUPT, salt_result)
             return
-        if not self._metadata_path.exists():
-            self._set_load_failure(StateLoadStatus.CORRUPT, "missing_index_existing_domain")
-            return
-        if not self._is_regular_file(self._metadata_path):
-            self._set_load_failure(StateLoadStatus.CORRUPT, "invalid_index_target")
-            return
         try:
-            raw_index = self._metadata_path.read_bytes()
+            raw_index, _index_identity = read_owner_only_regular_file_with_identity(
+                self._metadata_path
+            )
         except OSError:
             self._set_load_failure(StateLoadStatus.CORRUPT, "index_read_failed")
+            return
+        if raw_index is None:
+            self._set_load_failure(StateLoadStatus.CORRUPT, "missing_index_existing_domain")
             return
         load_result, payload = self._decode_index(raw_index)
         if load_result.status is not StateLoadStatus.OK:
@@ -973,14 +973,14 @@ class ArtifactLedger:
         ensure_owner_only_directory(path)
 
     def _load_existing_salt(self, configured_salt: bytes | None) -> str | None:
-        if not self._salt_path.exists():
-            return "missing_salt_existing_domain"
-        if not self._is_regular_file(self._salt_path):
-            return "invalid_salt_target"
         try:
-            persisted_salt = self._salt_path.read_bytes()
+            persisted_salt, _salt_identity = read_owner_only_regular_file_with_identity(
+                self._salt_path
+            )
         except OSError:
             return "salt_read_failed"
+        if persisted_salt is None:
+            return "missing_salt_existing_domain"
         if len(persisted_salt) != 32:
             return "invalid_salt"
         if configured_salt is not None and not hmac.compare_digest(
@@ -1275,10 +1275,10 @@ class ArtifactLedger:
                 drop_ref=False,
             )
         path = self._blob_path(ref.content_hash)
-        if not self._is_regular_file(path):
-            return _BlobLoadResult(None, f"blob {ref.content_hash} is missing", drop_ref=True)
         try:
             content = self._read_blob(path)
+        except FileNotFoundError:
+            return _BlobLoadResult(None, f"blob {ref.content_hash} is missing", drop_ref=True)
         except ArtifactBlobCodecError as exc:
             return _BlobLoadResult(None, str(exc) or "blob codec unavailable", drop_ref=False)
         except (OSError, UnicodeDecodeError, ValueError):
@@ -1293,7 +1293,10 @@ class ArtifactLedger:
         return _BlobLoadResult(content)
 
     def _read_blob(self, path: Path) -> str:
-        return self._blob_codec.decode(path.read_bytes())
+        payload, _identity = read_owner_only_regular_file_with_identity(path)
+        if payload is None:
+            raise FileNotFoundError(path)
+        return self._blob_codec.decode(payload)
 
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"

@@ -20,6 +20,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from shisad.core.atomic_state import read_owned_regular_file_with_identity
+
 A2A_PROTOCOL_VERSION = "shisad-a2a/0.1"
 DEFAULT_REPLAY_WINDOW_SECONDS = 300
 _A2A_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -187,7 +189,10 @@ def fingerprint_for_public_key(public_key: Ed25519PublicKey) -> str:
 def load_private_key_from_path(path: Path) -> Ed25519PrivateKey:
     """Load an Ed25519 private key from a PEM path."""
 
-    loaded = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    payload, _identity = read_owned_regular_file_with_identity(path, required_mode=0o600)
+    if payload is None:
+        raise FileNotFoundError(path)
+    loaded = serialization.load_pem_private_key(payload, password=None)
     if not isinstance(loaded, Ed25519PrivateKey):
         raise TypeError("A2A private key must be an Ed25519 key")
     return loaded
@@ -196,7 +201,10 @@ def load_private_key_from_path(path: Path) -> Ed25519PrivateKey:
 def load_public_key_from_path(path: Path) -> Ed25519PublicKey:
     """Load an Ed25519 public key from a PEM path."""
 
-    return load_public_key_from_pem(path.read_bytes())
+    payload, _identity = read_owned_regular_file_with_identity(path)
+    if payload is None:
+        raise FileNotFoundError(path)
+    return load_public_key_from_pem(payload)
 
 
 def load_public_key_from_pem(data: bytes | str) -> Ed25519PublicKey:
