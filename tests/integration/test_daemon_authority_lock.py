@@ -1342,7 +1342,7 @@ def test_f3_cross_claim_rejects_derived_to_derived_in_either_order(
         first_claim.release()
 
 
-def test_f3_active_claim_refreshes_replaced_inode_alias(
+def test_f3_active_claim_refresh_rejects_replaced_hardlink_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1367,7 +1367,7 @@ def test_f3_active_claim_refreshes_replaced_inode_alias(
             str(alias_path),
         )
         second = _config(tmp_path, name="second", socket_name="second.sock")
-        with pytest.raises(AuthorityConflictError, match="overlaps"):
+        with pytest.raises(AuthorityRegistryError, match="hardlinked"):
             second_claim = acquire_daemon_authority_claim(second)
     finally:
         if second_claim is not None:
@@ -1618,6 +1618,57 @@ def test_f3_symlinked_external_authority_fails_before_mutation(
         before.st_mode,
         before.st_mtime_ns,
         b"trusted",
+    )
+
+
+@pytest.mark.parametrize("role", ["approval", "soul"])
+@pytest.mark.parametrize("artifact_kind", ["base", "derived"])
+def test_f3_hardlinked_external_authority_fails_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    artifact_kind: str,
+) -> None:
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("unrelated", encoding="utf-8")
+    unrelated.chmod(0o644)
+    configured = tmp_path / ("approval.json" if role == "approval" else "SOUL.md")
+    artifact = (
+        configured
+        if artifact_kind == "base"
+        else configured.with_name(f"{configured.name}.corrupt.retained")
+    )
+    artifact.hardlink_to(unrelated)
+    if artifact_kind == "derived":
+        configured.write_text("configured", encoding="utf-8")
+        configured.chmod(0o600)
+    if role == "approval":
+        monkeypatch.setenv(
+            "SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH",
+            str(configured),
+        )
+        config = _config(tmp_path, name="data", socket_name="control.sock")
+    else:
+        config = DaemonConfig(
+            data_dir=tmp_path / "data",
+            socket_path=tmp_path / "control.sock",
+            policy_path=tmp_path / "policy.yaml",
+            assistant_persona_soul_path=configured,
+        )
+    before = unrelated.stat()
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityRegistryError, match="hardlink"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+    after = unrelated.stat()
+    assert (after.st_ino, after.st_mode, after.st_mtime_ns, unrelated.read_bytes()) == (
+        before.st_ino,
+        before.st_mode,
+        before.st_mtime_ns,
+        b"unrelated",
     )
 
 

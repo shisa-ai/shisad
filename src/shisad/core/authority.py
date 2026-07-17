@@ -455,6 +455,10 @@ def _candidate_at_canonical_path(role: str, canonical: Path) -> DaemonAuthorityC
                 raise AuthorityRegistryError(
                     f"daemon mutable authority {role} is not owner-controlled: {artifact_path}"
                 )
+            if path_stat.st_nlink != 1:
+                raise AuthorityRegistryError(
+                    f"daemon mutable authority {role} is hardlinked: {artifact_path}"
+                )
         artifact_identities.add((path_stat.st_dev, path_stat.st_ino))
         if artifact_path == canonical:
             device = path_stat.st_dev
@@ -1430,6 +1434,10 @@ def _restrict_external_authority_files(candidate: DaemonAuthorityCandidate) -> N
             if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != os.getuid():
                 raise AuthorityClaimError(
                     f"claimed {candidate.role} authority is not an owner file: {path}"
+                )
+            if file_stat.st_nlink != 1:
+                raise AuthorityClaimError(
+                    f"claimed {candidate.role} authority is hardlinked: {path}"
                 )
             if stat.S_IMODE(file_stat.st_mode) != 0o600:
                 os.fchmod(fd, 0o600)

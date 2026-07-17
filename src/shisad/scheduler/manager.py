@@ -1402,6 +1402,12 @@ class SchedulerManager:
                     "invalid_task_counters",
                 )
                 return
+            if type(item.get("enabled", True)) is not bool:
+                self._state_load_results["tasks"] = self._semantic_corruption_result(
+                    result,
+                    "invalid_task_enabled",
+                )
+                return
             try:
                 task = ScheduledTask.model_validate(item)
             except ValidationError:

@@ -407,6 +407,34 @@ def test_checksum_valid_task_with_invalid_run_counter_is_corrupt(
     assert tasks_path.read_bytes() == invalid_bytes
 
 
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+def test_retained_task_requires_native_enabled_boolean(
+    tmp_path: Path,
+    snapshot_kind: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    _create_scheduler_task(scheduler)
+    tasks_path = storage / "tasks.json"
+    envelope = json.loads(tasks_path.read_text(encoding="utf-8"))
+    payload = envelope["payload"]
+    payload[0]["enabled"] = "yes"
+    invalid_bytes = (
+        encode_versioned_json_snapshot(payload)
+        if snapshot_kind == "current"
+        else json.dumps(payload).encode("utf-8")
+    )
+    tasks_path.write_bytes(invalid_bytes)
+
+    restarted = SchedulerManager(storage_dir=storage)
+
+    result = restarted.state_load_result("tasks")
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_task_enabled"
+    assert restarted.state_degraded is True
+    assert tasks_path.read_bytes() == invalid_bytes
+
+
 def test_corrupt_pending_confirmation_snapshot_never_becomes_fresh(
     tmp_path: Path,
 ) -> None:
