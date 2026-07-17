@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import subprocess
 import sys
@@ -2051,10 +2052,12 @@ async def test_f3_current_pending_envelope_rejects_invalid_rows_without_rewrite(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("collision_kind", ["nested", "scheduler-shadow"])
-async def test_f3_current_pending_envelope_rejects_canonical_identity_collisions(
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+async def test_f3_pending_snapshot_rejects_canonical_identity_collisions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     collision_kind: str,
+    snapshot_kind: str,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
     config = DaemonConfig(
@@ -2078,7 +2081,11 @@ async def test_f3_current_pending_envelope_rejects_canonical_identity_collisions
             {"confirmation_id": "shared", "identity": {"confirmation_id": "nested-b"}},
         ]
     pending_path = config.data_dir / "pending_actions.json"
-    retained_bytes = encode_versioned_json_snapshot(invalid_payload, version=1)
+    retained_bytes = (
+        encode_versioned_json_snapshot(invalid_payload, version=1)
+        if snapshot_kind == "current"
+        else json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
+    )
     pending_path.write_bytes(retained_bytes)
     pending_path.chmod(0o600)
     try:
@@ -2087,6 +2094,45 @@ async def test_f3_current_pending_envelope_rejects_canonical_identity_collisions
         status = impl._pending_action_state_status()
         assert status["status"] == "degraded"
         assert status["reason"] == "duplicate_pending_action_identity"
+        assert status["fail_closed"] is True
+        assert impl._pending_actions == {}
+        assert pending_path.read_bytes() == retained_bytes
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+async def test_f3_pending_snapshot_rejects_blank_nested_confirmation_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_kind: str,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    invalid_payload = [
+        {"confirmation_id": "direct", "identity": {"confirmation_id": " "}}
+    ]
+    pending_path = config.data_dir / "pending_actions.json"
+    retained_bytes = (
+        encode_versioned_json_snapshot(invalid_payload, version=1)
+        if snapshot_kind == "current"
+        else json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
+    )
+    pending_path.write_bytes(retained_bytes)
+    pending_path.chmod(0o600)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        status = impl._pending_action_state_status()
+        assert status["status"] == "degraded"
+        assert status["reason"] == "invalid_pending_action_row"
         assert status["fail_closed"] is True
         assert impl._pending_actions == {}
         assert pending_path.read_bytes() == retained_bytes

@@ -92,10 +92,12 @@ class DurableAppendError(RuntimeError):
         path: Path,
         stage: DurableAppendStage,
         publication_may_have_committed: bool,
+        authority_changed: bool = False,
     ) -> None:
         self.path = path
         self.stage = stage
         self.publication_may_have_committed = publication_may_have_committed
+        self.authority_changed = authority_changed
         commitment = "commit uncertain" if publication_may_have_committed else "not committed"
         super().__init__(f"durable append failed at {stage.value} ({commitment}): {path}")
 
@@ -869,6 +871,7 @@ def durable_append_bytes(
     *,
     fault_injector: DurableAppendFaultInjector | None = None,
     expected_identity: tuple[int, int] | None = None,
+    require_missing: bool = False,
 ) -> tuple[int, int]:
     """Append owner-only bytes, returning the exact acknowledged file identity.
 
@@ -876,8 +879,13 @@ def durable_append_bytes(
     retries that may be recovering a first publication. Append failures after
     any byte is written are typed as commit-uncertain; the caller must not assume
     it is safe to retry an effect-bearing record. When ``expected_identity`` is
-    provided, reject a different opened inode before writing.
+    provided, reject a different opened inode before writing. When
+    ``require_missing`` is true, atomically create a new authority rather than
+    adopting a file that appeared after an earlier absence observation.
     """
+
+    if expected_identity is not None and require_missing:
+        raise ValueError("expected_identity and require_missing are mutually exclusive")
 
     target = Path(path)
     absolute_target = _absolute_normalized_path(target)
@@ -887,8 +895,14 @@ def durable_append_bytes(
     parent_fd = -1
     try:
         preliminary_stat = target.lstat()
-    except FileNotFoundError:
-        pass
+    except FileNotFoundError as exc:
+        if expected_identity is not None:
+            raise DurableAppendError(
+                path=target,
+                stage=DurableAppendStage.TARGET_VALIDATE,
+                publication_may_have_committed=False,
+                authority_changed=True,
+            ) from exc
     except OSError as exc:
         raise DurableAppendError(
             path=target,
@@ -896,6 +910,13 @@ def durable_append_bytes(
             publication_may_have_committed=False,
         ) from exc
     else:
+        if require_missing:
+            raise DurableAppendError(
+                path=target,
+                stage=DurableAppendStage.TARGET_VALIDATE,
+                publication_may_have_committed=False,
+                authority_changed=True,
+            )
         if not stat.S_ISREG(preliminary_stat.st_mode):
             raise DurableAppendError(
                 path=target,
@@ -925,7 +946,20 @@ def durable_append_bytes(
         except FileNotFoundError:
             target_stat = None
         if target_stat is None:
-            pass
+            if expected_identity is not None:
+                raise DurableAppendError(
+                    path=target,
+                    stage=DurableAppendStage.TARGET_VALIDATE,
+                    publication_may_have_committed=False,
+                    authority_changed=True,
+                )
+        elif require_missing:
+            raise DurableAppendError(
+                path=target,
+                stage=DurableAppendStage.TARGET_VALIDATE,
+                publication_may_have_committed=False,
+                authority_changed=True,
+            )
         elif not stat.S_ISREG(target_stat.st_mode):
             raise DurableAppendError(
                 path=target,
@@ -964,17 +998,22 @@ def durable_append_bytes(
     created_file = False
     wrote_payload = False
     completed = False
+    authority_changed = False
     opened_identity: tuple[int, int] | None = None
     stage = DurableAppendStage.FILE_OPEN
     try:
         if fault_injector is not None:
             fault_injector(stage)
         flags = os.O_WRONLY | os.O_APPEND
-        if not target_existed:
+        if require_missing or not target_existed:
             flags |= os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
-        file_fd = os.open(target_name, flags, 0o600, dir_fd=parent_fd)
+        try:
+            file_fd = os.open(target_name, flags, 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            authority_changed = require_missing
+            raise
         created_file = not target_existed
         opened_stat = os.fstat(file_fd)
         if not stat.S_ISREG(opened_stat.st_mode):
@@ -985,6 +1024,7 @@ def durable_append_bytes(
             raise PermissionError("durable append target must have exactly one link")
         opened_identity = (opened_stat.st_dev, opened_stat.st_ino)
         if expected_identity is not None and opened_identity != expected_identity:
+            authority_changed = True
             raise PermissionError("durable append target identity changed")
         os.fchmod(file_fd, 0o600)
 
@@ -1010,11 +1050,15 @@ def durable_append_bytes(
         os.fsync(parent_fd)
         for created_directory in reversed(missing_directories):
             _fsync_directory_path(created_directory.parent)
-        published_stat = os.stat(
-            target_name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
+        try:
+            published_stat = os.stat(
+                target_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError:
+            authority_changed = True
+            raise
         if (
             opened_identity != (published_stat.st_dev, published_stat.st_ino)
             or not stat.S_ISREG(published_stat.st_mode)
@@ -1022,6 +1066,7 @@ def durable_append_bytes(
             or published_stat.st_nlink != 1
             or stat.S_IMODE(published_stat.st_mode) != 0o600
         ):
+            authority_changed = True
             raise OSError("durable append target identity changed before acknowledgement")
         _verify_directory_path_identity(parent, expected=parent_identity)
         completed = True
@@ -1032,6 +1077,7 @@ def durable_append_bytes(
             path=target,
             stage=stage,
             publication_may_have_committed=wrote_payload,
+            authority_changed=authority_changed,
         ) from exc
     finally:
         if file_fd >= 0:

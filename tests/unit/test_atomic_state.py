@@ -315,7 +315,45 @@ def test_durable_append_rejects_unexpected_existing_identity_before_write(
 
     assert raised.value.stage is DurableAppendStage.FILE_OPEN
     assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
     assert target.read_bytes() == replacement_bytes
+
+
+def test_durable_append_require_missing_rejects_preexisting_authority(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    identity = durable_append_bytes(target, b"", require_missing=True)
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(target, b'{"id":"blocked"}\n', require_missing=True)
+
+    target_stat = target.stat()
+    assert identity == (target_stat.st_dev, target_stat.st_ino)
+    assert raised.value.stage is DurableAppendStage.TARGET_VALIDATE
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert target.read_bytes() == b""
+
+
+def test_durable_append_expected_identity_rejects_missing_authority_without_recreation(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "channels" / "pairing_requests.jsonl"
+    expected_identity = durable_append_bytes(target, b'{"id":"original"}\n')
+    target.unlink()
+
+    with pytest.raises(DurableAppendError) as raised:
+        durable_append_bytes(
+            target,
+            b'{"id":"blocked"}\n',
+            expected_identity=expected_identity,
+        )
+
+    assert raised.value.stage is DurableAppendStage.TARGET_VALIDATE
+    assert raised.value.publication_may_have_committed is False
+    assert raised.value.authority_changed is True
+    assert not target.exists()
 
 
 def test_durable_append_rejects_target_replacement_before_acknowledgement(

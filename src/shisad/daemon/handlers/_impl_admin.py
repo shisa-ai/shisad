@@ -317,6 +317,8 @@ def _migrated_channel_memory_key(
 
 
 class AdminImplMixin(HandlerMixinBase):
+    _pairing_publication_degradation: dict[str, str] | None
+
     _KEYED_CHANNEL_STATE_ENTRY_TYPES: ClassVar[set[str]] = {
         "channel_participation",
         "person_note",
@@ -2389,6 +2391,12 @@ class AdminImplMixin(HandlerMixinBase):
                         self._mark_pairing_publication_uncertain(exc)
                     else:
                         self._identity_map.discard_pairing_request(pairing)
+                        if exc.authority_changed:
+                            self._pairing_publication_degradation = {
+                                "stage": exc.stage.value,
+                                "reason": "artifact_identity_changed",
+                                "path": str(exc.path),
+                            }
                     raise
                 except Exception:
                     self._identity_map.discard_pairing_request(pairing)

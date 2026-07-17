@@ -297,6 +297,114 @@ async def test_f3_pairing_proposal_rejects_writer_created_artifact_replacement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_consumer", ["ingest", "proposal"])
+async def test_f3_missing_startup_pairing_authority_is_pinned_before_first_consumer(
+    model_env: None,
+    tmp_path: Path,
+    first_consumer: str,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    crafted_bytes = b'{"channel":"discord","external_user_id":"crafted-user"}\n'
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        assert artifact_file.read_bytes() == b""
+        crafted = tmp_path / f"crafted-before-{first_consumer}.jsonl"
+        crafted.write_bytes(crafted_bytes)
+        crafted.chmod(0o600)
+        crafted.replace(artifact_file)
+
+        if first_consumer == "proposal":
+            with pytest.raises(RuntimeError, match="State authority unavailable"):
+                await client.call(
+                    "channel.pairing_propose",
+                    {"channel": "discord", "limit": 25},
+                )
+        else:
+            with pytest.raises(RuntimeError):
+                await client.call(
+                    "channel.ingest",
+                    {
+                        "message": {
+                            "channel": "discord",
+                            "external_user_id": "pre-first-ingest-user",
+                            "workspace_hint": "guild-1",
+                            "content": "hello",
+                            "message_id": "m-pre-first-ingest",
+                            "reply_target": "chan-1",
+                        }
+                    },
+                )
+
+        doctor = await client.call("doctor.check", {"component": "channels"})
+        pairing_status = doctor["checks"]["channels"]["pairing_requests"]
+        assert pairing_status["status"] == "degraded"
+        assert pairing_status["stage"] == (
+            "proposal_read" if first_consumer == "proposal" else "file_open"
+        )
+        assert pairing_status["fail_closed"] is True
+        assert artifact_file.read_bytes() == crafted_bytes
+        assert not (data_dir / "proposals" / "channel_pairing").exists()
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_f3_pairing_reset_rebaseline_rejects_later_replacement(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        test_mode=True,
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    crafted_bytes = b'{"channel":"discord","external_user_id":"crafted-user"}\n'
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        reset = await client.call("daemon.reset")
+        assert reset["status"] == "reset"
+        assert artifact_file.read_bytes() == b""
+        crafted = tmp_path / "crafted-after-reset.jsonl"
+        crafted.write_bytes(crafted_bytes)
+        crafted.chmod(0o600)
+        crafted.replace(artifact_file)
+
+        with pytest.raises(RuntimeError, match="State authority unavailable"):
+            await client.call(
+                "channel.pairing_propose",
+                {"channel": "discord", "limit": 25},
+            )
+
+        assert artifact_file.read_bytes() == crafted_bytes
+        assert not (data_dir / "proposals" / "channel_pairing").exists()
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_f3_pairing_request_append_rejects_symlink_target(
     model_env: None,
     tmp_path: Path,
@@ -361,8 +469,16 @@ async def test_f3_pairing_append_failure_allows_same_process_retry(
         payload: bytes,
         *,
         expected_identity: tuple[int, int] | None = None,
+        require_missing: bool = False,
     ) -> tuple[int, int]:
         nonlocal attempts
+        if not payload:
+            return real_append(
+                path,
+                payload,
+                expected_identity=expected_identity,
+                require_missing=require_missing,
+            )
         attempts += 1
         if attempts == 1:
             raise DurableAppendError(
@@ -370,7 +486,12 @@ async def test_f3_pairing_append_failure_allows_same_process_retry(
                 stage=DurableAppendStage.FILE_OPEN,
                 publication_may_have_committed=False,
             )
-        return real_append(path, payload, expected_identity=expected_identity)
+        return real_append(
+            path,
+            payload,
+            expected_identity=expected_identity,
+            require_missing=require_missing,
+        )
 
     monkeypatch.setattr(impl_module, "durable_append_bytes", _fail_first_append)
     daemon_task = asyncio.create_task(run_daemon(config))
@@ -390,7 +511,7 @@ async def test_f3_pairing_append_failure_allows_same_process_retry(
                 "channel.ingest",
                 {"message": {**message, "message_id": "m-first"}},
             )
-        assert not artifact_file.exists()
+        assert artifact_file.read_bytes() == b""
 
         retry = await client.call(
             "channel.ingest",
@@ -436,8 +557,16 @@ async def test_f3_pairing_commit_uncertainty_fails_closed_without_retry(
         payload: bytes,
         *,
         expected_identity: tuple[int, int] | None = None,
+        require_missing: bool = False,
     ) -> tuple[int, int]:
         nonlocal attempts
+        if not payload:
+            return real_append(
+                path,
+                payload,
+                expected_identity=expected_identity,
+                require_missing=require_missing,
+            )
         attempts += 1
 
         def _inject(stage: DurableAppendStage) -> None:
@@ -449,6 +578,7 @@ async def test_f3_pairing_commit_uncertainty_fails_closed_without_retry(
             payload,
             fault_injector=_inject,
             expected_identity=expected_identity,
+            require_missing=require_missing,
         )
 
     monkeypatch.setattr(impl_module, "durable_append_bytes", _uncertain_append)
