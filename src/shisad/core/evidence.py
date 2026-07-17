@@ -530,7 +530,12 @@ class ArtifactLedger:
             rewrote_blob = False
             if blob_owner is not None:
                 blob_load = self._load_validated_blob_content(blob_owner)
-                rewrote_blob = blob_load.content is None and blob_load.drop_ref
+                if blob_load.content is None:
+                    if not blob_load.drop_ref:
+                        raise ArtifactBlobCodecError(
+                            blob_load.failure_reason or "owned blob validation failed"
+                        )
+                    rewrote_blob = True
             if blob_owner is None or not blob_path.exists() or rewrote_blob:
                 try:
                     self._atomic_write(blob_path, self._blob_codec.encode(content))

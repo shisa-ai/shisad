@@ -652,6 +652,58 @@ def test_artifact_ledger_kms_reuses_owned_blob_across_sessions_without_republica
         assert ledger.read(second_sid, second.ref_id) == content
 
 
+@pytest.mark.parametrize("target_kind", ["same_session", "cross_session"])
+def test_artifact_ledger_store_fails_without_index_mutation_when_owned_kms_blob_unreadable(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_kind: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    content = "temporarily unreadable encrypted artifact body"
+    first_sid = SessionId("sess-a")
+    second_sid = SessionId("sess-b")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        first = ledger.store(
+            first_sid,
+            content,
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="original summary",
+        )
+        index_path = evidence_root / "refs_index.json"
+        index_before = index_path.read_bytes()
+        blob_path = evidence_root / "blobs" / f"{first.content_hash}.txt"
+        blob_before = blob_path.read_bytes()
+
+        def _fail_decode(
+            _codec: KmsArtifactBlobCodec,
+            _payload: bytes,
+        ) -> str:
+            raise ArtifactBlobCodecError("kms temporarily unavailable")
+
+        monkeypatch.setattr(KmsArtifactBlobCodec, "decode", _fail_decode)
+        target_sid = first_sid if target_kind == "same_session" else second_sid
+
+        with pytest.raises(ArtifactBlobCodecError, match="kms temporarily unavailable"):
+            ledger.store(
+                target_sid,
+                content,
+                taint_labels={TaintLabel.UNTRUSTED, TaintLabel.USER_REVIEWED},
+                source="realitycheck.read:/tmp/example.txt",
+                summary="must not publish",
+            )
+
+        assert index_path.read_bytes() == index_before
+        assert blob_path.read_bytes() == blob_before
+        assert ledger._refs[str(first_sid)][first.ref_id] == first
+        assert ledger._refs.get(str(second_sid), {}) == {}
+
+
 def test_artifact_ledger_kms_blob_codec_round_trips_and_restarts(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
