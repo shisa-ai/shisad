@@ -444,6 +444,36 @@ def test_f3_fs_git_toolkit_parent_swap_cannot_escape_allowlisted_root(
     assert swapped is True
 
 
+def test_f3_fs_git_read_open_is_nonblocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "source.txt"
+    target.write_text("safe", encoding="utf-8")
+    toolkit = FsGitToolkit(roots=[workspace], max_read_bytes=1024)
+    real_open = os.open
+
+    def _require_nonblocking(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == target.name:
+            assert flags & os.O_NONBLOCK
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", _require_nonblocking)
+
+    result = toolkit.read_file(path="source.txt")
+
+    assert result["ok"] is True
+    assert result["content"] == "safe"
+
+
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)

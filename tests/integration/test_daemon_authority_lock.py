@@ -329,7 +329,7 @@ async def test_f3_daemon_build_binds_runtime_to_admitted_canonical_data_root(
     alias = tmp_path / "data-alias"
     alias.symlink_to(safe_root, target_is_directory=True)
     config = _config(tmp_path, name="unused", socket_name="retarget.sock").model_copy(
-        update={"data_dir": alias}
+        update={"data_dir": alias, "socket_path": alias / "control.sock"}
     )
     real_initialize = initialize_claimed_daemon_authorities
     built_config: DaemonConfig | None = None
@@ -352,6 +352,9 @@ async def test_f3_daemon_build_binds_runtime_to_admitted_canonical_data_root(
         nonlocal built_config, built_claim
         built_config = run_config
         built_claim = authority_claim
+        server = ControlServer(run_config.socket_path)
+        await server.start()
+        await server.stop()
         (run_config.data_dir / "runtime-marker").write_bytes(b"claimed")
         return object.__new__(DaemonServices)
 
@@ -367,6 +370,7 @@ async def test_f3_daemon_build_binds_runtime_to_admitted_canonical_data_root(
         assert alias.resolve() == attacker_root
         assert built_config is not None
         assert built_config.data_dir == safe_root
+        assert built_config.socket_path == safe_root / "control.sock"
         assert (safe_root / "runtime-marker").read_bytes() == b"claimed"
         assert not (attacker_root / "runtime-marker").exists()
         assert built_claim is not None

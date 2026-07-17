@@ -663,6 +663,19 @@ def _canonical_json_bytes(payload: Any) -> bytes:
     ).encode("utf-8")
 
 
+class _DuplicateJsonMemberError(ValueError):
+    """A JSON object repeated a member name."""
+
+
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    decoded: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in decoded:
+            raise _DuplicateJsonMemberError(key)
+        decoded[key] = value
+    return decoded
+
+
 def _snapshot_integrity_bytes(*, version: int, payload: Any) -> bytes:
     return _canonical_json_bytes({"payload": payload, "version": version})
 
@@ -707,8 +720,11 @@ def decode_versioned_json_snapshot(
     """Decode a checksum-bound envelope into a typed non-throwing load result."""
 
     try:
-        raw = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        raw = json.loads(
+            raw_bytes.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_members,
+        )
+    except (UnicodeError, json.JSONDecodeError, _DuplicateJsonMemberError, RecursionError):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_json"), None
     if not isinstance(raw, dict):
         return StateLoadResult(StateLoadStatus.CORRUPT, reason="invalid_envelope"), None

@@ -98,7 +98,7 @@ class FsGitToolkit:
             )
             try:
                 flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
                 fd = os.open(resolved.name, flags, dir_fd=parent_fd)
             finally:
                 os.close(parent_fd)

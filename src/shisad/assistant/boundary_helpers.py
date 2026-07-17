@@ -61,7 +61,7 @@ def _open_nofollow_regular_file(path: Path) -> Iterator[BufferedReader]:
     try:
         _absolute, parent_fd, _created = _open_directory_chain(path.parent, create=False)
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         file_fd = os.open(path.name, flags, dir_fd=parent_fd)
         file_stat = os.fstat(file_fd)
         if not stat.S_ISREG(file_stat.st_mode):

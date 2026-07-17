@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
+
+import pytest
 
 from shisad.assistant.boundary_helpers import (
     _host_matches,
     _is_within,
     _NoRedirectHandler,
+    _open_nofollow_regular_file,
     _read_limited,
 )
 
@@ -53,6 +57,31 @@ def test_read_limited_under_limit_is_not_truncated() -> None:
 
     assert data == b"ab"
     assert truncated is False
+
+
+def test_f3_nofollow_regular_file_open_is_nonblocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "source.txt"
+    target.write_text("safe", encoding="utf-8")
+    real_open = os.open
+
+    def _require_nonblocking(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == target.name:
+            assert flags & os.O_NONBLOCK
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", _require_nonblocking)
+
+    with _open_nofollow_regular_file(target) as handle:
+        assert handle.read() == b"safe"
 
 
 def test_no_redirect_handler_always_blocks_redirects() -> None:

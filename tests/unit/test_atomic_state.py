@@ -787,6 +787,22 @@ def test_versioned_json_snapshot_rejects_checksum_exempt_envelope_fields() -> No
     assert payload is None
 
 
+def test_versioned_json_snapshot_rejects_duplicate_envelope_members() -> None:
+    envelope = json.loads(encode_versioned_json_snapshot({"rows": []}).decode("utf-8"))
+    raw_bytes = (
+        "{"
+        f'"version":1,"checksum":{json.dumps(envelope["checksum"])},'
+        '"payload":{"unchecked":true},"payload":{"rows":[]}'
+        "}"
+    ).encode()
+
+    result, payload = decode_versioned_json_snapshot(raw_bytes)
+
+    assert result.status == StateLoadStatus.CORRUPT
+    assert result.reason == "invalid_json"
+    assert payload is None
+
+
 def test_atomic_write_supports_long_valid_basename(tmp_path: Path) -> None:
     target = tmp_path / ("s" * 240)
 

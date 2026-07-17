@@ -676,9 +676,14 @@ class DaemonServices:
             claimed_data_root = next(
                 candidate.path for candidate in candidates if candidate.role == "data_root"
             )
-            claimed_config = config.model_copy(update={"data_dir": claimed_data_root})
             control_socket_path = next(
                 candidate.path for candidate in candidates if candidate.role == "control_socket"
+            )
+            claimed_config = config.model_copy(
+                update={
+                    "data_dir": claimed_data_root,
+                    "socket_path": control_socket_path,
+                }
             )
             await preflight_claimed_control_socket(control_socket_path)
             initialize_task = asyncio.create_task(
