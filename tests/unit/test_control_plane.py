@@ -3343,6 +3343,30 @@ def test_f3_control_plane_history_corruption_is_retained_and_blocks_append(
     assert path.read_bytes() == corrupt_bytes
 
 
+def test_f3_control_plane_history_blank_row_is_retained_and_blocks_append(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "history.jsonl"
+    path.parent.mkdir(parents=True)
+    corrupt_bytes = b"\n"
+    _write_owner_only_bytes(path, corrupt_bytes)
+
+    history = SessionActionHistoryStore(path)
+
+    assert history.state_load_result.status == StateLoadStatus.CORRUPT
+    assert history.state_status()["fail_closed"] is True
+    with pytest.raises(StatePersistenceDegradedError, match="control_plane_history"):
+        history.append(
+            ActionHistoryRecord(
+                session_id="s-history",
+                action_kind=ActionKind.FS_READ,
+                tool_name="file.read",
+            )
+        )
+    assert history.all_for_session("s-history") == []
+    assert path.read_bytes() == corrupt_bytes
+
+
 def test_f3_control_plane_history_commit_uncertainty_retains_live_view(
     tmp_path: Path,
 ) -> None:

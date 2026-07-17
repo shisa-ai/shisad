@@ -354,7 +354,11 @@ class SessionActionHistoryStore:
         for line_number, line in enumerate(lines, start=1):
             text = line.strip()
             if not text:
-                continue
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason=f"blank_history_record:{line_number}",
+                )
+                return
             try:
                 record = ActionHistoryRecord.model_validate_json(text)
             except ValidationError:

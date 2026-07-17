@@ -199,6 +199,23 @@ def test_channel_replay_truncated_journal_is_retained_and_blocks_fresh_admission
     assert journal_path.read_bytes() == corrupt
 
 
+def test_channel_replay_blank_journal_row_is_retained_and_blocks_fresh_admission(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    journal_path = root / "matrix.state.journal"
+    corrupt = b"\n"
+    journal_path.write_bytes(corrupt)
+
+    store = ChannelStateStore(root)
+
+    assert store.state_load_result("matrix").status == StateLoadStatus.CORRUPT
+    with pytest.raises(StatePersistenceDegradedError, match="channel_replay:matrix"):
+        store.reserve(channel="matrix", message_id="m-new")
+    assert journal_path.read_bytes() == corrupt
+
+
 def test_channel_replay_non_directory_root_blocks_reads_without_following_target(
     tmp_path: Path,
 ) -> None:

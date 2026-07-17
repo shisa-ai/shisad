@@ -586,9 +586,17 @@ class ChannelStateStore:
             )
         rows: list[_ReplayRecord] = []
         legacy_message_ids: set[str] = set()
-        for raw_line in raw.splitlines():
+        for line_number, raw_line in enumerate(raw.splitlines(), start=1):
             if not raw_line.strip():
-                continue
+                return (
+                    StateLoadResult(
+                        StateLoadStatus.CORRUPT,
+                        reason=f"blank_journal_row:{line_number}",
+                    ),
+                    [],
+                    set(),
+                    file_identity,
+                )
             line = raw_line.strip()
             if line.startswith(b"{"):
                 decoded, payload = decode_versioned_json_snapshot(

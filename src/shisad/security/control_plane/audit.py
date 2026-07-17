@@ -169,7 +169,7 @@ class ControlPlaneAuditLog:
             if payload.endswith("\r"):
                 payload = payload[:-1]
             if not payload.strip():
-                continue
+                return (False, count, f"line {index}: blank entry")
             try:
                 entry = ControlPlaneAuditEntry.model_validate_json(payload)
             except ValidationError as exc:

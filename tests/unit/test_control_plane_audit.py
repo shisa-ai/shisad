@@ -105,6 +105,23 @@ def test_f3_control_plane_audit_corruption_is_retained_and_blocks_append(
     assert path.read_bytes() == corrupt_bytes
 
 
+def test_f3_control_plane_audit_blank_row_is_retained_and_blocks_append(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    corrupt_bytes = b"\n"
+    path.write_bytes(corrupt_bytes)
+    path.chmod(0o600)
+
+    log = ControlPlaneAuditLog(path)
+
+    assert log.state_load_result.status == StateLoadStatus.CORRUPT
+    assert log.entry_count == 0
+    with pytest.raises(StatePersistenceDegradedError, match="control_plane_audit"):
+        log.append(event_type="new", session_id="s", actor="a", data={})
+    assert path.read_bytes() == corrupt_bytes
+
+
 def test_f3_control_plane_audit_commit_uncertainty_keeps_chain_state(
     tmp_path: Path,
 ) -> None:
