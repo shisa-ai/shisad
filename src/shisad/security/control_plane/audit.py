@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,12 +11,15 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.atomic_state import (
+    AtomicWriteError,
     DurableAppendError,
     DurableAppendFaultInjector,
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
+    atomic_write_bytes,
     durable_append_bytes,
+    read_owner_only_regular_file,
 )
 from shisad.security.control_plane.schema import sanitize_metadata_payload
 
@@ -42,7 +44,7 @@ class ControlPlaneAuditLog:
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
         self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation: DurableAppendError | None = None
+        self._persistence_degradation: AtomicWriteError | DurableAppendError | None = None
         self._state_fault_injector: DurableAppendFaultInjector | None = None
         self._resume()
 
@@ -77,6 +79,21 @@ class ControlPlaneAuditLog:
                 else ""
             ),
         }
+
+    def reset_state(self) -> int:
+        """Durably publish an empty audit chain and reset its genesis cursor."""
+
+        cleared = self._entry_count
+        try:
+            atomic_write_bytes(self._path, b"")
+        except AtomicWriteError as exc:
+            self._persistence_degradation = exc
+            raise
+        self._previous_hash = _GENESIS_HASH
+        self._entry_count = 0
+        self._persistence_degradation = None
+        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
+        return cleared
 
     def _require_available(self, *, transition: str) -> None:
         if not self.state_degraded:
@@ -131,11 +148,11 @@ class ControlPlaneAuditLog:
 
     def verify_chain(self) -> tuple[bool, int, str]:
         try:
-            raw_bytes = self._path.read_bytes()
-        except FileNotFoundError:
-            return (True, 0, "")
+            raw_bytes = read_owner_only_regular_file(self._path)
         except OSError as exc:
             return (False, 0, f"read failed ({exc})")
+        if raw_bytes is None:
+            return (True, 0, "")
         return self._verify_chain_bytes(raw_bytes)
 
     @staticmethod
@@ -173,49 +190,40 @@ class ControlPlaneAuditLog:
         event_type: str | None = None,
         session_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        if self.state_degraded or not self._path.exists():
+        if self.state_degraded:
+            return []
+        try:
+            raw_bytes = read_owner_only_regular_file(self._path)
+        except OSError:
+            return []
+        if raw_bytes is None:
             return []
         rows: list[dict[str, Any]] = []
-        with self._path.open(encoding="utf-8") as handle:
-            for raw in handle:
-                text = raw.strip()
-                if not text:
-                    continue
-                try:
-                    entry = ControlPlaneAuditEntry.model_validate_json(text)
-                except ValidationError:
-                    continue
-                if event_type and entry.event_type != event_type:
-                    continue
-                if session_id and entry.session_id != session_id:
-                    continue
-                rows.append(entry.model_dump(mode="json"))
+        for raw in raw_bytes.splitlines():
+            text = raw.strip()
+            if not text:
+                continue
+            try:
+                entry = ControlPlaneAuditEntry.model_validate_json(text)
+            except ValidationError:
+                continue
+            if event_type and entry.event_type != event_type:
+                continue
+            if session_id and entry.session_id != session_id:
+                continue
+            rows.append(entry.model_dump(mode="json"))
         return rows
 
     def _resume(self) -> None:
         try:
-            target_stat = self._path.lstat()
-        except FileNotFoundError:
-            return
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="audit_stat_failed",
-            )
-            return
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_audit_target",
-            )
-            return
-        try:
-            raw_bytes = self._path.read_bytes()
+            raw_bytes = read_owner_only_regular_file(self._path)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="audit_read_failed",
             )
+            return
+        if raw_bytes is None:
             return
         if raw_bytes and not raw_bytes.endswith(b"\n"):
             self._state_load_result = StateLoadResult(

@@ -50,7 +50,9 @@ from shisad.core.approval import (
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
+    StateLoadStatus,
     StatePersistenceDegradedError,
+    decode_versioned_json_snapshot,
 )
 from shisad.core.events import (
     PlanAmended,
@@ -112,6 +114,16 @@ from shisad.security.policy import PolicyBundle
 from shisad.ui.confirmation import ConfirmationWarningGenerator
 from tests.helpers.signer import generate_secp256k1_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
+
+
+def _read_pending_rows(path: Path) -> list[dict[str, object]]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):
+        return raw
+    result, payload = decode_versioned_json_snapshot(path.read_bytes())
+    assert result.status is StateLoadStatus.OK
+    assert isinstance(payload, list)
+    return payload
 
 
 class _StubImpl:
@@ -1228,7 +1240,7 @@ def test_f2_legacy_null_expiry_is_terminal_and_invalidates_nonce_on_restart(
     assert loaded.expires_at is not None
     assert loaded.expires_at <= datetime.now(UTC)
     assert public["lifecycle_state"] == "expired"
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["decision_nonce"] == ""
     assert persisted["status_reason"] == "approval_expired"
     assert persisted["expires_at"]
@@ -1323,7 +1335,7 @@ def test_f2_queue_persistence_failure_restores_only_durable_old_state(
     assert harness._pending_actions == {}
     assert harness._pending_by_session == {}
     if harness._pending_actions_file.exists():
-        assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+        assert _read_pending_rows(harness._pending_actions_file) == []
 
 
 @pytest.mark.asyncio
@@ -1365,7 +1377,7 @@ async def test_f2_pre_effect_attempt_fault_invokes_nothing_and_restores_pending(
     assert pending.execution_attempt_id == ""
     assert pending.result_id == ""
     assert pending.confirmation_evidence is None
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "pending"
     assert durable["execution_attempt_id"] == ""
 
@@ -1374,7 +1386,7 @@ async def test_f2_pre_effect_attempt_fault_invokes_nothing_and_restores_pending(
 async def test_pending_attempt_state_is_durable_before_effect(tmp_path: Path) -> None:
     class _InspectingHarness(_AtomicConfirmationHarness):
         async def _execute_approved_action(self, **kwargs: object) -> object:
-            durable = json.loads(self._pending_actions_file.read_text(encoding="utf-8"))[0]
+            durable = _read_pending_rows(self._pending_actions_file)[0]
             assert durable["status"] == "executing"
             assert durable["execution_attempt_id"]
             assert durable["result_id"]
@@ -1445,7 +1457,7 @@ async def test_f2_confirmed_post_effect_exception_persists_uncertainty(
     assert harness._control_plane.cancelled_correlations == [
         pending.stage2_correlation_id
     ]
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "outcome_unknown"
     assert durable["decision_nonce"] == ""
     replay = await harness.do_action_confirm(
@@ -1506,7 +1518,7 @@ async def test_f2_confirmed_exception_revokes_stage2_when_fallback_containment_f
     assert harness._control_plane.cancelled_correlations == [
         pending.stage2_correlation_id
     ]
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "executing"
     assert durable["stage2_correlation_id"] == pending.stage2_correlation_id
 
@@ -1616,7 +1628,7 @@ async def test_f2_cancelled_stage2_ready_transition_revokes_correlation(
     assert scheduler.run_outcomes == [
         {"task_id": pending.task_id, "success": False}
     ]
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] in {"failed", "cancelled"}
     assert durable["status_reason"]
 
@@ -1692,7 +1704,7 @@ async def test_f2_post_effect_terminal_fault_never_rolls_back_over_executing(
 
     assert harness.effect_calls == 1
     assert pending.status == "approved"
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == (
         "approved" if fault_stage == AtomicWriteStage.PARENT_FSYNC else "executing"
     )
@@ -1800,7 +1812,7 @@ async def test_f2_reject_terminal_state_commits_before_rejection_side_effects(
     assert pending.status_reason == ""
     assert pending.decision_nonce == "expected"
     assert harness.published_events == []
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "pending"
     assert durable["decision_nonce"] == "expected"
 
@@ -1983,7 +1995,7 @@ async def test_f2_scheduled_terminal_postcommit_fault_replays_after_restart(
                 }
             )
 
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == expected_status
     assert durable["status_reason"] == expected_reason
     assert durable["scheduler_accounting_pending"] is True
@@ -2140,7 +2152,7 @@ def test_f2_invalid_recovery_mac_neutralizes_valid_scheduler_mode_substitution(
     harness._pending_actions[pending.confirmation_id] = pending
     harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
     harness._persist_pending_actions()
-    durable_rows = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    durable_rows = _read_pending_rows(pending_actions_file)
     original_mac = durable_rows[0]["recovery_authority_mac"]
     durable_rows[0]["scheduler_accounting_mode"] = tampered_mode
     pending_actions_file.write_text(json.dumps(durable_rows), encoding="utf-8")
@@ -2157,7 +2169,7 @@ def test_f2_invalid_recovery_mac_neutralizes_valid_scheduler_mode_substitution(
     assert recovered.recovery_scheduler_accounted is True
     assert scheduler.task.enabled is False
     assert scheduler.run_outcomes == []
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["scheduler_accounting_mode"] == "ambiguous"
     assert persisted["scheduler_accounting_pending"] is True
     assert persisted["recovery_authority_mac"] != original_mac
@@ -2274,7 +2286,7 @@ async def test_f2_stage2_ready_write_fault_resolves_durable_attempt_before_effec
     assert pending.status == "failed"
     assert pending.status_reason == "stage2_ready_transition_failed"
     assert harness.effect_calls == 0
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "failed"
     assert durable["status_reason"] == "stage2_ready_transition_failed"
     assert (
@@ -2384,9 +2396,7 @@ async def test_f2_stage2_post_commit_task_cancellation_resolves_durable_attempt(
     assert control_plane.cancelled_correlations == [pending.stage2_correlation_id]
     assert pending.status in {"failed", "cancelled"}
     assert pending.status_reason
-    durable = json.loads(
-        (tmp_path / "pending_actions.json").read_text(encoding="utf-8")
-    )[0]
+    durable = _read_pending_rows(tmp_path / "pending_actions.json")[0]
     assert durable["status"] in {"failed", "cancelled"}
     assert durable["status_reason"]
     assert harness.effect_calls == 0
@@ -2506,7 +2516,7 @@ async def test_f2_pending_purge_rolls_back_when_deletion_is_not_durable(
     assert pending.decision_nonce == "expected"
     assert scheduler.resolved_confirmations == []
     assert scheduler.run_outcomes == []
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "pending"
     assert durable["decision_nonce"] == "expected"
 
@@ -2533,7 +2543,7 @@ async def test_f2_pending_purge_postcommit_scheduler_fault_replays_before_deleti
             {"status": "pending", "older_than_days": 7, "limit": 10}
         )
 
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "failed"
     assert durable["status_reason"] == "purged_stale_pending_action"
     assert durable["scheduler_accounting_pending"] is True
@@ -2554,7 +2564,7 @@ async def test_f2_pending_purge_postcommit_scheduler_fault_replays_before_deleti
         {"status": "terminal", "limit": 10}
     )
     assert purge_result["confirmation_ids"] == [pending.confirmation_id]
-    assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+    assert _read_pending_rows(harness._pending_actions_file) == []
 
 
 @pytest.mark.asyncio
@@ -2591,7 +2601,7 @@ async def test_f2_pending_purge_retry_completes_terminal_accounting_before_delet
     assert purge_result["confirmation_ids"] == [pending.confirmation_id]
     assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
     assert len(scheduler.run_outcomes) == 1
-    assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+    assert _read_pending_rows(harness._pending_actions_file) == []
 
 
 @pytest.mark.asyncio
@@ -2716,7 +2726,7 @@ async def test_f2_pending_purge_completes_cancellation_required_accounting(
     assert sibling.decision_nonce == ""
     assert scheduler.task.enabled is False
     assert len(scheduler.run_outcomes) == expected_run_outcomes
-    durable_rows = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))
+    durable_rows = _read_pending_rows(harness._pending_actions_file)
     assert [row["confirmation_id"] for row in durable_rows] == (
         [] if purge_sibling else [sibling.confirmation_id]
     )
@@ -2759,7 +2769,7 @@ async def test_f2_pending_purge_deletion_fault_restores_committed_terminal_row(
     assert pending.scheduler_accounting_pending is False
     assert scheduler.confirmation_outcomes[(pending.task_id, pending.confirmation_id)] is False
     assert len(scheduler.run_outcomes) == 1
-    durable = json.loads(harness._pending_actions_file.read_text(encoding="utf-8"))[0]
+    durable = _read_pending_rows(harness._pending_actions_file)[0]
     assert durable["status"] == "failed"
     assert durable["scheduler_accounting_pending"] is False
 
@@ -2768,7 +2778,7 @@ async def test_f2_pending_purge_deletion_fault_restores_committed_terminal_row(
         {"status": "terminal", "limit": 10}
     )
     assert purge_result["confirmation_ids"] == [pending.confirmation_id]
-    assert json.loads(harness._pending_actions_file.read_text(encoding="utf-8")) == []
+    assert _read_pending_rows(harness._pending_actions_file) == []
 
 
 @pytest.mark.asyncio
@@ -3280,7 +3290,7 @@ def test_f1_cancelled_pending_action_keeps_empty_nonce_after_restart(
     harness._pending_actions[pending.confirmation_id] = pending
     harness._pending_by_session[pending.session_id] = [pending.confirmation_id]
     harness._persist_pending_actions()
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["result_id"]
     assert persisted["recovery_authority_mac"].startswith("hmac-sha256:")
     harness._pending_actions = {}
@@ -3320,7 +3330,7 @@ def test_f2_expired_pending_persist_does_not_mint_terminal_recovery_authority(
 
     harness._persist_pending_actions()
 
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["status"] == "pending"
     assert persisted["result_id"] == ""
     assert persisted["recovery_authority_mac"] == ""
@@ -3369,7 +3379,7 @@ def test_f2_sanitized_raw_recovery_marker_cannot_restore_live_pending(
     assert loaded.status_reason == "uncertain_effect_requires_fresh_approval"
     assert loaded.decision_nonce == ""
     assert loaded.recovery_accounting_pending is False
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["recovery_authority_mac"].startswith("hmac-sha256:")
     harness._pending_actions = {}
     harness._pending_by_session = {}
@@ -3397,7 +3407,7 @@ def test_f2_current_contract_blank_nonce_fails_closed(tmp_path: Path) -> None:
     assert loaded.status == "failed"
     assert loaded.status_reason == "approval_contract_mismatch"
     assert loaded.decision_nonce == ""
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["status"] == "failed"
     assert persisted["decision_nonce"] == ""
 
@@ -3431,7 +3441,7 @@ def test_f2_parent_contract_blank_nonce_migration_is_verified_and_rebound(
     assert loaded.approval_envelope is not None
     assert loaded.approval_envelope.approval_contract_hash == pending_approval_contract_hash(loaded)
     assert loaded.approval_envelope_hash == approval_envelope_hash(loaded.approval_envelope)
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["decision_nonce"] == loaded.decision_nonce
     assert persisted["approval_envelope_hash"] == loaded.approval_envelope_hash
 
@@ -3491,7 +3501,7 @@ def test_f2_pending_attempt_identity_recovers_as_outcome_unknown(
     assert loaded.status == "outcome_unknown"
     assert loaded.status_reason == "uncertain_effect_requires_fresh_approval"
     assert loaded.decision_nonce == ""
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["status"] == "outcome_unknown"
     assert persisted["decision_nonce"] == ""
 
@@ -3588,7 +3598,7 @@ def test_f1_legacy_confirmation_alias_migrates_to_distinct_action_identity(
     assert loaded.action_id.startswith("act-")
     assert loaded.action_id != pending.confirmation_id
     assert loaded.followup_id.startswith("followup-")
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["action_id"] == loaded.action_id
     assert persisted["identity"]["action_id"] == loaded.action_id
     assert persisted["followup_id"] == loaded.followup_id
@@ -4555,7 +4565,7 @@ def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_pat
     loaded = harness._pending_actions["c-1"]
     assert loaded.status == "failed"
     assert loaded.status_reason == "approval_envelope_missing"
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     assert persisted[0]["status"] == "failed"
     assert persisted[0]["status_reason"] == "approval_envelope_missing"
 
@@ -4578,7 +4588,7 @@ def test_f1_load_stale_terminalization_does_not_mint_decision_nonce(
     assert loaded.status == "failed"
     assert loaded.status_reason == "approval_envelope_missing"
     assert loaded.decision_nonce == ""
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))[0]
+    persisted = _read_pending_rows(pending_actions_file)[0]
     assert persisted["decision_nonce"] == ""
 
 
@@ -4614,7 +4624,7 @@ def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_pat
     assert harness._pending_actions["c-2"].status_reason == "approved"
     persisted = {
         item["confirmation_id"]: item
-        for item in json.loads(pending_actions_file.read_text(encoding="utf-8"))
+        for item in _read_pending_rows(pending_actions_file)
     }
     assert persisted["c-1"]["status"] == "failed"
     assert persisted["c-1"]["status_reason"] == "confirmation_method_locked_out"
@@ -4650,7 +4660,7 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     loaded = harness._pending_actions["c-1"]
     assert loaded.status == "failed"
     assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_serialized = json.dumps(persisted, sort_keys=True)
     assert "browser-sensitive-token" not in persisted_serialized
     assert persisted[0]["status"] == "failed"
@@ -4757,7 +4767,7 @@ def test_gh33_pending_sensitive_browser_text_redacts_persisted_payload(tmp_path)
     loaded_raw = raw_harness._pending_actions["c-raw"]
     assert loaded_raw.status == "failed"
     assert loaded_raw.status_reason == "sensitive_confirmation_secret_unavailable"
-    raw_persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    raw_persisted = _read_pending_rows(pending_actions_file)
     raw_persisted_serialized = json.dumps(raw_persisted, sort_keys=True)
     assert "raw-upgrade-token" not in raw_persisted_serialized
     assert raw_persisted[0]["arguments"]["text"] == "[sensitive text redacted]"
@@ -4810,7 +4820,7 @@ def test_gh34_pending_sensitive_browser_text_alias_redacts_persisted_payload(
     loaded = harness._pending_actions[f"c-raw-{tool_name}"]
     assert loaded.status == "failed"
     assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_serialized = json.dumps(persisted, sort_keys=True)
     assert "browser-alias-raw-secret" not in persisted_serialized
     assert persisted[0]["arguments"]["text"] == "[sensitive text redacted]"
@@ -4863,7 +4873,7 @@ def test_gh33_pending_sensitive_mixed_sibling_uses_public_payload(tmp_path) -> N
     loaded = harness._pending_actions["c-1"]
     assert loaded.status == "failed"
     assert loaded.status_reason == "sensitive_confirmation_secret_unavailable"
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_serialized = json.dumps(persisted, sort_keys=True)
     assert "mixed-browser-secret" not in persisted_serialized
     assert "secret.example" not in persisted_serialized
@@ -4925,7 +4935,7 @@ def test_gh33_load_pending_actions_fails_legacy_mixed_sensitive_sibling(tmp_path
     assert loaded_sibling.public_arguments == {}
     assert loaded_sibling.sensitive_public_payload is True
 
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_by_id = {item["confirmation_id"]: item for item in persisted}
     persisted_serialized = json.dumps(persisted, sort_keys=True)
     assert "legacy-mixed-secret" not in persisted_serialized
@@ -4986,7 +4996,7 @@ def test_gh33_load_pending_actions_fails_blank_task_legacy_sibling_on_raw_value(
     assert loaded_sibling.status_reason == "sensitive_confirmation_secret_unavailable"
     assert loaded_sibling.arguments == {}
 
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_serialized = json.dumps(persisted, sort_keys=True)
     assert "legacy-blank-task-secret" not in persisted_serialized
 
@@ -5039,7 +5049,7 @@ def test_gh33_load_pending_actions_fails_blank_task_legacy_sibling_on_escaped_va
     assert loaded_sibling.status_reason == "sensitive_confirmation_secret_unavailable"
     assert loaded_sibling.arguments == {}
 
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_by_id = {item["confirmation_id"]: item for item in persisted}
     assert persisted_by_id["c-shell"]["arguments"] == {}
 
@@ -5146,7 +5156,7 @@ def test_gh33_load_pending_actions_preserves_unrelated_blank_task_sibling(
     assert loaded_sibling.public_arguments is None
     assert loaded_sibling.sensitive_public_payload is False
 
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     persisted_by_id = {item["confirmation_id"]: item for item in persisted}
     assert persisted_by_id["c-shell"]["status"] == "pending"
     assert persisted_by_id["c-shell"]["arguments"] == {"command": ["echo", "ordinary-value"]}
@@ -5179,7 +5189,7 @@ def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_pat
 
     loaded = harness._pending_actions["c-1"]
     assert loaded.strip_direct_tool_execute_envelope_keys is True
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     assert persisted[0]["strip_direct_tool_execute_envelope_keys"] is True
 
 
@@ -5197,7 +5207,7 @@ def test_a1_load_pending_actions_backfills_legacy_channel_principal(tmp_path) ->
 
     loaded = harness._pending_actions["c-1"]
     assert loaded.allowed_channel_principals == ["alice"]
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     assert persisted[0]["allowed_channel_principals"] == ["alice"]
 
 
@@ -5226,7 +5236,7 @@ def test_a1_load_pending_actions_fails_legacy_channel_pending_without_principal(
     assert capability["can_collect_selected_method"] is False
     assert capability["can_carry"] is False
     assert capability["can_carry_required_proof_tier"] is False
-    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    persisted = _read_pending_rows(pending_actions_file)
     assert persisted[0]["status"] == "failed"
     assert persisted[0]["status_reason"] == "channel_principal_unavailable"
 

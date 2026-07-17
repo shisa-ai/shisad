@@ -205,6 +205,32 @@ class SecurityDashboard:
             ),
         }
 
+    def reset_state(self) -> int:
+        """Durably clear false-positive marks and all rollback/load metadata."""
+
+        mark_count = len(self._marks)
+        if self._marks_path is None:
+            self._marks = {}
+            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+            self._persistence_degradation = None
+            return mark_count
+        try:
+            atomic_write_bytes(
+                self._marks_path,
+                encode_versioned_json_snapshot({}, version=_DASHBOARD_MARKS_VERSION),
+                fault_injector=self._state_fault_injector,
+            )
+        except AtomicWriteError as exc:
+            self._persistence_degradation = exc
+            raise
+        self._marks = {}
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_DASHBOARD_MARKS_VERSION,
+        )
+        self._persistence_degradation = None
+        return mark_count
+
     def _load_marks(self) -> None:
         if self._marks_path is None:
             return

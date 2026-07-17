@@ -232,6 +232,7 @@ class ControlPlaneEngine:
             "network": self._network_monitor.state_status(),
             "audit": self._audit_log.state_status(),
         }
+
         problems = [
             str(problem)
             for domain in domains.values()
@@ -253,6 +254,16 @@ class ControlPlaneEngine:
                 if degraded
                 else ""
             ),
+        }
+
+    def reset_state(self) -> dict[str, int]:
+        """Reset every retained control-plane authority for test isolation."""
+
+        return {
+            "history_records": self._history_store.reset_state(),
+            "trace_plans": self._trace_verifier.reset_state(),
+            "network_baselines": self._network_monitor.reset_state(),
+            "audit_entries": self._audit_log.reset_state(),
         }
 
     def begin_precontent_plan(

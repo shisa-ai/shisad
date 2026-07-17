@@ -29,6 +29,16 @@ from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
 
 
+def _write_owner_only_bytes(path: Path, payload: bytes) -> None:
+    path.write_bytes(payload)
+    path.chmod(0o600)
+
+
+def _write_owner_only_text(path: Path, payload: str) -> None:
+    path.write_text(payload, encoding="utf-8")
+    path.chmod(0o600)
+
+
 class _PlannerStub:
     def __init__(self) -> None:
         self.defaults: list[tuple[str, str]] = []
@@ -320,7 +330,7 @@ def test_f3_selfmod_corrupt_inventory_is_retained_and_blocks_runtime(
     selfmod_root.mkdir()
     inventory_path = selfmod_root / "inventory.yaml"
     corrupt_bytes = b'{"version":1,"payload":'
-    inventory_path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(inventory_path, corrupt_bytes)
     registry = ToolRegistry()
     skill_manager = SkillManager(
         storage_dir=tmp_path / "skills-state",
@@ -388,7 +398,7 @@ def test_f3_selfmod_recursive_inventory_is_typed_and_retained(
     selfmod_root = tmp_path / "selfmod"
     selfmod_root.mkdir()
     inventory_path = selfmod_root / "inventory.yaml"
-    inventory_path.write_bytes(recursive_bytes)
+    _write_owner_only_bytes(inventory_path, recursive_bytes)
 
     manager, planner = _build_manager(
         tmp_path,
@@ -438,7 +448,7 @@ def test_f3_selfmod_inventory_shape_failures_are_typed_and_retained(
     root = tmp_path / "selfmod"
     root.mkdir()
     inventory_path = root / "inventory.yaml"
-    inventory_path.write_bytes(snapshot)
+    _write_owner_only_bytes(inventory_path, snapshot)
 
     manager, planner = _build_manager(
         tmp_path,
@@ -472,6 +482,33 @@ def test_f3_selfmod_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -
     assert inventory_path.is_symlink()
 
 
+@pytest.mark.parametrize("unsafe_shape", ["mode", "hardlink"])
+def test_f3_selfmod_inventory_reopen_rejects_unsafe_file(
+    tmp_path: Path,
+    unsafe_shape: str,
+) -> None:
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+    inventory_path = manager._inventory_path
+    retained = inventory_path.read_bytes()
+    if unsafe_shape == "mode":
+        inventory_path.chmod(0o640)
+    else:
+        os.link(inventory_path, tmp_path / "selfmod-inventory-alias")
+
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.inventory_load_result().reason == "inventory_read_failed"
+    assert restarted_planner.defaults == []
+    assert inventory_path.read_bytes() == retained
+
+
 def test_f3_selfmod_symlinked_root_never_loads_or_mutates_external_domain(
     tmp_path: Path,
 ) -> None:
@@ -501,7 +538,7 @@ def test_f3_selfmod_legacy_inventory_migrates_with_owner_only_modes(
     root = tmp_path / "selfmod"
     root.mkdir()
     inventory_path = root / "inventory.yaml"
-    inventory_path.write_text("skills: {}\nbehavior_packs: {}\n", encoding="utf-8")
+    _write_owner_only_text(inventory_path, "skills: {}\nbehavior_packs: {}\n")
     previous_umask = os.umask(0)
     try:
         manager, _planner = _build_manager(
@@ -600,7 +637,7 @@ def test_f3_selfmod_corrupt_control_record_is_retained_and_not_missing(
         else manager._change_path(record_id)
     )
     corrupt_bytes = b'{"version":1,"payload":'
-    path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(path, corrupt_bytes)
 
     result = (
         manager.apply(record_id, confirm=True)
@@ -625,7 +662,7 @@ def test_f3_selfmod_corrupt_incident_is_retained_and_actionable(tmp_path: Path) 
         allowed_signers_path=tmp_path / "allowed_signers",
     )
     corrupt_bytes = b'{"version":1,"payload":'
-    manager._incident_path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(manager._incident_path, corrupt_bytes)
 
     status_payload = manager.status()
 
@@ -643,7 +680,7 @@ def test_f3_selfmod_future_proposal_is_retained_and_not_missing(tmp_path: Path) 
     proposal_id = "b" * 32
     path = manager._proposal_path(proposal_id)
     snapshot = encode_versioned_json_snapshot({}, version=99)
-    path.write_bytes(snapshot)
+    _write_owner_only_bytes(path, snapshot)
 
     result = manager.apply(proposal_id, confirm=True)
 
@@ -670,7 +707,7 @@ def test_f3_selfmod_legacy_raw_proposal_with_artifact_version_remains_readable(
     proposal = manager.propose(artifact)
     proposal_path = manager._proposal_path(proposal.proposal_id)
     envelope = json.loads(proposal_path.read_text(encoding="utf-8"))
-    proposal_path.write_text(json.dumps(envelope["payload"]), encoding="utf-8")
+    _write_owner_only_text(proposal_path, json.dumps(envelope["payload"]))
 
     preview = manager.apply(proposal.proposal_id, confirm=False)
 
@@ -709,7 +746,7 @@ def test_f3_selfmod_semantically_invalid_proposal_is_retained_as_corrupt(
     else:
         payload["unexpected"] = True
     snapshot = encode_versioned_json_snapshot(payload, version=1)
-    path.write_bytes(snapshot)
+    _write_owner_only_bytes(path, snapshot)
 
     result = manager.apply(proposal.proposal_id, confirm=True)
 
@@ -750,7 +787,7 @@ def test_f3_selfmod_semantically_invalid_change_is_retained_as_corrupt(
     else:
         payload["unexpected"] = True
     snapshot = encode_versioned_json_snapshot(payload, version=1)
-    path.write_bytes(snapshot)
+    _write_owner_only_bytes(path, snapshot)
 
     result = manager.rollback(applied.change_id)
 

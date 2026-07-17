@@ -355,6 +355,50 @@ def remove_owner_controlled_directory_contents(
             os.close(parent_fd)
 
 
+def remove_owner_controlled_file_entries(
+    directory: Path,
+    names: tuple[str, ...],
+    *,
+    expected_directory_identity: tuple[int, int] | None = None,
+) -> int:
+    """Remove selected non-directory entries through one verified directory fd."""
+
+    for name in names:
+        if not name or Path(name).name != name or name in {".", ".."}:
+            raise ValueError("state reset names must be single path components")
+    absolute = _absolute_normalized_path(directory)
+    directory_fd = -1
+    try:
+        _absolute, directory_fd, _created = _open_directory_chain(
+            absolute,
+            create=False,
+        )
+        directory_stat = os.fstat(directory_fd)
+        directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
+        if (
+            expected_directory_identity is not None
+            and directory_identity != expected_directory_identity
+        ):
+            raise OSError(f"state reset directory identity changed: {absolute}")
+        removed = 0
+        for name in names:
+            try:
+                entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(entry_stat.st_mode):
+                raise OSError(f"state reset refuses directory entry: {absolute / name}")
+            os.unlink(name, dir_fd=directory_fd)
+            removed += 1
+        if removed:
+            os.fsync(directory_fd)
+        _verify_directory_path_identity(absolute, expected=directory_identity)
+        return removed
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+
+
 def _validate_sibling_cleanup_prefix(name_prefix: str) -> None:
     if not name_prefix or Path(name_prefix).name != name_prefix:
         raise ValueError("sibling cleanup prefix must be one path component")
@@ -376,13 +420,18 @@ def _remove_sibling_entries_fd(parent_fd: int, *, name_prefix: str) -> int:
     return len(matches)
 
 
-def _verify_directory_path_identity(path: Path, *, expected: tuple[int, int]) -> None:
+def _verify_directory_path_identity(
+    path: Path,
+    *,
+    expected: tuple[int, int],
+    require_safe_ancestry: bool = False,
+) -> None:
     current_fd = -1
     try:
         _absolute, current_fd, _created = _open_directory_chain(
             path,
             create=False,
-            require_safe_ancestry=True,
+            require_safe_ancestry=require_safe_ancestry,
         )
         current_stat = os.fstat(current_fd)
         if (current_stat.st_dev, current_stat.st_ino) != expected:
@@ -790,7 +839,11 @@ def atomic_write_bytes(
                 parent_fd,
                 name_prefix=cleanup_sibling_prefix,
             )
-        _verify_directory_path_identity(parent, expected=parent_identity)
+        _verify_directory_path_identity(
+            parent,
+            expected=parent_identity,
+            require_safe_ancestry=require_safe_parent_ancestry,
+        )
     except AtomicWriteError:
         raise
     except OSError as exc:

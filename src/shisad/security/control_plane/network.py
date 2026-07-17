@@ -6,7 +6,6 @@ import asyncio
 import fnmatch
 import json
 import logging
-import stat
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -25,6 +24,7 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    read_owner_only_regular_file,
 )
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.security.control_plane.schema import Origin, RiskTier, risk_rank
@@ -137,6 +137,31 @@ class BaselineDatabase:
             ),
         }
 
+    def reset_state(self) -> int:
+        """Durably replace the learned baseline with an empty snapshot."""
+
+        cleared = len(self._entries)
+        if self._storage_path is not None:
+            try:
+                atomic_write_bytes(
+                    self._storage_path,
+                    encode_versioned_json_snapshot(
+                        {},
+                        version=_NETWORK_BASELINE_STATE_VERSION,
+                    ),
+                    fault_injector=self._state_fault_injector,
+                )
+            except AtomicWriteError as exc:
+                self._persistence_degradation = exc
+                raise
+        self._entries.clear()
+        self._persistence_degradation = None
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_NETWORK_BASELINE_STATE_VERSION,
+        )
+        return cleared
+
     def key_for(self, origin: Origin, host: str) -> str:
         skill = origin.skill_name or "none"
         user = origin.user_id or "anonymous"
@@ -232,28 +257,14 @@ class BaselineDatabase:
         if self._storage_path is None:
             return
         try:
-            target_stat = self._storage_path.lstat()
-        except FileNotFoundError:
-            return
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="network_baseline_stat_failed",
-            )
-            return
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_network_baseline_target",
-            )
-            return
-        try:
-            raw_bytes = self._storage_path.read_bytes()
+            raw_bytes = read_owner_only_regular_file(self._storage_path)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="network_baseline_read_failed",
             )
+            return
+        if raw_bytes is None:
             return
         try:
             raw_payload = json.loads(raw_bytes.decode("utf-8"))
@@ -353,6 +364,12 @@ class NetworkIntelligenceMonitor:
 
     def state_status(self) -> dict[str, Any]:
         return self._baseline_db.state_status()
+
+    def reset_state(self) -> int:
+        cleared = self._baseline_db.reset_state()
+        self._cache.clear()
+        self._recent.clear()
+        return cleared
 
     async def evaluate(
         self,

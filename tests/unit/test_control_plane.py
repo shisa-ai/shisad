@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,16 @@ def _origin(session_id: str = "s1") -> Origin:
         actor="planner",
         trust_level="untrusted",
     )
+
+
+def _write_owner_only_bytes(path: Path, payload: bytes) -> None:
+    path.write_bytes(payload)
+    path.chmod(0o600)
+
+
+def _write_owner_only_text(path: Path, payload: str) -> None:
+    path.write_text(payload, encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _append_recent_memory_read_burst(
@@ -2967,7 +2978,7 @@ def test_m5_rt8_history_load_logs_malformed_records(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     history_path = tmp_path / "history.jsonl"
-    history_path.write_text("{not-json}\n", encoding="utf-8")
+    _write_owner_only_text(history_path, "{not-json}\n")
     caplog.set_level("WARNING", logger="shisad.security.control_plane.history")
     history = SessionActionHistoryStore(history_path)
     assert history.state_load_result.status == StateLoadStatus.CORRUPT
@@ -3314,7 +3325,7 @@ def test_f3_control_plane_history_corruption_is_retained_and_blocks_append(
         tool_name="file.read",
     )
     corrupt_bytes = (valid.model_dump_json() + "\n{not-json}\n").encode()
-    path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(path, corrupt_bytes)
 
     history = SessionActionHistoryStore(path)
 
@@ -3370,7 +3381,7 @@ def test_f3_control_plane_trace_corruption_and_future_schema_fail_closed(
     path = tmp_path / "control_plane" / "plans.json"
     path.parent.mkdir(parents=True)
     corrupt_bytes = b'{"version":1,"payload":'
-    path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(path, corrupt_bytes)
 
     corrupt = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
     assert corrupt.state_load_result.status == StateLoadStatus.CORRUPT
@@ -3383,7 +3394,7 @@ def test_f3_control_plane_trace_corruption_and_future_schema_fail_closed(
     assert path.read_bytes() == corrupt_bytes
 
     future_bytes = encode_versioned_json_snapshot({}, version=99)
-    path.write_bytes(future_bytes)
+    _write_owner_only_bytes(path, future_bytes)
     future = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
     assert future.state_load_result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
     assert future.active_plan("s-trace") is None
@@ -3402,7 +3413,7 @@ def test_f3_control_plane_trace_recursive_snapshot_is_typed_and_retained(
         + (b"]" * 10000)
         + b"}"
     )
-    path.write_bytes(recursive_bytes)
+    _write_owner_only_bytes(path, recursive_bytes)
 
     trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
 
@@ -3422,10 +3433,7 @@ def test_f3_control_plane_trace_legacy_migrates_and_fault_retains_live_view(
     )
     path = tmp_path / "control_plane" / "plans.json"
     path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps({"s-trace": plan.model_dump(mode="json")}),
-        encoding="utf-8",
-    )
+    _write_owner_only_text(path, json.dumps({"s-trace": plan.model_dump(mode="json")}))
     trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
     assert trace.state_load_result.status == StateLoadStatus.OK
     assert trace.state_load_result.legacy is True
@@ -3466,7 +3474,7 @@ def test_f3_control_plane_trace_rejects_negative_persisted_counters(
         if versioned
         else (json.dumps(payload) + "\n").encode()
     )
-    path.write_bytes(raw_bytes)
+    _write_owner_only_bytes(path, raw_bytes)
 
     trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
 
@@ -3481,7 +3489,7 @@ def test_f3_control_plane_network_corruption_disables_learning_without_authority
     path = tmp_path / "control_plane" / "network_baseline.json"
     path.parent.mkdir(parents=True)
     corrupt_bytes = b'{"version":1,"payload":'
-    path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(path, corrupt_bytes)
     baseline = BaselineDatabase(str(path))
     metadata = extract_network_metadata(
         origin=_origin("s-network"),
@@ -3553,7 +3561,7 @@ def test_f3_control_plane_network_legacy_migrates_and_future_schema_is_retained(
         "count": 1,
         "average_request_size": 128.0,
     }
-    path.write_text(json.dumps({"ws:user:none:api.example.com": legacy_entry}))
+    _write_owner_only_text(path, json.dumps({"ws:user:none:api.example.com": legacy_entry}))
 
     legacy = BaselineDatabase(str(path))
 
@@ -3564,7 +3572,7 @@ def test_f3_control_plane_network_legacy_migrates_and_future_schema_is_retained(
     assert "checksum" in migrated
 
     future_bytes = encode_versioned_json_snapshot({}, version=99)
-    path.write_bytes(future_bytes)
+    _write_owner_only_bytes(path, future_bytes)
     future = BaselineDatabase(str(path))
 
     assert future.state_load_result.status == StateLoadStatus.UNSUPPORTED_SCHEMA
@@ -3592,7 +3600,7 @@ def test_f3_control_plane_network_rejects_negative_persisted_counters(
     raw_bytes = encode_versioned_json_snapshot({"ws:user:none:api.example.com": entry})
     path = tmp_path / "control_plane" / "network_baseline.json"
     path.parent.mkdir(parents=True)
-    path.write_bytes(raw_bytes)
+    _write_owner_only_bytes(path, raw_bytes)
 
     baseline = BaselineDatabase(str(path))
 
@@ -3623,7 +3631,7 @@ def test_f3_control_plane_history_rejects_unknown_protocol_values(
     raw_bytes = (json.dumps(record) + "\n").encode()
     path = tmp_path / "control_plane" / "history.jsonl"
     path.parent.mkdir(parents=True)
-    path.write_bytes(raw_bytes)
+    _write_owner_only_bytes(path, raw_bytes)
 
     history = SessionActionHistoryStore(path)
 
@@ -3653,3 +3661,110 @@ def test_f3_control_plane_engine_state_status_aggregates_domain_failures(
     assert status["domains"]["network"]["fail_closed"] is False
     assert status["domains"]["trace"]["load_status"] == "corrupt"
     assert status["domains"]["audit"]["load_status"] == "corrupt"
+
+
+def _seed_retained_control_plane_state(
+    data_dir: Path,
+    workspace_root: Path,
+) -> tuple[ControlPlaneEngine, Origin]:
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[workspace_root])
+    origin = _origin("s-reset")
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=f"read {workspace_root / 'source.txt'}",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=3,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": str(workspace_root / "source.txt")},
+        origin=origin,
+        workspace_roots=[workspace_root],
+    )
+    engine.record_execution(action=action, success=True, idempotency_key="reset-execution")
+    metadata = extract_network_metadata(
+        origin=origin,
+        tool_name="http.request",
+        destination_host="api.example.com",
+        destination_port=443,
+        protocol="https",
+        request_size=128,
+    )
+    engine._network_monitor._baseline_db.record(
+        metadata=metadata,
+        allow_or_confirmed=True,
+        suspicious=False,
+        lockdown=False,
+    )
+    return engine, origin
+
+
+@pytest.mark.parametrize("domain", ["history", "trace", "network", "audit"])
+@pytest.mark.parametrize("unsafe_shape", ["mode", "hardlink"])
+def test_f3_control_plane_reopen_rejects_unsafe_retained_files(
+    tmp_path: Path,
+    domain: str,
+    unsafe_shape: str,
+) -> None:
+    data_dir = tmp_path / f"unsafe-{domain}-{unsafe_shape}"
+    _engine, _origin_value = _seed_retained_control_plane_state(data_dir, tmp_path)
+    filenames = {
+        "history": "history.jsonl",
+        "trace": "plans.json",
+        "network": "network_baseline.json",
+        "audit": "audit.jsonl",
+    }
+    path = data_dir / "control_plane" / filenames[domain]
+    retained = path.read_bytes()
+    if unsafe_shape == "mode":
+        path.chmod(0o640)
+    else:
+        os.link(path, tmp_path / f"{domain}.alias")
+
+    restarted = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    status = restarted.state_status()["domains"][domain]
+
+    assert status["status"] == "degraded"
+    assert status["load_status"] == "corrupt"
+    assert path.read_bytes() == retained
+
+
+def test_f3_control_plane_reset_publishes_empty_healthy_authorities(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "reset-control-plane"
+    engine, origin = _seed_retained_control_plane_state(data_dir, tmp_path)
+
+    cleared = engine.reset_state()
+
+    assert cleared["history_records"] == 1
+    assert cleared["trace_plans"] == 1
+    assert cleared["network_baselines"] == 1
+    assert cleared["audit_entries"] >= 1
+    restarted = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    assert restarted.state_status()["status"] == "ok"
+    assert restarted.active_plan_hash(origin.session_id) == ""
+    for path in (data_dir / "control_plane").glob("*.json*"):
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_f3_control_plane_reset_recovers_explicitly_from_corrupt_state(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "reset-corrupt-control-plane"
+    control_plane_dir = data_dir / "control_plane"
+    control_plane_dir.mkdir(parents=True)
+    for filename in ("history.jsonl", "plans.json", "network_baseline.json", "audit.jsonl"):
+        _write_owner_only_bytes(control_plane_dir / filename, b'{"torn":')
+    engine = ControlPlaneEngine.build(data_dir=data_dir, workspace_roots=[tmp_path])
+    assert engine.state_status()["status"] == "degraded"
+
+    engine.reset_state()
+
+    assert engine.state_status()["status"] == "ok"
+    assert ControlPlaneEngine.build(
+        data_dir=data_dir,
+        workspace_roots=[tmp_path],
+    ).state_status()["status"] == "ok"

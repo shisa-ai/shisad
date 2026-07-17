@@ -1046,7 +1046,7 @@ class SelfModificationManager:
             )
             return _Inventory()
         try:
-            raw_bytes = read_owned_regular_file(self._inventory_path)
+            raw_bytes = read_owned_regular_file(self._inventory_path, required_mode=0o600)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
@@ -1150,7 +1150,10 @@ class SelfModificationManager:
         if not stat.S_ISREG(target_stat.st_mode):
             return "invalid"
         try:
-            marker = read_owned_regular_file(self._inventory_domain_marker_path)
+            marker = read_owned_regular_file(
+                self._inventory_domain_marker_path,
+                required_mode=0o600,
+            )
         except OSError:
             return "invalid"
         if marker is None:
@@ -1427,7 +1430,7 @@ class SelfModificationManager:
             )
             return None
         try:
-            raw_bytes = read_owned_regular_file(path)
+            raw_bytes = read_owned_regular_file(path, required_mode=0o600)
         except OSError:
             self._record_load_results[record_kind] = StateLoadResult(
                 StateLoadStatus.CORRUPT,

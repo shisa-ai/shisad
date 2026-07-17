@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -13,12 +12,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.atomic_state import (
+    AtomicWriteError,
     DurableAppendError,
     DurableAppendFaultInjector,
     StateLoadResult,
     StateLoadStatus,
     StatePersistenceDegradedError,
+    atomic_write_bytes,
     durable_append_bytes,
+    read_owner_only_regular_file,
 )
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin
 
@@ -84,7 +86,7 @@ class SessionActionHistoryStore:
         self._state_load_result = StateLoadResult(
             StateLoadStatus.OK if storage_path is None else StateLoadStatus.MISSING
         )
-        self._persistence_degradation: DurableAppendError | None = None
+        self._persistence_degradation: AtomicWriteError | DurableAppendError | None = None
         self._state_fault_injector: DurableAppendFaultInjector | None = None
         self._load()
 
@@ -119,6 +121,22 @@ class SessionActionHistoryStore:
                 else ""
             ),
         }
+
+    def reset_state(self) -> int:
+        """Durably publish an empty history and clear its typed degradation."""
+
+        cleared = sum(len(records) for records in self._records.values())
+        if self._storage_path is not None:
+            try:
+                atomic_write_bytes(self._storage_path, b"")
+            except AtomicWriteError as exc:
+                self._persistence_degradation = exc
+                raise
+        self._records.clear()
+        self._idempotent_records.clear()
+        self._persistence_degradation = None
+        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
+        return cleared
 
     def _require_available(self, *, transition: str) -> None:
         if not self.state_degraded:
@@ -299,28 +317,14 @@ class SessionActionHistoryStore:
         if self._storage_path is None:
             return
         try:
-            target_stat = self._storage_path.lstat()
-        except FileNotFoundError:
-            return
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="history_stat_failed",
-            )
-            return
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_history_target",
-            )
-            return
-        try:
-            raw_bytes = self._storage_path.read_bytes()
+            raw_bytes = read_owner_only_regular_file(self._storage_path)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="history_read_failed",
             )
+            return
+        if raw_bytes is None:
             return
         if raw_bytes and not raw_bytes.endswith(b"\n"):
             self._state_load_result = StateLoadResult(

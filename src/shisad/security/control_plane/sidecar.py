@@ -79,6 +79,8 @@ class ControlPlaneGateway(Protocol):
 
     async def state_status(self) -> dict[str, Any]: ...
 
+    async def reset_state(self) -> dict[str, int]: ...
+
     async def begin_precontent_plan(
         self,
         *,
@@ -178,6 +180,10 @@ class _StateStatusResult(BaseModel):
     fail_closed: bool = False
     domains: dict[str, Any] = Field(default_factory=dict)
     remediation: str = ""
+
+
+class _ResetStateResult(BaseModel):
+    cleared: dict[str, int] = Field(default_factory=dict)
 
 
 class _PlanHashResult(BaseModel):
@@ -357,6 +363,14 @@ class _ControlPlaneSidecarHandlers:
     ) -> _StateStatusResult:
         _ = (params, ctx)
         return _StateStatusResult.model_validate(self._engine.state_status())
+
+    async def handle_reset_state(
+        self,
+        params: _EmptyParams,
+        ctx: RequestContext,
+    ) -> _ResetStateResult:
+        _ = (params, ctx)
+        return _ResetStateResult(cleared=self._engine.reset_state())
 
     async def handle_begin_precontent_plan(
         self,
@@ -539,6 +553,14 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             _StateStatusResult,
         )
         return result.model_dump(mode="json")
+
+    async def reset_state(self) -> dict[str, int]:
+        result = await self._call(
+            "control_plane.reset_state",
+            {},
+            _ResetStateResult,
+        )
+        return dict(result.cleared)
 
     async def begin_precontent_plan(
         self,
@@ -842,6 +864,14 @@ async def start_control_plane_sidecar(
     try:
         verify_inherited_daemon_authority_lease(lease, data_dir=data_dir)
         ensure_owner_only_directory(socket_path.parent)
+        pass_fds = tuple(
+            fd for fd in (lease.fd, getattr(lease, "namespace_fd", -1)) if fd >= 0
+        )
+        namespace_args = (
+            ["--authority-namespace-fd", str(lease.namespace_fd)]
+            if getattr(lease, "namespace_fd", -1) >= 0
+            else []
+        )
         spawn_task = asyncio.create_task(
             asyncio.create_subprocess_exec(
                 sys.executable,
@@ -859,12 +889,13 @@ async def start_control_plane_sidecar(
                 str(lease.fd),
                 "--authority-record-path",
                 str(lease.record_path),
+                *namespace_args,
                 *[
                     token
                     for root in (assistant_fs_roots or [])
                     for token in ("--assistant-fs-root", str(root))
                 ],
-                pass_fds=(lease.fd,),
+                pass_fds=pass_fds,
             )
         )
         while True:
@@ -979,6 +1010,11 @@ async def _run_claimed_sidecar(
         params_model=_EmptyParams,
     )
     server.register_method(
+        "control_plane.reset_state",
+        cast(Any, handlers.handle_reset_state),
+        params_model=_EmptyParams,
+    )
+    server.register_method(
         "control_plane.begin_precontent_plan",
         cast(Any, handlers.handle_begin_precontent_plan),
         params_model=_BeginPrecontentPlanParams,
@@ -1078,6 +1114,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--parent-pid", type=int, default=0)
     parser.add_argument("--authority-lease-fd", type=int, required=True)
     parser.add_argument("--authority-record-path", required=True)
+    parser.add_argument("--authority-namespace-fd", type=int, default=-1)
     parser.add_argument("--assistant-fs-root", action="append", default=[])
     return parser.parse_args(argv)
 
@@ -1094,6 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
                 authority_lease=DaemonAuthorityLease(
                     fd=int(args.authority_lease_fd),
                     record_path=Path(args.authority_record_path),
+                    namespace_fd=int(args.authority_namespace_fd),
                 ),
                 assistant_fs_roots=[Path(item) for item in args.assistant_fs_root],
             )

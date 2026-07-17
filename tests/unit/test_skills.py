@@ -49,6 +49,16 @@ from shisad.skills.manager import InstalledSkill, SkillManager
 from shisad.skills.signatures import KeyRing, SigningKey
 
 
+def _write_owner_only_bytes(path: Path, payload: bytes) -> None:
+    path.write_bytes(payload)
+    path.chmod(0o600)
+
+
+def _write_owner_only_text(path: Path, payload: str) -> None:
+    path.write_text(payload, encoding="utf-8")
+    path.chmod(0o600)
+
+
 def _manifest_payload(
     *,
     name: str = "calendar-helper",
@@ -732,7 +742,7 @@ def test_f3_skill_inventory_corruption_is_retained_and_blocks_registration(
     storage.mkdir()
     inventory_path = storage / "inventory.json"
     corrupt_bytes = b'{"version":1,"payload":'
-    inventory_path.write_bytes(corrupt_bytes)
+    _write_owner_only_bytes(inventory_path, corrupt_bytes)
     registry = ToolRegistry()
     skill = _f3_skill_with_tool(tmp_path)
 
@@ -801,6 +811,28 @@ def test_f3_skill_inventory_symlink_is_retained_and_rejected(tmp_path: Path) -> 
     assert target.read_bytes() == encode_versioned_json_snapshot([], version=1)
 
 
+@pytest.mark.parametrize("unsafe_shape", ["mode", "hardlink"])
+def test_f3_skill_inventory_reopen_rejects_unsafe_file(
+    tmp_path: Path,
+    unsafe_shape: str,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    SkillManager(storage_dir=storage).activate_bundle(skill)
+    inventory_path = storage / "inventory.json"
+    retained = inventory_path.read_bytes()
+    if unsafe_shape == "mode":
+        inventory_path.chmod(0o640)
+    else:
+        os.link(inventory_path, tmp_path / "inventory-alias.json")
+
+    restarted = SkillManager(storage_dir=storage, tool_registry=ToolRegistry())
+
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.inventory_load_result().reason == "inventory_read_failed"
+    assert inventory_path.read_bytes() == retained
+
+
 def test_f3_skill_inventory_symlinked_root_ancestor_never_activates_external_tools(
     tmp_path: Path,
 ) -> None:
@@ -846,7 +878,7 @@ def test_f3_current_skill_inventory_requires_explicit_tool_binding_map(
         ],
         version=1,
     )
-    inventory_path.write_bytes(snapshot)
+    _write_owner_only_bytes(inventory_path, snapshot)
 
     manager = SkillManager(storage_dir=storage)
 
@@ -878,7 +910,7 @@ def test_f3_current_skill_inventory_requires_exact_nonblank_declared_tool_bindin
             "removed-tool": "stale-binding",
         }
     snapshot = encode_versioned_json_snapshot(payload, version=1)
-    inventory_path.write_bytes(snapshot)
+    _write_owner_only_bytes(inventory_path, snapshot)
 
     manager = SkillManager(storage_dir=storage)
 
@@ -946,7 +978,7 @@ def test_f3_skill_inventory_shape_failures_are_typed_and_retained(
     storage = tmp_path / "state"
     storage.mkdir()
     inventory_path = storage / "inventory.json"
-    inventory_path.write_bytes(snapshot)
+    _write_owner_only_bytes(inventory_path, snapshot)
 
     manager = SkillManager(storage_dir=storage)
 
@@ -995,10 +1027,7 @@ def test_f3_legacy_skill_inventory_loads_and_migrates_on_revoke(tmp_path: Path) 
         author="trusted-dev",
     )
     inventory_path = storage / "inventory.json"
-    inventory_path.write_text(
-        json.dumps([legacy.model_dump(mode="json")]),
-        encoding="utf-8",
-    )
+    _write_owner_only_text(inventory_path, json.dumps([legacy.model_dump(mode="json")]))
     manager = SkillManager(storage_dir=storage)
 
     assert manager.inventory_load_result().legacy is True
@@ -1034,7 +1063,7 @@ def test_f3_unrelated_mutation_preserves_hashless_legacy_tool_binding_marker(
         )
     ]
     inventory_path = storage / "inventory.json"
-    inventory_path.write_text(json.dumps(legacy_entries), encoding="utf-8")
+    _write_owner_only_text(inventory_path, json.dumps(legacy_entries))
     manager = SkillManager(storage_dir=storage)
 
     manager.revoke(skill_name="legacy-first", reason="unrelated")

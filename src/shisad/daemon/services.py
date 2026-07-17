@@ -1276,6 +1276,11 @@ class DaemonServices:
             cleared["scheduler_pending_confirmations"],
         ) = self.scheduler.reset_state()
 
+        # -- Control-plane retained state (owned by the sidecar) --
+        control_plane_cleared = await self.control_plane.reset_state()
+        for authority, count in control_plane_cleared.items():
+            cleared[f"control_plane_{authority}"] = count
+
         # -- Memory --
         self._reset_memory_surfaces_for_test(cleared)
 

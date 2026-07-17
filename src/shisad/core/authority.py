@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
 import json
 import logging
 import os
+import socket
 import stat
 import time
 import uuid
@@ -24,6 +26,7 @@ _CLAIM_PREFIX = "claim-"
 _CLAIM_SUFFIX = ".json"
 _MAX_CLAIM_BYTES = 256 * 1024
 _MAX_MATCHING_ARTIFACTS = 4096
+_NAMESPACE_GUARD_TIMEOUT_SECONDS = 5.0
 _EXTERNAL_FILE_ROLES = frozenset({"approval_factor_store", "soul"})
 _TREE_ROLES = frozenset({"config_backup_root", "data_root"})
 _BASELINE_ROLES = frozenset({*_TREE_ROLES, "control_socket", *_EXTERNAL_FILE_ROLES})
@@ -81,18 +84,20 @@ class DaemonAuthorityLease:
 
     fd: int
     record_path: Path
+    namespace_fd: int = -1
 
     @property
     def closed(self) -> bool:
         return self.fd < 0
 
     def close(self) -> None:
-        if self.fd < 0:
-            return
-        fd = self.fd
-        self.fd = -1
-        with suppress(OSError):
-            os.close(fd)
+        for attribute in ("fd", "namespace_fd"):
+            fd = getattr(self, attribute)
+            if fd < 0:
+                continue
+            setattr(self, attribute, -1)
+            with suppress(OSError):
+                os.close(fd)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,18 +118,26 @@ class _SiblingPattern:
 class DaemonAuthorityClaim:
     """A process-lifetime claim held by an open, exclusively locked record."""
 
-    __slots__ = ("_candidates", "_fd", "_record_path", "_registry_root")
+    __slots__ = (
+        "_candidates",
+        "_fd",
+        "_namespace_socket",
+        "_record_path",
+        "_registry_root",
+    )
 
     def __init__(
         self,
         *,
         candidates: tuple[DaemonAuthorityCandidate, ...],
         fd: int,
+        namespace_socket: socket.socket,
         record_path: Path,
         registry_root: Path,
     ) -> None:
         self._candidates = candidates
         self._fd: int | None = fd
+        self._namespace_socket: socket.socket | None = namespace_socket
         self._record_path = record_path
         self._registry_root = registry_root
 
@@ -153,6 +166,15 @@ class DaemonAuthorityClaim:
             raise AuthorityClaimError("daemon authority claim record is unavailable") from exc
         if (record_stat.st_dev, record_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
             raise AuthorityClaimError("daemon authority claim record identity changed")
+        namespace_socket = self._namespace_socket
+        if namespace_socket is None:
+            raise AuthorityClaimError("daemon authority claim namespace is unavailable")
+        _verify_bound_namespace_socket(
+            namespace_socket.fileno(),
+            root=self._registry_root,
+            record_path=self._record_path,
+            error_type=AuthorityClaimError,
+        )
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -198,10 +220,27 @@ class DaemonAuthorityClaim:
             fd = self._fd
             if fd is None:
                 raise AuthorityClaimError("daemon authority claim has already been released")
+            namespace_socket = self._namespace_socket
+            if namespace_socket is None:
+                raise AuthorityClaimError("daemon authority claim namespace is unavailable")
             return DaemonAuthorityLease(
                 fd=os.dup(fd),
                 record_path=self._record_path,
+                namespace_fd=os.dup(namespace_socket.fileno()),
             )
+
+    def _discard_descriptors(self) -> None:
+        """Close a claim that could not cross its registry transaction boundary."""
+
+        fd = self._fd
+        self._fd = None
+        if fd is not None:
+            with suppress(OSError):
+                os.close(fd)
+        namespace_socket = self._namespace_socket
+        self._namespace_socket = None
+        if namespace_socket is not None:
+            namespace_socket.close()
 
     def release(self) -> None:
         """Release this reference and remove its record after inherited holders."""
@@ -210,6 +249,8 @@ class DaemonAuthorityClaim:
         if fd is None:
             return
         self._fd = None
+        namespace_socket = self._namespace_socket
+        self._namespace_socket = None
         cleanup_error: OSError | AuthorityRegistryError | None = None
         fd_open = True
         try:
@@ -256,6 +297,9 @@ class DaemonAuthorityClaim:
                                 raise AuthorityRegistryError(
                                     "daemon authority claim record identity changed during release"
                                 )
+                            if namespace_socket is not None:
+                                namespace_socket.close()
+                                namespace_socket = None
                             self._record_path.unlink()
                             _fsync_directory(self._registry_root)
                     finally:
@@ -265,6 +309,8 @@ class DaemonAuthorityClaim:
         finally:
             if fd_open:
                 os.close(fd)
+            if namespace_socket is not None:
+                namespace_socket.close()
         if cleanup_error is not None:
             raise AuthorityRegistryError(
                 "failed to clean daemon authority claim"
@@ -477,6 +523,154 @@ def _registry_root() -> Path:
     return Path("/tmp") / f"shisad-authority-{os.getuid()}"
 
 
+def _registry_path_token(root: Path) -> str:
+    lexical = os.path.abspath(os.fspath(root.expanduser()))
+    return _identity_token(lexical, length=12)
+
+
+def _namespace_prefix(root: Path) -> str:
+    return f"shisad-authority-v3-{os.getuid()}-{_registry_path_token(root)}"
+
+
+def _namespace_guard_name(root: Path) -> str:
+    return f"\0{_namespace_prefix(root)}-guard"
+
+
+def _identity_token(*values: object, length: int) -> str:
+    payload = ":".join(str(value) for value in values).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:length]
+
+
+def _registry_identity_token(path_stat: os.stat_result) -> str:
+    return _identity_token(path_stat.st_dev, path_stat.st_ino, length=16)
+
+
+def _claim_identity_token(path: Path, path_stat: os.stat_result) -> str:
+    return _identity_token(path.name, path_stat.st_dev, path_stat.st_ino, length=24)
+
+
+def _claim_namespace_name(
+    root: Path,
+    root_stat: os.stat_result,
+    record_path: Path,
+    record_stat: os.stat_result,
+) -> str:
+    return (
+        f"\0{_namespace_prefix(root)}-marker-"
+        f"{_registry_identity_token(root_stat)}-"
+        f"{_claim_identity_token(record_path, record_stat)}"
+    )
+
+
+def _bind_abstract_socket(name: str) -> socket.socket:
+    namespace_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        namespace_socket.bind(name)
+    except BaseException:
+        namespace_socket.close()
+        raise
+    return namespace_socket
+
+
+def _active_namespace_markers(root: Path) -> set[tuple[str, str]]:
+    proc_path = Path("/proc/net/unix")
+    marker_prefix = f"@{_namespace_prefix(root)}-marker-"
+    try:
+        rows = proc_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise AuthorityRegistryError(
+            "cannot inspect non-detachable authority namespace"
+        ) from exc
+    markers: set[tuple[str, str]] = set()
+    for row in rows:
+        fields = row.split()
+        if not fields:
+            continue
+        name = fields[-1]
+        if not name.startswith(marker_prefix):
+            continue
+        suffix = name.removeprefix(marker_prefix)
+        root_token, separator, claim_token = suffix.partition("-")
+        if (
+            not separator
+            or len(root_token) != 16
+            or len(claim_token) != 24
+            or not all(character in "0123456789abcdef" for character in root_token)
+            or not all(character in "0123456789abcdef" for character in claim_token)
+        ):
+            raise AuthorityRegistryError("authority namespace marker is malformed")
+        markers.add((root_token, claim_token))
+    return markers
+
+
+def _validate_namespace_markers(root: Path) -> None:
+    try:
+        root_stat = root.lstat()
+    except OSError as exc:
+        raise AuthorityRegistryError("authority registry namespace is unavailable") from exc
+    root_token = _registry_identity_token(root_stat)
+    markers = _active_namespace_markers(root)
+    if any(marker_root != root_token for marker_root, _claim in markers):
+        raise AuthorityRegistryError("authority registry namespace identity changed")
+
+    file_tokens: set[str] = set()
+    locked_tokens: set[str] = set()
+    for path in sorted(root.glob(f"{_CLAIM_PREFIX}*{_CLAIM_SUFFIX}")):
+        try:
+            fd = _open_owner_file(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise AuthorityRegistryError(
+                "cannot inspect authority claim namespace"
+            ) from exc
+        try:
+            path_stat = path.lstat()
+            fd_stat = os.fstat(fd)
+            if (path_stat.st_dev, path_stat.st_ino) != (fd_stat.st_dev, fd_stat.st_ino):
+                raise AuthorityRegistryError("authority claim namespace identity changed")
+            token = _claim_identity_token(path, path_stat)
+            file_tokens.add(token)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise AuthorityRegistryError(
+                        "cannot inspect authority claim namespace lock"
+                    ) from exc
+                locked_tokens.add(token)
+        finally:
+            os.close(fd)
+
+    marker_tokens = {claim_token for _marker_root, claim_token in markers}
+    if not marker_tokens.issubset(file_tokens) or not locked_tokens.issubset(marker_tokens):
+        raise AuthorityRegistryError("authority claim namespace identity changed")
+
+
+def _verify_bound_namespace_socket(
+    namespace_fd: int,
+    *,
+    root: Path,
+    record_path: Path,
+    error_type: type[AuthorityRegistryError] | type[AuthorityClaimError],
+) -> None:
+    try:
+        root_stat = root.lstat()
+        record_stat = record_path.lstat()
+        duplicate = socket.fromfd(namespace_fd, socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            bound_name = duplicate.getsockname()
+        finally:
+            duplicate.close()
+    except OSError as exc:
+        raise error_type("daemon authority namespace is unavailable") from exc
+    if isinstance(bound_name, bytes):
+        bound_name = os.fsdecode(bound_name)
+    expected = _claim_namespace_name(root, root_stat, record_path, record_stat)
+    if bound_name != expected:
+        raise error_type("daemon authority namespace identity changed")
+
+
 def _validate_registry_directory(path: Path) -> None:
     try:
         path_stat = path.lstat()
@@ -532,17 +726,33 @@ def _open_owner_file(path: Path, *, create: bool = False, exclusive: bool = Fals
 
 @contextmanager
 def _registry_guard(root: Path) -> Iterator[None]:
-    _ensure_registry_root(root)
-    guard_path = root / "registry.lock"
+    deadline = time.monotonic() + _NAMESPACE_GUARD_TIMEOUT_SECONDS
+    guard_socket: socket.socket | None = None
+    while guard_socket is None:
+        try:
+            guard_socket = _bind_abstract_socket(_namespace_guard_name(root))
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise AuthorityRegistryError(
+                    "cannot acquire non-detachable authority registry guard"
+                ) from exc
+            if time.monotonic() >= deadline:
+                raise AuthorityRegistryError(
+                    "timed out acquiring non-detachable authority registry guard"
+                ) from exc
+            time.sleep(0.005)
     try:
-        guard_fd = _open_owner_file(guard_path, create=True)
-    except OSError as exc:
-        raise AuthorityRegistryError("cannot open daemon authority registry guard") from exc
-    try:
-        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        _ensure_registry_root(root)
+        _validate_namespace_markers(root)
+        initial_stat = root.lstat()
+        initial_identity = (initial_stat.st_dev, initial_stat.st_ino)
         yield
+        current_stat = root.lstat()
+        if (current_stat.st_dev, current_stat.st_ino) != initial_identity:
+            raise AuthorityRegistryError("authority registry namespace identity changed")
+        _validate_namespace_markers(root)
     finally:
-        os.close(guard_fd)
+        guard_socket.close()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -641,6 +851,14 @@ def verify_inherited_daemon_authority_lease(
         or stat.S_IMODE(record_stat.st_mode) != 0o600
     ):
         raise AuthorityClaimError("inherited daemon authority record is unsafe")
+    if lease.namespace_fd < 0:
+        raise AuthorityClaimError("inherited daemon authority namespace is unavailable")
+    _verify_bound_namespace_socket(
+        lease.namespace_fd,
+        root=registry_root,
+        record_path=record_path,
+        error_type=AuthorityClaimError,
+    )
     try:
         fcntl.flock(lease.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
@@ -655,6 +873,7 @@ def verify_inherited_daemon_authority_lease(
             "inherited daemon authority lease does not cover the exact data root"
         )
     os.set_inheritable(lease.fd, False)
+    os.set_inheritable(lease.namespace_fd, False)
     return candidates
 
 
@@ -943,14 +1162,24 @@ def _publish_claim(
     except OSError as exc:
         raise AuthorityRegistryError("cannot create daemon authority claim") from exc
     published = False
+    namespace_socket: socket.socket | None = None
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         _write_claim_record(fd, candidates)
         _fsync_directory(root)
+        try:
+            namespace_socket = _bind_abstract_socket(
+                _claim_namespace_name(root, root.lstat(), record_path, os.fstat(fd))
+            )
+        except OSError as exc:
+            raise AuthorityRegistryError(
+                "cannot bind non-detachable daemon authority namespace"
+            ) from exc
         published = True
         return DaemonAuthorityClaim(
             candidates=candidates,
             fd=fd,
+            namespace_socket=namespace_socket,
             record_path=record_path,
             registry_root=root,
         )
@@ -961,6 +1190,8 @@ def _publish_claim(
                 _fsync_directory(root)
             except OSError:
                 pass
+            if namespace_socket is not None:
+                namespace_socket.close()
             os.close(fd)
 
 
@@ -988,11 +1219,18 @@ def acquire_daemon_authority_claim(config: DaemonConfig) -> DaemonAuthorityClaim
     canonical_root = _canonical_path(root)
     _validate_candidate_boundaries(config, preliminary_candidates, canonical_root)
     _preflight_assistant_filesystem_roots(config, preliminary_candidates, canonical_root)
-    with _registry_guard(root):
-        candidates = derive_daemon_authority_candidates(config)
-        _validate_candidate_boundaries(config, candidates, canonical_root)
-        _reject_active_claim_conflicts(root, candidates)
-        return _publish_claim(root, candidates)
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with _registry_guard(root):
+            candidates = derive_daemon_authority_candidates(config)
+            _validate_candidate_boundaries(config, candidates, canonical_root)
+            _reject_active_claim_conflicts(root, candidates)
+            claim = _publish_claim(root, candidates)
+        return claim
+    except BaseException:
+        if claim is not None:
+            claim._discard_descriptors()
+        raise
 
 
 def _derive_fresh_config_union_candidates(
@@ -1014,11 +1252,18 @@ def _acquire_fresh_config_authority_claim_once(
 ) -> DaemonAuthorityClaim:
     root = _registry_root()
     canonical_root = _canonical_path(root)
-    with _registry_guard(root):
-        candidates = _derive_fresh_config_union_candidates(prior_config, refreshed_config)
-        _validate_candidate_boundaries(refreshed_config, candidates, canonical_root)
-        _reject_active_claim_conflicts(root, candidates)
-        return _publish_claim(root, candidates)
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with _registry_guard(root):
+            candidates = _derive_fresh_config_union_candidates(prior_config, refreshed_config)
+            _validate_candidate_boundaries(refreshed_config, candidates, canonical_root)
+            _reject_active_claim_conflicts(root, candidates)
+            claim = _publish_claim(root, candidates)
+        return claim
+    except BaseException:
+        if claim is not None:
+            claim._discard_descriptors()
+        raise
 
 
 def acquire_fresh_config_authority_claim(

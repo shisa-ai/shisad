@@ -71,6 +71,8 @@ logger = logging.getLogger(__name__)
 _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "dependencies",
     "storage",
+    "scheduler",
+    "actions",
     "approvals",
     "skills",
     "selfmod",
@@ -1613,6 +1615,8 @@ class AdminImplMixin(HandlerMixinBase):
             },
             "pairing_requests": self._pairing_request_publication_status(),
             "delivery": self._delivery.health_status(),
+            "scheduler": self._scheduler.state_status(),
+            "actions": self._pending_action_state_status(),
             "approvals": self._credential_store.approval_state_status(),
             "skills": self._skill_manager.state_status(),
             "dashboard": self._dashboard.state_status(),
@@ -1884,6 +1888,8 @@ class AdminImplMixin(HandlerMixinBase):
         component_factories = {
             "dependencies": self._doctor_dependencies_status,
             "storage": self._doctor_storage_status,
+            "scheduler": self._scheduler.state_status,
+            "actions": self._pending_action_state_status,
             "approvals": self._doctor_approval_status,
             "skills": self._skill_manager.state_status,
             "selfmod": self._selfmod_manager.doctor_status,

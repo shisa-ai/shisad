@@ -33,6 +33,7 @@ from shisad.core.atomic_state import (
     ensure_owner_only_directory,
     read_owned_regular_file,
     remove_owner_controlled_directory_contents,
+    remove_owner_controlled_file_entries,
     validate_directory_ancestry,
 )
 
@@ -77,6 +78,7 @@ class ChannelStateStore:
         self._loaded_channels: set[str] = set()
         self._load_results: dict[str, StateLoadResult] = {}
         self._degradation: dict[str, dict[str, str]] = {}
+        self._loaded_root_identities: dict[str, tuple[int, int]] = {}
         self._lock = RLock()
         self._append_fault_injector: DurableAppendFaultInjector | None = None
         self._snapshot_fault_injector: AtomicWriteFaultInjector | None = None
@@ -296,15 +298,32 @@ class ChannelStateStore:
                 raise ValueError(
                     "replay rebaseline is only available for ambiguous legacy state"
                 )
-            removed = 0
-            for path in (self._state_path(channel), self._journal_path(channel)):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    continue
-                removed += 1
-            if removed and self._root_dir.exists():
-                self._fsync_directory_entry(self._root_dir)
+            expected_root_identity = self._loaded_root_identities.get(channel)
+            if expected_root_identity is None:
+                self._degrade(
+                    channel,
+                    transition="rebaseline",
+                    stage="directory_identity",
+                    reason="rebaseline_root_identity_unavailable",
+                )
+                self._raise_if_degraded(channel)
+            try:
+                removed = remove_owner_controlled_file_entries(
+                    self._root_dir,
+                    (
+                        self._state_path(channel).name,
+                        self._journal_path(channel).name,
+                    ),
+                    expected_directory_identity=expected_root_identity,
+                )
+            except OSError:
+                self._degrade(
+                    channel,
+                    transition="rebaseline",
+                    stage="directory_identity",
+                    reason="rebaseline_root_identity_changed",
+                )
+                self._raise_if_degraded(channel)
             self._clear_channel_cache_locked(channel)
             return removed
 
@@ -329,6 +348,7 @@ class ChannelStateStore:
         self._loaded_channels.clear()
         self._load_results.clear()
         self._degradation.clear()
+        self._loaded_root_identities.clear()
 
     def _clear_channel_cache_locked(self, channel: str) -> None:
         self._records.pop(channel, None)
@@ -340,6 +360,7 @@ class ChannelStateStore:
         self._loaded_channels.discard(channel)
         self._load_results.pop(channel, None)
         self._degradation.pop(channel, None)
+        self._loaded_root_identities.pop(channel, None)
 
     def _record_outcome(
         self,
@@ -467,6 +488,9 @@ class ChannelStateStore:
         self._journal_appends_since_compaction[channel] = journal_lines
         self._load_results[channel] = load_result
         self._loaded_channels.add(channel)
+        if self._root_dir.exists():
+            root_stat = self._root_dir.stat(follow_symlinks=False)
+            self._loaded_root_identities[channel] = (root_stat.st_dev, root_stat.st_ino)
 
     def _load_snapshot(
         self,

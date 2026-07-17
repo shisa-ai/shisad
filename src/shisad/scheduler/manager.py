@@ -125,6 +125,42 @@ class SchedulerManager:
         except KeyError as exc:
             raise ValueError(f"unknown scheduler state authority: {authority}") from exc
 
+    def state_status(self) -> dict[str, Any]:
+        domains: dict[str, dict[str, Any]] = {}
+        for authority, load_result in self._state_load_results.items():
+            persistence = self._state_persistence_degradation.get(authority)
+            degraded = persistence is not None or load_result.status in {
+                StateLoadStatus.CORRUPT,
+                StateLoadStatus.UNSUPPORTED_SCHEMA,
+            }
+            domains[authority] = {
+                "status": "degraded" if degraded else "ok",
+                "problems": [f"scheduler_{authority}_state_degraded"] if degraded else [],
+                "load_status": load_result.status.value,
+                "reason": load_result.reason,
+                "schema_version": load_result.schema_version,
+                "legacy": load_result.legacy,
+                "fail_closed": degraded,
+                "stage": persistence.stage.value if persistence is not None else "",
+            }
+        degraded = any(domain["status"] == "degraded" for domain in domains.values())
+        return {
+            "status": "degraded" if degraded else "ok",
+            "problems": [
+                problem
+                for domain in domains.values()
+                for problem in domain["problems"]
+            ],
+            "fail_closed": degraded,
+            "domains": domains,
+            "remediation": (
+                "Restore scheduler tasks and pending-confirmation state from a trusted backup "
+                "or explicitly reset both authorities, then restart shisad."
+                if degraded
+                else ""
+            ),
+        }
+
     def reset_state(self) -> tuple[int, int]:
         """Durably reset scheduler authority and every rollback/load snapshot."""
 

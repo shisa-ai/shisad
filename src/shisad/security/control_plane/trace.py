@@ -7,7 +7,6 @@ import fnmatch
 import hashlib
 import json
 import re
-import stat
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -24,6 +23,7 @@ from shisad.core.atomic_state import (
     atomic_write_bytes,
     decode_versioned_json_snapshot,
     encode_versioned_json_snapshot,
+    read_owner_only_regular_file,
 )
 from shisad.core.types import Capability
 from shisad.core.url_parsing import safe_url_hostname
@@ -231,6 +231,29 @@ class ExecutionTraceVerifier:
                 else ""
             ),
         }
+
+    def reset_state(self) -> int:
+        """Durably replace retained plans with an empty current-schema snapshot."""
+
+        cleared = len(self._plans)
+        if self._storage_path is not None:
+            try:
+                atomic_write_bytes(
+                    self._storage_path,
+                    encode_versioned_json_snapshot({}, version=_TRACE_STATE_VERSION),
+                    fault_injector=self._state_fault_injector,
+                )
+            except AtomicWriteError as exc:
+                if exc.publication_may_have_committed:
+                    self._persistence_degradation = exc
+                raise
+        self._plans.clear()
+        self._persistence_degradation = None
+        self._state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_TRACE_STATE_VERSION,
+        )
+        return cleared
 
     def _require_available(self, *, transition: str) -> None:
         if not self.state_degraded:
@@ -786,28 +809,14 @@ class ExecutionTraceVerifier:
         if self._storage_path is None:
             return
         try:
-            target_stat = self._storage_path.lstat()
-        except FileNotFoundError:
-            return
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="trace_stat_failed",
-            )
-            return
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_trace_target",
-            )
-            return
-        try:
-            raw_bytes = self._storage_path.read_bytes()
+            raw_bytes = read_owner_only_regular_file(self._storage_path)
         except OSError:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="trace_read_failed",
             )
+            return
+        if raw_bytes is None:
             return
         try:
             raw_payload = json.loads(raw_bytes.decode("utf-8"))

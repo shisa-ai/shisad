@@ -119,6 +119,52 @@ def test_unscoped_v1_state_blocks_unknown_identity_until_explicit_rebaseline(
     assert store.reserve(identity=_identity(message_id="unknown")) is False
 
 
+@pytest.mark.parametrize("replacement_kind", ["symlink", "real_directory"])
+def test_rebaseline_rejects_replay_root_replacement_without_touching_external_state(
+    tmp_path: Path,
+    replacement_kind: str,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    state_path = root / "discord.state.json"
+    state_path.write_bytes(
+        encode_versioned_json_snapshot(
+            {
+                "channel": "discord",
+                "records": [],
+                "recent_message_ids": ["legacy-known"],
+            },
+            version=1,
+        )
+    )
+    store = ChannelStateStore(root)
+    assert store.state_status("discord")["reason"] == (
+        "legacy_scope_ambiguous_rebaseline_required"
+    )
+    detached = tmp_path / "detached-state"
+    root.rename(detached)
+    external = tmp_path / "external-state"
+    external.mkdir()
+    external_state = external / "discord.state.json"
+    external_state.write_bytes(b"must remain external")
+    external_journal = external / "discord.journal.jsonl"
+    external_journal.write_bytes(b"must remain external journal")
+    if replacement_kind == "symlink":
+        root.symlink_to(external, target_is_directory=True)
+    else:
+        external.rename(root)
+
+    with pytest.raises(StatePersistenceDegradedError, match="root_identity_changed"):
+        store.rebaseline("discord")
+
+    assert (detached / "discord.state.json").exists()
+    replacement_root = external if replacement_kind == "symlink" else root
+    assert (replacement_root / "discord.state.json").read_bytes() == b"must remain external"
+    assert (replacement_root / "discord.journal.jsonl").read_bytes() == (
+        b"must remain external journal"
+    )
+
+
 def test_channel_replay_corrupt_snapshot_is_retained_and_blocks_fresh_admission(
     tmp_path: Path,
 ) -> None:
@@ -421,7 +467,7 @@ def test_channel_replay_production_depth_fsyncs_every_new_ancestor(
 
     assert store.reserve(channel="discord", message_id="m-1") is False
 
-    assert fsynced[:3] == [root, data_dir, data_dir / "channels"]
+    assert fsynced[:2] == [data_dir, data_dir / "channels"]
     assert ChannelStateStore(root).reserve(channel="discord", message_id="m-1") is True
 
 

@@ -448,6 +448,7 @@ def test_f3_claim_duplicates_verifiable_sidecar_lease(tmp_path: Path) -> None:
         wrong_descriptor_lease = authority.DaemonAuthorityLease(
             fd=wrong_fd,
             record_path=lease.record_path,
+            namespace_fd=os.dup(lease.namespace_fd),
         )
         try:
             with pytest.raises(AuthorityClaimError, match="lock is not held"):
@@ -1396,6 +1397,109 @@ def test_f3_disjoint_sibling_authorities_both_succeed(
         if second_claim is not None:
             second_claim.release()
         first_claim.release()
+
+
+@pytest.mark.parametrize("operation", ["acquire", "narrow"])
+@pytest.mark.parametrize("replacement", ["registry", "claim"])
+def test_f3_authority_namespace_replacement_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    replacement: str,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    first = _config(tmp_path, name="first", socket_name="first.sock")
+    claim = acquire_daemon_authority_claim(first)
+    detached = tmp_path / f"detached-{replacement}"
+    replacement_path: Path
+    try:
+        if replacement == "registry":
+            registry_root.rename(detached)
+            registry_root.mkdir(mode=0o700)
+            replacement_path = registry_root
+        else:
+            record_path = claim._record_path
+            record_path.rename(detached)
+            record_path.write_bytes(detached.read_bytes())
+            record_path.chmod(0o600)
+            replacement_path = record_path
+
+        if operation == "acquire":
+            second = _config(tmp_path, name="second", socket_name="second.sock")
+            with pytest.raises(AuthorityRegistryError, match="namespace"):
+                acquire_daemon_authority_claim(second)
+        else:
+            with pytest.raises((AuthorityRegistryError, AuthorityClaimError), match="namespace"):
+                claim.narrow_to(claim.candidates)
+
+        if replacement == "registry":
+            assert replacement_path.is_dir()
+            replacement_path.rmdir()
+            detached.rename(registry_root)
+        else:
+            replacement_path.unlink()
+            detached.rename(replacement_path)
+    finally:
+        with suppress(AuthorityRegistryError):
+            claim.release()
+        if detached.exists() and not registry_root.exists():
+            detached.rename(registry_root)
+
+
+def test_f3_registry_replacement_during_acquisition_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    detached = tmp_path / "detached-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    real_publish = authority._publish_claim
+
+    def _replace_then_publish(root: Path, candidates):
+        root.rename(detached)
+        root.mkdir(mode=0o700)
+        return real_publish(root, candidates)
+
+    monkeypatch.setattr(authority, "_publish_claim", _replace_then_publish)
+    with pytest.raises(AuthorityRegistryError, match="namespace identity changed"):
+        acquire_daemon_authority_claim(
+            _config(tmp_path, name="raced", socket_name="raced.sock")
+        )
+
+    for path in registry_root.iterdir():
+        path.unlink()
+    registry_root.rmdir()
+    detached.rename(registry_root)
+
+
+def test_f3_claim_replacement_during_narrowing_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    claim = acquire_daemon_authority_claim(
+        _config(tmp_path, name="raced", socket_name="raced.sock")
+    )
+    record_path = claim._record_path
+    detached = tmp_path / "detached-claim"
+    real_write = authority._write_claim_record
+
+    def _replace_then_write(fd: int, candidates) -> None:
+        record_path.rename(detached)
+        record_path.write_bytes(detached.read_bytes())
+        record_path.chmod(0o600)
+        real_write(fd, candidates)
+
+    monkeypatch.setattr(authority, "_write_claim_record", _replace_then_write)
+    try:
+        with pytest.raises(AuthorityRegistryError, match="namespace identity changed"):
+            claim.narrow_to(claim.candidates)
+        record_path.unlink()
+        detached.rename(record_path)
+    finally:
+        claim.release()
 
 
 @pytest.mark.parametrize(

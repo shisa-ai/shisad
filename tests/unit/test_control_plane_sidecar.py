@@ -39,6 +39,7 @@ from shisad.security.control_plane.sidecar import (
     ControlPlaneSidecarHandle,
     ControlPlaneUnavailableError,
     _ControlPlaneSidecarHandlers,
+    _EmptyParams,
     _EvaluateActionParams,
     _RecordExecutionParams,
     start_control_plane_sidecar,
@@ -80,6 +81,28 @@ async def _start_claimed_sidecar(
         claim.release()
         raise
     return handle, claim
+
+
+@pytest.mark.asyncio
+async def test_f3_sidecar_reset_state_dispatches_to_engine(tmp_path: Path) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "data", workspace_roots=[tmp_path])
+    origin = Origin(session_id="reset-sidecar", user_id="alice", workspace_id="ws")
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=f"read {tmp_path / 'source.txt'}",
+        origin=origin,
+        ttl_seconds=300,
+        max_actions=3,
+        capabilities={Capability.FILE_READ},
+    )
+
+    result = await _ControlPlaneSidecarHandlers(engine=engine).handle_reset_state(
+        _EmptyParams(),
+        RequestContext(),
+    )
+
+    assert result.cleared["trace_plans"] == 1
+    assert engine.state_status()["status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -526,9 +549,11 @@ async def test_f3_sidecar_exec_rejects_wrong_inherited_descriptor_before_mutatio
             str(os.getpid()),
             "--authority-lease-fd",
             str(wrong_fd),
-            "--authority-record-path",
-            str(lease.record_path),
-            pass_fds=(wrong_fd,),
+                "--authority-record-path",
+                str(lease.record_path),
+                "--authority-namespace-fd",
+                str(lease.namespace_fd),
+                pass_fds=(wrong_fd, lease.namespace_fd),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -1079,7 +1104,9 @@ async def test_h1_control_plane_sidecar_rejects_client_when_parent_pid_mismatche
             str(lease.fd),
             "--authority-record-path",
             str(lease.record_path),
-            pass_fds=(lease.fd,),
+            "--authority-namespace-fd",
+            str(lease.namespace_fd),
+            pass_fds=(lease.fd, lease.namespace_fd),
         )
     finally:
         lease.close()

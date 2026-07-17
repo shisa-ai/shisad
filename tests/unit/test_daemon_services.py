@@ -17,7 +17,13 @@ from pydantic import ValidationError
 
 from shisad.channels.base import InMemoryChannel
 from shisad.channels.telegram import TelegramChannel, TelegramConfig
-from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
+from shisad.core.atomic_state import (
+    AtomicWriteError,
+    AtomicWriteStage,
+    StateLoadStatus,
+    decode_versioned_json_snapshot,
+    encode_versioned_json_snapshot,
+)
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus, SessionCreated
 from shisad.core.evidence import ArtifactLedger
@@ -46,6 +52,7 @@ from shisad.daemon.services import (
 from shisad.interop.a2a_registry import A2aConfig, A2aIdentityConfig
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import Schedule
+from shisad.security.control_plane.schema import Origin
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.credentials import (
     ApprovalFactorRecord,
@@ -159,6 +166,8 @@ async def test_daemon_services_builds_with_local_provider(
         skill_doctor = await impl.do_doctor_check({"component": "skills"})
         selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
         dashboard_doctor = await impl.do_doctor_check({"component": "dashboard"})
+        scheduler_doctor = await impl.do_doctor_check({"component": "scheduler"})
+        actions_doctor = await impl.do_doctor_check({"component": "actions"})
         control_plane_doctor = await impl.do_doctor_check({"component": "control_plane"})
         channels_doctor = await impl.do_doctor_check({"component": "channels"})
         assert isinstance(services.provider, LocalPlannerProvider)
@@ -172,6 +181,9 @@ async def test_daemon_services_builds_with_local_provider(
         assert status["dashboard"]["status"] == "ok"
         assert status["dashboard"]["load_status"] == "missing"
         assert status["pairing_requests"]["status"] == "ok"
+        assert status["scheduler"]["status"] == "ok"
+        assert status["actions"]["status"] == "ok"
+        assert status["actions"]["load_status"] == "missing"
         assert status["control_plane"]["status"] == "ok"
         assert "pairing_requests" not in status["channels"]
         assert channels_doctor["status"] == "ok"
@@ -197,6 +209,8 @@ async def test_daemon_services_builds_with_local_provider(
         assert selfmod_doctor["checks"]["selfmod"]["load_status"] == "missing"
         assert dashboard_doctor["status"] == "ok"
         assert dashboard_doctor["checks"]["dashboard"]["load_status"] == "missing"
+        assert scheduler_doctor["checks"]["scheduler"]["status"] == "ok"
+        assert actions_doctor["checks"]["actions"]["load_status"] == "missing"
         assert control_plane_doctor["status"] == "ok"
         assert control_plane_doctor["checks"]["control_plane"]["status"] == "ok"
     finally:
@@ -991,6 +1005,41 @@ async def test_f3_daemon_reset_clears_scheduler_durable_task_snapshot(
 
         assert services.scheduler.list_tasks() == []
         assert services.scheduler.get_task(old_task.id) is None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_daemon_reset_clears_control_plane_sidecar_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        origin = Origin(session_id="reset-control-plane", user_id="alice", workspace_id="ws")
+        await services.control_plane.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal=f"read {tmp_path / 'source.txt'}",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=3,
+            capabilities={Capability.FILE_READ},
+        )
+
+        result = await services.reset_test_state()
+
+        assert result["cleared"]["control_plane_trace_plans"] == 1
+        assert result["cleared"]["control_plane_audit_entries"] >= 1
+        status = await services.control_plane.state_status()
+        assert status["status"] == "ok"
+        assert all(domain["load_status"] == "ok" for domain in status["domains"].values())
     finally:
         await services.shutdown()
 
@@ -1810,6 +1859,7 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         impl._plan_violation_counts[session.id] = 3
         impl._confirmation_alerted_at[pending.confirmation_id] = datetime.now(UTC)
         impl._confirmation_failure_tracker.record_failure(user_id="alice", method="totp")
+        impl._dashboard.mark_false_positive(event_id="evt-reset", reason="unit-test")
         impl._identity_map.record_pairing_request(
             channel="matrix",
             external_user_id="mallory",
@@ -1837,6 +1887,7 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert result["cleared"]["confirmation_lockouts"] == 1
         assert result["cleared"]["pairing_requests"] == 1
         assert result["cleared"]["pairing_request_artifacts"] == 1
+        assert result["cleared"]["dashboard_false_positive_marks"] == 1
 
         assert impl._pending_actions == {}
         assert impl._pending_by_session == {}
@@ -1846,8 +1897,88 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert impl._confirmation_alerted_at == {}
         assert impl._confirmation_failure_tracker._state == {}
         assert impl._identity_map.list_pairing_requests() == []
-        assert not impl._pending_actions_file.exists()
-        assert not impl._pairing_requests_file.exists()
+        assert impl._dashboard._marks == {}
+        pending_result, pending_payload = decode_versioned_json_snapshot(
+            impl._pending_actions_file.read_bytes()
+        )
+        assert pending_result.status is StateLoadStatus.OK
+        assert pending_payload == []
+        assert impl._pairing_requests_file.read_bytes() == b""
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_kind", ["malformed", "future", "symlink", "hardlink"])
+async def test_f3_pending_action_startup_fails_closed_without_following_invalid_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_kind: str,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    pending_path = config.data_dir / "pending_actions.json"
+    external = tmp_path / "external-pending.json"
+    expected_external = b"external pending authority"
+    if invalid_kind == "malformed":
+        pending_path.write_bytes(b'{"version":1,"payload":')
+        pending_path.chmod(0o600)
+    elif invalid_kind == "future":
+        pending_path.write_bytes(encode_versioned_json_snapshot([], version=2))
+        pending_path.chmod(0o600)
+    else:
+        external.write_bytes(expected_external)
+        external.chmod(0o600)
+        if invalid_kind == "symlink":
+            pending_path.symlink_to(external)
+        else:
+            pending_path.hardlink_to(external)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        status = impl._pending_action_state_status()
+        assert status["status"] == "degraded"
+        assert status["fail_closed"] is True
+        daemon_status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "actions"})
+        assert daemon_status["actions"]["status"] == "degraded"
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["actions"]["fail_closed"] is True
+        assert impl._pending_actions == {}
+        if invalid_kind in {"symlink", "hardlink"}:
+            assert external.read_bytes() == expected_external
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_pending_action_legacy_owner_file_is_normalized_and_loaded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    pending_path = config.data_dir / "pending_actions.json"
+    pending_path.write_bytes(b"[]")
+    pending_path.chmod(0o644)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        assert impl._pending_action_state_status()["status"] == "ok"
+        assert impl._pending_state_load_result.legacy is True
+        assert pending_path.stat().st_mode & 0o777 == 0o600
     finally:
         await services.shutdown()
 

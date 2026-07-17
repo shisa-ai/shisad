@@ -12,7 +12,6 @@ import logging
 import math
 import os
 import re
-import stat
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -75,9 +74,14 @@ from shisad.core.approval import (
 from shisad.core.atomic_state import (
     AtomicWriteError,
     DurableAppendError,
+    StateLoadResult,
+    StateLoadStatus,
     StatePersistenceDegradedError,
     atomic_write_bytes,
+    decode_versioned_json_snapshot,
     durable_append_bytes,
+    encode_versioned_json_snapshot,
+    read_owned_regular_file,
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.authority import (
@@ -221,6 +225,8 @@ if TYPE_CHECKING:
     from shisad.daemon.services import DaemonServices
 
 logger = logging.getLogger(__name__)
+
+_PENDING_ACTIONS_STATE_VERSION = 1
 
 _MONITOR_REJECT_THRESHOLD = 3
 _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
@@ -2202,6 +2208,8 @@ class HandlerImplementation(
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
+        self._pending_state_load_result = StateLoadResult(StateLoadStatus.MISSING)
+        self._pending_state_degradation: dict[str, str] = {}
         self._recovery_accounting_tasks: set[asyncio.Task[None]] = set()
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._plan_violation_counts: dict[SessionId, int] = {}
@@ -2441,7 +2449,33 @@ class HandlerImplementation(
             "pending_two_factor_enrollments": len(self._pending_two_factor_enrollments),
             "confirmation_lockouts": len(self._confirmation_failure_tracker._state),
             "pairing_request_artifacts": pairing_request_artifacts,
+            "dashboard_false_positive_marks": len(self._dashboard._marks),
         }
+        self._dashboard.reset_state()
+        try:
+            atomic_write_bytes(
+                self._pending_actions_file,
+                encode_versioned_json_snapshot(
+                    [],
+                    version=_PENDING_ACTIONS_STATE_VERSION,
+                ),
+            )
+        except AtomicWriteError as exc:
+            self._pending_state_degradation = {
+                "transition": "reset",
+                "stage": exc.stage.value,
+                "reason": "pending_state_reset_failed",
+            }
+            raise
+        try:
+            atomic_write_bytes(self._pairing_requests_file, b"")
+        except AtomicWriteError as exc:
+            self._pairing_publication_degradation = {
+                "stage": exc.stage.value,
+                "reason": "reset_failed",
+                "path": str(exc.path),
+            }
+            raise
         self._pending_actions.clear()
         self._pending_by_session.clear()
         self._monitor_reject_counts.clear()
@@ -2449,8 +2483,11 @@ class HandlerImplementation(
         self._confirmation_alerted_at.clear()
         self._pending_two_factor_enrollments.clear()
         self._confirmation_failure_tracker._state.clear()
-        self._pending_actions_file.unlink(missing_ok=True)
-        self._pairing_requests_file.unlink(missing_ok=True)
+        self._pending_state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_PENDING_ACTIONS_STATE_VERSION,
+        )
+        self._pending_state_degradation = {}
         self._pairing_publication_degradation = None
         lockout_state_path = self._confirmation_failure_tracker._state_path
         if lockout_state_path is not None:
@@ -2533,6 +2570,11 @@ class HandlerImplementation(
                 not self._risk_calibrator.observations_path.exists()
                 and not self._risk_calibrator.policy_path.exists()
             ),
+            "dashboard_marks_empty": (
+                not self._dashboard._marks
+                and not self._dashboard.state_degraded
+                and self._dashboard.state_load_result.status is StateLoadStatus.OK
+            ),
             "handler_pending_empty": not (
                 self._pending_actions
                 or self._pending_by_session
@@ -2543,8 +2585,10 @@ class HandlerImplementation(
                 or self._pairing_publication_degradation
                 or self._confirmation_failure_tracker._state
             )
-            and not self._pending_actions_file.exists()
-            and not self._pairing_requests_file.exists()
+            and self._pending_state_load_result.status is StateLoadStatus.OK
+            and not self._pending_state_degradation
+            and self._pending_actions_file.exists()
+            and self._pairing_requests_file.exists()
             and (
                 self._confirmation_failure_tracker._state_path is None
                 or not self._confirmation_failure_tracker._state_path.exists()
@@ -4274,11 +4318,28 @@ class HandlerImplementation(
             else:
                 pending.recovery_authority_mac = ""
         payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
-        atomic_write_bytes(
-            self._pending_actions_file,
-            json.dumps(payload, indent=2).encode("utf-8"),
-            fault_injector=getattr(self, "_pending_state_fault_injector", None),
+        try:
+            atomic_write_bytes(
+                self._pending_actions_file,
+                encode_versioned_json_snapshot(
+                    payload,
+                    version=_PENDING_ACTIONS_STATE_VERSION,
+                ),
+                fault_injector=getattr(self, "_pending_state_fault_injector", None),
+            )
+        except AtomicWriteError as exc:
+            if exc.publication_may_have_committed:
+                self._pending_state_degradation = {
+                    "transition": "persist",
+                    "stage": exc.stage.value,
+                    "reason": "pending_state_commit_uncertain",
+                }
+            raise
+        self._pending_state_load_result = StateLoadResult(
+            StateLoadStatus.OK,
+            schema_version=_PENDING_ACTIONS_STATE_VERSION,
         )
+        self._pending_state_degradation = {}
 
     @staticmethod
     def _fallback_corrupt_pending_action(
@@ -4511,15 +4572,86 @@ class HandlerImplementation(
         normalized["identity"] = identity
         return normalized, binding_invalid
 
+    def _pending_action_state_status(self) -> dict[str, Any]:
+        load_result = self._pending_state_load_result
+        degradation = self._pending_state_degradation
+        degraded = degradation is not None or load_result.status in {
+            StateLoadStatus.CORRUPT,
+            StateLoadStatus.UNSUPPORTED_SCHEMA,
+        }
+        return {
+            "status": "degraded" if degraded else "ok",
+            "problems": ["pending_action_state_degraded"] if degraded else [],
+            "path": str(self._pending_actions_file),
+            "load_status": load_result.status.value,
+            "reason": str((degradation or {}).get("reason", load_result.reason) or ""),
+            "schema_version": load_result.schema_version,
+            "legacy": load_result.legacy,
+            "fail_closed": degraded,
+            "stage": str((degradation or {}).get("stage", "")),
+            "remediation": (
+                "Restore retained pending-action state from a trusted backup or explicitly "
+                "reset it after verification, then restart shisad."
+                if degraded
+                else ""
+            ),
+        }
+
     def _load_pending_actions(self) -> None:
-        if not self._pending_actions_file.exists():
+        try:
+            raw_bytes = read_owned_regular_file(
+                self._pending_actions_file,
+                normalize_mode=0o600,
+            )
+        except OSError:
+            self._pending_state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="pending_actions_read_failed",
+            )
+            self._pending_state_degradation = {
+                "transition": "load",
+                "stage": "load",
+                "reason": "pending_actions_read_failed",
+            }
+            return
+        if raw_bytes is None:
+            self._pending_state_load_result = StateLoadResult(StateLoadStatus.MISSING)
             return
         try:
-            raw = json.loads(self._pending_actions_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw_json = json.loads(raw_bytes)
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
+            raw_json = None
+        if isinstance(raw_json, list):
+            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
+            raw: Any = raw_json
+        else:
+            load_result, raw = decode_versioned_json_snapshot(
+                raw_bytes,
+                supported_version=_PENDING_ACTIONS_STATE_VERSION,
+            )
+        if load_result.status is not StateLoadStatus.OK:
+            self._pending_state_load_result = load_result
+            self._pending_state_degradation = {
+                "transition": "load",
+                "stage": "load",
+                "reason": load_result.reason or load_result.status.value,
+            }
             return
         if not isinstance(raw, list):
+            self._pending_state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_pending_actions_payload",
+                schema_version=load_result.schema_version,
+                legacy=load_result.legacy,
+            )
+            self._pending_state_degradation = {
+                "transition": "load",
+                "stage": "load",
+                "reason": "invalid_pending_actions_payload",
+            }
             return
+        self._pending_state_load_result = load_result
+        self._pending_state_degradation = {}
         sensitive_pending_groups: set[tuple[str, str]] = set()
         sensitive_values_by_session: dict[str, list[str]] = {}
         for item in raw:
@@ -6370,34 +6502,16 @@ class HandlerImplementation(
     def _inspect_pairing_request_publication_state(self) -> dict[str, str] | None:
         path = self._pairing_requests_file
         try:
-            target_stat = path.lstat()
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            return {
-                "stage": "startup_inspect",
-                "reason": f"artifact_stat_failed:{exc.__class__.__name__}",
-                "path": str(path),
-            }
-        if not stat.S_ISREG(target_stat.st_mode):
-            return {
-                "stage": "startup_inspect",
-                "reason": "artifact_target_invalid",
-                "path": str(path),
-            }
-        try:
-            with path.open("rb") as handle:
-                if target_stat.st_size == 0:
-                    return None
-                handle.seek(-1, os.SEEK_END)
-                final_byte = handle.read(1)
+            payload = read_owned_regular_file(path, normalize_mode=0o600)
         except OSError as exc:
             return {
                 "stage": "startup_inspect",
                 "reason": f"artifact_read_failed:{exc.__class__.__name__}",
                 "path": str(path),
             }
-        if final_byte != b"\n":
+        if payload is None or payload == b"":
+            return None
+        if payload[-1:] != b"\n":
             return {
                 "stage": "startup_inspect",
                 "reason": "artifact_unterminated_row",
