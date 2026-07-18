@@ -20,8 +20,11 @@ from shisad.core.artifact_staging import (
     DEFAULT_ARTIFACT_STAGE_MAX_ENTRIES as _ARTIFACT_STAGE_MAX_ENTRIES,
 )
 from shisad.core.artifact_staging import (
+    capture_bounded_regular_tree,
     copy_bounded_regular_tree,
+    digest_regular_tree_files,
     fsync_directory,
+    materialize_regular_tree_files,
 )
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -87,6 +90,8 @@ class InstalledSkill(BaseModel):
     manifest_hash: str
     state: ArtifactState
     author: str
+    content_digest: str = ""
+    content_digest_legacy: bool = Field(default=True, strict=True)
     tool_schema_hashes: dict[str, str] = Field(default_factory=dict)
     tool_schema_hashes_legacy: bool = Field(default=False, strict=True)
 
@@ -207,8 +212,15 @@ class SkillManager:
         self._require_state_available(transition="install")
         staged_path = self._stage_install_bundle(skill_path)
         try:
-            bundle = load_skill_bundle(
+            captured = capture_bounded_regular_tree(
                 staged_path,
+                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+            )
+            content_digest = self._content_digest(captured.files)
+            bundle = load_skill_bundle_snapshot(
+                staged_path,
+                captured.files,
                 allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
             )
             findings = self._run_static(bundle)
@@ -290,9 +302,17 @@ class SkillManager:
                     artifact_state=ArtifactState.REVIEW,
                 )
 
-            retained_path = self._publish_install_bundle(staged_path)
+            retained_path = self._publish_install_bundle(
+                staged_path,
+                captured.files,
+                expected_digest=content_digest,
+            )
             try:
-                self._activate_loaded_bundle(bundle, retained_path)
+                self._activate_loaded_bundle(
+                    bundle,
+                    retained_path,
+                    content_digest=content_digest,
+                )
             except AtomicWriteError as exc:
                 if not exc.publication_may_have_committed:
                     self._discard_managed_install_bundle(retained_path)
@@ -372,11 +392,13 @@ class SkillManager:
         state: ArtifactState = ArtifactState.PUBLISHED,
     ) -> InstalledSkill | None:
         self._require_state_available(transition="activate")
-        bundle = load_skill_bundle(
+        bundle, content_digest = self._capture_loaded_bundle(skill_path)
+        return self._activate_loaded_bundle(
+            bundle,
             skill_path,
-            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+            state=state,
+            content_digest=content_digest,
         )
-        return self._activate_loaded_bundle(bundle, skill_path, state=state)
 
     def activate_bundle_snapshot(
         self,
@@ -393,7 +415,16 @@ class SkillManager:
             files_snapshot,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
-        return self._activate_loaded_bundle(bundle, skill_path, state=state)
+        content_digest = self._content_digest(files_snapshot)
+        _current_bundle, current_digest = self._capture_loaded_bundle(skill_path)
+        if current_digest != content_digest:
+            raise ValueError("captured snapshot does not match the retained skill bundle")
+        return self._activate_loaded_bundle(
+            bundle,
+            skill_path,
+            state=state,
+            content_digest=content_digest,
+        )
 
     def _activate_loaded_bundle(
         self,
@@ -401,6 +432,7 @@ class SkillManager:
         skill_path: Path,
         *,
         state: ArtifactState = ArtifactState.PUBLISHED,
+        content_digest: str,
     ) -> InstalledSkill:
         installed = InstalledSkill(
             name=bundle.manifest.name,
@@ -409,6 +441,8 @@ class SkillManager:
             manifest_hash=bundle.manifest.manifest_hash(),
             state=state,
             author=bundle.manifest.author,
+            content_digest=content_digest,
+            content_digest_legacy=False,
             tool_schema_hashes=_declared_tool_schema_hashes(bundle.manifest),
         )
         candidate = dict(self._inventory)
@@ -440,15 +474,49 @@ class SkillManager:
             raise
         return staging_path
 
-    def _publish_install_bundle(self, staging_path: Path) -> Path:
+    def _publish_install_bundle(
+        self,
+        staging_path: Path,
+        files_snapshot: Mapping[str, bytes],
+        *,
+        expected_digest: str,
+    ) -> Path:
         retained_path = staging_path.parent / f"bundle-{uuid.uuid4().hex}"
-        staging_path.replace(retained_path)
         try:
+            materialize_regular_tree_files(
+                files_snapshot,
+                retained_path,
+                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+            )
             fsync_directory(retained_path.parent)
-        except OSError:
+            _bundle, retained_digest = self._capture_loaded_bundle(retained_path)
+            if retained_digest != expected_digest:
+                raise OSError("published skill snapshot digest mismatch")
+        except (OSError, TypeError, ValueError):
             self._discard_managed_install_bundle(retained_path)
             raise
         return retained_path
+
+    def _content_digest(self, files_snapshot: Mapping[str, bytes]) -> str:
+        return digest_regular_tree_files(
+            files_snapshot,
+            max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+            max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+        )
+
+    def _capture_loaded_bundle(self, skill_path: Path) -> tuple[SkillBundle, str]:
+        snapshot = capture_bounded_regular_tree(
+            skill_path,
+            max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+            max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+        )
+        bundle = load_skill_bundle_snapshot(
+            skill_path,
+            snapshot.files,
+            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+        )
+        return bundle, self._content_digest(snapshot.files)
 
     def _retire_superseded_managed_bundle(
         self,
@@ -506,10 +574,14 @@ class SkillManager:
         path = Path(installed.path)
         if not path.exists():
             return SkillSandboxDecision(allowed=False, reason="skill_path_missing")
-        bundle = load_skill_bundle(
-            path,
-            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
-        )
+        if installed.content_digest_legacy or not installed.content_digest:
+            return SkillSandboxDecision(allowed=False, reason="skill_content_unbound")
+        try:
+            bundle, content_digest = self._capture_loaded_bundle(path)
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            return SkillSandboxDecision(allowed=False, reason="skill_content_read_failed")
+        if content_digest != installed.content_digest:
+            return SkillSandboxDecision(allowed=False, reason="skill_content_drift")
         manifest_hash = bundle.manifest.manifest_hash()
         if manifest_hash != installed.manifest_hash:
             return SkillSandboxDecision(allowed=False, reason="skill_manifest_drift")
@@ -745,6 +817,7 @@ class SkillManager:
         inventory: dict[str, InstalledSkill] = {}
         missing_binding_map = False
         invalid_binding_map = False
+        invalid_content_binding = False
         for item in payload:
             if not isinstance(item, dict):
                 self._state_load_result = StateLoadResult(
@@ -757,6 +830,10 @@ class SkillManager:
             candidate_item = dict(item)
             if legacy:
                 candidate_item["tool_schema_hashes_legacy"] = True
+                candidate_item["content_digest_legacy"] = True
+            elif "content_digest" not in item:
+                candidate_item["content_digest"] = ""
+                candidate_item["content_digest_legacy"] = True
             try:
                 entry = InstalledSkill.model_validate(candidate_item)
             except (TypeError, ValueError, ValidationError):
@@ -799,6 +876,8 @@ class SkillManager:
                 not value.strip() for value in entry.tool_schema_hashes.values()
             ):
                 invalid_binding_map = True
+            if not entry.content_digest_legacy and not _is_sha256_digest(entry.content_digest):
+                invalid_content_binding = True
         if missing_binding_map:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
@@ -813,11 +892,22 @@ class SkillManager:
                 schema_version=load_result.schema_version,
             )
             return {}
+        if invalid_content_binding:
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason="invalid_skill_content_binding",
+                schema_version=load_result.schema_version,
+            )
+            return {}
         self._state_load_result = StateLoadResult(
             load_result.status,
             reason=load_result.reason,
             schema_version=load_result.schema_version,
-            legacy=legacy or any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
+            legacy=legacy
+            or any(
+                entry.tool_schema_hashes_legacy or entry.content_digest_legacy
+                for entry in inventory.values()
+            ),
         )
         return inventory
 
@@ -885,24 +975,24 @@ class SkillManager:
         self._state_load_result = StateLoadResult(
             StateLoadStatus.OK,
             schema_version=_SKILL_INVENTORY_VERSION,
-            legacy=any(entry.tool_schema_hashes_legacy for entry in inventory.values()),
+            legacy=any(
+                entry.tool_schema_hashes_legacy or entry.content_digest_legacy
+                for entry in inventory.values()
+            ),
         )
 
     def _installed_bundles(self) -> list[SkillBundle]:
         bundles: list[SkillBundle] = []
         for skill in self._inventory.values():
             path = Path(skill.path)
-            if not path.exists():
+            if not path.exists() or skill.content_digest_legacy or not skill.content_digest:
                 continue
             try:
-                bundles.append(
-                    load_skill_bundle(
-                        path,
-                        allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
-                    )
-                )
+                bundle, content_digest = self._capture_loaded_bundle(path)
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
+            if content_digest == skill.content_digest:
+                bundles.append(bundle)
         return bundles
 
     def _register_inventory_tools(self) -> None:
@@ -917,13 +1007,26 @@ class SkillManager:
             path = Path(installed.path)
             if not path.exists():
                 continue
-            try:
-                bundle = load_skill_bundle(
-                    path,
-                    allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+            if installed.content_digest_legacy or not installed.content_digest:
+                logger.warning(
+                    "Skipping content-unbound legacy skill until it is reviewed again: "
+                    "skill=%s version=%s",
+                    installed.name,
+                    installed.version,
                 )
+                continue
+            try:
+                bundle, content_digest = self._capture_loaded_bundle(path)
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
+            if content_digest != installed.content_digest:
+                self._state_load_result = StateLoadResult(
+                    StateLoadStatus.CORRUPT,
+                    reason="skill_content_drift",
+                    schema_version=_SKILL_INVENTORY_VERSION,
+                )
+                self._unregister_all_skill_tools()
+                return
             if not _tool_schema_bindings_complete(
                 bundle.manifest,
                 expected_hashes=installed.tool_schema_hashes,
@@ -1199,3 +1302,7 @@ def _tool_schema_bindings_complete(
 
 def _hash_prefix(value: str) -> str:
     return value[:12]
+
+
+def _is_sha256_digest(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

@@ -177,7 +177,14 @@ skill inventory and self-modification inventory use checksum-bound, owner-only
 atomic snapshots, and publish candidate activation or rollback truth before the
 live tool registry or persona overlay changes. Malformed, semantically invalid,
 or newer snapshots are retained in place and fail closed; they are not treated
-as an empty inventory. If self-modification activation truth is uncertain,
+as an empty inventory. Direct skill installation materializes the exact bounded
+byte snapshot that was analyzed and signature-checked instead of renaming the
+still-writable review stage. The durable skill row binds every retained relative
+file path and byte through one tree digest; restart registration and each
+runtime authorization recapture once, parse those same captured bytes, and fail
+closed on drift. Pre-binding legacy skill rows remain visible for recovery but
+do not register tools or authorize execution until reviewed again. If
+self-modification activation truth is uncertain,
 dynamic skill registrations are withdrawn because the two authorities cannot
 be safely reconciled in that process.
 

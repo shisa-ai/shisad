@@ -13,6 +13,8 @@ from shisad.core.artifact_staging import (
     ArtifactTreeCopyError,
     capture_bounded_regular_tree,
     copy_bounded_regular_tree,
+    digest_regular_tree_files,
+    materialize_regular_tree_files,
 )
 
 
@@ -62,6 +64,62 @@ def test_artifact_snapshot_captures_only_the_held_regular_file_bytes(tmp_path: P
         "nested/child.txt": b"child",
         "root.txt": b"root",
     }
+
+
+def test_artifact_snapshot_materialization_and_digest_bind_exact_files(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "nested/child.txt": b"child",
+        "root.txt": b"root",
+    }
+    destination = tmp_path / "destination"
+
+    result = materialize_regular_tree_files(
+        files,
+        destination,
+        max_entries=8,
+        max_total_bytes=32,
+    )
+    captured = capture_bounded_regular_tree(
+        destination,
+        max_entries=8,
+        max_total_bytes=32,
+    )
+
+    assert result.entry_count == 3
+    assert result.file_count == 2
+    assert result.total_bytes == 9
+    assert dict(captured.files) == files
+    assert digest_regular_tree_files(
+        captured.files,
+        max_entries=8,
+        max_total_bytes=32,
+    ) == digest_regular_tree_files(
+        files,
+        max_entries=8,
+        max_total_bytes=32,
+    )
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    assert stat.S_IMODE((destination / "root.txt").stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("relative", ["../escape", "/absolute", "nested//child"])
+def test_artifact_snapshot_materialization_rejects_noncanonical_paths(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    destination = tmp_path / "destination"
+
+    with pytest.raises(ArtifactTreeCopyError, match="path is not canonical"):
+        materialize_regular_tree_files(
+            {relative: b"payload"},
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
 
 
 def test_artifact_snapshot_rejects_symlinks_without_reading_external_bytes(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -779,6 +780,64 @@ async def test_f3_skill_install_publishes_the_analyzed_staged_bytes(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage_attack", ["mutate", "replace"])
+async def test_f3_skill_install_publishes_snapshot_when_internal_stage_changes(
+    tmp_path: Path,
+    stage_attack: str,
+) -> None:
+    manifest = _manifest_payload(name=f"internal-stage-{stage_attack}")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n"},
+    )
+    storage = tmp_path / "state"
+
+    class _SwapInternalStageProvider(_FakeProvider):
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            staged_path = next((storage / "bundles").glob(".install-*.tmp"))
+            if stage_attack == "replace":
+                shutil.rmtree(staged_path)
+                _write_skill(
+                    staged_path,
+                    manifest=manifest,
+                    files={"SKILL.md": "attacker replacement instructions\n"},
+                )
+            else:
+                (staged_path / "SKILL.md").write_text(
+                    "attacker mutation instructions\n",
+                    encoding="utf-8",
+                )
+            return await super().complete(messages, tools)
+
+    manager = SkillManager(
+        storage_dir=storage,
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        llm_analyzer=LlmSkillAnalyzer(
+            provider=_SwapInternalStageProvider(
+                {"risk_score": 0.0, "mismatch": False, "findings": []},
+            )
+        ),
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+
+    assert decision.allowed is True
+    installed = manager.list_installed()[0]
+    assert (Path(installed.path) / "SKILL.md").read_text(encoding="utf-8") == (
+        "trusted reviewed instructions\n"
+    )
+
+
+@pytest.mark.asyncio
 async def test_f3_skill_install_rejects_symlinked_source_before_analysis(
     tmp_path: Path,
 ) -> None:
@@ -1195,6 +1254,44 @@ def test_f3_skill_existing_domain_missing_inventory_is_degraded(tmp_path: Path) 
     assert result.reason == "inventory_missing_existing_root"
     assert manager.state_degraded is True
     assert registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+
+
+def test_f3_skill_payload_drift_fails_closed_at_runtime_and_restart(tmp_path: Path) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    registry = ToolRegistry()
+    manager = SkillManager(storage_dir=storage, tool_registry=registry)
+    manager.activate_bundle(skill)
+    (skill / "SKILL.md").write_text("attacker instructions\n", encoding="utf-8")
+
+    decision = manager.authorize_runtime(
+        skill_name="durable-skill",
+        request=SkillExecutionRequest(skill_name="durable-skill"),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "skill_content_drift"
+    restarted_registry = ToolRegistry()
+    restarted = SkillManager(storage_dir=storage, tool_registry=restarted_registry)
+    assert restarted.inventory_load_result().status == StateLoadStatus.CORRUPT
+    assert restarted.inventory_load_result().reason == "skill_content_drift"
+    assert restarted_registry.get_tool(ToolName("skill.durable-skill.lookup")) is None
+
+
+def test_f3_skill_snapshot_activation_rejects_bytes_not_retained_at_path(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "state"
+    skill = _f3_skill_with_tool(tmp_path)
+    files_snapshot = {
+        "skill.manifest.yaml": (skill / "skill.manifest.yaml").read_bytes(),
+        "SKILL.md": (skill / "SKILL.md").read_bytes(),
+    }
+    (skill / "SKILL.md").write_text("attacker instructions\n", encoding="utf-8")
+    manager = SkillManager(storage_dir=storage)
+
+    with pytest.raises(ValueError, match="captured snapshot"):
+        manager.activate_bundle_snapshot(skill, files_snapshot)
 
 
 def test_f3_skill_legacy_empty_domain_is_initialized_then_guarded(tmp_path: Path) -> None:

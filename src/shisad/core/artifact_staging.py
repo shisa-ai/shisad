@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import shutil
 import stat
@@ -45,6 +46,9 @@ class _CopyTotals:
     entry_count: int = 0
     file_count: int = 0
     total_bytes: int = 0
+
+
+_TREE_DIGEST_DOMAIN = b"shisad-bounded-regular-tree-v1\x00"
 
 
 def _absolute_path(path: Path) -> Path:
@@ -438,6 +442,160 @@ def capture_bounded_regular_tree(
         )
     finally:
         os.close(source_fd)
+
+
+def _validated_snapshot_tree(
+    files: Mapping[str, bytes],
+    *,
+    max_entries: int,
+    max_total_bytes: int,
+) -> tuple[dict[str, object], int, int]:
+    if max_entries < 1 or max_total_bytes < 1:
+        raise ValueError("artifact snapshot bounds must be positive")
+    tree: dict[str, object] = {}
+    entry_count = 0
+    total_bytes = 0
+    for relative, raw in files.items():
+        if not isinstance(relative, str) or not relative or relative.startswith("/"):
+            raise ArtifactTreeCopyError("artifact snapshot path is not canonical")
+        parts = relative.split("/")
+        if any(not part or part in {".", ".."} or "\x00" in part for part in parts):
+            raise ArtifactTreeCopyError("artifact snapshot path is not canonical")
+        if not isinstance(raw, bytes):
+            raise ArtifactTreeCopyError("artifact snapshot content must be bytes")
+        total_bytes += len(raw)
+        if total_bytes > max_total_bytes:
+            raise ArtifactTreeCopyError("artifact tree byte limit exceeded")
+        node = tree
+        for component in parts[:-1]:
+            existing = node.get(component)
+            if existing is None:
+                child: dict[str, object] = {}
+                node[component] = child
+                node = child
+                entry_count += 1
+            elif isinstance(existing, dict):
+                node = existing
+            else:
+                raise ArtifactTreeCopyError("artifact snapshot has a file/directory collision")
+        leaf = parts[-1]
+        if leaf in node:
+            raise ArtifactTreeCopyError("artifact snapshot has a file/directory collision")
+        node[leaf] = raw
+        entry_count += 1
+        if entry_count > max_entries:
+            raise ArtifactTreeCopyError("artifact tree entry limit exceeded")
+    return tree, entry_count, total_bytes
+
+
+def digest_regular_tree_files(
+    files: Mapping[str, bytes],
+    *,
+    max_entries: int,
+    max_total_bytes: int,
+) -> str:
+    """Return a canonical digest binding every relative path and file byte."""
+
+    _validated_snapshot_tree(
+        files,
+        max_entries=max_entries,
+        max_total_bytes=max_total_bytes,
+    )
+    digest = hashlib.sha256(_TREE_DIGEST_DOMAIN)
+    for relative, raw in sorted(files.items()):
+        encoded_path = relative.encode("utf-8", errors="surrogateescape")
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+    return digest.hexdigest()
+
+
+def _materialize_snapshot_node(destination_fd: int, node: dict[str, object]) -> None:
+    for name, value in sorted(node.items()):
+        if isinstance(value, bytes):
+            file_fd = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=destination_fd,
+            )
+            try:
+                view = memoryview(value)
+                while view:
+                    written = os.write(file_fd, view)
+                    if written <= 0:
+                        raise ArtifactTreeCopyError(
+                            f"artifact snapshot publication stalled: {name}"
+                        )
+                    view = view[written:]
+                os.fchmod(file_fd, 0o600)
+                os.fsync(file_fd)
+            finally:
+                os.close(file_fd)
+            continue
+        if not isinstance(value, dict):
+            raise ArtifactTreeCopyError("artifact snapshot tree is invalid")
+        os.mkdir(name, 0o700, dir_fd=destination_fd)
+        child_fd = os.open(name, _directory_open_flags(), dir_fd=destination_fd)
+        try:
+            os.fchmod(child_fd, 0o700)
+            _materialize_snapshot_node(child_fd, value)
+            os.fsync(child_fd)
+        finally:
+            os.close(child_fd)
+    os.fsync(destination_fd)
+
+
+def materialize_regular_tree_files(
+    files: Mapping[str, bytes],
+    destination: Path,
+    *,
+    max_entries: int,
+    max_total_bytes: int,
+) -> ArtifactTreeCopyResult:
+    """Durably materialize bounded captured bytes into one new owner-only tree."""
+
+    tree, entry_count, total_bytes = _validated_snapshot_tree(
+        files,
+        max_entries=max_entries,
+        max_total_bytes=max_total_bytes,
+    )
+    destination = _absolute_path(destination)
+    parent_fd = _open_directory_chain(destination.parent)
+    destination_fd = -1
+    created = False
+    try:
+        os.mkdir(destination.name, 0o700, dir_fd=parent_fd)
+        created = True
+        destination_fd = os.open(
+            destination.name,
+            _directory_open_flags(),
+            dir_fd=parent_fd,
+        )
+        os.fchmod(destination_fd, 0o700)
+        _materialize_snapshot_node(destination_fd, tree)
+        os.fsync(parent_fd)
+        return ArtifactTreeCopyResult(
+            entry_count=entry_count,
+            file_count=len(files),
+            total_bytes=total_bytes,
+        )
+    except BaseException:
+        if destination_fd >= 0:
+            os.close(destination_fd)
+            destination_fd = -1
+        if created:
+            shutil.rmtree(destination, ignore_errors=True)
+        raise
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        os.close(parent_fd)
 
 
 def copy_bounded_regular_tree(
