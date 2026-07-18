@@ -491,7 +491,7 @@ class SchedulerManager:
         )
         if task_id not in self._tasks:
             raise ValueError("pending confirmation task does not exist")
-        payload = dict(action)
+        payload = copy.deepcopy(action)
         confirmation_id = payload.get("confirmation_id")
         if not isinstance(confirmation_id, str) or not confirmation_id.strip():
             raise ValueError("pending confirmation requires confirmation_id")
@@ -587,7 +587,7 @@ class SchedulerManager:
                 reconciled_expiry = True
                 continue
             if lifecycle_state == "pending":
-                payload = dict(row)
+                payload = copy.deepcopy(row)
                 payload["lifecycle_state"] = lifecycle_state
                 pending.append(payload)
         if reconciled_expiry:

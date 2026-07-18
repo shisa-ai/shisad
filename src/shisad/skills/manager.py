@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import stat
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -190,98 +192,104 @@ class SkillManager:
         approve_untrusted: bool = False,
     ) -> SkillInstallDecision:
         self._require_state_available(transition="install")
-        bundle = load_skill_bundle(
-            skill_path,
-            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
-        )
-        findings = self._run_static(bundle)
-        if self._llm_analyzer is not None:
-            llm_findings = await self._llm_analyzer.analyze(
-                bundle,
-                static_risk_score=_risk_score(findings),
+        staged_path = self._stage_install_bundle(skill_path)
+        try:
+            bundle = load_skill_bundle(
+                staged_path,
+                allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
             )
-            findings.extend(llm_findings)
-        findings.extend(scan_cross_skill([bundle, *self._installed_bundles()]))
-        content_map = {file.path: file.content for file in bundle.files if not file.binary}
-        findings = self._meta.filter(findings, content_map=content_map)
-        signature = verify_manifest_signature(
-            manifest=bundle.manifest,
-            file_hashes={file.path: file.sha256 for file in bundle.files},
-            keyring=self._keyring,
-        )
-        summary = render_risk_summary(skill=bundle, findings=findings, signature=signature)
+            findings = self._run_static(bundle)
+            if self._llm_analyzer is not None:
+                llm_findings = await self._llm_analyzer.analyze(
+                    bundle,
+                    static_risk_score=_risk_score(findings),
+                )
+                findings.extend(llm_findings)
+            findings.extend(scan_cross_skill([bundle, *self._installed_bundles()]))
+            content_map = {file.path: file.content for file in bundle.files if not file.binary}
+            findings = self._meta.filter(findings, content_map=content_map)
+            signature = verify_manifest_signature(
+                manifest=bundle.manifest,
+                file_hashes={file.path: file.sha256 for file in bundle.files},
+                keyring=self._keyring,
+            )
+            summary = render_risk_summary(skill=bundle, findings=findings, signature=signature)
 
-        if signature.status == SignatureStatus.INVALID:
-            return SkillInstallDecision(
-                allowed=False,
-                status="blocked",
-                reason=signature.reason,
-                findings=findings,
-                summary=summary,
-                artifact_state=ArtifactState.REVOKED,
-            )
-        if (
-            self._policy.require_signature_for_auto_install
-            and signature.status is not SignatureStatus.TRUSTED
-        ):
-            return SkillInstallDecision(
-                allowed=False,
-                status="review",
-                reason="signature_required_policy",
-                findings=findings,
-                summary=summary,
-                artifact_state=ArtifactState.REVIEW,
-            )
-        if signature.require_confirmation and not approve_untrusted:
-            return SkillInstallDecision(
-                allowed=False,
-                status="review",
-                reason=signature.reason,
-                findings=findings,
-                summary=summary,
-                artifact_state=ArtifactState.REVIEW,
-            )
-
-        max_severity = _max_severity(findings)
-        if max_severity in {FindingSeverity.CRITICAL, FindingSeverity.HIGH}:
-            if any("tool_surface_policy" in finding.tags for finding in findings):
+            if signature.status == SignatureStatus.INVALID:
+                return SkillInstallDecision(
+                    allowed=False,
+                    status="blocked",
+                    reason=signature.reason,
+                    findings=findings,
+                    summary=summary,
+                    artifact_state=ArtifactState.REVOKED,
+                )
+            if (
+                self._policy.require_signature_for_auto_install
+                and signature.status is not SignatureStatus.TRUSTED
+            ):
                 return SkillInstallDecision(
                     allowed=False,
                     status="review",
-                    reason="tool_surface_policy_violation",
+                    reason="signature_required_policy",
                     findings=findings,
                     summary=summary,
                     artifact_state=ArtifactState.REVIEW,
                 )
+            if signature.require_confirmation and not approve_untrusted:
+                return SkillInstallDecision(
+                    allowed=False,
+                    status="review",
+                    reason=signature.reason,
+                    findings=findings,
+                    summary=summary,
+                    artifact_state=ArtifactState.REVIEW,
+                )
+
+            max_severity = _max_severity(findings)
+            if max_severity in {FindingSeverity.CRITICAL, FindingSeverity.HIGH}:
+                if any("tool_surface_policy" in finding.tags for finding in findings):
+                    return SkillInstallDecision(
+                        allowed=False,
+                        status="review",
+                        reason="tool_surface_policy_violation",
+                        findings=findings,
+                        summary=summary,
+                        artifact_state=ArtifactState.REVIEW,
+                    )
+                return SkillInstallDecision(
+                    allowed=False,
+                    status="review",
+                    reason="high_risk_findings",
+                    findings=findings,
+                    summary=summary,
+                    artifact_state=ArtifactState.REVIEW,
+                )
+
+            existing = self._inventory.get(bundle.manifest.name)
+            if existing is not None and self._policy.require_review_on_update:
+                return SkillInstallDecision(
+                    allowed=False,
+                    status="review",
+                    reason="update_requires_review",
+                    findings=findings,
+                    summary=summary,
+                    artifact_state=ArtifactState.REVIEW,
+                )
+
+            retained_path = self._publish_install_bundle(staged_path)
+            self._activate_loaded_bundle(bundle, retained_path)
             return SkillInstallDecision(
-                allowed=False,
-                status="review",
-                reason="high_risk_findings",
+                allowed=True,
+                status="installed",
+                reason="ok",
                 findings=findings,
                 summary=summary,
-                artifact_state=ArtifactState.REVIEW,
+                artifact_state=ArtifactState.PUBLISHED,
             )
-
-        existing = self._inventory.get(bundle.manifest.name)
-        if existing is not None and self._policy.require_review_on_update:
-            return SkillInstallDecision(
-                allowed=False,
-                status="review",
-                reason="update_requires_review",
-                findings=findings,
-                summary=summary,
-                artifact_state=ArtifactState.REVIEW,
-            )
-
-        self.activate_bundle(skill_path)
-        return SkillInstallDecision(
-            allowed=True,
-            status="installed",
-            reason="ok",
-            findings=findings,
-            summary=summary,
-            artifact_state=ArtifactState.PUBLISHED,
-        )
+        finally:
+            if staged_path.exists():
+                shutil.rmtree(staged_path, ignore_errors=True)
 
     def profile(self, skill_path: Path) -> SkillProfiler:
         bundle = load_skill_bundle(
@@ -302,7 +310,10 @@ class SkillManager:
 
     def list_installed(self) -> list[InstalledSkill]:
         self._require_state_available(transition="list")
-        return sorted(self._inventory.values(), key=lambda item: item.name)
+        return sorted(
+            (item.model_copy(deep=True) for item in self._inventory.values()),
+            key=lambda item: item.name,
+        )
 
     def revoke(self, *, skill_name: str, reason: str = "") -> InstalledSkill | None:
         self._require_state_available(transition="revoke")
@@ -310,7 +321,7 @@ class SkillManager:
         if installed is None:
             return None
         if installed.state == ArtifactState.REVOKED:
-            return installed
+            return installed.model_copy(deep=True)
         updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
         candidate = dict(self._inventory)
         candidate[skill_name] = updated
@@ -318,7 +329,7 @@ class SkillManager:
         self._inventory = candidate
         self._unregister_skill_tools(skill_name)
         _ = reason
-        return updated
+        return updated.model_copy(deep=True)
 
     def activate_bundle(
         self,
@@ -331,6 +342,15 @@ class SkillManager:
             skill_path,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
+        return self._activate_loaded_bundle(bundle, skill_path, state=state)
+
+    def _activate_loaded_bundle(
+        self,
+        bundle: SkillBundle,
+        skill_path: Path,
+        *,
+        state: ArtifactState = ArtifactState.PUBLISHED,
+    ) -> InstalledSkill:
         installed = InstalledSkill(
             name=bundle.manifest.name,
             version=bundle.manifest.version,
@@ -351,7 +371,24 @@ class SkillManager:
                 expected_hashes=installed.tool_schema_hashes,
                 registration_source="activate_bundle",
             )
-        return installed
+        return installed.model_copy(deep=True)
+
+    def _stage_install_bundle(self, skill_path: Path) -> Path:
+        bundles_root = self._storage_dir / "bundles"
+        ensure_owner_only_directory(bundles_root)
+        staging_path = bundles_root / f".install-{uuid.uuid4().hex}.tmp"
+        try:
+            shutil.copytree(skill_path, staging_path)
+        except OSError:
+            shutil.rmtree(staging_path, ignore_errors=True)
+            raise
+        return staging_path
+
+    @staticmethod
+    def _publish_install_bundle(staging_path: Path) -> Path:
+        retained_path = staging_path.parent / f"bundle-{uuid.uuid4().hex}"
+        staging_path.replace(retained_path)
+        return retained_path
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
         return [str(name) for name in self._skill_tool_map.get(skill_name, [])]

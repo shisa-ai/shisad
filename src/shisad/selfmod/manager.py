@@ -213,6 +213,12 @@ class _SelfModificationOperationError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class _StagedArtifactCopy:
     target_path: Path
+    staging_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedArtifactCopy:
+    target_path: Path
     backup_path: Path | None = None
 
 
@@ -351,8 +357,29 @@ class SelfModificationManager:
                 reason="confirmation_required",
             )
 
-        inspection = self._inspect_artifact(Path(proposal.artifact_path))
+        try:
+            staged_copy = self._stage_artifact_copy(
+                artifact_type=proposal.artifact_type,
+                name=proposal.name,
+                version=proposal.version,
+                source_path=Path(proposal.artifact_path),
+            )
+        except OSError:
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                warnings=list(proposal.warnings),
+                capability_diff=dict(proposal.capability_diff),
+                active_version=self._active_version(
+                    proposal.artifact_type,
+                    proposal.name,
+                ),
+                reason="artifact_store_copy_failed",
+            )
+
+        inspection = self._inspect_artifact(staged_copy.staging_path)
         if not inspection.valid:
+            self._discard_staged_artifact(staged_copy)
             reason = _normalize_integrity_reason(inspection.reason)
             self._record_incident(
                 proposal_id=proposal.proposal_id,
@@ -371,6 +398,7 @@ class SelfModificationManager:
                 reason=reason,
             )
         if inspection.manifest.model_dump(mode="json") != proposal.manifest.model_dump(mode="json"):
+            self._discard_staged_artifact(staged_copy)
             self._record_incident(
                 proposal_id=proposal.proposal_id,
                 artifact_path=proposal.artifact_path,
@@ -388,26 +416,8 @@ class SelfModificationManager:
                 reason="proposal_artifact_changed",
             )
 
-        previous_inventory = self._inventory.model_copy(deep=True)
-        previous_entry = self._inventory_entry_from(
-            previous_inventory,
-            proposal.artifact_type,
-            proposal.name,
-        )
-        candidate_inventory = previous_inventory.model_copy(deep=True)
-        self._set_inventory_entry_in(
-            candidate_inventory,
-            proposal.artifact_type,
-            proposal.name,
-            _InventoryEntry(enabled=True, active_version=proposal.version),
-        )
         try:
-            staged_copy = self._stage_artifact_copy(
-                artifact_type=proposal.artifact_type,
-                name=proposal.name,
-                version=proposal.version,
-                source_path=Path(proposal.artifact_path),
-            )
+            published_copy = self._publish_staged_artifact(staged_copy)
         except OSError:
             return SelfModificationApplyResult(
                 applied=False,
@@ -421,6 +431,19 @@ class SelfModificationManager:
                 reason="artifact_store_copy_failed",
             )
 
+        previous_inventory = self._inventory.model_copy(deep=True)
+        previous_entry = self._inventory_entry_from(
+            previous_inventory,
+            proposal.artifact_type,
+            proposal.name,
+        )
+        candidate_inventory = previous_inventory.model_copy(deep=True)
+        self._set_inventory_entry_in(
+            candidate_inventory,
+            proposal.artifact_type,
+            proposal.name,
+            _InventoryEntry(enabled=True, active_version=proposal.version),
+        )
         change_id = uuid.uuid4().hex
         change = _ChangeRecord(
             change_id=change_id,
@@ -437,7 +460,7 @@ class SelfModificationManager:
         except AtomicWriteError as exc:
             if not exc.publication_may_have_committed:
                 with suppress(OSError):
-                    self._restore_staged_artifact(staged_copy)
+                    self._restore_published_artifact(published_copy)
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -469,11 +492,11 @@ class SelfModificationManager:
                     reason="inventory_restore_failed",
                 )
             try:
-                self._restore_staged_artifact(staged_copy)
+                self._restore_published_artifact(published_copy)
             except OSError:
                 self._record_incident(
                     proposal_id=proposal.proposal_id,
-                    artifact_path=str(staged_copy.target_path),
+                    artifact_path=str(published_copy.target_path),
                     reason="artifact_store_restore_failed",
                 )
                 return SelfModificationApplyResult(
@@ -495,7 +518,7 @@ class SelfModificationManager:
             )
 
         self._inventory = candidate_inventory
-        self._finalize_staged_artifact(staged_copy)
+        self._finalize_published_artifact(published_copy)
         return SelfModificationApplyResult(
             applied=True,
             proposal_id=proposal_id,
@@ -994,33 +1017,59 @@ class SelfModificationManager:
         target_path = self._artifact_version_path(artifact_type, name, version)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         staging_path = target_path.parent / f".{target_path.name}.tmp-{uuid.uuid4().hex}"
-        backup_path = target_path.parent / f".{target_path.name}.bak-{uuid.uuid4().hex}"
-        staged_backup: Path | None = None
         try:
             shutil.copytree(source_path, staging_path)
-            if target_path.exists():
-                target_path.replace(backup_path)
-                staged_backup = backup_path
-            staging_path.replace(target_path)
-            return _StagedArtifactCopy(target_path=target_path, backup_path=staged_backup)
         except OSError:
             if staging_path.exists():
                 shutil.rmtree(staging_path, ignore_errors=True)
-            if staged_backup is not None and staged_backup.exists() and not target_path.exists():
-                backup_path.replace(target_path)
             raise
+        return _StagedArtifactCopy(
+            target_path=target_path,
+            staging_path=staging_path,
+        )
 
     @staticmethod
-    def _restore_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
-        if staged_copy.target_path.exists():
-            shutil.rmtree(staged_copy.target_path, ignore_errors=True)
-        if staged_copy.backup_path is not None and staged_copy.backup_path.exists():
-            staged_copy.backup_path.replace(staged_copy.target_path)
+    def _discard_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
+        if staged_copy.staging_path.exists():
+            shutil.rmtree(staged_copy.staging_path, ignore_errors=True)
 
     @staticmethod
-    def _finalize_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
-        if staged_copy.backup_path is not None and staged_copy.backup_path.exists():
-            shutil.rmtree(staged_copy.backup_path, ignore_errors=True)
+    def _publish_staged_artifact(staged_copy: _StagedArtifactCopy) -> _PublishedArtifactCopy:
+        backup_path = staged_copy.target_path.parent / (
+            f".{staged_copy.target_path.name}.bak-{uuid.uuid4().hex}"
+        )
+        staged_backup: Path | None = None
+        try:
+            if staged_copy.target_path.exists():
+                staged_copy.target_path.replace(backup_path)
+                staged_backup = backup_path
+            staged_copy.staging_path.replace(staged_copy.target_path)
+        except OSError:
+            if staged_copy.staging_path.exists():
+                shutil.rmtree(staged_copy.staging_path, ignore_errors=True)
+            if (
+                staged_backup is not None
+                and staged_backup.exists()
+                and not staged_copy.target_path.exists()
+            ):
+                staged_backup.replace(staged_copy.target_path)
+            raise
+        return _PublishedArtifactCopy(
+            target_path=staged_copy.target_path,
+            backup_path=staged_backup,
+        )
+
+    @staticmethod
+    def _restore_published_artifact(published_copy: _PublishedArtifactCopy) -> None:
+        if published_copy.target_path.exists():
+            shutil.rmtree(published_copy.target_path, ignore_errors=True)
+        if published_copy.backup_path is not None and published_copy.backup_path.exists():
+            published_copy.backup_path.replace(published_copy.target_path)
+
+    @staticmethod
+    def _finalize_published_artifact(published_copy: _PublishedArtifactCopy) -> None:
+        if published_copy.backup_path is not None and published_copy.backup_path.exists():
+            shutil.rmtree(published_copy.backup_path, ignore_errors=True)
 
     def _load_inventory(self) -> _Inventory:
         try:

@@ -456,6 +456,33 @@ def test_f3_scheduler_detaches_caller_owned_schedule_before_retention() -> None:
     assert len(scheduler.trigger_event(event_type="message.received", payload="accepted")) == 1
 
 
+def test_f3_scheduler_detaches_nested_pending_confirmation_admission_and_reads() -> None:
+    scheduler = SchedulerManager()
+    task_id = _create_scheduler_task(scheduler)
+    action = {
+        "confirmation_id": "confirm-detached",
+        "status": "pending",
+        "identity": {
+            "delivery_target": {
+                "channel": "session",
+                "recipient": "trusted-session",
+            },
+        },
+    }
+
+    scheduler.queue_confirmation(task_id, action)
+    action["identity"]["delivery_target"]["recipient"] = "attacker-session"
+
+    first_read = scheduler.pending_confirmations(task_id)
+    assert first_read[0]["identity"]["delivery_target"]["recipient"] == "trusted-session"
+    first_read[0]["identity"]["delivery_target"]["recipient"] = "reader-attacker"
+    first_read[0]["identity"]["task_id"] = "reader-task"
+
+    second_read = scheduler.pending_confirmations(task_id)
+    assert second_read[0]["identity"]["delivery_target"]["recipient"] == "trusted-session"
+    assert second_read[0]["identity"]["task_id"] == task_id
+
+
 def test_f3_scheduler_revalidates_internal_task_before_persisting(tmp_path: Path) -> None:
     storage = tmp_path / "scheduler"
     scheduler = SchedulerManager(storage_dir=storage)

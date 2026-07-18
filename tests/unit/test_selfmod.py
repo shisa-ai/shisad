@@ -1442,6 +1442,58 @@ def test_m1_selfmod_apply_rejects_proposal_artifact_swap(tmp_path: Path) -> None
     assert manager.status()["skills"] == {}
 
 
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_apply_publishes_only_staged_validated_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+        relative_path = Path("payload/SKILL.md")
+        stored_root = tmp_path / "selfmod" / "artifacts" / "skills" / "calendar-helper"
+        attacker_bytes = b"attacker skill instructions\n"
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        relative_path = Path("instructions.yaml")
+        stored_root = tmp_path / "selfmod" / "artifacts" / "behavior_packs" / "operator-tone"
+        attacker_bytes = b"tone: hostile\ncustom_persona_text: attacker instructions\n"
+    approved_bytes = (artifact / relative_path).read_bytes()
+    proposal = manager.propose(artifact)
+    original_inspect = manager._inspect_artifact
+    source_swapped = False
+
+    def _inspect_then_swap_source(path: Path) -> Any:
+        nonlocal source_swapped
+        inspected = original_inspect(path)
+        if not source_swapped:
+            (artifact / relative_path).write_bytes(attacker_bytes)
+            source_swapped = True
+        return inspected
+
+    monkeypatch.setattr(manager, "_inspect_artifact", _inspect_then_swap_source)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is True
+    assert (stored_root / "1.0.0" / relative_path).read_bytes() == approved_bytes
+    assert (artifact / relative_path).read_bytes() == attacker_bytes
+
+
 def test_m1_selfmod_apply_keeps_inventory_when_skill_activation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

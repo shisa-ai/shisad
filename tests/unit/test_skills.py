@@ -735,6 +735,80 @@ def _f3_skill_with_tool(tmp_path: Path, *, name: str = "durable-skill") -> Path:
     )
 
 
+@pytest.mark.asyncio
+async def test_f3_skill_install_publishes_the_analyzed_staged_bytes(tmp_path: Path) -> None:
+    manifest = _manifest_payload(name="staged-install")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n"},
+    )
+
+    class _SwapAfterAnalysisProvider(_FakeProvider):
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            (skill / "SKILL.md").write_text("attacker instructions\n", encoding="utf-8")
+            return await super().complete(messages, tools)
+
+    provider = _SwapAfterAnalysisProvider(
+        {"risk_score": 0.0, "mismatch": False, "findings": []},
+    )
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        llm_analyzer=LlmSkillAnalyzer(provider=provider),
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+
+    assert decision.allowed is True
+    installed = manager.list_installed()[0]
+    assert Path(installed.path) != skill
+    assert (Path(installed.path) / "SKILL.md").read_text(encoding="utf-8") == (
+        "trusted reviewed instructions\n"
+    )
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == "attacker instructions\n"
+
+
+@pytest.mark.parametrize("accessor", ["activate", "list", "revoke"])
+def test_f3_skill_inventory_accessors_detach_retained_models(
+    tmp_path: Path,
+    accessor: str,
+) -> None:
+    skill = _f3_skill_with_tool(tmp_path)
+    manager = SkillManager(storage_dir=tmp_path / "state")
+    activated = manager.activate_bundle(skill)
+    assert activated is not None
+    if accessor == "activate":
+        escaped = activated
+        expected_state = ArtifactState.PUBLISHED
+    elif accessor == "list":
+        escaped = manager.list_installed()[0]
+        expected_state = ArtifactState.PUBLISHED
+    else:
+        escaped = manager.revoke(skill_name="durable-skill", reason="test")
+        assert escaped is not None
+        expected_state = ArtifactState.REVOKED
+
+    original_hashes = dict(escaped.tool_schema_hashes)
+    schema_name = next(iter(original_hashes))
+    escaped.path = "/tmp/attacker-skill"
+    escaped.state = ArtifactState.REVIEW
+    escaped.tool_schema_hashes[schema_name] = "attacker-hash"
+
+    retained = manager.list_installed()[0]
+    assert retained.path == str(skill)
+    assert retained.state == expected_state
+    assert retained.tool_schema_hashes == original_hashes
+
+
 def test_f3_skill_inventory_corruption_is_retained_and_blocks_registration(
     tmp_path: Path,
 ) -> None:

@@ -3805,6 +3805,34 @@ def test_f3_control_plane_network_atomic_fault_keeps_old_live_baseline(
     assert baseline.state_status()["stage"] == "parent_fsync"
 
 
+def test_f3_control_plane_network_get_detaches_retained_baseline_entry() -> None:
+    baseline = BaselineDatabase()
+    metadata = extract_network_metadata(
+        origin=_origin("s-network-detached"),
+        tool_name="http.request",
+        destination_host="api.example.com",
+        destination_port=443,
+        protocol="https",
+        request_size=100,
+    )
+    baseline.record(
+        metadata=metadata,
+        allow_or_confirmed=True,
+        suspicious=False,
+        lockdown=False,
+    )
+
+    escaped = baseline.get(origin=metadata.origin, host=metadata.destination_host)
+    assert escaped is not None
+    escaped.count = 999
+    escaped.average_request_size = 999.0
+
+    retained = baseline.get(origin=metadata.origin, host=metadata.destination_host)
+    assert retained is not None
+    assert retained.count == 1
+    assert retained.average_request_size == 100.0
+
+
 def test_f3_control_plane_network_legacy_migrates_and_future_schema_is_retained(
     tmp_path: Path,
 ) -> None:

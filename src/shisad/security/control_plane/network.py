@@ -170,7 +170,10 @@ class BaselineDatabase:
         return f"{workspace}:{user}:{skill}:{host.lower()}"
 
     def get(self, *, origin: Origin, host: str) -> BaselineEntry | None:
-        return self._entries.get(self.key_for(origin, host))
+        entry = self._entries.get(self.key_for(origin, host))
+        if entry is None:
+            return None
+        return entry.model_copy(deep=True)
 
     def record(
         self,

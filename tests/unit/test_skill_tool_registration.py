@@ -421,6 +421,7 @@ async def test_m6_skill_tool_schema_drift_blocks_reregistration_on_restart(
     decision = await manager.install(skill, approve_untrusted=True)
     assert decision.allowed is True
     assert first_registry.has_tool(ToolName("skill.calendar-helper.lookup")) is True
+    installed_path = Path(manager.list_installed()[0].path)
 
     manifest = _manifest_payload(
         tools=[
@@ -438,7 +439,7 @@ async def test_m6_skill_tool_schema_drift_blocks_reregistration_on_restart(
             }
         ]
     )
-    (skill / "skill.manifest.yaml").write_text(
+    (installed_path / "skill.manifest.yaml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",
     )
@@ -494,6 +495,7 @@ async def test_h5_skill_tool_schema_drift_emits_metadata_only_restart_diagnostic
 
     decision = await manager.install(skill, approve_untrusted=True)
     assert decision.allowed is True
+    installed_path = Path(manager.list_installed()[0].path)
 
     manifest = _manifest_payload(
         tools=[
@@ -511,7 +513,7 @@ async def test_h5_skill_tool_schema_drift_emits_metadata_only_restart_diagnostic
             }
         ]
     )
-    (skill / "skill.manifest.yaml").write_text(
+    (installed_path / "skill.manifest.yaml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",
     )
@@ -629,6 +631,7 @@ async def test_m6_runtime_authorization_denies_manifest_drift(tmp_path: Path) ->
 
     decision = await manager.install(skill, approve_untrusted=True)
     assert decision.allowed is True
+    installed_path = Path(manager.list_installed()[0].path)
 
     manifest = _manifest_payload(
         description="calendar helper with drift",
@@ -647,7 +650,7 @@ async def test_m6_runtime_authorization_denies_manifest_drift(tmp_path: Path) ->
             }
         ],
     )
-    (skill / "skill.manifest.yaml").write_text(
+    (installed_path / "skill.manifest.yaml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",
     )
