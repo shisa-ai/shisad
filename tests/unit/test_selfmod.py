@@ -1676,16 +1676,29 @@ def test_f3_selfmod_publication_recovery_fsync_uncertainty_degrades_without_auth
     )
     manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
     if artifact_type == "skill_bundle":
-        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+        status_key = "skills"
+        artifact_name = "calendar-helper"
     else:
-        artifact = _write_signed_behavior_pack(
-            tmp_path / "behavior-pack",
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
             key_path=key_path,
             version="1.0.0",
             tone="strict",
             custom_text="Stay strict.",
         )
-    proposal = manager.propose(artifact)
+        status_key = "behavior_packs"
+        artifact_name = "operator-tone"
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    proposal = manager.propose(candidate)
 
     def _fail_publication_and_recovery_fsync(_path: Path) -> None:
         raise OSError("publication durability uncertain")
@@ -1700,9 +1713,12 @@ def test_f3_selfmod_publication_recovery_fsync_uncertainty_degrades_without_auth
 
     assert result.applied is False
     assert result.reason == "artifact_store_restore_failed"
+    assert result.active_version == ""
     assert manager.state_degraded is True
-    assert manager.status()["skills"] == {}
-    assert manager.status()["behavior_packs"] == {}
+    assert manager.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
     assert planner.defaults[-1] == ("neutral", "")
 
 
@@ -1721,16 +1737,29 @@ def test_f3_selfmod_pre_runtime_restore_fsync_uncertainty_degrades_without_candi
     )
     manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
     if artifact_type == "skill_bundle":
-        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+        status_key = "skills"
+        artifact_name = "calendar-helper"
     else:
-        artifact = _write_signed_behavior_pack(
-            tmp_path / "behavior-pack",
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
             key_path=key_path,
             version="1.0.0",
             tone="strict",
             custom_text="Stay strict.",
         )
-    proposal = manager.propose(artifact)
+        status_key = "behavior_packs"
+        artifact_name = "operator-tone"
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    proposal = manager.propose(candidate)
 
     inventory_write_failed = False
 
@@ -1760,16 +1789,21 @@ def test_f3_selfmod_pre_runtime_restore_fsync_uncertainty_degrades_without_candi
 
     assert result.applied is False
     assert result.reason == "artifact_store_restore_failed"
+    assert result.active_version == ""
     assert manager.state_degraded is True
-    assert manager.status()["skills"] == {}
-    assert manager.status()["behavior_packs"] == {}
+    assert manager.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
     assert planner.defaults[-1] == ("neutral", "")
     restarted, restarted_planner = _build_manager(
         tmp_path,
         allowed_signers_path=allowed_signers,
     )
-    assert restarted.status()["skills"] == {}
-    assert restarted.status()["behavior_packs"] == {}
+    assert restarted.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
     assert restarted._skill_manager._tool_registry.list_tools() == []
     assert restarted_planner.defaults[-1] == ("neutral", "")
 
@@ -1963,6 +1997,7 @@ def test_f3_selfmod_restore_fsync_failure_still_restores_runtime_and_degrades(
 
     assert result.applied is False
     assert result.reason == "artifact_store_restore_failed"
+    assert result.active_version == ""
     assert runtime_restore_attempted is True
     assert manager.state_degraded is True
     if artifact_type == "skill_bundle":
@@ -2096,10 +2131,12 @@ def test_f3_selfmod_publication_recovery_failure_quarantines_authority_across_re
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+@pytest.mark.parametrize("invalidation_failure", [False, True])
 def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     artifact_type: str,
+    invalidation_failure: bool,
 ) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
@@ -2171,6 +2208,16 @@ def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
             "_remove_artifact_tree",
             staticmethod(_fail_candidate_eviction),
         )
+        if invalidation_failure:
+
+            def _fail_inventory_invalidation(*_args: object, **_kwargs: object) -> None:
+                raise OSError("inventory invalidation failed")
+
+            faults.setattr(
+                selfmod_manager_module,
+                "remove_owner_controlled_file_entries",
+                _fail_inventory_invalidation,
+            )
         result = manager.apply(proposal.proposal_id, confirm=True)
     manager._state_fault_injector = None
 
@@ -2186,6 +2233,10 @@ def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
         assert manager._skill_manager._tool_registry.list_tools() == []
     else:
         assert planner.defaults[-1] == ("neutral", "")
+    if invalidation_failure:
+        assert manager._authority_block_path.exists()
+    else:
+        assert not manager._inventory_path.exists()
 
     restarted, restarted_planner = _build_manager(
         tmp_path,

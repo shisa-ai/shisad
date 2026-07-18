@@ -58,6 +58,7 @@ _ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SELFMOD_INVENTORY_VERSION = 1
 _SELFMOD_INVENTORY_DOMAIN_MARKER = b"shisad-selfmod-inventory-domain-v1\n"
+_SELFMOD_AUTHORITY_BLOCK_MARKER = b"shisad-selfmod-authority-blocked-v1\n"
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,7 @@ class SelfModificationManager:
         self._artifact_root = self._root / "artifacts"
         self._inventory_path = self._root / "inventory.yaml"
         self._inventory_domain_marker_path = self._root / ".inventory-domain-v1"
+        self._authority_block_path = self._root / ".authority-blocked-v1"
         self._incident_path = self._root / "last_incident.json"
         self._root_invalid = False
         try:
@@ -299,10 +301,23 @@ class SelfModificationManager:
         self._inventory_domain_marker_status = (
             "invalid" if self._root_invalid else self._inspect_inventory_domain_marker()
         )
+        authority_block_status = (
+            "invalid" if self._root_invalid else self._inspect_authority_block_marker()
+        )
         if self._root_invalid:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason="invalid_selfmod_root",
+            )
+            self._inventory = _Inventory()
+        elif authority_block_status != "missing":
+            self._state_load_result = StateLoadResult(
+                StateLoadStatus.CORRUPT,
+                reason=(
+                    "artifact_authority_blocked"
+                    if authority_block_status == "valid"
+                    else "invalid_authority_block_marker"
+                ),
             )
             self._inventory = _Inventory()
         else:
@@ -517,9 +532,7 @@ class SelfModificationManager:
                         proposal_id=proposal_id,
                         warnings=list(inspection.warnings),
                         capability_diff=dict(inspection.capability_diff),
-                        active_version=(
-                            previous_entry.active_version if previous_entry.enabled else ""
-                        ),
+                        active_version="",
                         reason="artifact_store_restore_failed",
                     )
             return SelfModificationApplyResult(
@@ -572,7 +585,7 @@ class SelfModificationManager:
                     proposal_id=proposal_id,
                     warnings=list(inspection.warnings),
                     capability_diff=dict(inspection.capability_diff),
-                    active_version=previous_entry.active_version if previous_entry.enabled else "",
+                    active_version="",
                     reason="artifact_store_restore_failed",
                 )
             self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
@@ -1066,6 +1079,14 @@ class SelfModificationManager:
                 logger.exception(
                     "failed to invalidate self-modification inventory after quarantine failure"
                 )
+                try:
+                    atomic_write_bytes(
+                        self._authority_block_path,
+                        _SELFMOD_AUTHORITY_BLOCK_MARKER,
+                        fault_injector=None,
+                    )
+                except AtomicWriteError:
+                    logger.exception("failed to persist self-modification authority block marker")
         self._inventory = quarantined_inventory
         self._restore_runtime(quarantined_inventory, artifact_type, name)
         self._mark_inventory_degraded("artifact_store_restore_uncertain")
@@ -1337,6 +1358,26 @@ class SelfModificationManager:
         if marker is None:
             return "invalid"
         return "valid" if marker == _SELFMOD_INVENTORY_DOMAIN_MARKER else "invalid"
+
+    def _inspect_authority_block_marker(self) -> str:
+        try:
+            target_stat = self._authority_block_path.lstat()
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "invalid"
+        if not stat.S_ISREG(target_stat.st_mode):
+            return "invalid"
+        try:
+            marker = read_owned_regular_file(
+                self._authority_block_path,
+                required_mode=0o600,
+            )
+        except OSError:
+            return "invalid"
+        if marker is None:
+            return "invalid"
+        return "valid" if marker == _SELFMOD_AUTHORITY_BLOCK_MARKER else "invalid"
 
     def _ensure_inventory_domain_marker(self) -> bool:
         if self._inventory_domain_marker_status == "valid":
