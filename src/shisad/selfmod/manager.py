@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
@@ -61,6 +63,7 @@ _SELFMOD_INVENTORY_VERSION = 1
 _SELFMOD_INVENTORY_DOMAIN_MARKER = b"shisad-selfmod-inventory-domain-v1\n"
 _SELFMOD_AUTHORITY_BLOCK_MARKER = b"shisad-selfmod-authority-blocked-v1\n"
 _SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER = b"shisad-selfmod-authority-complete-v1\n"
+_SIGNATURE_VERIFY_TIMEOUT_SECONDS = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -851,7 +854,6 @@ class SelfModificationManager:
         }
 
     def _inspect_artifact(self, artifact_path: Path) -> _ArtifactInspection:
-        signature_path = artifact_path / "manifest.json.sig"
         try:
             snapshot = capture_bounded_regular_tree(
                 artifact_path,
@@ -879,7 +881,8 @@ class SelfModificationManager:
                 valid=False,
                 reason="invalid_manifest_schema",
             )
-        if "manifest.json.sig" not in artifact_files:
+        signature_bytes = artifact_files.get("manifest.json.sig")
+        if signature_bytes is None:
             return _ArtifactInspection(
                 manifest=manifest,
                 valid=False,
@@ -887,7 +890,7 @@ class SelfModificationManager:
             )
         verified, signer, signature_reason = _verify_signature(
             manifest_bytes=manifest_bytes,
-            signature_path=signature_path,
+            signature_bytes=signature_bytes,
             allowed_signers_path=self._allowed_signers_path,
         )
         if not verified:
@@ -2195,7 +2198,7 @@ def _allowed_signer_principals(path: Path) -> list[str]:
 def _verify_signature(
     *,
     manifest_bytes: bytes,
-    signature_path: Path,
+    signature_bytes: bytes,
     allowed_signers_path: Path,
 ) -> tuple[bool, str, str]:
     principals = _allowed_signer_principals(allowed_signers_path)
@@ -2205,26 +2208,48 @@ def _verify_signature(
         manifest_text = manifest_bytes.decode("utf-8")
     except UnicodeDecodeError:
         return False, "", "invalid_manifest_encoding"
-    for principal in principals:
-        result = subprocess.run(
-            [
-                "ssh-keygen",
-                "-Y",
-                "verify",
-                "-f",
-                str(allowed_signers_path),
-                "-I",
-                principal,
-                "-n",
-                "file",
-                "-s",
-                str(signature_path),
-            ],
-            input=manifest_text,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            return True, principal, "signature_verified"
+    try:
+        with tempfile.TemporaryFile(prefix="shisad-selfmod-signature-") as signature_file:
+            signature_file.write(signature_bytes)
+            signature_file.flush()
+            signature_fd = signature_file.fileno()
+            os.fchmod(signature_fd, 0o400)
+            signature_descriptor_path = _held_descriptor_path(signature_fd)
+            if signature_descriptor_path is None:
+                return False, "", "signature_descriptor_unavailable"
+            for principal in principals:
+                signature_file.seek(0)
+                result = subprocess.run(
+                    [
+                        "ssh-keygen",
+                        "-Y",
+                        "verify",
+                        "-f",
+                        str(allowed_signers_path),
+                        "-I",
+                        principal,
+                        "-n",
+                        "file",
+                        "-s",
+                        str(signature_descriptor_path),
+                    ],
+                    input=manifest_text,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    pass_fds=(signature_fd,),
+                    timeout=_SIGNATURE_VERIFY_TIMEOUT_SECONDS,
+                )
+                if result.returncode == 0:
+                    return True, principal, "signature_verified"
+    except (OSError, subprocess.TimeoutExpired):
+        return False, "", "signature_verification_failed"
     return False, "", "signature_verification_failed"
+
+
+def _held_descriptor_path(fd: int) -> Path | None:
+    for root in (Path("/proc/self/fd"), Path("/dev/fd")):
+        candidate = root / str(fd)
+        if candidate.exists():
+            return candidate
+    return None

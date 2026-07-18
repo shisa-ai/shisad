@@ -352,7 +352,7 @@ def _capture_directory_contents(
     if depth > _MAX_TREE_DEPTH:
         raise ArtifactTreeCopyError("artifact tree depth limit exceeded")
     with os.scandir(source_fd) as entries:
-        for entry in sorted(entries, key=lambda item: item.name):
+        for entry in entries:
             name = entry.name
             observed = entry.stat(follow_symlinks=False)
             totals.entry_count += 1

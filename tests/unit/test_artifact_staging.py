@@ -81,6 +81,51 @@ def test_artifact_snapshot_rejects_symlinks_without_reading_external_bytes(
         )
 
 
+def test_artifact_snapshot_stops_enumeration_at_entry_limit_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    for index in range(8):
+        (source / f"file-{index}.txt").write_text(str(index), encoding="utf-8")
+    original_scandir = os.scandir
+    yielded = 0
+
+    class _BudgetedScandir:
+        def __init__(self, path: int | Path) -> None:
+            self._entries = original_scandir(path)
+
+        def __enter__(self) -> _BudgetedScandir:
+            self._entries.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self._entries.__exit__(*args)
+
+        def __iter__(self) -> _BudgetedScandir:
+            return self
+
+        def __next__(self) -> os.DirEntry[str]:
+            nonlocal yielded
+            if yielded >= 3:
+                raise AssertionError("capture enumerated beyond max_entries + 1")
+            entry = next(self._entries)
+            yielded += 1
+            return entry
+
+    monkeypatch.setattr(os, "scandir", _BudgetedScandir)
+
+    with pytest.raises(ArtifactTreeCopyError, match="entry limit"):
+        capture_bounded_regular_tree(
+            source,
+            max_entries=2,
+            max_total_bytes=32,
+        )
+
+    assert yielded == 3
+
+
 @pytest.mark.parametrize("link_to_directory", [False, True])
 def test_artifact_staging_rejects_symlinks_without_copying_external_bytes(
     tmp_path: Path,

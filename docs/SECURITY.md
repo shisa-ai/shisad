@@ -186,12 +186,13 @@ Overlay updates close that gate before changing planner defaults and reopen it
 only after every enabled stored artifact has passed its signed manifest,
 identity, and file-hash checks and the complete update succeeds. Inspection
 captures each bounded artifact tree through no-follow descriptors; behavior
-parsing and skill activation consume those same captured bytes rather than
-rereading the mutable stored paths after validation. Skill runtime activation
-and recovery revalidate the outer signed artifact and load its payload from
-that byte snapshot. If candidate application, recovery, rollback, or a trusted
-SOUL refresh cannot restore a coherent validated overlay, prompt composition
-ignores the staged defaults while self-modification reports degraded. With no
+parsing, signature verification, and skill activation consume those same
+captured bytes rather than rereading the mutable stored paths after validation.
+Skill runtime activation and recovery revalidate the outer signed artifact and
+load its payload from that byte snapshot. If candidate application, recovery,
+rollback, or a trusted SOUL refresh cannot restore a coherent validated overlay,
+prompt composition ignores the staged defaults while self-modification reports
+degraded. With no
 separate per-call tone override it uses a neutral tone, and it omits mutable
 custom persona text; it does not continue using the possibly candidate,
 tampered, or mismatched overlay.

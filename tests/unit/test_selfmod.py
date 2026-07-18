@@ -1714,6 +1714,73 @@ def test_f3_skill_runtime_consumes_the_validated_byte_snapshot(
     assert tool.description == "Look up calendar entries."
 
 
+def test_f3_signature_verification_consumes_the_captured_signature_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    planner = Planner(
+        object(),
+        PEP(PolicyBundle(default_require_confirmation=False), ToolRegistry()),
+        persona_tone="neutral",
+    )
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+        planner=planner,
+    )
+    stable = _write_signed_behavior_pack(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    stored_signature = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "behavior_packs"
+        / "operator-tone"
+        / "1.0.0"
+        / "manifest.json.sig"
+    )
+    original_verifier = selfmod_manager_module._verify_signature
+    mutated = False
+
+    def _mutate_after_capture(
+        *,
+        manifest_bytes: bytes,
+        signature_bytes: bytes,
+        allowed_signers_path: Path,
+    ) -> tuple[bool, str, str]:
+        nonlocal mutated
+        stored_signature.write_bytes(b"replacement signature bytes")
+        mutated = True
+        return original_verifier(
+            manifest_bytes=manifest_bytes,
+            signature_bytes=signature_bytes,
+            allowed_signers_path=allowed_signers_path,
+        )
+
+    monkeypatch.setattr(selfmod_manager_module, "_verify_signature", _mutate_after_capture)
+
+    manager._apply_behavior_overlay()
+
+    assert mutated is True
+    assert stored_signature.read_bytes() == b"replacement signature bytes"
+    assert planner._persona_defaults_enabled is True
+    assert planner._persona_tone == "friendly"
+    assert planner._custom_persona_text == "Stay warm."
+
+
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
