@@ -1763,7 +1763,15 @@ def test_f3_selfmod_pre_runtime_restore_fsync_uncertainty_degrades_without_candi
     assert manager.state_degraded is True
     assert manager.status()["skills"] == {}
     assert manager.status()["behavior_packs"] == {}
-    assert planner.defaults == [("neutral", "")]
+    assert planner.defaults[-1] == ("neutral", "")
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert restarted.status()["skills"] == {}
+    assert restarted.status()["behavior_packs"] == {}
+    assert restarted._skill_manager._tool_registry.list_tools() == []
+    assert restarted_planner.defaults[-1] == ("neutral", "")
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
@@ -1960,7 +1968,21 @@ def test_f3_selfmod_restore_fsync_failure_still_restores_runtime_and_degrades(
     if artifact_type == "skill_bundle":
         assert manager._skill_manager._tool_registry.list_tools() == []
     else:
-        assert planner.defaults[-1] == ("friendly", "Stay warm.")
+        assert planner.defaults[-1] == ("neutral", "")
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    status_key = "skills" if artifact_type == "skill_bundle" else "behavior_packs"
+    artifact_name = "calendar-helper" if artifact_type == "skill_bundle" else "operator-tone"
+    assert restarted.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
+    if artifact_type == "skill_bundle":
+        assert restarted._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert restarted_planner.defaults[-1] == ("neutral", "")
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
@@ -2071,6 +2093,110 @@ def test_f3_selfmod_publication_recovery_failure_quarantines_authority_across_re
         assert restarted._skill_manager._tool_registry.list_tools() == []
     else:
         assert restarted_planner.defaults[-1] == ("neutral", "")
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+        target = tmp_path / "selfmod" / "artifacts" / "skills" / "calendar-helper" / "1.0.0"
+        status_key = "skills"
+        artifact_name = "calendar-helper"
+    else:
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+        target = tmp_path / "selfmod" / "artifacts" / "behavior_packs" / "operator-tone" / "1.0.0"
+        status_key = "behavior_packs"
+        artifact_name = "operator-tone"
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    proposal = manager.propose(candidate)
+    quarantine_write_failed = False
+
+    def _fail_quarantine_write(stage: AtomicWriteStage) -> None:
+        nonlocal quarantine_write_failed
+        if not quarantine_write_failed and stage == AtomicWriteStage.TEMP_OPEN:
+            quarantine_write_failed = True
+            raise OSError("quarantine inventory write failed")
+
+    manager._state_fault_injector = _fail_quarantine_write
+    with monkeypatch.context() as faults:
+        fsync_calls = 0
+
+        def _fail_publication_fsync(path: Path) -> None:
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 1:
+                raise OSError("candidate publication fsync failed")
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+        original_remove = manager._remove_artifact_tree
+
+        def _fail_candidate_eviction(path: Path) -> None:
+            if path == target:
+                raise OSError("candidate eviction failed")
+            original_remove(path)
+
+        faults.setattr(selfmod_manager_module, "fsync_directory", _fail_publication_fsync)
+        faults.setattr(
+            SelfModificationManager,
+            "_remove_artifact_tree",
+            staticmethod(_fail_candidate_eviction),
+        )
+        result = manager.apply(proposal.proposal_id, confirm=True)
+    manager._state_fault_injector = None
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_restore_failed"
+    assert quarantine_write_failed is True
+    assert manager.state_degraded is True
+    assert manager.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
+    if artifact_type == "skill_bundle":
+        assert manager._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert planner.defaults[-1] == ("neutral", "")
+
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert restarted.state_degraded is True
+    assert restarted.status()[status_key] == {}
+    if artifact_type == "skill_bundle":
+        assert restarted._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert restarted_planner.defaults == []
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])

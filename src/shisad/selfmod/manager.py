@@ -49,6 +49,7 @@ from shisad.core.atomic_state import (
     ensure_owner_only_directory,
     read_owned_regular_file,
     remove_owner_controlled_directory_contents,
+    remove_owner_controlled_file_entries,
     validate_directory_ancestry,
 )
 
@@ -502,7 +503,10 @@ class SelfModificationManager:
                 try:
                     self._restore_published_artifact(published_copy)
                 except OSError:
-                    self._mark_inventory_degraded("artifact_store_restore_uncertain")
+                    self._quarantine_artifact_authority(
+                        proposal.artifact_type,
+                        proposal.name,
+                    )
                     self._record_incident(
                         proposal_id=proposal.proposal_id,
                         artifact_path=str(published_copy.target_path),
@@ -553,9 +557,11 @@ class SelfModificationManager:
                 self._restore_published_artifact(published_copy)
             except OSError:
                 restore_failed = True
-            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
             if restore_failed:
-                self._mark_inventory_degraded("artifact_store_restore_uncertain")
+                self._quarantine_artifact_authority(
+                    proposal.artifact_type,
+                    proposal.name,
+                )
                 self._record_incident(
                     proposal_id=proposal.proposal_id,
                     artifact_path=str(published_copy.target_path),
@@ -569,6 +575,7 @@ class SelfModificationManager:
                     active_version=previous_entry.active_version if previous_entry.enabled else "",
                     reason="artifact_store_restore_failed",
                 )
+            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -1046,8 +1053,19 @@ class SelfModificationManager:
         )
         if name in entries:
             entries[name] = _InventoryEntry(enabled=False, active_version="")
-        with suppress(AtomicWriteError):
+        try:
             self._persist_inventory_snapshot(quarantined_inventory)
+        except AtomicWriteError as exc:
+            self._persistence_degradation = exc
+            try:
+                remove_owner_controlled_file_entries(
+                    self._root,
+                    (self._inventory_path.name,),
+                )
+            except OSError:
+                logger.exception(
+                    "failed to invalidate self-modification inventory after quarantine failure"
+                )
         self._inventory = quarantined_inventory
         self._restore_runtime(quarantined_inventory, artifact_type, name)
         self._mark_inventory_degraded("artifact_store_restore_uncertain")
