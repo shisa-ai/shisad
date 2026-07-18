@@ -71,6 +71,16 @@ def _open_directory_chain(path: Path) -> int:
         raise
 
 
+def fsync_directory(path: Path) -> None:
+    """Durably publish directory-entry changes through a no-follow descriptor."""
+
+    directory_fd = _open_directory_chain(path)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
     return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
 
@@ -213,9 +223,7 @@ def _copy_directory_contents(
                         f"artifact tree directory changed during staging: {name}"
                     )
                 if _mount_id(source_child_fd) != root_mount_id:
-                    raise ArtifactTreeCopyError(
-                        f"artifact tree contains a nested mount: {name}"
-                    )
+                    raise ArtifactTreeCopyError(f"artifact tree contains a nested mount: {name}")
                 os.mkdir(name, 0o700, dir_fd=destination_fd)
                 destination_child_fd = os.open(
                     name,
@@ -258,12 +266,16 @@ def copy_bounded_regular_tree(
         raise ArtifactTreeCopyError("artifact source and destination overlap")
 
     source_fd = _open_directory_chain(source)
+    source_parent_fd = -1
     destination_parent_fd = -1
     destination_fd = -1
     created = False
     try:
         source_stat = os.fstat(source_fd)
         source_mount_id = _mount_id(source_fd)
+        source_parent_fd = _open_directory_chain(source.parent)
+        if _mount_id(source_parent_fd) != source_mount_id:
+            raise ArtifactTreeCopyError("artifact source root mount alias is not allowed")
         destination_parent_fd = _open_directory_chain(destination.parent)
         os.mkdir(destination.name, 0o700, dir_fd=destination_parent_fd)
         created = True
@@ -301,4 +313,6 @@ def copy_bounded_regular_tree(
             os.close(destination_fd)
         if destination_parent_fd >= 0:
             os.close(destination_parent_fd)
+        if source_parent_fd >= 0:
+            os.close(source_parent_fd)
         os.close(source_fd)

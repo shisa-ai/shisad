@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import stat
@@ -33,6 +34,7 @@ from shisad.core.artifact_staging import (
 )
 from shisad.core.artifact_staging import (
     copy_bounded_regular_tree,
+    fsync_directory,
 )
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -56,15 +58,21 @@ _ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SELFMOD_INVENTORY_VERSION = 1
 _SELFMOD_INVENTORY_DOMAIN_MARKER = b"shisad-selfmod-inventory-domain-v1\n"
 
+logger = logging.getLogger(__name__)
+
 
 class ArtifactFileRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     path: str
     sha256: str
     size: int
 
 
 class ArtifactManifest(BaseModel):
-    schema_version: str
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1"]
     type: Literal["skill_bundle", "behavior_pack"]
     name: str
     version: str
@@ -147,7 +155,7 @@ class _ProposalRecord(SelfModificationProposal):
 
     artifact_type: Literal["skill_bundle", "behavior_pack"]
     valid: bool = Field(strict=True)
-    manifest: ArtifactManifest
+    manifest: ArtifactManifest | None = None
 
     @model_validator(mode="after")
     def _validate_record_semantics(self) -> _ProposalRecord:
@@ -157,14 +165,17 @@ class _ProposalRecord(SelfModificationProposal):
             raise ValueError("invalid proposal name")
         if self.version and not _ARTIFACT_VERSION_RE.fullmatch(self.version):
             raise ValueError("invalid proposal version")
-        if self.valid and (
-            not self.name
-            or not self.version
-            or self.artifact_type != self.manifest.type
-            or self.name != self.manifest.name
-            or self.version != self.manifest.version
-        ):
-            raise ValueError("proposal identity does not match manifest")
+        if self.valid:
+            if self.manifest is None:
+                raise ValueError("valid proposal is missing its manifest")
+            if (
+                not self.name
+                or not self.version
+                or self.artifact_type != self.manifest.type
+                or self.name != self.manifest.name
+                or self.version != self.manifest.version
+            ):
+                raise ValueError("proposal identity does not match manifest")
         return self
 
 
@@ -319,7 +330,7 @@ class SelfModificationManager:
             capability_diff=dict(inspection.capability_diff),
             signer=inspection.signer,
             reason=inspection.reason,
-            manifest=inspection.manifest,
+            manifest=inspection.manifest if inspection.valid else None,
         )
         self._write_record_atomic(
             self._proposal_path(proposal.proposal_id),
@@ -406,7 +417,9 @@ class SelfModificationManager:
                 ),
                 reason=reason,
             )
-        if inspection.manifest.model_dump(mode="json") != proposal.manifest.model_dump(mode="json"):
+        if proposal.manifest is None or (
+            inspection.manifest.model_dump(mode="json") != proposal.manifest.model_dump(mode="json")
+        ):
             self._discard_staged_artifact(staged_copy)
             self._record_incident(
                 proposal_id=proposal.proposal_id,
@@ -468,8 +481,24 @@ class SelfModificationManager:
             self._persist_inventory_snapshot(candidate_inventory)
         except AtomicWriteError as exc:
             if not exc.publication_may_have_committed:
-                with suppress(OSError):
+                try:
                     self._restore_published_artifact(published_copy)
+                except OSError:
+                    self._record_incident(
+                        proposal_id=proposal.proposal_id,
+                        artifact_path=str(published_copy.target_path),
+                        reason="artifact_store_restore_failed",
+                    )
+                    return SelfModificationApplyResult(
+                        applied=False,
+                        proposal_id=proposal_id,
+                        warnings=list(inspection.warnings),
+                        capability_diff=dict(inspection.capability_diff),
+                        active_version=(
+                            previous_entry.active_version if previous_entry.enabled else ""
+                        ),
+                        reason="artifact_store_restore_failed",
+                    )
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -527,7 +556,13 @@ class SelfModificationManager:
             )
 
         self._inventory = candidate_inventory
-        self._finalize_published_artifact(published_copy)
+        try:
+            self._finalize_published_artifact(published_copy)
+        except OSError:
+            logger.exception(
+                "self-modification artifact backup finalization failed for %s",
+                published_copy.target_path,
+            )
         return SelfModificationApplyResult(
             applied=True,
             proposal_id=proposal_id,
@@ -1024,7 +1059,7 @@ class SelfModificationManager:
         source_path: Path,
     ) -> _StagedArtifactCopy:
         target_path = self._artifact_version_path(artifact_type, name, version)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_directory(target_path.parent)
         staging_path = target_path.parent / f".{target_path.name}.tmp-{uuid.uuid4().hex}"
         try:
             copy_bounded_regular_tree(
@@ -1043,12 +1078,24 @@ class SelfModificationManager:
         )
 
     @staticmethod
-    def _discard_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
-        if staged_copy.staging_path.exists():
-            shutil.rmtree(staged_copy.staging_path, ignore_errors=True)
+    def _remove_artifact_tree(path: Path) -> None:
+        remove_owner_controlled_directory_contents(
+            path,
+            allow_nested_directories=True,
+        )
+        path.rmdir()
 
-    @staticmethod
-    def _publish_staged_artifact(staged_copy: _StagedArtifactCopy) -> _PublishedArtifactCopy:
+    @classmethod
+    def _discard_staged_artifact(cls, staged_copy: _StagedArtifactCopy) -> None:
+        if staged_copy.staging_path.exists():
+            cls._remove_artifact_tree(staged_copy.staging_path)
+            fsync_directory(staged_copy.staging_path.parent)
+
+    @classmethod
+    def _publish_staged_artifact(
+        cls,
+        staged_copy: _StagedArtifactCopy,
+    ) -> _PublishedArtifactCopy:
         backup_path = staged_copy.target_path.parent / (
             f".{staged_copy.target_path.name}.bak-{uuid.uuid4().hex}"
         )
@@ -1058,32 +1105,38 @@ class SelfModificationManager:
                 staged_copy.target_path.replace(backup_path)
                 staged_backup = backup_path
             staged_copy.staging_path.replace(staged_copy.target_path)
+            fsync_directory(staged_copy.target_path.parent)
         except OSError:
-            if staged_copy.staging_path.exists():
-                shutil.rmtree(staged_copy.staging_path, ignore_errors=True)
+            if staged_copy.target_path.exists():
+                cls._remove_artifact_tree(staged_copy.target_path)
             if (
                 staged_backup is not None
                 and staged_backup.exists()
                 and not staged_copy.target_path.exists()
             ):
                 staged_backup.replace(staged_copy.target_path)
+            if staged_copy.staging_path.exists():
+                cls._remove_artifact_tree(staged_copy.staging_path)
+            fsync_directory(staged_copy.target_path.parent)
             raise
         return _PublishedArtifactCopy(
             target_path=staged_copy.target_path,
             backup_path=staged_backup,
         )
 
-    @staticmethod
-    def _restore_published_artifact(published_copy: _PublishedArtifactCopy) -> None:
+    @classmethod
+    def _restore_published_artifact(cls, published_copy: _PublishedArtifactCopy) -> None:
         if published_copy.target_path.exists():
-            shutil.rmtree(published_copy.target_path, ignore_errors=True)
+            cls._remove_artifact_tree(published_copy.target_path)
         if published_copy.backup_path is not None and published_copy.backup_path.exists():
             published_copy.backup_path.replace(published_copy.target_path)
+        fsync_directory(published_copy.target_path.parent)
 
-    @staticmethod
-    def _finalize_published_artifact(published_copy: _PublishedArtifactCopy) -> None:
+    @classmethod
+    def _finalize_published_artifact(cls, published_copy: _PublishedArtifactCopy) -> None:
         if published_copy.backup_path is not None and published_copy.backup_path.exists():
-            shutil.rmtree(published_copy.backup_path, ignore_errors=True)
+            cls._remove_artifact_tree(published_copy.backup_path)
+            fsync_directory(published_copy.target_path.parent)
 
     def _load_inventory(self) -> _Inventory:
         try:
@@ -1127,9 +1180,8 @@ class SelfModificationManager:
 
         legacy = False
         document_result, json_payload = decode_json_document(raw_bytes)
-        if (
-            document_result.status is not StateLoadStatus.OK
-            and raw_bytes.lstrip().startswith((b"{", b"["))
+        if document_result.status is not StateLoadStatus.OK and raw_bytes.lstrip().startswith(
+            (b"{", b"[")
         ):
             self._state_load_result = document_result
             return _Inventory()

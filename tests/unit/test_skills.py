@@ -922,6 +922,61 @@ async def test_f3_skill_install_commit_uncertainty_retains_potentially_reference
 
 
 @pytest.mark.asyncio
+async def test_f3_skill_install_publication_fsync_failure_never_updates_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest_payload(name="publication-fsync-failure")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n"},
+    )
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+    calls = 0
+
+    def _fail_first_directory_fsync(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("bundle publication fsync failed")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(
+        skill_manager_module,
+        "fsync_directory",
+        _fail_first_directory_fsync,
+        raising=False,
+    )
+
+    with pytest.raises(OSError, match="publication fsync failed"):
+        await manager.install(skill, approve_untrusted=True)
+
+    assert calls >= 2
+    assert manager.list_installed() == []
+    assert list((tmp_path / "state" / "bundles").iterdir()) == []
+    restarted = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+    assert restarted.list_installed() == []
+
+
+@pytest.mark.asyncio
 async def test_f3_skill_install_replacement_retires_only_superseded_managed_bundle(
     tmp_path: Path,
 ) -> None:

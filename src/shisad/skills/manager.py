@@ -20,6 +20,7 @@ from shisad.core.artifact_staging import (
 )
 from shisad.core.artifact_staging import (
     copy_bounded_regular_tree,
+    fsync_directory,
 )
 from shisad.core.atomic_state import (
     AtomicWriteError,
@@ -414,10 +415,14 @@ class SkillManager:
             raise
         return staging_path
 
-    @staticmethod
-    def _publish_install_bundle(staging_path: Path) -> Path:
+    def _publish_install_bundle(self, staging_path: Path) -> Path:
         retained_path = staging_path.parent / f"bundle-{uuid.uuid4().hex}"
         staging_path.replace(retained_path)
+        try:
+            fsync_directory(retained_path.parent)
+        except OSError:
+            self._discard_managed_install_bundle(retained_path)
+            raise
         return retained_path
 
     def _retire_superseded_managed_bundle(
@@ -451,6 +456,7 @@ class SkillManager:
             allow_nested_directories=True,
         )
         path.rmdir()
+        fsync_directory(path.parent)
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
         return [str(name) for name in self._skill_tool_map.get(skill_name, [])]

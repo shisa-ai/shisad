@@ -273,12 +273,10 @@ def test_artifact_staging_rejects_changed_mount_identity_for_nested_subtree(
     nested.mkdir()
     (nested / "secret.txt").write_text("operator secret", encoding="utf-8")
     destination = tmp_path / "destination"
-    calls = 0
+    nested_inode = nested.stat().st_ino
 
-    def _changed_mount_id(_fd: int) -> int:
-        nonlocal calls
-        calls += 1
-        return 100 if calls == 1 else 200
+    def _changed_mount_id(fd: int) -> int:
+        return 200 if os.fstat(fd).st_ino == nested_inode else 100
 
     monkeypatch.setattr(
         artifact_staging_module,
@@ -316,6 +314,35 @@ def test_artifact_staging_fails_closed_when_mount_identity_is_unavailable(
     )
 
     with pytest.raises(ArtifactTreeCopyError, match="mount identity unavailable"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_rejects_source_root_mount_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "destination"
+    source_inode = source.stat().st_ino
+
+    def _source_root_mount_id(fd: int) -> int:
+        return 200 if os.fstat(fd).st_ino == source_inode else 100
+
+    monkeypatch.setattr(
+        artifact_staging_module,
+        "_mount_id",
+        _source_root_mount_id,
+    )
+
+    with pytest.raises(ArtifactTreeCopyError, match="source root mount"):
         copy_bounded_regular_tree(
             source,
             destination,

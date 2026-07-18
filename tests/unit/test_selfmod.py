@@ -1518,6 +1518,257 @@ def test_f3_selfmod_apply_rejects_symlinked_source_during_staging(tmp_path: Path
     assert not any(path.is_file() for path in artifact_root.rglob("*"))
 
 
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_staging_rejects_symlinked_destination_bucket_without_external_mutation(
+    tmp_path: Path,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+        bucket = "skills"
+        name = "calendar-helper"
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        bucket = "behavior_packs"
+        name = "operator-tone"
+    proposal = manager.propose(artifact)
+    external = tmp_path / "external"
+    external.mkdir()
+    bucket_path = tmp_path / "selfmod" / "artifacts" / bucket
+    bucket_path.symlink_to(external, target_is_directory=True)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_copy_failed"
+    assert not (external / name).exists()
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_staging_creates_owner_only_namespace_parents_under_permissive_umask(
+    tmp_path: Path,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+        bucket = "skills"
+        name = "calendar-helper"
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        bucket = "behavior_packs"
+        name = "operator-tone"
+    proposal = manager.propose(artifact)
+    previous_umask = os.umask(0)
+    try:
+        result = manager.apply(proposal.proposal_id, confirm=True)
+    finally:
+        os.umask(previous_umask)
+
+    assert result.applied is True
+    artifact_root = tmp_path / "selfmod" / "artifacts"
+    assert stat.S_IMODE((artifact_root / bucket).stat().st_mode) == 0o700
+    assert stat.S_IMODE((artifact_root / bucket / name).stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_publication_fsync_failure_restores_absent_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+        target = tmp_path / "selfmod" / "artifacts" / "skills" / "calendar-helper" / "1.0.0"
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        target = tmp_path / "selfmod" / "artifacts" / "behavior_packs" / "operator-tone" / "1.0.0"
+    proposal = manager.propose(artifact)
+    calls = 0
+
+    def _fail_first_directory_fsync(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("artifact publication fsync failed")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "fsync_directory",
+        _fail_first_directory_fsync,
+        raising=False,
+    )
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_copy_failed"
+    assert calls >= 2
+    assert not target.exists()
+    assert manager.status()["skills"] == {}
+    assert manager.status()["behavior_packs"] == {}
+    restarted, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert restarted.status()["skills"] == {}
+    assert restarted.status()["behavior_packs"] == {}
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_publish_restore_and_finalize_fsync_the_artifact_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+    else:
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    fsynced: list[Path] = []
+
+    def _record_directory_fsync(path: Path) -> None:
+        fsynced.append(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "fsync_directory",
+        _record_directory_fsync,
+        raising=False,
+    )
+    proposal = manager.propose(candidate)
+    original_commit = manager._commit_inventory_and_change
+
+    def _fail_change_commit(*_args: object, **_kwargs: object) -> None:
+        raise selfmod_manager_module._SelfModificationOperationError("change_record_persist_failed")
+
+    monkeypatch.setattr(manager, "_commit_inventory_and_change", _fail_change_commit)
+    failed = manager.apply(proposal.proposal_id, confirm=True)
+    assert failed.applied is False
+    assert failed.reason == "change_record_persist_failed"
+    assert len(fsynced) >= 2
+
+    monkeypatch.setattr(manager, "_commit_inventory_and_change", original_commit)
+    fsynced.clear()
+    succeeded = manager.apply(proposal.proposal_id, confirm=True)
+    assert succeeded.applied is True
+    assert len(fsynced) >= 2
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_rejects_signed_unsupported_artifact_manifest_schema(
+    tmp_path: Path,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+    _rewrite_manifest(
+        artifact,
+        key_path=key_path,
+        mutate=lambda manifest: manifest.update(
+            {"schema_version": "2", "future_policy": {"mode": "future"}}
+        ),
+    )
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "invalid_manifest_schema"
+    result = manager.apply(proposal.proposal_id, confirm=True)
+    assert result.applied is False
+    assert result.reason == "invalid_manifest_schema"
+
+
 def test_m1_selfmod_apply_keeps_inventory_when_skill_activation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
