@@ -104,6 +104,14 @@ def _config(tmp_path: Path, *, name: str, socket_name: str) -> DaemonConfig:
     )
 
 
+def _legacy_abstract_namespace_prefix(root: Path) -> str:
+    path_token = authority._identity_token(
+        os.path.abspath(os.fspath(root.expanduser())),
+        length=12,
+    )
+    return f"shisad-authority-v3-{os.getuid()}-{path_token}"
+
+
 def test_f3_authority_candidates_are_complete_and_side_effect_free(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -165,7 +173,7 @@ def test_f3_candidate_cannot_overlap_host_global_registry(
     tmp_path: Path,
     overlap: str,
 ) -> None:
-    registry_root = Path("/tmp") / f"shisad-authority-{os.getuid()}"
+    registry_root = authority._registry_root()
     data_dir = tmp_path / "data"
     socket_path = tmp_path / "control.sock"
     if overlap == "exact":
@@ -182,6 +190,108 @@ def test_f3_candidate_cannot_overlap_host_global_registry(
 
     with pytest.raises(AuthorityRegistryError, match="overlaps host-global registry"):
         acquire_daemon_authority_claim(config)
+
+
+def test_f3_authority_registry_uses_private_xdg_runtime_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_root))
+
+    registry_root = authority._registry_root()
+
+    assert registry_root == runtime_root / "shisad" / "authority-registry"
+    assert registry_root != Path("/tmp") / f"shisad-authority-{os.getuid()}"
+
+
+def test_f3_authority_registry_ignores_unsafe_xdg_runtime_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "foreign-writable-runtime"
+    runtime_root.mkdir(mode=0o777)
+    runtime_root.chmod(0o777)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_root))
+
+    registry_root = authority._registry_root()
+
+    assert not registry_root.is_relative_to(runtime_root)
+    assert registry_root == (
+        Path.home() / ".local" / "state" / "shisad" / "runtime" / "authority-registry"
+    )
+
+
+def test_f3_authority_guard_and_marker_are_owner_only_outside_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    claim = acquire_daemon_authority_claim(
+        _config(tmp_path, name="marker-modes", socket_name="marker-modes.sock")
+    )
+    marker = claim._namespace_marker
+    assert marker is not None
+    marker_path = marker.path
+    guard_path = authority._namespace_guard_path(registry_root)
+    try:
+        assert marker_path.parent == authority._namespace_marker_root(registry_root)
+        assert not marker_path.is_relative_to(registry_root)
+        assert stat.S_IMODE(marker_path.stat().st_mode) == 0o600
+        assert marker_path.stat().st_uid == os.geteuid()
+        assert stat.S_IMODE(guard_path.stat().st_mode) == 0o600
+        assert guard_path.stat().st_uid == os.geteuid()
+    finally:
+        claim.release()
+    assert not marker_path.exists()
+    assert guard_path.exists()
+
+
+def test_f3_legacy_abstract_guard_squatting_does_not_block_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    monkeypatch.setattr(authority, "_NAMESPACE_GUARD_TIMEOUT_SECONDS", 0.02)
+    squatter = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    squatter.bind(f"\0{_legacy_abstract_namespace_prefix(registry_root)}-guard")
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        claim = acquire_daemon_authority_claim(
+            _config(tmp_path, name="guard-squat", socket_name="guard-squat.sock")
+        )
+    finally:
+        if claim is not None:
+            claim.release()
+        squatter.close()
+
+
+def test_f3_stale_abstract_claim_name_rebinding_does_not_block_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_root = tmp_path / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    config = _config(tmp_path, name="marker-rebind", socket_name="marker-rebind.sock")
+    claim = acquire_daemon_authority_claim(config)
+    legacy_name = (
+        f"\0{_legacy_abstract_namespace_prefix(registry_root)}-marker-"
+        f"{authority._registry_identity_token(registry_root.lstat())}-"
+        f"{authority._claim_identity_token(claim._record_path, claim._record_path.lstat())}"
+    )
+    claim.release()
+    squatter = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    squatter.bind(legacy_name)
+    successor: DaemonAuthorityClaim | None = None
+    try:
+        successor = acquire_daemon_authority_claim(config)
+    finally:
+        if successor is not None:
+            successor.release()
+        squatter.close()
 
 
 def test_f3_atomic_claim_loser_cannot_create_or_repair_target(tmp_path: Path) -> None:

@@ -8,7 +8,6 @@ import hashlib
 import json
 import logging
 import os
-import socket
 import stat
 import time
 import uuid
@@ -120,13 +119,33 @@ class _SiblingPattern:
         return name.startswith(self.prefix) and name.endswith(self.suffix)
 
 
+class _NamespaceMarker:
+    """Owner-authenticated filesystem marker held for one claim lifetime."""
+
+    __slots__ = ("fd", "path")
+
+    def __init__(self, *, fd: int, path: Path) -> None:
+        self.fd = fd
+        self.path = path
+
+    def fileno(self) -> int:
+        return self.fd
+
+    def close(self) -> None:
+        fd = self.fd
+        self.fd = -1
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+
+
 class DaemonAuthorityClaim:
     """A process-lifetime claim held by an open, exclusively locked record."""
 
     __slots__ = (
         "_candidates",
         "_fd",
-        "_namespace_socket",
+        "_namespace_marker",
         "_record_path",
         "_registry_root",
     )
@@ -136,13 +155,13 @@ class DaemonAuthorityClaim:
         *,
         candidates: tuple[DaemonAuthorityCandidate, ...],
         fd: int,
-        namespace_socket: socket.socket,
+        namespace_marker: _NamespaceMarker,
         record_path: Path,
         registry_root: Path,
     ) -> None:
         self._candidates = candidates
         self._fd: int | None = fd
-        self._namespace_socket: socket.socket | None = namespace_socket
+        self._namespace_marker: _NamespaceMarker | None = namespace_marker
         self._record_path = record_path
         self._registry_root = registry_root
 
@@ -245,13 +264,13 @@ class DaemonAuthorityClaim:
                     if probe_fd >= 0:
                         os.close(probe_fd)
 
-            namespace_socket = self._namespace_socket
-            if namespace_socket is None:
+            namespace_marker = self._namespace_marker
+            if namespace_marker is None:
                 problems.append("namespace_reference_unavailable")
             else:
                 try:
-                    _verify_bound_namespace_socket(
-                        namespace_socket.fileno(),
+                    _verify_bound_namespace_marker(
+                        namespace_marker.fileno(),
                         root=self._registry_root,
                         record_path=self._record_path,
                         error_type=AuthorityClaimError,
@@ -306,11 +325,11 @@ class DaemonAuthorityClaim:
             raise AuthorityClaimError("daemon authority claim record is unavailable") from exc
         if (record_stat.st_dev, record_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
             raise AuthorityClaimError("daemon authority claim record identity changed")
-        namespace_socket = self._namespace_socket
-        if namespace_socket is None:
+        namespace_marker = self._namespace_marker
+        if namespace_marker is None:
             raise AuthorityClaimError("daemon authority claim namespace is unavailable")
-        _verify_bound_namespace_socket(
-            namespace_socket.fileno(),
+        _verify_bound_namespace_marker(
+            namespace_marker.fileno(),
             root=self._registry_root,
             record_path=self._record_path,
             error_type=AuthorityClaimError,
@@ -360,13 +379,13 @@ class DaemonAuthorityClaim:
             fd = self._fd
             if fd is None:
                 raise AuthorityClaimError("daemon authority claim has already been released")
-            namespace_socket = self._namespace_socket
-            if namespace_socket is None:
+            namespace_marker = self._namespace_marker
+            if namespace_marker is None:
                 raise AuthorityClaimError("daemon authority claim namespace is unavailable")
             return DaemonAuthorityLease(
                 fd=os.dup(fd),
                 record_path=self._record_path,
-                namespace_fd=os.dup(namespace_socket.fileno()),
+                namespace_fd=os.dup(namespace_marker.fileno()),
             )
 
     def _discard_descriptors(self) -> None:
@@ -377,10 +396,10 @@ class DaemonAuthorityClaim:
         if fd is not None:
             with suppress(OSError):
                 os.close(fd)
-        namespace_socket = self._namespace_socket
-        self._namespace_socket = None
-        if namespace_socket is not None:
-            namespace_socket.close()
+        namespace_marker = self._namespace_marker
+        self._namespace_marker = None
+        if namespace_marker is not None:
+            namespace_marker.close()
 
     def release(self) -> None:
         """Release this reference and remove its record after inherited holders."""
@@ -389,8 +408,8 @@ class DaemonAuthorityClaim:
         if fd is None:
             return
         self._fd = None
-        namespace_socket = self._namespace_socket
-        self._namespace_socket = None
+        namespace_marker = self._namespace_marker
+        self._namespace_marker = None
         cleanup_error: OSError | AuthorityRegistryError | None = None
         fd_open = True
         try:
@@ -437,9 +456,9 @@ class DaemonAuthorityClaim:
                                 raise AuthorityRegistryError(
                                     "daemon authority claim record identity changed during release"
                                 )
-                            if namespace_socket is not None:
-                                namespace_socket.close()
-                                namespace_socket = None
+                            if namespace_marker is not None:
+                                _unlink_namespace_marker(namespace_marker)
+                                namespace_marker = None
                             self._record_path.unlink()
                             _fsync_directory(self._registry_root)
                     finally:
@@ -449,8 +468,8 @@ class DaemonAuthorityClaim:
         finally:
             if fd_open:
                 os.close(fd)
-            if namespace_socket is not None:
-                namespace_socket.close()
+            if namespace_marker is not None:
+                namespace_marker.close()
         if cleanup_error is not None:
             raise AuthorityRegistryError(
                 "failed to clean daemon authority claim"
@@ -675,20 +694,30 @@ def derive_daemon_authority_candidates(
 
 
 def _registry_root() -> Path:
-    return Path("/tmp") / f"shisad-authority-{os.getuid()}"
+    configured = os.environ.get("XDG_RUNTIME_DIR", "")
+    if configured and configured == configured.strip():
+        runtime_root = Path(configured)
+        if runtime_root.is_absolute():
+            try:
+                runtime_stat = runtime_root.lstat()
+            except OSError:
+                pass
+            else:
+                if (
+                    stat.S_ISDIR(runtime_stat.st_mode)
+                    and runtime_stat.st_uid == os.geteuid()
+                    and stat.S_IMODE(runtime_stat.st_mode) == 0o700
+                ):
+                    return runtime_root / "shisad" / "authority-registry"
+    return Path.home() / ".local" / "state" / "shisad" / "runtime" / "authority-registry"
 
 
-def _registry_path_token(root: Path) -> str:
-    lexical = os.path.abspath(os.fspath(root.expanduser()))
-    return _identity_token(lexical, length=12)
+def _namespace_guard_path(root: Path) -> Path:
+    return root.parent / f".{root.name}.guard"
 
 
-def _namespace_prefix(root: Path) -> str:
-    return f"shisad-authority-v3-{os.getuid()}-{_registry_path_token(root)}"
-
-
-def _namespace_guard_name(root: Path) -> str:
-    return f"\0{_namespace_prefix(root)}-guard"
+def _namespace_marker_root(root: Path) -> Path:
+    return root.parent / f".{root.name}.markers"
 
 
 def _identity_token(*values: object, length: int) -> str:
@@ -704,45 +733,53 @@ def _claim_identity_token(path: Path, path_stat: os.stat_result) -> str:
     return _identity_token(path.name, path_stat.st_dev, path_stat.st_ino, length=24)
 
 
-def _claim_namespace_name(
+def _claim_namespace_path(
     root: Path,
     root_stat: os.stat_result,
     record_path: Path,
     record_stat: os.stat_result,
-) -> str:
-    return (
-        f"\0{_namespace_prefix(root)}-marker-"
-        f"{_registry_identity_token(root_stat)}-"
-        f"{_claim_identity_token(record_path, record_stat)}"
+) -> Path:
+    return _namespace_marker_root(root) / (
+        f"marker-{_registry_identity_token(root_stat)}-"
+        f"{_claim_identity_token(record_path, record_stat)}.lock"
     )
 
 
-def _bind_abstract_socket(name: str) -> socket.socket:
-    namespace_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+def _ensure_registry_runtime_parent(root: Path) -> None:
     try:
-        namespace_socket.bind(name)
-    except BaseException:
-        namespace_socket.close()
+        _ensure_owner_directory(root.parent)
+        _ensure_owner_directory(_namespace_marker_root(root))
+    except AuthorityClaimError as exc:
+        raise AuthorityRegistryError(
+            "authority runtime directory is unavailable or unsafe"
+        ) from exc
+
+
+def _matching_namespace_marker_paths(root: Path) -> list[Path]:
+    marker_root = _namespace_marker_root(root)
+    paths: list[Path] = []
+    try:
+        with os.scandir(marker_root) as entries:
+            for entry in entries:
+                if not entry.name.startswith("marker-") or not entry.name.endswith(".lock"):
+                    continue
+                paths.append(Path(entry.path))
+                if len(paths) > _MAX_MATCHING_ARTIFACTS:
+                    raise AuthorityRegistryError("too many daemon authority namespace markers")
+    except FileNotFoundError:
+        return []
+    except AuthorityRegistryError:
         raise
-    return namespace_socket
+    except OSError as exc:
+        raise AuthorityRegistryError("cannot inspect daemon authority namespace markers") from exc
+    return sorted(paths, key=os.fspath)
 
 
 def _active_namespace_markers(root: Path) -> set[tuple[str, str]]:
-    proc_path = Path("/proc/net/unix")
-    marker_prefix = f"@{_namespace_prefix(root)}-marker-"
-    try:
-        rows = proc_path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise AuthorityRegistryError("cannot inspect non-detachable authority namespace") from exc
     markers: set[tuple[str, str]] = set()
-    for row in rows:
-        fields = row.split()
-        if not fields:
-            continue
-        name = fields[-1]
-        if not name.startswith(marker_prefix):
-            continue
-        suffix = name.removeprefix(marker_prefix)
+    marker_root = _namespace_marker_root(root)
+    for path in _matching_namespace_marker_paths(root):
+        suffix = path.name.removeprefix("marker-").removesuffix(".lock")
         root_token, separator, claim_token = suffix.partition("-")
         if (
             not separator
@@ -752,7 +789,30 @@ def _active_namespace_markers(root: Path) -> set[tuple[str, str]]:
             or not all(character in "0123456789abcdef" for character in claim_token)
         ):
             raise AuthorityRegistryError("authority namespace marker is malformed")
-        markers.add((root_token, claim_token))
+        try:
+            fd = _open_owner_file(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise AuthorityRegistryError("cannot inspect authority namespace marker") from exc
+        try:
+            path_stat = path.lstat()
+            fd_stat = os.fstat(fd)
+            if (path_stat.st_dev, path_stat.st_ino) != (fd_stat.st_dev, fd_stat.st_ino):
+                raise AuthorityRegistryError("authority namespace marker identity changed")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise AuthorityRegistryError(
+                        "cannot inspect authority namespace marker lock"
+                    ) from exc
+                markers.add((root_token, claim_token))
+                continue
+            path.unlink()
+            _fsync_directory(marker_root)
+        finally:
+            os.close(fd)
     return markers
 
 
@@ -798,7 +858,7 @@ def _validate_namespace_markers(root: Path) -> None:
         raise AuthorityRegistryError("authority claim namespace identity changed")
 
 
-def _verify_bound_namespace_socket(
+def _verify_bound_namespace_marker(
     namespace_fd: int,
     *,
     root: Path,
@@ -808,18 +868,36 @@ def _verify_bound_namespace_socket(
     try:
         root_stat = root.lstat()
         record_stat = record_path.lstat()
-        duplicate = socket.fromfd(namespace_fd, socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            bound_name = duplicate.getsockname()
-        finally:
-            duplicate.close()
+        marker_stat = os.fstat(namespace_fd)
     except OSError as exc:
         raise error_type("daemon authority namespace is unavailable") from exc
-    if isinstance(bound_name, bytes):
-        bound_name = os.fsdecode(bound_name)
-    expected = _claim_namespace_name(root, root_stat, record_path, record_stat)
-    if bound_name != expected:
+    expected = _claim_namespace_path(root, root_stat, record_path, record_stat)
+    try:
+        path_stat = expected.lstat()
+    except OSError as exc:
+        raise error_type("daemon authority namespace is unavailable") from exc
+    if (
+        not stat.S_ISREG(marker_stat.st_mode)
+        or marker_stat.st_uid != os.geteuid()
+        or marker_stat.st_nlink != 1
+        or stat.S_IMODE(marker_stat.st_mode) != 0o600
+        or (marker_stat.st_dev, marker_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino)
+    ):
         raise error_type("daemon authority namespace identity changed")
+    try:
+        probe_fd = _open_owner_file(expected)
+    except OSError as exc:
+        raise error_type("daemon authority namespace is unavailable") from exc
+    try:
+        try:
+            fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                return
+            raise error_type("daemon authority namespace lock is unavailable") from exc
+        raise error_type("daemon authority namespace lock is not held")
+    finally:
+        os.close(probe_fd)
 
 
 def _validate_registry_directory(path: Path) -> None:
@@ -875,24 +953,77 @@ def _open_owner_file(path: Path, *, create: bool = False, exclusive: bool = Fals
         raise
 
 
+def _create_namespace_marker(root: Path, record_path: Path, record_fd: int) -> _NamespaceMarker:
+    marker_path = _claim_namespace_path(
+        root,
+        root.lstat(),
+        record_path,
+        os.fstat(record_fd),
+    )
+    try:
+        marker_fd = _open_owner_file(marker_path, create=True, exclusive=True)
+    except OSError as exc:
+        raise AuthorityRegistryError("cannot create daemon authority namespace marker") from exc
+    created = False
+    try:
+        fcntl.flock(marker_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _fsync_directory(marker_path.parent)
+        created = True
+        return _NamespaceMarker(fd=marker_fd, path=marker_path)
+    finally:
+        if not created:
+            with suppress(OSError):
+                marker_path.unlink()
+                _fsync_directory(marker_path.parent)
+            os.close(marker_fd)
+
+
+def _unlink_namespace_marker(marker: _NamespaceMarker) -> None:
+    marker_fd = marker.fileno()
+    try:
+        marker_stat = os.fstat(marker_fd)
+        path_stat = marker.path.lstat()
+        if (marker_stat.st_dev, marker_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+            raise AuthorityRegistryError("daemon authority namespace marker identity changed")
+        marker.path.unlink()
+        _fsync_directory(marker.path.parent)
+    finally:
+        marker.close()
+
+
 @contextmanager
 def _registry_guard(root: Path) -> Iterator[None]:
+    _ensure_registry_runtime_parent(root)
     deadline = time.monotonic() + _NAMESPACE_GUARD_TIMEOUT_SECONDS
-    guard_socket: socket.socket | None = None
-    while guard_socket is None:
-        try:
-            guard_socket = _bind_abstract_socket(_namespace_guard_name(root))
-        except OSError as exc:
-            if exc.errno != errno.EADDRINUSE:
-                raise AuthorityRegistryError(
-                    "cannot acquire non-detachable authority registry guard"
-                ) from exc
-            if time.monotonic() >= deadline:
-                raise AuthorityRegistryError(
-                    "timed out acquiring non-detachable authority registry guard"
-                ) from exc
-            time.sleep(0.005)
+    guard_path = _namespace_guard_path(root)
     try:
+        guard_fd = _open_owner_file(guard_path, create=True)
+    except OSError as exc:
+        raise AuthorityRegistryError("cannot open owner-authenticated authority guard") from exc
+    acquired = False
+    try:
+        while not acquired:
+            try:
+                fcntl.flock(guard_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise AuthorityRegistryError(
+                        "cannot acquire owner-authenticated authority registry guard"
+                    ) from exc
+                if time.monotonic() >= deadline:
+                    raise AuthorityRegistryError(
+                        "timed out acquiring owner-authenticated authority registry guard"
+                    ) from exc
+                time.sleep(0.005)
+            else:
+                acquired = True
+        guard_stat = os.fstat(guard_fd)
+        guard_path_stat = guard_path.lstat()
+        if (guard_stat.st_dev, guard_stat.st_ino) != (
+            guard_path_stat.st_dev,
+            guard_path_stat.st_ino,
+        ):
+            raise AuthorityRegistryError("authority registry guard identity changed")
         _ensure_registry_root(root)
         _validate_namespace_markers(root)
         initial_stat = root.lstat()
@@ -903,7 +1034,9 @@ def _registry_guard(root: Path) -> Iterator[None]:
             raise AuthorityRegistryError("authority registry namespace identity changed")
         _validate_namespace_markers(root)
     finally:
-        guard_socket.close()
+        with suppress(OSError):
+            fcntl.flock(guard_fd, fcntl.LOCK_UN)
+        os.close(guard_fd)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1010,7 +1143,7 @@ def verify_inherited_daemon_authority_lease(
         raise AuthorityClaimError("inherited daemon authority record is unsafe")
     if lease.namespace_fd < 0:
         raise AuthorityClaimError("inherited daemon authority namespace is unavailable")
-    _verify_bound_namespace_socket(
+    _verify_bound_namespace_marker(
         lease.namespace_fd,
         root=registry_root,
         record_path=record_path,
@@ -1319,24 +1452,17 @@ def _publish_claim(
     except OSError as exc:
         raise AuthorityRegistryError("cannot create daemon authority claim") from exc
     published = False
-    namespace_socket: socket.socket | None = None
+    namespace_marker: _NamespaceMarker | None = None
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         _write_claim_record(fd, candidates)
         _fsync_directory(root)
-        try:
-            namespace_socket = _bind_abstract_socket(
-                _claim_namespace_name(root, root.lstat(), record_path, os.fstat(fd))
-            )
-        except OSError as exc:
-            raise AuthorityRegistryError(
-                "cannot bind non-detachable daemon authority namespace"
-            ) from exc
+        namespace_marker = _create_namespace_marker(root, record_path, fd)
         published = True
         return DaemonAuthorityClaim(
             candidates=candidates,
             fd=fd,
-            namespace_socket=namespace_socket,
+            namespace_marker=namespace_marker,
             record_path=record_path,
             registry_root=root,
         )
@@ -1347,8 +1473,9 @@ def _publish_claim(
                 _fsync_directory(root)
             except OSError:
                 pass
-            if namespace_socket is not None:
-                namespace_socket.close()
+            if namespace_marker is not None:
+                with suppress(AuthorityRegistryError):
+                    _unlink_namespace_marker(namespace_marker)
             os.close(fd)
 
 
