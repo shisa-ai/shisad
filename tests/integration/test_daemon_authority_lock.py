@@ -6,6 +6,7 @@ import asyncio
 import json
 import multiprocessing
 import os
+import pwd
 import queue
 import signal
 import socket
@@ -192,18 +193,22 @@ def test_f3_candidate_cannot_overlap_host_global_registry(
         acquire_daemon_authority_claim(config)
 
 
-def test_f3_authority_registry_uses_private_xdg_runtime_namespace(
+def test_f3_authority_registry_is_deterministic_across_xdg_environments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_root))
+    monkeypatch.setenv("HOME", str(tmp_path / "environment-home"))
 
-    registry_root = authority._registry_root()
+    service_root = authority._registry_root()
+    monkeypatch.delenv("XDG_RUNTIME_DIR")
+    monkeypatch.delenv("HOME")
+    shell_root = authority._registry_root()
 
-    assert registry_root == runtime_root / "shisad" / "authority-registry"
-    assert registry_root != Path("/tmp") / f"shisad-authority-{os.getuid()}"
+    expected = Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".shisad-runtime" / "authority-registry"
+    assert service_root == shell_root == expected
 
 
 def test_f3_authority_registry_ignores_unsafe_xdg_runtime_namespace(
@@ -219,8 +224,59 @@ def test_f3_authority_registry_ignores_unsafe_xdg_runtime_namespace(
 
     assert not registry_root.is_relative_to(runtime_root)
     assert registry_root == (
-        Path.home() / ".local" / "state" / "shisad" / "runtime" / "authority-registry"
+        Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".shisad-runtime" / "authority-registry"
     )
+
+
+@pytest.mark.parametrize("second_operation", ["ordinary", "fresh"])
+def test_f3_mixed_xdg_environments_share_authority_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    second_operation: str,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_root))
+    config = _config(tmp_path, name="mixed-env", socket_name="mixed-env.sock")
+    claim = acquire_daemon_authority_claim(config)
+    second_claim: DaemonAuthorityClaim | None = None
+    try:
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        with pytest.raises(AuthorityConflictError):
+            if second_operation == "fresh":
+                second_claim = authority.acquire_fresh_config_authority_claim(
+                    config,
+                    config,
+                    timeout_seconds=0,
+                )
+            else:
+                second_claim = acquire_daemon_authority_claim(config)
+    finally:
+        if second_claim is not None:
+            second_claim.release()
+        claim.release()
+
+
+def test_f3_inherited_lease_verifies_across_mixed_xdg_environments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_root))
+    config = _config(tmp_path, name="mixed-lease", socket_name="mixed-lease.sock")
+    claim = acquire_daemon_authority_claim(config)
+    lease = claim.duplicate_lease()
+    try:
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        candidates = authority.verify_inherited_daemon_authority_lease(
+            lease,
+            data_dir=config.data_dir,
+        )
+        assert any(candidate.role == "data_root" for candidate in candidates)
+    finally:
+        lease.close()
+        claim.release()
 
 
 def test_f3_authority_guard_and_marker_are_owner_only_outside_registry(

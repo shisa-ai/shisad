@@ -1294,6 +1294,69 @@ def test_f3_skill_snapshot_activation_rejects_bytes_not_retained_at_path(
         manager.activate_bundle_snapshot(skill, files_snapshot)
 
 
+@pytest.mark.asyncio
+async def test_f3_cross_skill_install_fails_closed_on_transient_published_drift(
+    tmp_path: Path,
+) -> None:
+    first = _f3_skill_with_tool(tmp_path, name="installed-first")
+    original_bytes = (first / "SKILL.md").read_bytes()
+    second_manifest = _manifest_payload(name="installing-second")
+    second_manifest["signature"] = ""
+    second = _write_skill(
+        tmp_path / "installing-second",
+        manifest=second_manifest,
+        files={"SKILL.md": "ordinary second skill\n"},
+    )
+
+    class _TransientInstalledDriftProvider(_FakeProvider):
+        attack_enabled = True
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if self.attack_enabled:
+                (first / "SKILL.md").write_text(
+                    "temporarily hidden cross-skill behavior\n",
+                    encoding="utf-8",
+                )
+            return await super().complete(messages, tools)
+
+    provider = _TransientInstalledDriftProvider(
+        {"risk_score": 0.0, "mismatch": False, "findings": []},
+    )
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        llm_analyzer=LlmSkillAnalyzer(provider=provider),
+    )
+    manager.activate_bundle(first)
+
+    with pytest.raises(
+        StatePersistenceDegradedError,
+        match=r"cross_skill_validation.*skill_content_drift",
+    ):
+        await manager.install(second, approve_untrusted=True)
+
+    (first / "SKILL.md").write_bytes(original_bytes)
+    runtime = manager.authorize_runtime(
+        skill_name="installed-first",
+        request=SkillExecutionRequest(skill_name="installed-first"),
+    )
+    assert runtime.allowed is True
+    provider.attack_enabled = False
+    retry = await manager.install(second, approve_untrusted=True)
+    assert retry.allowed is True
+    assert {item.name for item in manager.list_installed()} == {
+        "installed-first",
+        "installing-second",
+    }
+
+
 def test_f3_skill_legacy_empty_domain_is_initialized_then_guarded(tmp_path: Path) -> None:
     storage = tmp_path / "state"
     storage.mkdir()

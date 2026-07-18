@@ -184,6 +184,9 @@ file path and byte through one tree digest; restart registration and each
 runtime authorization recapture once, parse those same captured bytes, and fail
 closed on drift. Pre-binding legacy skill rows remain visible for recovery but
 do not register tools or authorize execution until reviewed again. If
+installation cannot validate every already-published skill against its bound
+snapshot, it aborts before cross-skill correlation instead of silently omitting
+that skill; restoring the exact bound bytes permits an explicit retry. If
 self-modification activation truth is uncertain,
 dynamic skill registrations are withdrawn because the two authorities cannot
 be safely reconciled in that process.
@@ -380,16 +383,16 @@ adapter-mismatched identity blocks dispatch.
 Configuration construction and the shared CLI config builder derive paths
 without creating or mode-repairing daemon targets. Service construction first
 publishes an owner-only, same-host lifetime claim in a registry independent of
-the target data directory. The registry lives below the current user's
-owner-only XDG runtime directory when that directory is safely configured, with
-an owner-only state-directory fallback rather than a predictable shared `/tmp`
-child. Serialization and non-detachable claim markers use locked `0600` files
-in the validated per-user parent outside the replaceable registry tree, so an
-unrelated UID cannot reserve a public abstract-socket name or pre-create the
-registry child to deny admission. The baseline claim covers the canonical data
-root, control socket, effective approval-factor store, and configured writable
-SOUL path. The data root is treated as a contained tree; external approval/SOUL
-files also reserve their component-owned atomic temp, retained-corruption,
+the target data directory. The registry has one deterministic per-UID location
+below the home directory from the system passwd record; it does not vary with
+`XDG_RUNTIME_DIR` or `HOME`, and its `.shisad-runtime` parent is admitted as an
+owner-only directory. Serialization and non-detachable claim markers use locked
+`0600` files in that validated parent outside the replaceable registry tree, so
+an unrelated UID cannot reserve a public abstract-socket name or pre-create a
+shared `/tmp` child to deny admission. The baseline claim covers the canonical
+data root, control socket, effective approval-factor store, and configured
+writable SOUL path. The data root is treated as a contained tree; external
+approval/SOUL files also reserve their component-owned atomic temp, retained-corruption,
 backup, tombstone, migration, and lock name families. Unexpected exact,
 ancestor, derived-name, and live inode/hardlink overlap fails before target
 initialization, while ordinary disjoint siblings remain usable. After claim

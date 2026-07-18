@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import pwd
 import stat
 import time
 import uuid
@@ -694,22 +695,13 @@ def derive_daemon_authority_candidates(
 
 
 def _registry_root() -> Path:
-    configured = os.environ.get("XDG_RUNTIME_DIR", "")
-    if configured and configured == configured.strip():
-        runtime_root = Path(configured)
-        if runtime_root.is_absolute():
-            try:
-                runtime_stat = runtime_root.lstat()
-            except OSError:
-                pass
-            else:
-                if (
-                    stat.S_ISDIR(runtime_stat.st_mode)
-                    and runtime_stat.st_uid == os.geteuid()
-                    and stat.S_IMODE(runtime_stat.st_mode) == 0o700
-                ):
-                    return runtime_root / "shisad" / "authority-registry"
-    return Path.home() / ".local" / "state" / "shisad" / "runtime" / "authority-registry"
+    try:
+        home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    except KeyError as exc:
+        raise AuthorityRegistryError("current user has no passwd authority namespace") from exc
+    if not home.is_absolute() or home == Path(home.anchor):
+        raise AuthorityRegistryError("current user home cannot host the authority namespace")
+    return home / ".shisad-runtime" / "authority-registry"
 
 
 def _namespace_guard_path(root: Path) -> Path:

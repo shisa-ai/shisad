@@ -984,15 +984,40 @@ class SkillManager:
     def _installed_bundles(self) -> list[SkillBundle]:
         bundles: list[SkillBundle] = []
         for skill in self._inventory.values():
-            path = Path(skill.path)
-            if not path.exists() or skill.content_digest_legacy or not skill.content_digest:
+            if skill.state != ArtifactState.PUBLISHED:
                 continue
+            path = Path(skill.path)
+            if skill.content_digest_legacy or not skill.content_digest:
+                raise StatePersistenceDegradedError(
+                    authority="skill_inventory",
+                    transition="install",
+                    stage="cross_skill_validation",
+                    reason="skill_content_unbound",
+                )
+            if not path.exists():
+                raise StatePersistenceDegradedError(
+                    authority="skill_inventory",
+                    transition="install",
+                    stage="cross_skill_validation",
+                    reason="skill_path_missing",
+                )
             try:
                 bundle, content_digest = self._capture_loaded_bundle(path)
-            except (FileNotFoundError, OSError, TypeError, ValueError):
-                continue
-            if content_digest == skill.content_digest:
-                bundles.append(bundle)
+            except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
+                raise StatePersistenceDegradedError(
+                    authority="skill_inventory",
+                    transition="install",
+                    stage="cross_skill_validation",
+                    reason="skill_content_read_failed",
+                ) from exc
+            if content_digest != skill.content_digest:
+                raise StatePersistenceDegradedError(
+                    authority="skill_inventory",
+                    transition="install",
+                    stage="cross_skill_validation",
+                    reason="skill_content_drift",
+                )
+            bundles.append(bundle)
         return bundles
 
     def _register_inventory_tools(self) -> None:
