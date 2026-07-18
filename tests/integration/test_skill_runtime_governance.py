@@ -238,6 +238,8 @@ async def test_h5_skill_tool_schema_drift_startup_drop_is_audited(
             {"skill_path": str(skill), "approve_untrusted": True},
         )
         assert decision["status"] == "installed"
+        installed = await client.call("skill.list", {})
+        retained_skill = Path(installed["skills"][0]["path"])
     finally:
         await _shutdown(daemon_task, client)
 
@@ -259,7 +261,7 @@ async def test_h5_skill_tool_schema_drift_startup_drop_is_audited(
         ],
     )
     drifted_manifest["capabilities"]["network"] = [{"domain": "api.good.example", "reason": "api"}]
-    (skill / "skill.manifest.yaml").write_text(
+    (retained_skill / "skill.manifest.yaml").write_text(
         yaml.safe_dump(drifted_manifest, sort_keys=False),
         encoding="utf-8",
     )

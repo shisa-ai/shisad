@@ -25,6 +25,15 @@ from pydantic import (
     model_validator,
 )
 
+from shisad.core.artifact_staging import (
+    DEFAULT_ARTIFACT_STAGE_MAX_BYTES as _ARTIFACT_STAGE_MAX_BYTES,
+)
+from shisad.core.artifact_staging import (
+    DEFAULT_ARTIFACT_STAGE_MAX_ENTRIES as _ARTIFACT_STAGE_MAX_ENTRIES,
+)
+from shisad.core.artifact_staging import (
+    copy_bounded_regular_tree,
+)
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteFaultInjector,
@@ -1018,7 +1027,12 @@ class SelfModificationManager:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         staging_path = target_path.parent / f".{target_path.name}.tmp-{uuid.uuid4().hex}"
         try:
-            shutil.copytree(source_path, staging_path)
+            copy_bounded_regular_tree(
+                source_path,
+                staging_path,
+                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+            )
         except OSError:
             if staging_path.exists():
                 shutil.rmtree(staging_path, ignore_errors=True)

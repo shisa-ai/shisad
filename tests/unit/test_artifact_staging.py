@@ -1,0 +1,198 @@
+"""Bounded no-follow staging for caller-controlled artifact trees."""
+
+from __future__ import annotations
+
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from shisad.core.artifact_staging import ArtifactTreeCopyError, copy_bounded_regular_tree
+
+
+def test_artifact_staging_copies_only_regular_tree_with_owner_only_modes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nested").mkdir()
+    (source / "root.txt").write_bytes(b"root")
+    (source / "nested" / "child.txt").write_bytes(b"child")
+    destination = tmp_path / "destination"
+
+    result = copy_bounded_regular_tree(
+        source,
+        destination,
+        max_entries=8,
+        max_total_bytes=32,
+    )
+
+    assert result.entry_count == 3
+    assert result.file_count == 2
+    assert result.total_bytes == 9
+    assert (destination / "nested" / "child.txt").read_bytes() == b"child"
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    assert stat.S_IMODE((destination / "root.txt").stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("link_to_directory", [False, True])
+def test_artifact_staging_rejects_symlinks_without_copying_external_bytes(
+    tmp_path: Path,
+    link_to_directory: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    secret = external / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    target = external if link_to_directory else secret
+    (source / "escape").symlink_to(target, target_is_directory=link_to_directory)
+    destination = tmp_path / "destination"
+
+    with pytest.raises(ArtifactTreeCopyError, match="symlink"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_rejects_special_files_without_opening_them(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    os.mkfifo(source / "stream")
+    destination = tmp_path / "destination"
+
+    with pytest.raises(ArtifactTreeCopyError, match="regular files and directories"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("destination_kind", ["same", "descendant", "ancestor"])
+def test_artifact_staging_rejects_source_destination_overlap(
+    tmp_path: Path,
+    destination_kind: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.txt").write_text("payload", encoding="utf-8")
+    if destination_kind == "same":
+        destination = source
+    elif destination_kind == "descendant":
+        destination = source / "nested" / "destination"
+    else:
+        destination = tmp_path
+
+    with pytest.raises(ArtifactTreeCopyError, match="overlap"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+
+@pytest.mark.parametrize(
+    ("max_entries", "max_total_bytes", "match"),
+    [
+        (1, 32, "entry limit"),
+        (8, 3, "byte limit"),
+    ],
+)
+def test_artifact_staging_enforces_entry_and_total_byte_bounds(
+    tmp_path: Path,
+    max_entries: int,
+    max_total_bytes: int,
+    match: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one.txt").write_bytes(b"one")
+    (source / "two.txt").write_bytes(b"two")
+    destination = tmp_path / "destination"
+
+    with pytest.raises(ArtifactTreeCopyError, match=match):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_rejects_file_swapped_to_fifo_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "payload.txt"
+    source_file.write_bytes(b"approved")
+    destination = tmp_path / "destination"
+    original_open = os.open
+    swapped = False
+
+    def _open_after_swap(
+        path: str | bytes | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if (
+            path == "payload.txt"
+            and dir_fd is not None
+            and flags & (os.O_WRONLY | os.O_RDWR) == 0
+            and not swapped
+        ):
+            source_file.unlink()
+            os.mkfifo(source_file)
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", _open_after_swap)
+
+    with pytest.raises(ArtifactTreeCopyError, match="changed during staging"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert swapped is True
+    assert not destination.exists()
+
+
+def test_artifact_staging_enforces_depth_bound(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    current = source
+    for index in range(130):
+        current /= f"d{index}"
+        current.mkdir()
+    destination = tmp_path / "destination"
+
+    with pytest.raises(ArtifactTreeCopyError, match="depth limit"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=512,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()

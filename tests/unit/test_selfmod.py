@@ -1494,6 +1494,30 @@ def test_f3_selfmod_apply_publishes_only_staged_validated_bytes(
     assert (artifact / relative_path).read_bytes() == attacker_bytes
 
 
+def test_f3_selfmod_apply_rejects_symlinked_source_during_staging(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "secret.txt").write_text("operator secret\n", encoding="utf-8")
+    (artifact / "escape").symlink_to(external, target_is_directory=True)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_copy_failed"
+    artifact_root = tmp_path / "selfmod" / "artifacts"
+    assert not any(path.is_file() for path in artifact_root.rglob("*"))
+
+
 def test_m1_selfmod_apply_keeps_inventory_when_skill_activation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1533,13 +1557,23 @@ def test_m1_selfmod_apply_copy_failure_does_not_leave_partial_artifact_store(
     artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
     proposal = manager.propose(artifact)
 
-    def _copytree_broken(src: Path, dst: Path, *args: object, **kwargs: object) -> Path:
-        _ = (src, args, kwargs)
+    def _copytree_broken(
+        src: Path,
+        dst: Path,
+        *,
+        max_entries: int,
+        max_total_bytes: int,
+    ) -> object:
+        _ = (src, max_entries, max_total_bytes)
         dst.mkdir(parents=True, exist_ok=True)
         (dst / "partial.txt").write_text("partial copy", encoding="utf-8")
         raise OSError("disk full")
 
-    monkeypatch.setattr(selfmod_manager_module.shutil, "copytree", _copytree_broken)
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "copy_bounded_regular_tree",
+        _copytree_broken,
+    )
 
     result = manager.apply(proposal.proposal_id, confirm=True)
 

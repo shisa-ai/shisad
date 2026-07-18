@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import stat
 import uuid
@@ -11,6 +12,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from shisad.core.artifact_staging import (
+    DEFAULT_ARTIFACT_STAGE_MAX_BYTES as _ARTIFACT_STAGE_MAX_BYTES,
+)
+from shisad.core.artifact_staging import (
+    DEFAULT_ARTIFACT_STAGE_MAX_ENTRIES as _ARTIFACT_STAGE_MAX_ENTRIES,
+)
+from shisad.core.artifact_staging import (
+    copy_bounded_regular_tree,
+)
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteFaultInjector,
@@ -278,7 +288,22 @@ class SkillManager:
                 )
 
             retained_path = self._publish_install_bundle(staged_path)
-            self._activate_loaded_bundle(bundle, retained_path)
+            try:
+                self._activate_loaded_bundle(bundle, retained_path)
+            except AtomicWriteError as exc:
+                if not exc.publication_may_have_committed:
+                    self._discard_managed_install_bundle(retained_path)
+                raise
+            except Exception:
+                current = self._inventory.get(bundle.manifest.name)
+                if current is None or Path(current.path) != retained_path:
+                    self._discard_managed_install_bundle(retained_path)
+                raise
+            if existing is not None:
+                self._retire_superseded_managed_bundle(
+                    Path(existing.path),
+                    retained_path=retained_path,
+                )
             return SkillInstallDecision(
                 allowed=True,
                 status="installed",
@@ -378,7 +403,12 @@ class SkillManager:
         ensure_owner_only_directory(bundles_root)
         staging_path = bundles_root / f".install-{uuid.uuid4().hex}.tmp"
         try:
-            shutil.copytree(skill_path, staging_path)
+            copy_bounded_regular_tree(
+                skill_path,
+                staging_path,
+                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+            )
         except OSError:
             shutil.rmtree(staging_path, ignore_errors=True)
             raise
@@ -389,6 +419,38 @@ class SkillManager:
         retained_path = staging_path.parent / f"bundle-{uuid.uuid4().hex}"
         staging_path.replace(retained_path)
         return retained_path
+
+    def _retire_superseded_managed_bundle(
+        self,
+        previous_path: Path,
+        *,
+        retained_path: Path,
+    ) -> None:
+        if previous_path == retained_path or not self._is_managed_install_bundle(previous_path):
+            return
+        if any(Path(item.path) == previous_path for item in self._inventory.values()):
+            return
+        self._discard_managed_install_bundle(previous_path)
+
+    def _is_managed_install_bundle(self, path: Path) -> bool:
+        absolute = Path(os.path.abspath(os.fspath(path)))
+        bundles_root = Path(os.path.abspath(os.fspath(self._storage_dir / "bundles")))
+        bundle_id = absolute.name.removeprefix("bundle-")
+        if absolute.parent != bundles_root or not absolute.name.startswith("bundle-"):
+            return False
+        try:
+            return uuid.UUID(hex=bundle_id).hex == bundle_id
+        except ValueError:
+            return False
+
+    def _discard_managed_install_bundle(self, path: Path) -> None:
+        if not self._is_managed_install_bundle(path) or not path.exists():
+            return
+        remove_owner_controlled_directory_contents(
+            path,
+            allow_nested_directories=True,
+        )
+        path.rmdir()
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
         return [str(name) for name in self._skill_tool_map.get(skill_name, [])]

@@ -14,6 +14,7 @@ import pytest
 import yaml
 from textguard import Finding as TextGuardFinding
 
+import shisad.skills.manager as skill_manager_module
 from shisad.core.atomic_state import (
     AtomicWriteError,
     AtomicWriteStage,
@@ -775,6 +776,244 @@ async def test_f3_skill_install_publishes_the_analyzed_staged_bytes(tmp_path: Pa
         "trusted reviewed instructions\n"
     )
     assert (skill / "SKILL.md").read_text(encoding="utf-8") == "attacker instructions\n"
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_install_rejects_symlinked_source_before_analysis(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest_payload(name="linked-install")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n"},
+    )
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "secret.txt").write_text("operator secret\n", encoding="utf-8")
+    (skill / "escape").symlink_to(external, target_is_directory=True)
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+
+    with pytest.raises(OSError, match="symlink"):
+        await manager.install(skill, approve_untrusted=True)
+
+    bundles_root = tmp_path / "state" / "bundles"
+    assert not any(bundles_root.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_install_known_uncommitted_failure_removes_retained_bundle(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest_payload(name="failed-install")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n"},
+    )
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.TEMP_OPEN:
+            raise OSError("known-uncommitted inventory fault")
+
+    manager._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        await manager.install(skill, approve_untrusted=True)
+
+    bundles_root = tmp_path / "state" / "bundles"
+    assert list(bundles_root.iterdir()) == []
+    assert manager.list_installed() == []
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_install_failed_update_keeps_prior_managed_bundle(
+    tmp_path: Path,
+) -> None:
+    first_manifest = _manifest_payload(name="failed-update", version="1.0.0")
+    first_manifest["signature"] = ""
+    first = _write_skill(
+        tmp_path / "install-v1",
+        manifest=first_manifest,
+        files={"SKILL.md": "first reviewed instructions\n"},
+    )
+    second_manifest = _manifest_payload(name="failed-update", version="2.0.0")
+    second_manifest["signature"] = ""
+    second = _write_skill(
+        tmp_path / "install-v2",
+        manifest=second_manifest,
+        files={"SKILL.md": "second reviewed instructions\n"},
+    )
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+    assert (await manager.install(first, approve_untrusted=True)).allowed is True
+    first_retained = Path(manager.list_installed()[0].path)
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.TEMP_OPEN:
+            raise OSError("known-uncommitted update fault")
+
+    manager._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        await manager.install(second, approve_untrusted=True)
+
+    installed = manager.list_installed()[0]
+    assert installed.version == "1.0.0"
+    assert Path(installed.path) == first_retained
+    assert first_retained.exists()
+    assert list((tmp_path / "state" / "bundles").glob("bundle-*")) == [first_retained]
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_install_commit_uncertainty_retains_potentially_referenced_bundle(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest_payload(name="uncertain-install")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n"},
+    )
+    storage = tmp_path / "state"
+    manager = SkillManager(
+        storage_dir=storage,
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+
+    def _inject(stage: AtomicWriteStage) -> None:
+        if stage == AtomicWriteStage.PARENT_FSYNC:
+            raise OSError("commit-uncertain inventory fault")
+
+    manager._state_fault_injector = _inject
+    with pytest.raises(AtomicWriteError):
+        await manager.install(skill, approve_untrusted=True)
+
+    retained = list((storage / "bundles").glob("bundle-*"))
+    assert len(retained) == 1
+    assert retained[0].exists()
+    assert manager.state_degraded is True
+    restarted = SkillManager(storage_dir=storage)
+    installed = restarted.list_installed()[0]
+    assert Path(installed.path) == retained[0]
+    assert installed.version == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_install_replacement_retires_only_superseded_managed_bundle(
+    tmp_path: Path,
+) -> None:
+    first_manifest = _manifest_payload(name="updated-install", version="1.0.0")
+    first_manifest["signature"] = ""
+    first = _write_skill(
+        tmp_path / "install-v1",
+        manifest=first_manifest,
+        files={"SKILL.md": "first reviewed instructions\n"},
+    )
+    second_manifest = _manifest_payload(name="updated-install", version="2.0.0")
+    second_manifest["signature"] = ""
+    second = _write_skill(
+        tmp_path / "install-v2",
+        manifest=second_manifest,
+        files={"SKILL.md": "second reviewed instructions\n"},
+    )
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+    assert (await manager.install(first, approve_untrusted=True)).allowed is True
+    first_retained = Path(manager.list_installed()[0].path)
+
+    assert (await manager.install(second, approve_untrusted=True)).allowed is True
+
+    installed = manager.list_installed()[0]
+    second_retained = Path(installed.path)
+    assert installed.version == "2.0.0"
+    assert second_retained != first_retained
+    assert second_retained.exists()
+    assert not first_retained.exists()
+    assert list((tmp_path / "state" / "bundles").glob("bundle-*")) == [second_retained]
+
+
+@pytest.mark.asyncio
+async def test_f3_skill_install_replacement_preserves_external_prior_bundle(
+    tmp_path: Path,
+) -> None:
+    external = _f3_skill_with_tool(tmp_path, name="external-prior")
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+    manager.activate_bundle(external)
+    replacement_manifest = _manifest_payload(name="external-prior", version="2.0.0")
+    replacement_manifest["signature"] = ""
+    replacement = _write_skill(
+        tmp_path / "replacement",
+        manifest=replacement_manifest,
+        files={"SKILL.md": "replacement reviewed instructions\n"},
+    )
+
+    assert (await manager.install(replacement, approve_untrusted=True)).allowed is True
+
+    assert external.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit_kind", ["entries", "bytes"])
+async def test_f3_skill_install_enforces_staging_resource_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_kind: str,
+) -> None:
+    manifest = _manifest_payload(name="bounded-install")
+    manifest["signature"] = ""
+    skill = _write_skill(
+        tmp_path / "install-source",
+        manifest=manifest,
+        files={"SKILL.md": "trusted reviewed instructions\n", "EXTRA.md": "extra\n"},
+    )
+    if limit_kind == "entries":
+        monkeypatch.setattr(skill_manager_module, "_ARTIFACT_STAGE_MAX_ENTRIES", 2, raising=False)
+    else:
+        monkeypatch.setattr(skill_manager_module, "_ARTIFACT_STAGE_MAX_BYTES", 32, raising=False)
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+    )
+
+    with pytest.raises(OSError, match="limit"):
+        await manager.install(skill, approve_untrusted=True)
 
 
 @pytest.mark.parametrize("accessor", ["activate", "list", "revoke"])
