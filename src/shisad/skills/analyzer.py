@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,7 +16,7 @@ from shisad.core.host_matching import host_matches
 from shisad.core.types import ThreatCategory
 from shisad.core.url_parsing import safe_url_hostname
 from shisad.security.firewall.classifier import PatternInjectionClassifier
-from shisad.skills.manifest import SkillManifest, parse_manifest
+from shisad.skills.manifest import SkillManifest, parse_manifest, parse_manifest_bytes
 
 _URL_RE = re.compile(r"https?://[^\s)>\]\"']+")
 _HTTP_RE = re.compile(r"\b(?:curl|wget|nc|ncat|telnet|ssh|scp)\b", re.IGNORECASE)
@@ -133,6 +133,54 @@ def load_skill_bundle(
     return SkillBundle(
         root_dir=str(root),
         manifest_path=str(manifest_path),
+        manifest=manifest,
+        files=files,
+    )
+
+
+def load_skill_bundle_snapshot(
+    root: Path,
+    files_snapshot: Mapping[str, bytes],
+    *,
+    allowed_dependency_sources: set[str] | None = None,
+) -> SkillBundle:
+    """Load a skill from one immutable, already-captured byte snapshot."""
+
+    manifest_relative = "skill.manifest.yaml"
+    try:
+        manifest_bytes = files_snapshot[manifest_relative]
+    except KeyError as exc:
+        raise ValueError("Skill manifest missing from captured bundle") from exc
+    manifest = parse_manifest_bytes(
+        manifest_bytes,
+        allowed_dependency_sources=allowed_dependency_sources,
+    )
+    files: list[SkillFile] = []
+    for relative, raw in sorted(files_snapshot.items()):
+        if relative == manifest_relative:
+            continue
+        if len(raw) > _MAX_BUNDLE_FILE_BYTES:
+            raise ValueError(
+                "Skill file too large for analysis: "
+                f"{relative} ({len(raw)} bytes > {_MAX_BUNDLE_FILE_BYTES})"
+            )
+        sha256 = hashlib.sha256(raw).hexdigest()
+        binary = b"\x00" in raw
+        content = "" if binary else raw.decode("utf-8", errors="ignore")
+        refs = _URL_RE.findall(content) if content else []
+        files.append(
+            SkillFile(
+                path=relative,
+                size=len(raw),
+                binary=binary,
+                content=content,
+                sha256=sha256,
+                external_refs=sorted(set(refs)),
+            )
+        )
+    return SkillBundle(
+        root_dir=str(root),
+        manifest_path=str(root / manifest_relative),
         manifest=manifest,
         files=files,
     )

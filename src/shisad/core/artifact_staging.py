@@ -6,8 +6,10 @@ import errno
 import os
 import shutil
 import stat
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 _COPY_BUFFER_BYTES = 1024 * 1024
 _MAX_TREE_DEPTH = 128
@@ -26,6 +28,16 @@ class ArtifactTreeCopyResult:
     entry_count: int
     file_count: int
     total_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactTreeSnapshot:
+    """One bounded no-follow tree captured as immutable file bytes."""
+
+    entry_count: int
+    file_count: int
+    total_bytes: int
+    files: Mapping[str, bytes]
 
 
 @dataclass(slots=True)
@@ -272,6 +284,160 @@ def _copy_directory_contents(
                     os.close(destination_child_fd)
                 os.close(source_child_fd)
     os.fsync(destination_fd)
+
+
+def _capture_file(
+    *,
+    source_parent_fd: int,
+    name: str,
+    relative_path: str,
+    observed: os.stat_result,
+    totals: _CopyTotals,
+    files: dict[str, bytes],
+    max_total_bytes: int,
+    root_device: int,
+    root_mount_id: int,
+) -> None:
+    if observed.st_dev != root_device:
+        raise ArtifactTreeCopyError(f"artifact tree contains a mounted file: {name}")
+    if observed.st_nlink != 1:
+        raise ArtifactTreeCopyError(f"artifact tree contains a hard link: {name}")
+    if totals.total_bytes + observed.st_size > max_total_bytes:
+        raise ArtifactTreeCopyError("artifact tree byte limit exceeded")
+    source_fd = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=source_parent_fd,
+    )
+    try:
+        opened = os.fstat(source_fd)
+        if not stat.S_ISREG(opened.st_mode) or not _same_inode(observed, opened):
+            raise ArtifactTreeCopyError(f"artifact tree entry changed during capture: {name}")
+        if opened.st_nlink != 1:
+            raise ArtifactTreeCopyError(f"artifact tree contains a hard link: {name}")
+        if _mount_id(source_fd) != root_mount_id:
+            raise ArtifactTreeCopyError(f"artifact tree contains a nested mount: {name}")
+        chunks: list[bytes] = []
+        captured = 0
+        while True:
+            chunk = os.read(source_fd, _COPY_BUFFER_BYTES)
+            if not chunk:
+                break
+            if totals.total_bytes + captured + len(chunk) > max_total_bytes:
+                raise ArtifactTreeCopyError("artifact tree byte limit exceeded")
+            chunks.append(chunk)
+            captured += len(chunk)
+        files[relative_path] = b"".join(chunks)
+        totals.file_count += 1
+        totals.total_bytes += captured
+    finally:
+        os.close(source_fd)
+
+
+def _capture_directory_contents(
+    *,
+    source_fd: int,
+    relative_parts: tuple[str, ...],
+    totals: _CopyTotals,
+    files: dict[str, bytes],
+    max_entries: int,
+    max_total_bytes: int,
+    root_device: int,
+    root_mount_id: int,
+    depth: int = 0,
+) -> None:
+    if depth > _MAX_TREE_DEPTH:
+        raise ArtifactTreeCopyError("artifact tree depth limit exceeded")
+    with os.scandir(source_fd) as entries:
+        for entry in sorted(entries, key=lambda item: item.name):
+            name = entry.name
+            observed = entry.stat(follow_symlinks=False)
+            totals.entry_count += 1
+            if totals.entry_count > max_entries:
+                raise ArtifactTreeCopyError("artifact tree entry limit exceeded")
+            next_parts = (*relative_parts, name)
+            if stat.S_ISREG(observed.st_mode):
+                _capture_file(
+                    source_parent_fd=source_fd,
+                    name=name,
+                    relative_path="/".join(next_parts),
+                    observed=observed,
+                    totals=totals,
+                    files=files,
+                    max_total_bytes=max_total_bytes,
+                    root_device=root_device,
+                    root_mount_id=root_mount_id,
+                )
+                continue
+            if stat.S_ISLNK(observed.st_mode):
+                raise ArtifactTreeCopyError(f"artifact tree contains a symlink: {name}")
+            if not stat.S_ISDIR(observed.st_mode):
+                raise ArtifactTreeCopyError(
+                    f"artifact tree must contain only regular files and directories: {name}"
+                )
+            if observed.st_dev != root_device:
+                raise ArtifactTreeCopyError(f"artifact tree contains a nested mount: {name}")
+            source_child_fd = os.open(name, _directory_open_flags(), dir_fd=source_fd)
+            try:
+                opened = os.fstat(source_child_fd)
+                if not stat.S_ISDIR(opened.st_mode) or not _same_inode(observed, opened):
+                    raise ArtifactTreeCopyError(
+                        f"artifact tree directory changed during capture: {name}"
+                    )
+                if _mount_id(source_child_fd) != root_mount_id:
+                    raise ArtifactTreeCopyError(f"artifact tree contains a nested mount: {name}")
+                _capture_directory_contents(
+                    source_fd=source_child_fd,
+                    relative_parts=next_parts,
+                    totals=totals,
+                    files=files,
+                    max_entries=max_entries,
+                    max_total_bytes=max_total_bytes,
+                    root_device=root_device,
+                    root_mount_id=root_mount_id,
+                    depth=depth + 1,
+                )
+            finally:
+                os.close(source_child_fd)
+
+
+def capture_bounded_regular_tree(
+    source: Path,
+    *,
+    max_entries: int,
+    max_total_bytes: int,
+) -> ArtifactTreeSnapshot:
+    """Capture one tree without links, special files, mounts, or unbounded input."""
+
+    if max_entries < 1 or max_total_bytes < 1:
+        raise ValueError("artifact capture bounds must be positive")
+    source_fd = _open_directory_chain(_absolute_path(source))
+    try:
+        source_stat = os.fstat(source_fd)
+        source_mount_id = _mount_id(source_fd)
+        totals = _CopyTotals()
+        files: dict[str, bytes] = {}
+        _capture_directory_contents(
+            source_fd=source_fd,
+            relative_parts=(),
+            totals=totals,
+            files=files,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+            root_device=source_stat.st_dev,
+            root_mount_id=source_mount_id,
+        )
+        return ArtifactTreeSnapshot(
+            entry_count=totals.entry_count,
+            file_count=totals.file_count,
+            total_bytes=totals.total_bytes,
+            files=MappingProxyType(files),
+        )
+    finally:
+        os.close(source_fd)
 
 
 def copy_bounded_regular_tree(

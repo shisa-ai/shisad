@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 import shisad.core.artifact_staging as artifact_staging_module
-from shisad.core.artifact_staging import ArtifactTreeCopyError, copy_bounded_regular_tree
+from shisad.core.artifact_staging import (
+    ArtifactTreeCopyError,
+    capture_bounded_regular_tree,
+    copy_bounded_regular_tree,
+)
 
 
 def test_artifact_staging_copies_only_regular_tree_with_owner_only_modes(
@@ -35,6 +39,46 @@ def test_artifact_staging_copies_only_regular_tree_with_owner_only_modes(
     assert (destination / "nested" / "child.txt").read_bytes() == b"child"
     assert stat.S_IMODE(destination.stat().st_mode) == 0o700
     assert stat.S_IMODE((destination / "root.txt").stat().st_mode) == 0o600
+
+
+def test_artifact_snapshot_captures_only_the_held_regular_file_bytes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nested").mkdir()
+    (source / "root.txt").write_bytes(b"root")
+    (source / "nested" / "child.txt").write_bytes(b"child")
+
+    snapshot = capture_bounded_regular_tree(
+        source,
+        max_entries=8,
+        max_total_bytes=32,
+    )
+    (source / "root.txt").write_bytes(b"changed after capture")
+
+    assert snapshot.entry_count == 3
+    assert snapshot.file_count == 2
+    assert snapshot.total_bytes == 9
+    assert dict(snapshot.files) == {
+        "nested/child.txt": b"child",
+        "root.txt": b"root",
+    }
+
+
+def test_artifact_snapshot_rejects_symlinks_without_reading_external_bytes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    external = tmp_path / "secret.txt"
+    external.write_text("secret", encoding="utf-8")
+    (source / "escape").symlink_to(external)
+
+    with pytest.raises(ArtifactTreeCopyError, match="symlink"):
+        capture_bounded_regular_tree(
+            source,
+            max_entries=8,
+            max_total_bytes=32,
+        )
 
 
 @pytest.mark.parametrize("link_to_directory", [False, True])

@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ from shisad.skills.analyzer import (
     SkillBundle,
     ToolSurfaceAnalyzer,
     load_skill_bundle,
+    load_skill_bundle_snapshot,
 )
 from shisad.skills.artifacts import ArtifactState
 from shisad.skills.cross_skill import scan_cross_skill
@@ -372,6 +374,23 @@ class SkillManager:
         self._require_state_available(transition="activate")
         bundle = load_skill_bundle(
             skill_path,
+            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+        )
+        return self._activate_loaded_bundle(bundle, skill_path, state=state)
+
+    def activate_bundle_snapshot(
+        self,
+        skill_path: Path,
+        files_snapshot: Mapping[str, bytes],
+        *,
+        state: ArtifactState = ArtifactState.PUBLISHED,
+    ) -> InstalledSkill | None:
+        """Activate tool metadata parsed from the caller's captured bytes."""
+
+        self._require_state_available(transition="activate")
+        bundle = load_skill_bundle_snapshot(
+            skill_path,
+            files_snapshot,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
         return self._activate_loaded_bundle(bundle, skill_path, state=state)

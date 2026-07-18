@@ -1584,6 +1584,136 @@ def test_f3_stored_skill_tampering_blocks_failed_apply_recovery(
     assert manager._authority_block_path.exists() is True
 
 
+def test_f3_behavior_runtime_consumes_the_validated_byte_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    planner = Planner(
+        object(),
+        PEP(PolicyBundle(default_require_confirmation=False), ToolRegistry()),
+        persona_tone="neutral",
+    )
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+        planner=planner,
+    )
+    stable = _write_signed_behavior_pack(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    stored_root = tmp_path / "selfmod" / "artifacts" / "behavior_packs" / "operator-tone" / "1.0.0"
+    stored_instructions = stored_root / "instructions.yaml"
+    original_validator = selfmod_manager_module._validate_manifest_files
+    mutated = False
+
+    def _mutate_after_hash_validation(
+        *,
+        artifact_files: dict[str, bytes],
+        manifest: selfmod_manager_module.ArtifactManifest,
+    ) -> tuple[bool, str]:
+        nonlocal mutated
+        result = original_validator(artifact_files=artifact_files, manifest=manifest)
+        if result[0]:
+            stored_instructions.write_text(
+                yaml.safe_dump(
+                    {
+                        "tone": "strict",
+                        "custom_persona_text": "Tampered after validation.",
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            mutated = True
+        return result
+
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "_validate_manifest_files",
+        _mutate_after_hash_validation,
+    )
+
+    manager._apply_behavior_overlay()
+
+    assert mutated is True
+    assert planner._persona_defaults_enabled is True
+    assert planner._persona_tone == "friendly"
+    assert planner._custom_persona_text == "Stay warm."
+    prompt = planner._compose_system_prompt()
+    assert "Stay warm." in prompt
+    assert "Tampered after validation." not in prompt
+
+
+def test_f3_skill_runtime_consumes_the_validated_byte_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    stored_manifest = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "skills"
+        / "calendar-helper"
+        / "1.0.0"
+        / "payload"
+        / "skill.manifest.yaml"
+    )
+    original_validator = manager._validated_runtime_artifact
+    mutated = False
+
+    def _mutate_before_activation(
+        inventory: selfmod_manager_module._Inventory,
+        artifact_type: str,
+        name: str,
+    ) -> tuple[Path, selfmod_manager_module._ArtifactInspection] | None:
+        nonlocal mutated
+        result = original_validator(inventory, artifact_type, name)
+        if result is not None and artifact_type == "skill_bundle" and not mutated:
+            payload = yaml.safe_load(stored_manifest.read_text(encoding="utf-8"))
+            payload["tools"][0]["description"] = "Tampered after validation."
+            stored_manifest.write_text(
+                yaml.safe_dump(payload, sort_keys=False),
+                encoding="utf-8",
+            )
+            mutated = True
+        return result
+
+    monkeypatch.setattr(manager, "_validated_runtime_artifact", _mutate_before_activation)
+
+    manager._apply_runtime_for_inventory(
+        manager._inventory,
+        "skill_bundle",
+        "calendar-helper",
+    )
+
+    assert mutated is True
+    tool = manager._skill_manager._tool_registry.get_tool(ToolName("skill.calendar-helper.lookup"))
+    assert tool is not None
+    assert tool.description == "Look up calendar entries."
+
+
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
@@ -2901,7 +3031,11 @@ def test_m1_selfmod_apply_keeps_inventory_when_skill_activation_fails(
     manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
     artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
     proposal = manager.propose(artifact)
-    monkeypatch.setattr(manager._skill_manager, "activate_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        manager._skill_manager,
+        "activate_bundle_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
 
     result = manager.apply(proposal.proposal_id, confirm=True)
 

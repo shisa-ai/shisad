@@ -33,6 +33,7 @@ from shisad.core.artifact_staging import (
     DEFAULT_ARTIFACT_STAGE_MAX_ENTRIES as _ARTIFACT_STAGE_MAX_ENTRIES,
 )
 from shisad.core.artifact_staging import (
+    capture_bounded_regular_tree,
     copy_bounded_regular_tree,
     fsync_directory,
 )
@@ -225,6 +226,7 @@ class _ArtifactInspection(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     capability_diff: dict[str, Any] = Field(default_factory=dict)
     instructions: BehaviorPackInstructions | None = None
+    artifact_files: dict[str, bytes] = Field(default_factory=dict, exclude=True)
 
 
 class _SelfModificationOperationError(RuntimeError):
@@ -849,29 +851,42 @@ class SelfModificationManager:
         }
 
     def _inspect_artifact(self, artifact_path: Path) -> _ArtifactInspection:
-        manifest_path = artifact_path / "manifest.json"
         signature_path = artifact_path / "manifest.json.sig"
-        if not manifest_path.exists():
+        try:
+            snapshot = capture_bounded_regular_tree(
+                artifact_path,
+                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
+                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+            )
+        except (OSError, ValueError):
+            return _ArtifactInspection(
+                manifest=_empty_manifest(),
+                valid=False,
+                reason="artifact_read_failed",
+            )
+        artifact_files = dict(snapshot.files)
+        manifest_bytes = artifact_files.get("manifest.json")
+        if manifest_bytes is None:
             return _ArtifactInspection(
                 manifest=_empty_manifest(),
                 valid=False,
                 reason="manifest_missing",
             )
-        manifest = _load_manifest(manifest_path)
+        manifest = _load_manifest_bytes(manifest_bytes)
         if manifest is None:
             return _ArtifactInspection(
                 manifest=_empty_manifest(),
                 valid=False,
                 reason="invalid_manifest_schema",
             )
-        if not signature_path.exists():
+        if "manifest.json.sig" not in artifact_files:
             return _ArtifactInspection(
                 manifest=manifest,
                 valid=False,
                 reason="signature_missing",
             )
         verified, signer, signature_reason = _verify_signature(
-            manifest_path=manifest_path,
+            manifest_bytes=manifest_bytes,
             signature_path=signature_path,
             allowed_signers_path=self._allowed_signers_path,
         )
@@ -883,7 +898,7 @@ class SelfModificationManager:
                 reason=signature_reason,
             )
         files_valid, files_reason = _validate_manifest_files(
-            artifact_path=artifact_path,
+            artifact_files=artifact_files,
             manifest=manifest,
         )
         if not files_valid:
@@ -895,7 +910,7 @@ class SelfModificationManager:
             )
         if manifest.type == "skill_bundle":
             bundle_valid, bundle_reason, _instructions = _validate_skill_bundle(
-                artifact_path=artifact_path,
+                artifact_files=artifact_files,
                 manifest=manifest,
             )
             if not bundle_valid:
@@ -924,9 +939,10 @@ class SelfModificationManager:
                     manifest.name,
                     manifest.declared_capabilities,
                 ),
+                artifact_files=artifact_files,
             )
         instructions = _validate_behavior_pack(
-            artifact_path=artifact_path,
+            artifact_files=artifact_files,
             manifest=manifest,
         )
         if instructions is None:
@@ -956,6 +972,7 @@ class SelfModificationManager:
                 manifest.declared_capabilities,
             ),
             instructions=instructions,
+            artifact_files=artifact_files,
         )
 
     def _apply_behavior_overlay(self) -> None:
@@ -1144,9 +1161,19 @@ class SelfModificationManager:
                     )
                     if validated is None:
                         raise _SelfModificationOperationError("active_artifact_invalid")
-                    artifact_path, _inspection = validated
+                    artifact_path, inspection = validated
                     payload_root = artifact_path / "payload"
-                    installed = self._skill_manager.activate_bundle(payload_root)
+                    payload_files = {
+                        relative.removeprefix("payload/"): data
+                        for relative, data in inspection.artifact_files.items()
+                        if relative.startswith("payload/")
+                    }
+                    if not payload_files:
+                        raise _SelfModificationOperationError("active_artifact_invalid")
+                    installed = self._skill_manager.activate_bundle_snapshot(
+                        payload_root,
+                        payload_files,
+                    )
                     if installed is None:
                         raise _SelfModificationOperationError("skill_activation_failed")
                     return list(self._skill_manager.tool_names_for_skill(name))
@@ -2010,8 +2037,16 @@ def _empty_manifest() -> ArtifactManifest:
 
 def _load_manifest(path: Path) -> ArtifactManifest | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        manifest_bytes = path.read_bytes()
+    except OSError:
+        return None
+    return _load_manifest_bytes(manifest_bytes)
+
+
+def _load_manifest_bytes(manifest_bytes: bytes) -> ArtifactManifest | None:
+    try:
+        payload = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     try:
         return ArtifactManifest.model_validate(payload)
@@ -2029,26 +2064,24 @@ def _safe_relative_path(value: str) -> bool:
 
 def _validate_manifest_files(
     *,
-    artifact_path: Path,
+    artifact_files: dict[str, bytes],
     manifest: ArtifactManifest,
 ) -> tuple[bool, str]:
     declared = {item.path: item for item in manifest.files}
     if any(not _safe_relative_path(path) for path in declared):
         return False, "unsafe_relative_path"
-    actual: dict[str, Path] = {}
-    for path in sorted(artifact_path.rglob("*")):
-        if not path.is_file():
-            continue
-        if path.name in {"manifest.json", "manifest.json.sig"}:
-            continue
-        relative = str(path.relative_to(artifact_path))
+    actual = {
+        relative: data
+        for relative, data in artifact_files.items()
+        if relative not in {"manifest.json", "manifest.json.sig"}
+    }
+    for relative in actual:
         if not _safe_relative_path(relative):
             return False, "unsafe_relative_path"
-        actual[relative] = path
     if set(actual) != set(declared):
         return False, "file_set_mismatch"
     for relative, record in declared.items():
-        data = actual[relative].read_bytes()
+        data = actual[relative]
         digest = hashlib.sha256(data).hexdigest()
         if digest != record.sha256:
             return False, "file_hash_mismatch"
@@ -2059,19 +2092,18 @@ def _validate_manifest_files(
 
 def _validate_skill_bundle(
     *,
-    artifact_path: Path,
+    artifact_files: dict[str, bytes],
     manifest: ArtifactManifest,
 ) -> tuple[bool, str, None]:
     try:
-        from shisad.skills.manifest import parse_manifest
+        from shisad.skills.manifest import parse_manifest_bytes
     except Exception:
         return False, "skill_manifest_loader_unavailable", None
-    payload_root = artifact_path / "payload"
-    manifest_path = payload_root / "skill.manifest.yaml"
-    if not manifest_path.exists():
+    manifest_bytes = artifact_files.get("payload/skill.manifest.yaml")
+    if manifest_bytes is None:
         return False, "skill_manifest_missing", None
     try:
-        skill_manifest = parse_manifest(manifest_path)
+        skill_manifest = parse_manifest_bytes(manifest_bytes)
     except Exception:
         return False, "invalid_skill_manifest", None
     declared = _skill_declared_capabilities(skill_manifest)
@@ -2082,7 +2114,7 @@ def _validate_skill_bundle(
 
 def _validate_behavior_pack(
     *,
-    artifact_path: Path,
+    artifact_files: dict[str, bytes],
     manifest: ArtifactManifest,
 ) -> BehaviorPackInstructions | None:
     allowed = {"instructions.yaml"}
@@ -2092,15 +2124,18 @@ def _validate_behavior_pack(
         if file_record.path.startswith("templates/"):
             continue
         return None
-    return _load_behavior_pack_instructions(artifact_path / "instructions.yaml")
+    instructions_bytes = artifact_files.get("instructions.yaml")
+    return _load_behavior_pack_instructions(instructions_bytes)
 
 
-def _load_behavior_pack_instructions(path: Path) -> BehaviorPackInstructions | None:
-    if not path.exists():
+def _load_behavior_pack_instructions(
+    instructions_bytes: bytes | None,
+) -> BehaviorPackInstructions | None:
+    if instructions_bytes is None:
         return None
     try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        payload = yaml.safe_load(instructions_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -2159,14 +2194,17 @@ def _allowed_signer_principals(path: Path) -> list[str]:
 
 def _verify_signature(
     *,
-    manifest_path: Path,
+    manifest_bytes: bytes,
     signature_path: Path,
     allowed_signers_path: Path,
 ) -> tuple[bool, str, str]:
     principals = _allowed_signer_principals(allowed_signers_path)
     if not principals:
         return False, "", "trust_store_missing"
-    manifest_text = manifest_path.read_text(encoding="utf-8")
+    try:
+        manifest_text = manifest_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, "", "invalid_manifest_encoding"
     for principal in principals:
         result = subprocess.run(
             [
