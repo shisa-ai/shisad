@@ -351,3 +351,54 @@ def test_artifact_staging_rejects_source_root_mount_alias(
         )
 
     assert not destination.exists()
+
+
+def test_artifact_staging_rejects_underlying_source_alias_of_destination_ancestry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "bind-alias" / "payload"
+    source.mkdir(parents=True)
+    (source / "file.txt").write_text("payload", encoding="utf-8")
+    destination_parent = tmp_path / "state" / "bundles"
+    destination_parent.mkdir(parents=True)
+    destination = destination_parent / ".install.tmp"
+    source_stat = source.stat()
+
+    monkeypatch.setattr(
+        artifact_staging_module,
+        "_directory_ancestor_identities",
+        lambda _fd: {(source_stat.st_dev, source_stat.st_ino)},
+        raising=False,
+    )
+
+    with pytest.raises(ArtifactTreeCopyError, match="underlying alias overlap"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_collects_held_destination_ancestor_identities(
+    tmp_path: Path,
+) -> None:
+    destination_parent = tmp_path / "state" / "bundles"
+    destination_parent.mkdir(parents=True)
+    directory_fd = os.open(
+        destination_parent,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        identities = artifact_staging_module._directory_ancestor_identities(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+    expected = {
+        (path.stat().st_dev, path.stat().st_ino)
+        for path in (destination_parent, destination_parent.parent, tmp_path)
+    }
+    assert expected <= identities

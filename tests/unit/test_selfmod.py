@@ -1662,6 +1662,111 @@ def test_f3_selfmod_publication_fsync_failure_restores_absent_target(
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_publication_recovery_fsync_uncertainty_degrades_without_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    proposal = manager.propose(artifact)
+
+    def _fail_publication_and_recovery_fsync(_path: Path) -> None:
+        raise OSError("publication durability uncertain")
+
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "fsync_directory",
+        _fail_publication_and_recovery_fsync,
+    )
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_copy_failed"
+    assert manager.state_degraded is True
+    assert manager.status()["skills"] == {}
+    assert manager.status()["behavior_packs"] == {}
+    assert planner.defaults == [("neutral", "")]
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_pre_runtime_restore_fsync_uncertainty_degrades_without_candidate_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior-pack",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    proposal = manager.propose(artifact)
+
+    inventory_write_failed = False
+
+    def _fail_inventory_write(stage: AtomicWriteStage) -> None:
+        nonlocal inventory_write_failed
+        if not inventory_write_failed and stage == AtomicWriteStage.TEMP_OPEN:
+            inventory_write_failed = True
+            raise OSError("inventory write failed")
+
+    manager._state_fault_injector = _fail_inventory_write
+    fsync_calls = 0
+
+    def _fail_restore_directory_fsync(path: Path) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("restore durability uncertain")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(selfmod_manager_module, "fsync_directory", _fail_restore_directory_fsync)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_restore_failed"
+    assert manager.state_degraded is True
+    assert manager.status()["skills"] == {}
+    assert manager.status()["behavior_packs"] == {}
+    assert planner.defaults == [("neutral", "")]
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
 def test_f3_selfmod_publish_restore_and_finalize_fsync_the_artifact_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1727,6 +1832,135 @@ def test_f3_selfmod_publish_restore_and_finalize_fsync_the_artifact_parent(
     succeeded = manager.apply(proposal.proposal_id, confirm=True)
     assert succeeded.applied is True
     assert len(fsynced) >= 2
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_failed_initial_backup_rename_preserves_active_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+        target = tmp_path / "selfmod" / "artifacts" / "skills" / "calendar-helper" / "1.0.0"
+    else:
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+        target = tmp_path / "selfmod" / "artifacts" / "behavior_packs" / "operator-tone" / "1.0.0"
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    original_replace = Path.replace
+
+    def _fail_initial_backup_rename(path: Path, replacement: Path) -> Path:
+        if path == target and replacement.name.startswith(".1.0.0.bak-"):
+            raise OSError("initial backup rename failed")
+        return original_replace(path, replacement)
+
+    monkeypatch.setattr(Path, "replace", _fail_initial_backup_rename)
+
+    result = manager.apply(manager.propose(candidate).proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_copy_failed"
+    assert target.exists()
+    restarted, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    status_key = "skills" if artifact_type == "skill_bundle" else "behavior_packs"
+    assert restarted.status()[status_key][target.parent.name]["active_version"] == "1.0.0"
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_restore_fsync_failure_still_restores_runtime_and_degrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+    else:
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    proposal = manager.propose(candidate)
+    original_restore_runtime = manager._restore_runtime
+    runtime_restore_attempted = False
+
+    def _record_runtime_restore(*args: object, **kwargs: object) -> None:
+        nonlocal runtime_restore_attempted
+        runtime_restore_attempted = True
+        original_restore_runtime(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_restore_runtime", _record_runtime_restore)
+
+    def _fail_change_commit(*_args: object, **_kwargs: object) -> None:
+        raise selfmod_manager_module._SelfModificationOperationError("change_record_persist_failed")
+
+    monkeypatch.setattr(manager, "_commit_inventory_and_change", _fail_change_commit)
+    fsync_calls = 0
+
+    def _fail_restore_directory_fsync(path: Path) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("artifact restore fsync failed")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(selfmod_manager_module, "fsync_directory", _fail_restore_directory_fsync)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_restore_failed"
+    assert runtime_restore_attempted is True
+    assert manager.state_degraded is True
+    if artifact_type == "skill_bundle":
+        assert manager._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert planner.defaults[-1] == ("friendly", "Stay warm.")
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])

@@ -1016,6 +1016,59 @@ async def test_f3_skill_install_replacement_retires_only_superseded_managed_bund
 
 
 @pytest.mark.asyncio
+async def test_f3_skill_install_retirement_fsync_failure_keeps_committed_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_manifest = _manifest_payload(name="durable-update", version="1.0.0")
+    first_manifest["signature"] = ""
+    first = _write_skill(
+        tmp_path / "install-v1",
+        manifest=first_manifest,
+        files={"SKILL.md": "first reviewed instructions\n"},
+    )
+    second_manifest = _manifest_payload(name="durable-update", version="2.0.0")
+    second_manifest["signature"] = ""
+    second = _write_skill(
+        tmp_path / "install-v2",
+        manifest=second_manifest,
+        files={"SKILL.md": "second reviewed instructions\n"},
+    )
+    state_dir = tmp_path / "state"
+    policy = SkillPolicy(
+        require_signature_for_auto_install=False,
+        require_review_on_update=False,
+    )
+    manager = SkillManager(storage_dir=state_dir, policy=policy)
+    assert (await manager.install(first, approve_untrusted=True)).allowed is True
+    calls = 0
+
+    def _fail_retirement_directory_fsync(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("retirement fsync failed")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(
+        skill_manager_module,
+        "fsync_directory",
+        _fail_retirement_directory_fsync,
+    )
+
+    decision = await manager.install(second, approve_untrusted=True)
+
+    assert decision.allowed is True
+    assert manager.list_installed()[0].version == "2.0.0"
+    restarted = SkillManager(storage_dir=state_dir, policy=policy)
+    assert restarted.list_installed()[0].version == "2.0.0"
+
+
+@pytest.mark.asyncio
 async def test_f3_skill_install_replacement_preserves_external_prior_bundle(
     tmp_path: Path,
 ) -> None:

@@ -85,6 +85,31 @@ def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
     return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
 
 
+def _directory_ancestor_identities(directory_fd: int) -> set[tuple[int, int]]:
+    """Return held inode identities from a directory through namespace root."""
+
+    identities: set[tuple[int, int]] = set()
+    current_fd = os.dup(directory_fd)
+    try:
+        while True:
+            current_stat = os.fstat(current_fd)
+            identities.add((current_stat.st_dev, current_stat.st_ino))
+            parent_fd = os.open("..", _directory_open_flags(), dir_fd=current_fd)
+            try:
+                parent_stat = os.fstat(parent_fd)
+            except BaseException:
+                os.close(parent_fd)
+                raise
+            if _same_inode(current_stat, parent_stat):
+                os.close(parent_fd)
+                break
+            os.close(current_fd)
+            current_fd = parent_fd
+        return identities
+    finally:
+        os.close(current_fd)
+
+
 def _mount_id(fd: int) -> int:
     """Read the kernel mount identity for one held Linux file descriptor."""
 
@@ -277,6 +302,10 @@ def copy_bounded_regular_tree(
         if _mount_id(source_parent_fd) != source_mount_id:
             raise ArtifactTreeCopyError("artifact source root mount alias is not allowed")
         destination_parent_fd = _open_directory_chain(destination.parent)
+        if (source_stat.st_dev, source_stat.st_ino) in _directory_ancestor_identities(
+            destination_parent_fd
+        ):
+            raise ArtifactTreeCopyError("artifact source and destination underlying alias overlap")
         os.mkdir(destination.name, 0o700, dir_fd=destination_parent_fd)
         created = True
         destination_fd = os.open(

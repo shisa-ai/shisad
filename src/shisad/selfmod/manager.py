@@ -230,6 +230,12 @@ class _SelfModificationOperationError(RuntimeError):
         self.reason = reason
 
 
+class _ArtifactPublicationError(OSError):
+    def __init__(self, reason: str, *, recovery_uncertain: bool) -> None:
+        super().__init__(reason)
+        self.recovery_uncertain = recovery_uncertain
+
+
 @dataclass(frozen=True, slots=True)
 class _StagedArtifactCopy:
     target_path: Path
@@ -440,7 +446,9 @@ class SelfModificationManager:
 
         try:
             published_copy = self._publish_staged_artifact(staged_copy)
-        except OSError:
+        except OSError as exc:
+            if isinstance(exc, _ArtifactPublicationError) and exc.recovery_uncertain:
+                self._mark_inventory_degraded("artifact_store_restore_uncertain")
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -484,6 +492,7 @@ class SelfModificationManager:
                 try:
                     self._restore_published_artifact(published_copy)
                 except OSError:
+                    self._mark_inventory_degraded("artifact_store_restore_uncertain")
                     self._record_incident(
                         proposal_id=proposal.proposal_id,
                         artifact_path=str(published_copy.target_path),
@@ -529,9 +538,14 @@ class SelfModificationManager:
                     active_version="",
                     reason="inventory_restore_failed",
                 )
+            restore_failed = False
             try:
                 self._restore_published_artifact(published_copy)
             except OSError:
+                restore_failed = True
+            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
+            if restore_failed:
+                self._mark_inventory_degraded("artifact_store_restore_uncertain")
                 self._record_incident(
                     proposal_id=proposal.proposal_id,
                     artifact_path=str(published_copy.target_path),
@@ -545,7 +559,6 @@ class SelfModificationManager:
                     active_version=previous_entry.active_version if previous_entry.enabled else "",
                     reason="artifact_store_restore_failed",
                 )
-            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -1100,14 +1113,16 @@ class SelfModificationManager:
             f".{staged_copy.target_path.name}.bak-{uuid.uuid4().hex}"
         )
         staged_backup: Path | None = None
+        candidate_published = False
         try:
             if staged_copy.target_path.exists():
                 staged_copy.target_path.replace(backup_path)
                 staged_backup = backup_path
             staged_copy.staging_path.replace(staged_copy.target_path)
+            candidate_published = True
             fsync_directory(staged_copy.target_path.parent)
         except OSError:
-            if staged_copy.target_path.exists():
+            if candidate_published and staged_copy.target_path.exists():
                 cls._remove_artifact_tree(staged_copy.target_path)
             if (
                 staged_backup is not None
@@ -1117,7 +1132,13 @@ class SelfModificationManager:
                 staged_backup.replace(staged_copy.target_path)
             if staged_copy.staging_path.exists():
                 cls._remove_artifact_tree(staged_copy.staging_path)
-            fsync_directory(staged_copy.target_path.parent)
+            try:
+                fsync_directory(staged_copy.target_path.parent)
+            except OSError as recovery_error:
+                raise _ArtifactPublicationError(
+                    "artifact publication recovery durability is uncertain",
+                    recovery_uncertain=True,
+                ) from recovery_error
             raise
         return _PublishedArtifactCopy(
             target_path=staged_copy.target_path,

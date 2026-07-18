@@ -301,10 +301,16 @@ class SkillManager:
                     self._discard_managed_install_bundle(retained_path)
                 raise
             if existing is not None:
-                self._retire_superseded_managed_bundle(
-                    Path(existing.path),
-                    retained_path=retained_path,
-                )
+                try:
+                    self._retire_superseded_managed_bundle(
+                        Path(existing.path),
+                        retained_path=retained_path,
+                    )
+                except OSError:
+                    logger.exception(
+                        "superseded managed skill bundle finalization failed for %s",
+                        existing.path,
+                    )
             return SkillInstallDecision(
                 allowed=True,
                 status="installed",
