@@ -18,6 +18,7 @@ from shisad.core.authority import (
     DaemonAuthorityCandidate,
     daemon_authority_protects_path,
 )
+from shisad.core.file_descriptors import duplicate_fd_above_standard_streams
 
 
 def _directory_open_flags() -> int:
@@ -243,6 +244,7 @@ class FsGitToolkit:
         if not resolved.exists() or not resolved.is_dir():
             return self._error("repo_not_found", path=str(resolved))
         directory_fd = -1
+        subprocess_directory_fd = -1
         try:
             _absolute, directory_fd, _created = _open_directory_chain(
                 resolved,
@@ -251,14 +253,15 @@ class FsGitToolkit:
             git_stat = os.stat(".git", dir_fd=directory_fd, follow_symlinks=False)
             if not (stat.S_ISDIR(git_stat.st_mode) or stat.S_ISREG(git_stat.st_mode)):
                 return self._error("not_a_git_repo", path=str(resolved))
-            command = ["git", "-C", _descriptor_path(directory_fd), *args]
+            subprocess_directory_fd = duplicate_fd_above_standard_streams(directory_fd)
+            command = ["git", "-C", _descriptor_path(subprocess_directory_fd), *args]
             completed = subprocess.run(
                 command,
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=max(0.1, float(self.git_timeout_seconds)),
-                pass_fds=(directory_fd,),
+                pass_fds=(subprocess_directory_fd,),
             )
         except FileNotFoundError:
             return self._error("not_a_git_repo", path=str(resolved))
@@ -267,6 +270,8 @@ class FsGitToolkit:
         except (OSError, ValueError):
             return self._error("git_execution_failed", path=str(resolved))
         finally:
+            if subprocess_directory_fd >= 0:
+                os.close(subprocess_directory_fd)
             if directory_fd >= 0:
                 os.close(directory_fd)
         if completed.returncode != 0:

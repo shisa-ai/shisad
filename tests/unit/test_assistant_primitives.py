@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+import shisad.assistant.fs_git as fs_git_module
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
 from shisad.core.authority import DaemonAuthorityCandidate
@@ -507,6 +508,40 @@ def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     log = toolkit.git_log(repo_path=".", limit=5)
     assert log["ok"] is True
     assert "init" in log["output"]
+
+
+def test_fs_git_toolkit_uses_a_nonstandard_inherited_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    toolkit = FsGitToolkit(roots=[repo], max_read_bytes=1024)
+    original_open_chain = fs_git_module._open_directory_chain
+
+    def _force_stdout_descriptor(
+        path: Path,
+        *,
+        create: bool,
+    ) -> tuple[Path, int, bool]:
+        absolute, directory_fd, created = original_open_chain(path, create=create)
+        if directory_fd != 1:
+            os.dup2(directory_fd, 1)
+            os.close(directory_fd)
+        return absolute, 1, created
+
+    monkeypatch.setattr(fs_git_module, "_open_directory_chain", _force_stdout_descriptor)
+    saved_stdout = os.dup(1)
+    os.close(1)
+    try:
+        status = toolkit.git_status(repo_path=".")
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+
+    assert status["ok"] is True
+    assert "##" in status["output"]
 
 
 def test_web_fetch_redirect_blocks_unallowlisted_destination(

@@ -55,6 +55,7 @@ from shisad.core.atomic_state import (
     remove_owner_controlled_file_entries,
     validate_directory_ancestry,
 )
+from shisad.core.file_descriptors import duplicate_fd_above_standard_streams
 
 _IDENTIFIER_RE = re.compile(r"^[a-f0-9]{32}$")
 _ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -2212,36 +2213,39 @@ def _verify_signature(
         with tempfile.TemporaryFile(prefix="shisad-selfmod-signature-") as signature_file:
             signature_file.write(signature_bytes)
             signature_file.flush()
-            signature_fd = signature_file.fileno()
-            os.fchmod(signature_fd, 0o400)
-            signature_descriptor_path = _held_descriptor_path(signature_fd)
-            if signature_descriptor_path is None:
-                return False, "", "signature_descriptor_unavailable"
-            for principal in principals:
-                signature_file.seek(0)
-                result = subprocess.run(
-                    [
-                        "ssh-keygen",
-                        "-Y",
-                        "verify",
-                        "-f",
-                        str(allowed_signers_path),
-                        "-I",
-                        principal,
-                        "-n",
-                        "file",
-                        "-s",
-                        str(signature_descriptor_path),
-                    ],
-                    input=manifest_text,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    pass_fds=(signature_fd,),
-                    timeout=_SIGNATURE_VERIFY_TIMEOUT_SECONDS,
-                )
-                if result.returncode == 0:
-                    return True, principal, "signature_verified"
+            signature_fd = duplicate_fd_above_standard_streams(signature_file.fileno())
+            try:
+                os.fchmod(signature_fd, 0o400)
+                signature_descriptor_path = _held_descriptor_path(signature_fd)
+                if signature_descriptor_path is None:
+                    return False, "", "signature_descriptor_unavailable"
+                for principal in principals:
+                    os.lseek(signature_fd, 0, os.SEEK_SET)
+                    result = subprocess.run(
+                        [
+                            "ssh-keygen",
+                            "-Y",
+                            "verify",
+                            "-f",
+                            str(allowed_signers_path),
+                            "-I",
+                            principal,
+                            "-n",
+                            "file",
+                            "-s",
+                            str(signature_descriptor_path),
+                        ],
+                        input=manifest_text,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        pass_fds=(signature_fd,),
+                        timeout=_SIGNATURE_VERIFY_TIMEOUT_SECONDS,
+                    )
+                    if result.returncode == 0:
+                        return True, principal, "signature_verified"
+            finally:
+                os.close(signature_fd)
     except (OSError, subprocess.TimeoutExpired):
         return False, "", "signature_verification_failed"
     return False, "", "signature_verification_failed"

@@ -1781,6 +1781,42 @@ def test_f3_signature_verification_consumes_the_captured_signature_bytes(
     assert planner._custom_persona_text == "Stay warm."
 
 
+def test_f3_signature_verification_uses_a_nonstandard_inherited_descriptor(
+    tmp_path: Path,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    artifact = _write_signed_behavior_pack(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    manifest_bytes = (artifact / "manifest.json").read_bytes()
+    signature_bytes = (artifact / "manifest.json.sig").read_bytes()
+    saved_stdin = os.dup(0)
+    os.close(0)
+    try:
+        verified, signer, reason = selfmod_manager_module._verify_signature(
+            manifest_bytes=manifest_bytes,
+            signature_bytes=signature_bytes,
+            allowed_signers_path=allowed_signers,
+        )
+    finally:
+        os.dup2(saved_stdin, 0)
+        os.close(saved_stdin)
+
+    assert verified is True
+    assert signer == "dev"
+    assert reason == "signature_verified"
+
+
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
