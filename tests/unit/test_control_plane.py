@@ -3605,6 +3605,64 @@ def test_f3_control_plane_trace_rejects_unknown_or_naive_plan_fields(
     assert path.read_bytes() == retained
 
 
+@pytest.mark.parametrize("accessor", ["begin", "active"])
+def test_f3_control_plane_plan_accessors_do_not_leak_mutable_retained_state(
+    tmp_path: Path,
+    accessor: str,
+) -> None:
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    created = trace.begin_precontent_plan(
+        session_id="s-plan-copy",
+        goal="read a file",
+        origin=_origin("s-plan-copy"),
+    )
+    escaped = created if accessor == "begin" else trace.active_plan("s-plan-copy")
+    assert escaped is not None
+    original_expires_at = escaped.expires_at
+    escaped.expires_at = original_expires_at.replace(tzinfo=None)
+
+    trace.record_action(session_id="s-plan-copy", idempotency_key="action-1")
+
+    current = trace.active_plan("s-plan-copy")
+    assert current is not None
+    assert current.expires_at == original_expires_at
+    assert current.expires_at.tzinfo is not None
+    assert current.executed_actions == 1
+    restarted = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    assert restarted.state_load_result.status == StateLoadStatus.OK
+    reloaded = restarted.active_plan("s-plan-copy")
+    assert reloaded is not None
+    assert reloaded.executed_actions == 1
+
+
+def test_f3_control_plane_trace_revalidates_candidate_before_publication(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "control_plane" / "plans.json"
+    path.parent.mkdir(parents=True)
+    trace = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    created = trace.begin_precontent_plan(
+        session_id="s-plan-candidate",
+        goal="read a file",
+        origin=_origin("s-plan-candidate"),
+    )
+    original_bytes = path.read_bytes()
+    candidate = trace._copy_plans()
+    candidate[created.session_id].expires_at = created.expires_at.replace(tzinfo=None)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        trace._commit_candidate(candidate)
+
+    assert path.read_bytes() == original_bytes
+    current = trace.active_plan(created.session_id)
+    assert current is not None
+    assert current.expires_at == created.expires_at
+    restarted = ExecutionTraceVerifier(storage_path=path, workspace_roots=[tmp_path])
+    assert restarted.state_load_result.status == StateLoadStatus.OK
+
+
 @pytest.mark.parametrize("field", ["max_actions", "executed_actions"])
 @pytest.mark.parametrize("versioned", [False, True])
 def test_f3_control_plane_trace_rejects_negative_persisted_counters(

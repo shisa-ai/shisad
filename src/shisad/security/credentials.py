@@ -537,7 +537,10 @@ class InMemoryCredentialStore:
         """Persist a newly enrolled approval factor."""
         self._require_approval_state_available(transition="register_factor")
         validated = ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
-        self._approval_factors[validated.credential_id] = validated
+        candidate = self._clone_approval_factors(self._approval_factors)
+        candidate[validated.credential_id] = validated
+        self._validate_local_fido2_realm_consistency(candidate.values())
+        self._approval_factors = candidate
         self._persist_approval_factors()
 
     def list_approval_factors(
@@ -571,7 +574,10 @@ class InMemoryCredentialStore:
         validated = ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
         if validated.credential_id not in self._approval_factors:
             raise KeyError(f"Unknown approval factor: {validated.credential_id}")
-        self._approval_factors[validated.credential_id] = validated
+        candidate = self._clone_approval_factors(self._approval_factors)
+        candidate[validated.credential_id] = validated
+        self._validate_local_fido2_realm_consistency(candidate.values())
+        self._approval_factors = candidate
         self._persist_approval_factors()
 
     def revoke_approval_factor(
@@ -601,9 +607,10 @@ class InMemoryCredentialStore:
     def register_signer_key(self, record: SignerKeyRecord) -> None:
         """Persist a newly registered signer key."""
         self._require_approval_state_available(transition="register_signer")
-        if record.credential_id in self._signer_keys:
-            raise KeyError(f"Signer key already exists: {record.credential_id}")
-        self._signer_keys[record.credential_id] = record.model_copy(deep=True)
+        validated = SignerKeyRecord.model_validate(record.model_dump(mode="python"))
+        if validated.credential_id in self._signer_keys:
+            raise KeyError(f"Signer key already exists: {validated.credential_id}")
+        self._signer_keys[validated.credential_id] = validated
         self._persist_approval_factors()
 
     def list_signer_keys(
@@ -638,9 +645,10 @@ class InMemoryCredentialStore:
     def update_signer_key(self, record: SignerKeyRecord) -> None:
         """Persist an updated signer-key record."""
         self._require_approval_state_available(transition="update_signer")
-        if record.credential_id not in self._signer_keys:
-            raise KeyError(f"Unknown signer key: {record.credential_id}")
-        self._signer_keys[record.credential_id] = record.model_copy(deep=True)
+        validated = SignerKeyRecord.model_validate(record.model_dump(mode="python"))
+        if validated.credential_id not in self._signer_keys:
+            raise KeyError(f"Unknown signer key: {validated.credential_id}")
+        self._signer_keys[validated.credential_id] = validated
         self._persist_approval_factors()
 
     def revoke_signer_key(self, *, credential_id: str) -> int:
@@ -886,13 +894,37 @@ class InMemoryCredentialStore:
             return
         self._require_approval_state_available(transition="persist")
         try:
+            factors = [
+                ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
+                for factor in self._approval_factors.values()
+            ]
+            self._validate_local_fido2_realm_consistency(factors)
+            factors.sort(
+                key=lambda item: (
+                    item.created_at,
+                    item.user_id,
+                    item.method,
+                    item.credential_id,
+                )
+            )
+            signer_keys = [
+                SignerKeyRecord.model_validate(record.model_dump(mode="python"))
+                for record in self._signer_keys.values()
+            ]
+            signer_keys.sort(
+                key=lambda item: (
+                    item.created_at,
+                    item.user_id,
+                    item.backend,
+                    item.credential_id,
+                )
+            )
             payload: dict[str, Any] = {
                 "approval_factors": [
-                    factor.model_dump(mode="json") for factor in self.list_approval_factors()
+                    factor.model_dump(mode="json") for factor in factors
                 ],
                 "signer_keys": [
-                    record.model_dump(mode="json")
-                    for record in self.list_signer_keys(include_revoked=True)
+                    record.model_dump(mode="json") for record in signer_keys
                 ],
             }
             if self._local_fido2_realm_id:
@@ -942,3 +974,15 @@ class InMemoryCredentialStore:
         if len(derived_ids) != 1:
             raise ValueError("local_fido2 factors use inconsistent webauthn_rp_id values")
         return next(iter(derived_ids))
+
+    def _validate_local_fido2_realm_consistency(
+        self,
+        records: Iterable[ApprovalFactorRecord],
+    ) -> None:
+        derived = self._derive_local_fido2_realm_id_from_records(records)
+        stored = (self._local_fido2_realm_id or "").strip()
+        if not stored:
+            return
+        normalized = _normalize_local_fido2_realm_id(stored)
+        if derived is not None and derived != normalized:
+            raise ValueError("stored local_fido2 realm does not match approval factors")

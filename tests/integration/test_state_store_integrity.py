@@ -368,6 +368,86 @@ def test_scheduler_rejects_unknown_or_naive_retained_task_fields(
     assert tasks_path.read_bytes() == retained
 
 
+def test_f3_scheduler_rejects_naive_due_time_before_task_publication(tmp_path: Path) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task = scheduler.create_task(
+        name="interval",
+        goal="summarize updates",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="policy-v1",
+        created_by=UserId("alice"),
+    )
+    tasks_path = storage / "tasks.json"
+    original_bytes = tasks_path.read_bytes()
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        scheduler.trigger_due(
+            now=(task.created_at + timedelta(seconds=61)).replace(tzinfo=None),
+        )
+
+    assert tasks_path.read_bytes() == original_bytes
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert current.last_triggered_at is None
+    assert current.trigger_count == 0
+
+
+@pytest.mark.parametrize("accessor", ["create", "get", "list"])
+def test_f3_scheduler_task_accessors_do_not_leak_mutable_retained_state(
+    tmp_path: Path,
+    accessor: str,
+) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    created = scheduler.create_task(
+        name="isolated",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="policy-v1",
+        created_by=UserId("alice"),
+    )
+    if accessor == "create":
+        escaped = created
+    elif accessor == "get":
+        escaped = scheduler.get_task(created.id)
+    else:
+        escaped = scheduler.list_tasks()[0]
+    assert escaped is not None
+    original_created_at = escaped.created_at
+    escaped.created_at = original_created_at.replace(tzinfo=None)
+
+    current = scheduler.get_task(created.id)
+    assert current is not None
+    assert current.created_at == original_created_at
+    assert current.created_at.tzinfo is not None
+    assert current.created_at.utcoffset() is not None
+    restarted = SchedulerManager(storage_dir=storage)
+    assert restarted.state_load_result("tasks").status == StateLoadStatus.OK
+
+
+def test_f3_scheduler_revalidates_internal_task_before_persisting(tmp_path: Path) -> None:
+    storage = tmp_path / "scheduler"
+    scheduler = SchedulerManager(storage_dir=storage)
+    task_id = _create_scheduler_task(scheduler)
+    tasks_path = storage / "tasks.json"
+    original_bytes = tasks_path.read_bytes()
+    scheduler._tasks[task_id].created_at = scheduler._tasks[task_id].created_at.replace(tzinfo=None)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        scheduler.disable_task(task_id)
+
+    assert tasks_path.read_bytes() == original_bytes
+    restored = scheduler.get_task(task_id)
+    assert restored is not None
+    assert restored.enabled is True
+    assert restored.created_at.tzinfo is not None
+    restarted = SchedulerManager(storage_dir=storage)
+    assert restarted.state_load_result("tasks").status == StateLoadStatus.OK
+
+
 def test_checksum_valid_semantically_invalid_task_row_is_corrupt(tmp_path: Path) -> None:
     storage = tmp_path / "scheduler"
     scheduler = SchedulerManager(storage_dir=storage)

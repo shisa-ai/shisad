@@ -272,15 +272,22 @@ class SchedulerManager:
         self._tasks[task.id] = task
         self._persist_tasks()
         self._audit("task.create", {"task_id": task.id, "name": name, "max_runs": task.max_runs})
-        return task
+        return task.model_copy(deep=True)
 
     def list_tasks(self) -> list[ScheduledTask]:
         self._require_state_readable("tasks", transition="list")
-        return sorted(self._tasks.values(), key=lambda item: item.created_at, reverse=True)
+        return sorted(
+            (task.model_copy(deep=True) for task in self._tasks.values()),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
 
     def get_task(self, task_id: str) -> ScheduledTask | None:
         self._require_state_readable("tasks", transition="get")
-        return self._tasks.get(task_id)
+        task = self._tasks.get(task_id)
+        if task is None:
+            return None
+        return task.model_copy(deep=True)
 
     def disable_task(self, task_id: str) -> bool:
         self._require_state_writable("tasks", transition="disable")
@@ -412,6 +419,8 @@ class SchedulerManager:
     ) -> list[TaskRunRequest]:
         self._require_state_writable("tasks", transition="trigger_due")
         current = now or datetime.now(UTC)
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("scheduler due time must be timezone-aware")
         requests: list[TaskRunRequest] = []
         dirty = False
         current_minute = current.replace(second=0, microsecond=0)
@@ -1308,15 +1317,51 @@ class SchedulerManager:
         except StatePersistenceDegradedError:
             self._restore_durable_tasks()
             raise
-        payload: list[dict[str, Any]] = []
-        for task in self._tasks.values():
-            task_payload = task.model_dump(mode="json")
-            if task.confirmation_outcome_dedup:
-                task_payload["_confirmation_outcome_dedup"] = dict(task.confirmation_outcome_dedup)
-            if task.recovery_containment_token:
-                task_payload["_recovery_containment_token"] = task.recovery_containment_token
-            payload.append(task_payload)
         try:
+            payload: list[dict[str, Any]] = []
+            validated_tasks: dict[str, ScheduledTask] = {}
+            for task_id, task in self._tasks.items():
+                for field in ("trigger_count", "success_count", "failure_count", "max_runs"):
+                    value = getattr(task, field)
+                    if type(value) is not int or value < 0:
+                        raise ValueError(f"scheduled task {field} must be a nonnegative integer")
+                if type(task.enabled) is not bool:
+                    raise ValueError("scheduled task enabled must be a native boolean")
+                validated = ScheduledTask.model_validate(task.model_dump(mode="python"))
+                if validated.id != task_id:
+                    raise ValueError("scheduled task id does not match retained key")
+                if mismatch_reason := validated.envelope_binding_mismatch_reason():
+                    raise ValueError(mismatch_reason)
+                self._validate_schedule(validated.schedule)
+                outcome_dedup = task.confirmation_outcome_dedup
+                if not isinstance(outcome_dedup, dict):
+                    raise ValueError("invalid scheduled task confirmation outcome map")
+                if any(
+                    not isinstance(confirmation_id, str)
+                    or not confirmation_id.strip()
+                    or type(outcome) is not bool
+                    for confirmation_id, outcome in outcome_dedup.items()
+                ):
+                    raise ValueError("invalid scheduled task confirmation outcome identity")
+                validated.confirmation_outcome_dedup = {
+                    confirmation_id.strip(): outcome
+                    for confirmation_id, outcome in outcome_dedup.items()
+                }
+                token = task.recovery_containment_token
+                if not isinstance(token, str):
+                    raise ValueError("invalid scheduled task recovery containment token")
+                validated.recovery_containment_token = token.strip()
+                task_payload = validated.model_dump(mode="json")
+                if validated.confirmation_outcome_dedup:
+                    task_payload["_confirmation_outcome_dedup"] = dict(
+                        validated.confirmation_outcome_dedup
+                    )
+                if validated.recovery_containment_token:
+                    task_payload["_recovery_containment_token"] = (
+                        validated.recovery_containment_token
+                    )
+                payload.append(task_payload)
+                validated_tasks[task_id] = validated
             snapshot = encode_versioned_json_snapshot(
                 payload,
                 version=_SCHEDULER_STATE_VERSION,
@@ -1336,7 +1381,8 @@ class SchedulerManager:
             else:
                 self._restore_durable_tasks()
             raise
-        self._durable_tasks = self._clone_tasks(self._tasks)
+        self._tasks = validated_tasks
+        self._durable_tasks = self._clone_tasks(validated_tasks)
         self._state_load_results["tasks"] = StateLoadResult(
             StateLoadStatus.OK,
             schema_version=_SCHEDULER_STATE_VERSION,

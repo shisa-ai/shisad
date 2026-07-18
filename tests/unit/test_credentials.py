@@ -361,6 +361,43 @@ class TestApprovalFactorStore:
         reloaded.set_approval_store_path(store_path)
         assert reloaded.get_or_create_local_fido2_realm_id() == realm_id
 
+    @pytest.mark.parametrize("operation", ["register", "update"])
+    def test_f3_local_fido2_realm_mismatch_is_rejected_before_publication(
+        self,
+        tmp_path,
+        operation: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        realm_id = store.get_or_create_local_fido2_realm_id(seed="realmone")
+        original = ApprovalFactorRecord(
+            credential_id="local-fido2-1",
+            user_id="alice",
+            method="local_fido2",
+            principal_id="ops-key",
+            webauthn_rp_id=f"{realm_id}.approver.shisad.invalid",
+        )
+        store.register_approval_factor(original)
+        original_bytes = store_path.read_bytes()
+        mismatched = original.model_copy(deep=True)
+        mismatched.webauthn_rp_id = "realmtwo.approver.shisad.invalid"
+        if operation == "register":
+            mismatched.credential_id = "local-fido2-2"
+
+        with pytest.raises(ValueError, match=r"realm|inconsistent"):
+            if operation == "register":
+                store.register_approval_factor(mismatched)
+            else:
+                store.update_approval_factor(mismatched)
+
+        assert store_path.read_bytes() == original_bytes
+        assert store.list_approval_factors() == [original]
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+        assert restarted.approval_state_load_result().status == StateLoadStatus.OK
+        assert restarted.list_approval_factors() == [original]
+
     def test_local_fido2_realm_id_derives_from_legacy_store_without_metadata(
         self,
         tmp_path,
@@ -664,6 +701,46 @@ class TestApprovalFactorStore:
         restarted = InMemoryCredentialStore()
         restarted.set_approval_store_path(store_path)
         assert restarted.get_approval_factor("webauthn-1") == original
+
+    @pytest.mark.parametrize("operation", ["register", "update"])
+    def test_f3_signer_writers_reject_naive_timestamps_before_publication(
+        self,
+        tmp_path,
+        operation: str,
+    ) -> None:  # type: ignore[no-untyped-def]
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        original = SignerKeyRecord(
+            credential_id="kms:primary",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="enterprise",
+            public_key_pem="test-public-key",
+        )
+        store.register_signer_key(original)
+        original_bytes = store_path.read_bytes()
+        invalid = original.model_copy(deep=True)
+        if operation == "register":
+            invalid.credential_id = "kms:secondary"
+            invalid.created_at = invalid.created_at.replace(tzinfo=None)
+        else:
+            invalid.last_used_at = datetime.now(UTC).replace(tzinfo=None)
+
+        with pytest.raises(ValueError, match="timezone-aware"):
+            if operation == "register":
+                store.register_signer_key(invalid)
+            else:
+                store.update_signer_key(invalid)
+
+        assert store_path.read_bytes() == original_bytes
+        assert store.list_signer_keys(include_revoked=True) == [original]
+        restarted = InMemoryCredentialStore()
+        restarted.set_approval_store_path(store_path)
+        assert restarted.approval_state_load_result().status == StateLoadStatus.OK
+        assert restarted.list_signer_keys(include_revoked=True) == [original]
 
     def test_f3_approval_store_checksum_tamper_is_retained_and_fail_closed(
         self,

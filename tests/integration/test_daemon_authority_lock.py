@@ -1537,8 +1537,20 @@ def test_f3_oversized_integer_claim_json_fails_through_typed_boundary(
         claim.release()
 
 
-@pytest.mark.parametrize("mutation", ["record_extra", "candidate_extra", "invalid_pid"])
-def test_f3_authority_claim_rejects_unknown_members_and_invalid_pid(
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "record_extra",
+        "candidate_extra",
+        "invalid_pid_type",
+        "negative_pid",
+        "invalid_device_type",
+        "negative_device",
+        "invalid_inode_type",
+        "negative_inode",
+    ],
+)
+def test_f3_authority_claim_rejects_unknown_members_and_invalid_identity_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
@@ -1554,8 +1566,18 @@ def test_f3_authority_claim_rejects_unknown_members_and_invalid_pid(
             payload["unexpected_authority"] = "ignored"
         elif mutation == "candidate_extra":
             payload["candidates"][0]["unexpected_authority"] = "ignored"
-        else:
+        elif mutation == "invalid_pid_type":
             payload["pid"] = "123"
+        elif mutation == "negative_pid":
+            payload["pid"] = -1
+        elif mutation == "invalid_device_type":
+            payload["candidates"][0]["device"] = "123"
+        elif mutation == "negative_device":
+            payload["candidates"][0]["device"] = -1
+        elif mutation == "invalid_inode_type":
+            payload["candidates"][0]["inode"] = "123"
+        else:
+            payload["candidates"][0]["inode"] = -1
         retained = json.dumps(payload, sort_keys=True).encode()
         claim._record_path.write_bytes(retained)
         claim._record_path.chmod(0o600)

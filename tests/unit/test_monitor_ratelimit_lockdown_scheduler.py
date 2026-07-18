@@ -856,7 +856,12 @@ def test_f1_scheduler_pending_projection_excludes_expired_confirmation(
         delivery_target={"channel": "session", "recipient": "sess-1"},
         max_runs=1,
     )
-    created.trigger_count = 1
+    assert len(
+        scheduler.trigger_event(
+            event_type="message.received",
+            payload="deployment check",
+        )
+    ) == 1
     scheduler.queue_confirmation(
         created.id,
         {
@@ -869,13 +874,15 @@ def test_f1_scheduler_pending_projection_excludes_expired_confirmation(
 
     assert scheduler.pending_confirmations(created.id) == []
     assert scheduler.pending_confirmations(created.id) == []
-    assert created.failure_count == 1
+    current = scheduler.get_task(created.id)
+    assert current is not None
+    assert current.failure_count == 1
     resolved = scheduler._pending_confirmations[created.id][0]
     assert resolved["status"] == "failed"
     assert resolved["status_reason"] == "approval_expired"
     assert resolved["lifecycle_state"] == "expired"
     view = reminder_status_view_for_task(
-        created,
+        current,
         current_delivery_target={"channel": "session", "recipient": "sess-1"},
         pending_confirmation_count=0,
     )
@@ -1053,8 +1060,10 @@ def test_f2_confirmation_outcome_dedup_retention_tracks_durable_rows(
         str(row.get("confirmation_id", "")) for row in scheduler._pending_confirmations[task.id]
     }
     assert len(retained_ids) == 32
-    assert set(task.confirmation_outcome_dedup) == retained_ids
-    assert task.failure_count == 40
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert set(current.confirmation_outcome_dedup) == retained_ids
+    assert current.failure_count == 40
 
     restarted = SchedulerManager(storage_dir=storage)
     reloaded = restarted.get_task(task.id)
@@ -1252,8 +1261,7 @@ def test_m2_scheduler_interval_due_runs_once_per_interval() -> None:
         policy_snapshot_ref="p1",
         created_by=UserId("alice"),
     )
-    base = datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
-    task.created_at = base
+    base = task.created_at
 
     assert scheduler.trigger_due(now=base) == []
     first = scheduler.trigger_due(now=base + timedelta(seconds=61))
@@ -1349,7 +1357,7 @@ def test_gh59_trigger_due_skips_malformed_persisted_schedules_and_runs_valid_tas
 
 def test_m2_scheduler_cron_due_runs_once_per_matching_minute() -> None:
     scheduler = SchedulerManager()
-    task = scheduler.create_task(
+    scheduler.create_task(
         name="digest",
         goal="daily digest",
         schedule=Schedule(kind="cron", expression="*/5 * * * *"),
@@ -1358,8 +1366,6 @@ def test_m2_scheduler_cron_due_runs_once_per_matching_minute() -> None:
         created_by=UserId("alice"),
     )
     minute_00 = datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
-    task.created_at = minute_00
-
     first = scheduler.trigger_due(now=minute_00)
     assert len(first) == 1
     assert scheduler.trigger_due(now=minute_00 + timedelta(seconds=30)) == []
@@ -1370,7 +1376,7 @@ def test_m2_scheduler_cron_due_runs_once_per_matching_minute() -> None:
 
 def test_m2_scheduler_cron_step_respects_nonzero_field_minimum() -> None:
     scheduler = SchedulerManager()
-    task = scheduler.create_task(
+    scheduler.create_task(
         name="every-other-day",
         goal="check alternating days",
         schedule=Schedule(kind="cron", expression="0 0 */2 * *"),
@@ -1379,8 +1385,6 @@ def test_m2_scheduler_cron_step_respects_nonzero_field_minimum() -> None:
         created_by=UserId("alice"),
     )
     day_01 = datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC)
-    task.created_at = day_01
-
     assert len(scheduler.trigger_due(now=day_01)) == 1
     assert scheduler.trigger_due(now=day_01 + timedelta(days=1)) == []
     assert len(scheduler.trigger_due(now=day_01 + timedelta(days=2))) == 1
@@ -1438,8 +1442,7 @@ def test_t2_task_status_snapshot_includes_next_interval_run() -> None:
         created_by=UserId("alice"),
         workspace_id=WorkspaceId("ws1"),
     )
-    base = datetime(2026, 6, 29, 12, 0, 0, tzinfo=UTC)
-    task.created_at = base
+    base = task.created_at
 
     rows = scheduler.task_status_snapshot(
         limit=10,
@@ -1449,7 +1452,7 @@ def test_t2_task_status_snapshot_includes_next_interval_run() -> None:
     )
 
     assert rows[0]["task_id"] == task.id
-    assert rows[0]["next_run_at"] == "2026-06-29T12:01:00+00:00"
+    assert rows[0]["next_run_at"] == (base + timedelta(seconds=60)).isoformat()
 
 
 def test_t2_task_status_snapshot_includes_next_cron_run() -> None:

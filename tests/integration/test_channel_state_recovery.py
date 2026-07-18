@@ -121,7 +121,14 @@ def test_unscoped_v1_state_blocks_unknown_identity_until_explicit_rebaseline(
 
 @pytest.mark.parametrize(
     "retained_shape",
-    ["current_snapshot", "current_journal", "v1_snapshot", "v1_journal"],
+    [
+        "current_snapshot_outer",
+        "current_snapshot_row",
+        "current_journal",
+        "v1_snapshot_outer",
+        "v1_snapshot_row",
+        "v1_journal",
+    ],
 )
 def test_f3_replay_state_rejects_unknown_snapshot_and_journal_members(
     tmp_path: Path,
@@ -135,7 +142,6 @@ def test_f3_replay_state_rejects_unknown_snapshot_and_journal_members(
             "channel": "discord",
             "identity": identity.model_dump(mode="json"),
             "outcome": "terminal",
-            "unexpected_authority": "ignored",
         }
         version = 2
         snapshot = {
@@ -148,7 +154,6 @@ def test_f3_replay_state_rejects_unknown_snapshot_and_journal_members(
             "channel": "discord",
             "message_id": "m-1",
             "outcome": "terminal",
-            "unexpected_authority": "ignored",
         }
         version = 1
         snapshot = {
@@ -156,7 +161,11 @@ def test_f3_replay_state_rejects_unknown_snapshot_and_journal_members(
             "records": [row],
             "recent_message_ids": ["m-1"],
         }
-    if retained_shape.endswith("snapshot"):
+    if retained_shape.endswith("outer"):
+        snapshot["unexpected_authority"] = "ignored"
+    else:
+        row["unexpected_authority"] = "ignored"
+    if "_snapshot_" in retained_shape:
         retained_path = root / "discord.state.json"
         retained_path.write_bytes(encode_versioned_json_snapshot(snapshot, version=version))
     else:

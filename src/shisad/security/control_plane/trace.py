@@ -320,7 +320,7 @@ class ExecutionTraceVerifier:
         candidate = dict(self._plans)
         candidate[session_id] = plan
         self._commit_candidate(candidate)
-        return plan
+        return plan.model_copy(deep=True)
 
     def active_plan(self, session_id: str) -> CommittedPlan | None:
         if self.state_degraded:
@@ -332,7 +332,7 @@ class ExecutionTraceVerifier:
             return None
         if datetime.now(UTC) > plan.expires_at:
             return None
-        return plan
+        return plan.model_copy(deep=True)
 
     def verify_action(
         self,
@@ -804,8 +804,14 @@ class ExecutionTraceVerifier:
         return {session_id: plan.model_copy(deep=True) for session_id, plan in self._plans.items()}
 
     def _commit_candidate(self, candidate: dict[str, CommittedPlan]) -> None:
+        validated: dict[str, CommittedPlan] = {}
+        for session_id, plan in candidate.items():
+            validated_plan = CommittedPlan.model_validate(plan.model_dump(mode="python"))
+            if validated_plan.session_id != session_id:
+                raise ValueError("trace plan session does not match candidate key")
+            validated[session_id] = validated_plan
         previous = self._plans
-        self._plans = candidate
+        self._plans = validated
         try:
             self._persist()
         except Exception:
@@ -820,10 +826,12 @@ class ExecutionTraceVerifier:
     def _persist(self) -> None:
         if self._storage_path is None:
             return
-        payload = {
-            session_id: plan.model_dump(mode="json")
-            for session_id, plan in sorted(self._plans.items(), key=lambda item: item[0])
-        }
+        payload: dict[str, Any] = {}
+        for session_id, plan in sorted(self._plans.items(), key=lambda item: item[0]):
+            validated = CommittedPlan.model_validate(plan.model_dump(mode="python"))
+            if validated.session_id != session_id:
+                raise ValueError("trace plan session does not match retained key")
+            payload[session_id] = validated.model_dump(mode="json")
         try:
             atomic_write_bytes(
                 self._storage_path,

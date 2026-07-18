@@ -704,6 +704,39 @@ def test_registry_keeps_signer_backend_selectable_with_multiple_matching_princip
     assert resolved.backend is backend
 
 
+def test_f3_signer_record_key_use_rejects_naive_time_without_publishing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    store_path = tmp_path / "approval-factors.json"
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(store_path)
+    record = SignerKeyRecord(
+        credential_id="kms:finance-primary",
+        user_id="alice",
+        backend="kms",
+        principal_id="finance-owner",
+        algorithm="ed25519",
+        device_type="enterprise",
+        public_key_pem="test-public-key",
+    )
+    store.register_signer_key(record)
+    original_bytes = store_path.read_bytes()
+    backend = EnterpriseKmsSignerBackend(
+        credential_store=store,
+        endpoint_url="http://127.0.0.1:9/sign",
+    )
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        backend.record_key_use(
+            signer_key_id=record.credential_id,
+            when=datetime.now(UTC).replace(tzinfo=None),
+        )
+
+    assert store_path.read_bytes() == original_bytes
+    assert store.get_signer_key(record.credential_id) == record
+    restarted = InMemoryCredentialStore()
+    restarted.set_approval_store_path(store_path)
+    assert restarted.get_signer_key(record.credential_id) == record
+
+
 def test_software_backend_requires_approval_envelope_hash() -> None:
     # ADV-L4: real ``PendingAction`` rather than ``SimpleNamespace`` so the
     # missing-envelope error path remains sensitive to dataclass drift.

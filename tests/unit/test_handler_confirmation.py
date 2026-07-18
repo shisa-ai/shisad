@@ -1260,7 +1260,12 @@ def test_f2_load_expired_task_action_reconciles_scheduler_shadow_once(
         workspace_id=WorkspaceId("w-1"),
         max_runs=1,
     )
-    task.trigger_count = 1
+    assert len(
+        scheduler.trigger_event(
+            event_type="message.received",
+            payload="legacy expiry",
+        )
+    ) == 1
     pending = _pending_action(nonce="legacy-task-nonce")
     pending.task_id = task.id
     _bind_pending_action_identity(pending)
@@ -1293,7 +1298,9 @@ def test_f2_load_expired_task_action_reconciles_scheduler_shadow_once(
     assert shadow["lifecycle_state"] == "expired"
     assert shadow["status_reason"] == "approval_expired"
     assert shadow["run_outcome_recorded"] is True
-    assert task.failure_count == 1
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert current.failure_count == 1
 
 
 @pytest.mark.parametrize(
@@ -6263,7 +6270,12 @@ async def test_f1_scheduler_expiry_and_late_decision_record_one_failed_outcome(
         workspace_id=WorkspaceId("w-1"),
         max_runs=1,
     )
-    task.trigger_count = 1
+    assert len(
+        scheduler.trigger_event(
+            event_type="message.received",
+            payload="deployment check",
+        )
+    ) == 1
     pending = _pending_action(nonce="expected")
     pending.task_id = task.id
     pending.expires_at = datetime.now(UTC) - timedelta(seconds=1)
@@ -6281,14 +6293,18 @@ async def test_f1_scheduler_expiry_and_late_decision_record_one_failed_outcome(
     )
 
     assert scheduler.pending_confirmations(task.id) == []
-    assert task.failure_count == 1
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert current.failure_count == 1
 
     result = await harness.do_action_reject(
         {"confirmation_id": pending.confirmation_id, "decision_nonce": "expected"}
     )
 
     assert result["reason"] == "approval_expired"
-    assert task.failure_count == 1
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert current.failure_count == 1
     resolved = scheduler._pending_confirmations[task.id][0]
     assert resolved["run_outcome_recorded"] is True
 
@@ -6322,7 +6338,12 @@ async def test_f1_inflight_confirmation_status_read_records_one_terminal_outcome
         workspace_id=WorkspaceId("w-1"),
         max_runs=1,
     )
-    task.trigger_count = 1
+    assert len(
+        scheduler.trigger_event(
+            event_type="message.received",
+            payload="inflight check",
+        )
+    ) == 1
     pending = _pending_action(nonce="expected")
     pending.task_id = task.id
     pending.expires_at = datetime.now(UTC) + timedelta(minutes=1)
@@ -6356,15 +6377,19 @@ async def test_f1_inflight_confirmation_status_read_records_one_terminal_outcome
     assert shadow["status"] == "executing"
     assert str(shadow["processing_started_at"])
     assert "resolved_at" not in shadow
-    assert task.success_count == 0
-    assert task.failure_count == 0
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert current.success_count == 0
+    assert current.failure_count == 0
 
     harness.release_execution.set()
     result = await confirmation
 
     assert result["confirmed"] is execute_success
-    assert task.success_count == int(execute_success)
-    assert task.failure_count == int(not execute_success)
+    current = scheduler.get_task(task.id)
+    assert current is not None
+    assert current.success_count == int(execute_success)
+    assert current.failure_count == int(not execute_success)
     assert shadow["run_outcome_recorded"] is True
     assert str(shadow["resolved_at"])
 
