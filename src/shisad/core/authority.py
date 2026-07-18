@@ -166,8 +166,28 @@ class DaemonAuthorityClaim:
         record_identity = "unavailable"
         lock_state = "unavailable"
         namespace_state = "unavailable"
+        registry_owner = "unavailable"
+        registry_mode = ""
+        registry_permissions_ok = False
         record_stat: os.stat_result | None = None
         path_stat: os.stat_result | None = None
+
+        try:
+            registry_stat = self._registry_root.lstat()
+        except OSError:
+            problems.append("registry_root_unavailable")
+        else:
+            registry_owner = (
+                "current_user" if registry_stat.st_uid == os.geteuid() else "unexpected_owner"
+            )
+            registry_mode = f"{stat.S_IMODE(registry_stat.st_mode):04o}"
+            registry_permissions_ok = (
+                stat.S_ISDIR(registry_stat.st_mode)
+                and registry_owner == "current_user"
+                and registry_mode == "0700"
+            )
+            if not registry_permissions_ok:
+                problems.append("registry_permissions_invalid")
 
         if fd is None:
             problems.append("claim_reference_released")
@@ -254,6 +274,10 @@ class DaemonAuthorityClaim:
             "permissions_ok": permissions_ok,
             "record_identity": record_identity,
             "namespace_state": namespace_state,
+            "registry_owner": registry_owner,
+            "registry_mode": registry_mode,
+            "expected_registry_mode": "0700",
+            "registry_permissions_ok": registry_permissions_ok,
             "candidate_count": len(self._candidates),
             "candidate_roles": sorted(candidate.role for candidate in self._candidates),
             "paths_redacted": True,

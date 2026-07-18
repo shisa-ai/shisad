@@ -198,6 +198,10 @@ async def test_daemon_services_builds_with_local_provider(
             "permissions_ok": True,
             "record_identity": "matched",
             "namespace_state": "bound",
+            "registry_owner": "current_user",
+            "registry_mode": "0700",
+            "expected_registry_mode": "0700",
+            "registry_permissions_ok": True,
             "candidate_count": len(services.authority_claim.candidates),
             "candidate_roles": sorted(
                 candidate.role for candidate in services.authority_claim.candidates
@@ -252,7 +256,10 @@ async def test_daemon_services_builds_with_local_provider(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("degradation", ["record_permissions", "lock_not_held"])
+@pytest.mark.parametrize(
+    "degradation",
+    ["record_permissions", "registry_permissions", "lock_not_held"],
+)
 async def test_f3_authority_diagnostics_are_redacted_and_report_degradation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -270,6 +277,8 @@ async def test_f3_authority_diagnostics_are_redacted_and_report_degradation(
     assert claim_fd is not None
     if degradation == "record_permissions":
         claim._record_path.chmod(0o644)
+    elif degradation == "registry_permissions":
+        claim._registry_root.chmod(0o755)
     else:
         fcntl.flock(claim_fd, fcntl.LOCK_UN)
     try:
@@ -289,11 +298,17 @@ async def test_f3_authority_diagnostics_are_redacted_and_report_degradation(
             assert authority_status["record_mode"] == "0644"
             assert authority_status["permissions_ok"] is False
             assert "record_permissions_invalid" in authority_status["problems"]
+        elif degradation == "registry_permissions":
+            assert authority_status["registry_owner"] == "current_user"
+            assert authority_status["registry_mode"] == "0755"
+            assert authority_status["registry_permissions_ok"] is False
+            assert "registry_permissions_invalid" in authority_status["problems"]
         else:
             assert authority_status["lock_state"] == "not_held"
             assert "lock_not_held" in authority_status["problems"]
     finally:
         claim._record_path.chmod(0o600)
+        claim._registry_root.chmod(0o700)
         fcntl.flock(claim_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         await services.shutdown()
 

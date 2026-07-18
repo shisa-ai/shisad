@@ -22,9 +22,11 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     encode_versioned_json_snapshot,
 )
+from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import ToolName
+from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.security.pep import PEP
 from shisad.security.policy import PolicyBundle, SkillPolicy
 from shisad.selfmod import SelfModificationManager
@@ -54,6 +56,19 @@ class _PlannerStub:
 
     def unblock_persona_defaults(self) -> None:
         self.persona_defaults_enabled = True
+
+
+class _SoulRefreshHarness(AdminImplMixin):
+    def __init__(
+        self,
+        *,
+        config: DaemonConfig,
+        planner: Planner,
+        selfmod_manager: SelfModificationManager,
+    ) -> None:
+        self._config = config
+        self._planner = planner
+        self._selfmod_manager = selfmod_manager
 
 
 def _generate_ssh_keypair(tmp_path: Path, *, name: str) -> Path:
@@ -1438,6 +1453,135 @@ def test_f3_behavior_runtime_restore_failure_blocks_actual_planner_overlay(
     assert "tone=neutral" in prompt
     assert "Stay strict." not in prompt
     assert manager._authority_block_path.exists() is (transition == "failed_apply")
+
+
+@pytest.mark.parametrize("refresh_path", ["aggregate", "soul_refresh"])
+def test_f3_stored_behavior_tampering_blocks_runtime_refresh(
+    tmp_path: Path,
+    refresh_path: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    planner = Planner(
+        object(),
+        PEP(PolicyBundle(default_require_confirmation=False), ToolRegistry()),
+        persona_tone="neutral",
+    )
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+        planner=planner,
+    )
+    stable = _write_signed_behavior_pack(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    stored_instructions = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "behavior_packs"
+        / "operator-tone"
+        / "1.0.0"
+        / "instructions.yaml"
+    )
+    stored_instructions.write_text(
+        yaml.safe_dump(
+            {
+                "tone": "strict",
+                "custom_persona_text": "Tampered stored persona.",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        selfmod_manager_module._SelfModificationOperationError,
+        match="active_artifact_invalid",
+    ):
+        if refresh_path == "aggregate":
+            manager._apply_behavior_overlay()
+        else:
+            _SoulRefreshHarness(
+                config=DaemonConfig(data_dir=tmp_path / "daemon-data"),
+                planner=planner,
+                selfmod_manager=manager,
+            )._refresh_soul_persona_defaults()
+
+    assert manager.state_degraded is True
+    assert manager.inventory_load_result().reason == "active_artifact_invalid"
+    assert planner._persona_tone == "friendly"
+    assert planner._custom_persona_text == "Stay warm."
+    assert planner._persona_defaults_enabled is False
+    prompt = planner._compose_system_prompt()
+    assert "tone=neutral" in prompt
+    assert "Stay warm." not in prompt
+    assert "Tampered stored persona." not in prompt
+
+
+def test_f3_stored_skill_tampering_blocks_failed_apply_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    stable = _write_signed_skill_bundle(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+    )
+    candidate = _write_signed_skill_bundle(
+        tmp_path / "candidate",
+        key_path=key_path,
+        version="2.0.0",
+    )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    stored_instructions = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "skills"
+        / "calendar-helper"
+        / "1.0.0"
+        / "payload"
+        / "SKILL.md"
+    )
+    stored_instructions.write_text(
+        "Use the lookup tool and follow tampered stored instructions.\n",
+        encoding="utf-8",
+    )
+    proposal = manager.propose(candidate)
+
+    def _fail_change_commit(*_args: object, **_kwargs: object) -> None:
+        raise selfmod_manager_module._SelfModificationOperationError("change_record_persist_failed")
+
+    monkeypatch.setattr(manager, "_commit_inventory_and_change", _fail_change_commit)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "runtime_restore_failed"
+    assert result.active_version == ""
+    assert manager.state_degraded is True
+    assert manager._skill_manager.state_degraded is True
+    assert manager._skill_manager.tool_names_for_skill("calendar-helper") == []
+    assert manager._authority_block_path.exists() is True
 
 
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:

@@ -959,7 +959,14 @@ class SelfModificationManager:
         )
 
     def _apply_behavior_overlay(self) -> None:
-        self._apply_behavior_overlay_for_inventory(self._inventory)
+        try:
+            self._apply_behavior_overlay_for_inventory(self._inventory)
+        except _SelfModificationOperationError as exc:
+            self._mark_inventory_degraded(exc.reason)
+            raise
+        except Exception:
+            self._mark_inventory_degraded("behavior_overlay_failed")
+            raise
 
     def _apply_startup_runtime(self) -> None:
         for artifact_type, bucket in (
@@ -1011,7 +1018,7 @@ class SelfModificationManager:
         try:
             self._apply_behavior_overlay()
         except Exception:
-            self._mark_inventory_degraded("behavior_overlay_failed")
+            return
 
     def _mark_inventory_degraded(self, reason: str) -> None:
         current = self._state_load_result
@@ -1024,34 +1031,31 @@ class SelfModificationManager:
         self._block_coupled_skill_authority()
 
     def _apply_behavior_overlay_for_inventory(self, inventory: _Inventory) -> None:
+        blocker = getattr(self._planner, "block_persona_defaults", None)
+        unblocker = getattr(self._planner, "unblock_persona_defaults", None)
+        if not callable(blocker) or not callable(unblocker):
+            raise RuntimeError("planner persona authority gate is unavailable")
+        blocker()
         tone = self._default_persona_tone
         text_parts: list[str] = []
         for name in sorted(inventory.behavior_packs):
-            entry = inventory.behavior_packs[name]
-            if not entry.enabled or not entry.active_version:
+            validated = self._validated_runtime_artifact(
+                inventory,
+                "behavior_pack",
+                name,
+            )
+            if validated is None:
                 continue
-            try:
-                artifact_path = self._artifact_version_path(
-                    "behavior_pack",
-                    name,
-                    entry.active_version,
-                )
-            except ValueError:
-                continue
-            instructions = _load_behavior_pack_instructions(artifact_path / "instructions.yaml")
+            _artifact_path, inspection = validated
+            instructions = inspection.instructions
             if instructions is None:
-                continue
+                raise _SelfModificationOperationError("active_artifact_invalid")
             if instructions.tone:
                 # Deterministic precedence: alphabetical-last enabled pack wins on tone.
                 tone = instructions.tone
             if instructions.custom_persona_text.strip():
                 text_parts.append(instructions.custom_persona_text.strip())
         custom_text = "\n\n".join(text_parts).strip() or self._default_persona_text
-        blocker = getattr(self._planner, "block_persona_defaults", None)
-        unblocker = getattr(self._planner, "unblock_persona_defaults", None)
-        if not callable(blocker) or not callable(unblocker):
-            raise RuntimeError("planner persona authority gate is unavailable")
-        blocker()
         setter = getattr(self._planner, "set_persona_defaults", None)
         if not callable(setter):
             raise RuntimeError("planner persona defaults setter is unavailable")
@@ -1132,15 +1136,16 @@ class SelfModificationManager:
         entry = self._inventory_entry_from(inventory, artifact_type, name)
         if artifact_type == "skill_bundle":
             try:
-                if entry.enabled and entry.active_version:
-                    payload_root = (
-                        self._artifact_version_path(
-                            artifact_type,
-                            name,
-                            entry.active_version,
-                        )
-                        / "payload"
+                if entry.enabled:
+                    validated = self._validated_runtime_artifact(
+                        inventory,
+                        artifact_type,
+                        name,
                     )
+                    if validated is None:
+                        raise _SelfModificationOperationError("active_artifact_invalid")
+                    artifact_path, _inspection = validated
+                    payload_root = artifact_path / "payload"
                     installed = self._skill_manager.activate_bundle(payload_root)
                     if installed is None:
                         raise _SelfModificationOperationError("skill_activation_failed")
@@ -1156,6 +1161,37 @@ class SelfModificationManager:
         except Exception as exc:
             raise _SelfModificationOperationError("behavior_overlay_failed") from exc
         return []
+
+    def _validated_runtime_artifact(
+        self,
+        inventory: _Inventory,
+        artifact_type: str,
+        name: str,
+    ) -> tuple[Path, _ArtifactInspection] | None:
+        entry = self._inventory_entry_from(inventory, artifact_type, name)
+        if not entry.enabled:
+            return None
+        if not entry.active_version:
+            raise _SelfModificationOperationError("active_artifact_invalid")
+        try:
+            artifact_path = self._artifact_version_path(
+                artifact_type,
+                name,
+                entry.active_version,
+            )
+            artifact_exists = validate_directory_ancestry(artifact_path)
+            inspection = self._inspect_artifact(artifact_path) if artifact_exists else None
+        except Exception as exc:
+            raise _SelfModificationOperationError("active_artifact_invalid") from exc
+        if (
+            inspection is None
+            or not inspection.valid
+            or inspection.manifest.type != artifact_type
+            or inspection.manifest.name != name
+            or inspection.manifest.version != entry.active_version
+        ):
+            raise _SelfModificationOperationError("active_artifact_invalid")
+        return artifact_path, inspection
 
     def _restore_runtime(self, inventory: _Inventory, artifact_type: str, name: str) -> bool:
         try:

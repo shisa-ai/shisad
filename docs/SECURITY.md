@@ -183,12 +183,15 @@ be safely reconciled in that process.
 
 Behavior-pack persona publication has a separate in-process authority gate.
 Overlay updates close that gate before changing planner defaults and reopen it
-only after the complete update succeeds. If candidate application, recovery, or
-rollback cannot restore a coherent overlay, prompt composition ignores the
-staged defaults while self-modification reports degraded. With no separate
-per-call tone override it uses a neutral tone, and it omits mutable custom
-persona text; it does not continue using the possibly candidate or mismatched
-overlay.
+only after every enabled stored artifact has passed its signed manifest,
+identity, and file-hash checks and the complete update succeeds. Skill runtime
+activation and recovery revalidate the same outer signed artifact before
+loading its payload. If candidate application, recovery, rollback, or a trusted
+SOUL refresh cannot restore a coherent validated overlay, prompt composition
+ignores the staged defaults while self-modification reports degraded. With no
+separate per-call tone override it uses a neutral tone, and it omits mutable
+custom persona text; it does not continue using the possibly candidate,
+tampered, or mismatched overlay.
 
 Self-modification proposal, change, and incident records use the same
 old-or-new publication boundary. A broken requested proposal or change is
@@ -415,11 +418,11 @@ lease.
 `shisad status` and `shisad doctor check --component authority` project the
 live claim's health without exposing authority paths, process/user identifiers,
 or file descriptors. The diagnostic reports only candidate roles/count, whether
-the in-process claim reference is held, normalized owner/mode compliance, record
-identity, host lock state, and namespace binding. Permission, identity, lock, or
-namespace drift makes the authority component degraded and provides a restart/
-registry-remediation hint; it is not collapsed into a generic healthy storage
-row.
+the in-process claim reference is held, normalized registry-root and claim-record
+owner/mode compliance, record identity, host lock state, and namespace binding.
+Permission, identity, lock, or namespace drift makes the authority component
+degraded and provides a restart/registry-remediation hint; it is not collapsed
+into a generic healthy storage row.
 
 The local claim does not prevent another host or process outside that filesystem
 from using the same remote bot/account. Telegram polling startup failures and
