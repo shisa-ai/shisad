@@ -447,8 +447,18 @@ class SelfModificationManager:
         try:
             published_copy = self._publish_staged_artifact(staged_copy)
         except OSError as exc:
+            reason = "artifact_store_copy_failed"
             if isinstance(exc, _ArtifactPublicationError) and exc.recovery_uncertain:
-                self._mark_inventory_degraded("artifact_store_restore_uncertain")
+                self._quarantine_artifact_authority(
+                    proposal.artifact_type,
+                    proposal.name,
+                )
+                self._record_incident(
+                    proposal_id=proposal.proposal_id,
+                    artifact_path=str(staged_copy.target_path),
+                    reason="artifact_store_restore_failed",
+                )
+                reason = "artifact_store_restore_failed"
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -458,7 +468,7 @@ class SelfModificationManager:
                     proposal.artifact_type,
                     proposal.name,
                 ),
-                reason="artifact_store_copy_failed",
+                reason=reason,
             )
 
         previous_inventory = self._inventory.model_copy(deep=True)
@@ -1027,6 +1037,21 @@ class SelfModificationManager:
         except _SelfModificationOperationError:
             return None
 
+    def _quarantine_artifact_authority(self, artifact_type: str, name: str) -> None:
+        quarantined_inventory = self._inventory.model_copy(deep=True)
+        entries = (
+            quarantined_inventory.skills
+            if artifact_type == "skill_bundle"
+            else quarantined_inventory.behavior_packs
+        )
+        if name in entries:
+            entries[name] = _InventoryEntry(enabled=False, active_version="")
+        with suppress(AtomicWriteError):
+            self._persist_inventory_snapshot(quarantined_inventory)
+        self._inventory = quarantined_inventory
+        self._restore_runtime(quarantined_inventory, artifact_type, name)
+        self._mark_inventory_degraded("artifact_store_restore_uncertain")
+
     def _persist_inventory_snapshot(self, inventory: _Inventory) -> None:
         encoded = encode_versioned_json_snapshot(
             inventory.model_dump(mode="json"),
@@ -1122,17 +1147,17 @@ class SelfModificationManager:
             candidate_published = True
             fsync_directory(staged_copy.target_path.parent)
         except OSError:
-            if candidate_published and staged_copy.target_path.exists():
-                cls._remove_artifact_tree(staged_copy.target_path)
-            if (
-                staged_backup is not None
-                and staged_backup.exists()
-                and not staged_copy.target_path.exists()
-            ):
-                staged_backup.replace(staged_copy.target_path)
-            if staged_copy.staging_path.exists():
-                cls._remove_artifact_tree(staged_copy.staging_path)
             try:
+                if candidate_published and staged_copy.target_path.exists():
+                    cls._remove_artifact_tree(staged_copy.target_path)
+                if (
+                    staged_backup is not None
+                    and staged_backup.exists()
+                    and not staged_copy.target_path.exists()
+                ):
+                    staged_backup.replace(staged_copy.target_path)
+                if staged_copy.staging_path.exists():
+                    cls._remove_artifact_tree(staged_copy.staging_path)
                 fsync_directory(staged_copy.target_path.parent)
             except OSError as recovery_error:
                 raise _ArtifactPublicationError(
