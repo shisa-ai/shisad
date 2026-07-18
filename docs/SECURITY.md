@@ -389,7 +389,9 @@ below the home directory from the system passwd record; it does not vary with
 owner-only directory. Serialization and non-detachable claim markers use locked
 `0600` files in that validated parent outside the replaceable registry tree, so
 an unrelated UID cannot reserve a public abstract-socket name or pre-create a
-shared `/tmp` child to deny admission. The baseline claim covers the canonical
+shared `/tmp` child to deny admission. The complete parent namespace (registry,
+guard, and marker tree) is reserved from configured mutable authorities and
+direct assistant writes. The baseline claim covers the canonical
 data root, control socket, effective approval-factor store, and configured
 writable SOUL path. The data root is treated as a contained tree; external
 approval/SOUL files also reserve their component-owned atomic temp, retained-corruption,
@@ -428,7 +430,7 @@ the connected server's peer UID before sending RPC traffic. If an assistant
 filesystem root contains claimed control state or trusted policy/signer/A2A
 private-key inputs,
 startup emits a visible preflight warning and the direct `fs.write` surface
-blocks the data tree, authority registry, exact trust inputs, and reserved
+blocks the data tree, complete authority namespace, exact trust inputs, and reserved
 external-file artifacts;
 legitimate changes continue through their dedicated admin routes. The daemon
 claim remains held until mutable services and listeners stop. This is a local

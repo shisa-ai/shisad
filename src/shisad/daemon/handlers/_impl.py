@@ -88,7 +88,7 @@ from shisad.core.atomic_state import (
 )
 from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.authority import (
-    daemon_authority_registry_root,
+    daemon_authority_namespace_root,
     daemon_trusted_read_input_paths,
 )
 from shisad.core.clock import current_time_payload
@@ -2318,7 +2318,7 @@ class HandlerImplementation(
             max_read_bytes=self._config.assistant_max_read_bytes,
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
             protected_write_paths=daemon_trusted_read_input_paths(self._config),
-            protected_write_roots=(daemon_authority_registry_root(),),
+            protected_write_roots=(daemon_authority_namespace_root(),),
             protected_write_authorities=services.authority_claim.candidates,
         )
         self._attachment_ingestor = AttachmentIngestor(

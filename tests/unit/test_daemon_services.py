@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+import shisad.core.authority as authority
 from shisad.channels.base import InMemoryChannel
 from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.core.atomic_state import (
@@ -387,6 +388,46 @@ async def test_f3_handler_blocks_direct_write_to_a2a_private_key(
 
         assert result["error"] == "protected_control_plane_path"
         assert private_key.read_text(encoding="utf-8") == "secret"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_f3_handler_blocks_confirmed_authority_guard_and_marker_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    registry_root = authority._registry_root()
+    workspace = registry_root.parent
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        assistant_fs_roots=[workspace],
+    )
+    services = await DaemonServices.build(config)
+    try:
+        impl = HandlerImplementation(services=services)
+        marker = services.authority_claim._namespace_marker
+        assert marker is not None
+        protected_paths = (
+            authority._namespace_guard_path(registry_root),
+            marker.path,
+        )
+        original_identities = {
+            path: (path.stat().st_dev, path.stat().st_ino) for path in protected_paths
+        }
+
+        for path in protected_paths:
+            assert impl._fs_git_toolkit._is_protected_write_path(path)
+            result = impl._fs_git_toolkit.write_file(
+                path=str(path),
+                content="replacement",
+                confirm=True,
+            )
+            assert result["error"] == "protected_control_plane_path"
+            assert (path.stat().st_dev, path.stat().st_ino) == original_identities[path]
     finally:
         await services.shutdown()
 

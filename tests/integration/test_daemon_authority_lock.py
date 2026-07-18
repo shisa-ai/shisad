@@ -193,6 +193,45 @@ def test_f3_candidate_cannot_overlap_host_global_registry(
         acquire_daemon_authority_claim(config)
 
 
+@pytest.mark.parametrize(
+    "overlap",
+    ["guard_exact", "guard_ancestor", "markers_exact", "markers_ancestor", "marker_child"],
+)
+def test_f3_candidate_cannot_overlap_complete_authority_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overlap: str,
+) -> None:
+    registry_root = tmp_path / "runtime" / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    guard_path = authority._namespace_guard_path(registry_root)
+    marker_root = authority._namespace_marker_root(registry_root)
+    data_dir = tmp_path / "data"
+    socket_path = tmp_path / "control.sock"
+    if overlap == "guard_exact":
+        data_dir = guard_path
+    elif overlap == "guard_ancestor":
+        data_dir = guard_path.parent
+    elif overlap == "markers_exact":
+        data_dir = marker_root
+    elif overlap == "markers_ancestor":
+        data_dir = marker_root.parent.parent
+    else:
+        socket_path = marker_root / "forged-marker.lock"
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=socket_path,
+        policy_path=tmp_path / "policy.yaml",
+    )
+    claim: DaemonAuthorityClaim | None = None
+    try:
+        with pytest.raises(AuthorityRegistryError, match="overlaps host-global registry"):
+            claim = acquire_daemon_authority_claim(config)
+    finally:
+        if claim is not None:
+            claim.release()
+
+
 def test_f3_authority_registry_is_deterministic_across_xdg_environments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -283,7 +322,7 @@ def test_f3_authority_guard_and_marker_are_owner_only_outside_registry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     claim = acquire_daemon_authority_claim(
         _config(tmp_path, name="marker-modes", socket_name="marker-modes.sock")
@@ -309,7 +348,7 @@ def test_f3_legacy_abstract_guard_squatting_does_not_block_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     monkeypatch.setattr(authority, "_NAMESPACE_GUARD_TIMEOUT_SECONDS", 0.02)
     squatter = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -329,7 +368,7 @@ def test_f3_stale_abstract_claim_name_rebinding_does_not_block_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     config = _config(tmp_path, name="marker-rebind", socket_name="marker-rebind.sock")
     claim = acquire_daemon_authority_claim(config)
@@ -1623,7 +1662,7 @@ def test_f3_authority_namespace_replacement_fails_closed(
     operation: str,
     replacement: str,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     first = _config(tmp_path, name="first", socket_name="first.sock")
     claim = acquire_daemon_authority_claim(first)
@@ -1667,7 +1706,7 @@ def test_f3_recursive_authority_claim_json_fails_through_typed_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     first = _config(tmp_path, name="first", socket_name="first.sock")
     claim = acquire_daemon_authority_claim(first)
@@ -1687,7 +1726,7 @@ def test_f3_oversized_integer_claim_json_fails_through_typed_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     first = _config(tmp_path, name="first", socket_name="first.sock")
     claim = acquire_daemon_authority_claim(first)
@@ -1721,7 +1760,7 @@ def test_f3_authority_claim_rejects_unknown_members_and_invalid_identity_fields(
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     first = _config(tmp_path, name="first", socket_name="first.sock")
     claim = acquire_daemon_authority_claim(first)
@@ -1761,7 +1800,7 @@ def test_f3_registry_replacement_during_acquisition_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     detached = tmp_path / "detached-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     real_publish = authority._publish_claim
@@ -1785,7 +1824,7 @@ def test_f3_claim_replacement_during_narrowing_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry_root = tmp_path / "authority-registry"
+    registry_root = tmp_path / "runtime" / "authority-registry"
     monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
     claim = acquire_daemon_authority_claim(
         _config(tmp_path, name="raced", socket_name="raced.sock")
@@ -1866,6 +1905,31 @@ def test_f3_assistant_root_preflights_protected_control_state(
     with caplog.at_level("WARNING", logger="shisad.core.authority"):
         claim = acquire_daemon_authority_claim(config)
     claim.release()
+    assert "direct filesystem writes must remain blocked" in caplog.text
+
+
+@pytest.mark.parametrize("surface", ["guard", "markers"])
+def test_f3_assistant_root_preflights_complete_authority_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    surface: str,
+) -> None:
+    registry_root = tmp_path / "runtime" / "authority-registry"
+    monkeypatch.setattr(authority, "_registry_root", lambda: registry_root)
+    assistant_root = (
+        authority._namespace_guard_path(registry_root)
+        if surface == "guard"
+        else authority._namespace_marker_root(registry_root)
+    )
+    config = _config(tmp_path, name=f"namespace-{surface}", socket_name=f"{surface}.sock")
+    config = config.model_copy(update={"assistant_fs_roots": [assistant_root]})
+
+    with caplog.at_level("WARNING", logger="shisad.core.authority"):
+        claim = acquire_daemon_authority_claim(config)
+    claim.release()
+
+    assert "authority_namespace" in caplog.text
     assert "direct filesystem writes must remain blocked" in caplog.text
 
 

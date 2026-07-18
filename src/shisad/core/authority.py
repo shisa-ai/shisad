@@ -704,12 +704,16 @@ def _registry_root() -> Path:
     return home / ".shisad-runtime" / "authority-registry"
 
 
+def _authority_namespace_root(root: Path) -> Path:
+    return root.parent
+
+
 def _namespace_guard_path(root: Path) -> Path:
-    return root.parent / f".{root.name}.guard"
+    return _authority_namespace_root(root) / f".{root.name}.guard"
 
 
 def _namespace_marker_root(root: Path) -> Path:
-    return root.parent / f".{root.name}.markers"
+    return _authority_namespace_root(root) / f".{root.name}.markers"
 
 
 def _identity_token(*values: object, length: int) -> str:
@@ -1271,10 +1275,10 @@ def daemon_authority_protects_path(
     return _authority_overlap_kind(refreshed, probe) is not None
 
 
-def daemon_authority_registry_root() -> Path:
-    """Return the canonical same-user registry tree protected from assistant writes."""
+def daemon_authority_namespace_root() -> Path:
+    """Return the complete same-user authority namespace protected from writes."""
 
-    return _canonical_path(_registry_root())
+    return _canonical_path(_authority_namespace_root(_registry_root()))
 
 
 def _trusted_read_inputs(config: DaemonConfig) -> tuple[tuple[str, Path], ...]:
@@ -1354,11 +1358,12 @@ def _validate_candidate_boundaries(
     registry_root: Path,
 ) -> None:
     _validate_same_config_candidates(candidates)
+    namespace_root = _authority_namespace_root(registry_root)
     for candidate in candidates:
-        if _candidate_overlaps_tree(candidate, registry_root):
+        if _candidate_overlaps_tree(candidate, namespace_root):
             raise AuthorityRegistryError(
-                "daemon mutable authority overlaps host-global registry: "
-                f"{candidate.role}={candidate.path} registry={registry_root}"
+                "daemon mutable authority overlaps host-global registry namespace: "
+                f"{candidate.role}={candidate.path} namespace={namespace_root}"
             )
     _validate_trusted_read_inputs(config, candidates)
 
@@ -1377,6 +1382,7 @@ def _preflight_assistant_filesystem_roots(
     registry_root: Path,
 ) -> None:
     protected_read_inputs = _trusted_read_inputs(config)
+    namespace_root = _authority_namespace_root(registry_root)
     for raw_root in config.assistant_fs_roots:
         assistant_root = _canonical_path(raw_root)
         for candidate in candidates:
@@ -1388,13 +1394,13 @@ def _preflight_assistant_filesystem_roots(
                     candidate.role,
                     candidate.path,
                 )
-        if _paths_structurally_overlap(assistant_root, registry_root):
+        if _paths_structurally_overlap(assistant_root, namespace_root):
             logger.warning(
                 "Assistant filesystem root overlaps protected daemon control state; "
                 "direct filesystem writes must remain blocked: root=%s authority=%s:%s",
                 assistant_root,
-                "authority_registry",
-                registry_root,
+                "authority_namespace",
+                namespace_root,
             )
         for label, protected_path in protected_read_inputs:
             if _paths_structurally_overlap(assistant_root, protected_path):
