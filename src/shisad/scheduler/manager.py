@@ -228,7 +228,8 @@ class SchedulerManager:
         max_runs: int = 0,
     ) -> ScheduledTask:
         self._require_state_writable("tasks", transition="create")
-        self._validate_schedule(schedule)
+        retained_schedule = Schedule.model_validate(schedule.model_dump(mode="python"))
+        self._validate_schedule(retained_schedule)
         capability_snapshot_frozen = frozenset(capability_snapshot)
         owner_user_id = str(created_by)
         owner = owner_user_id or "unknown"
@@ -251,7 +252,7 @@ class SchedulerManager:
         task = ScheduledTask(
             name=name,
             goal=goal,
-            schedule=schedule,
+            schedule=retained_schedule,
             capability_snapshot=capability_snapshot_frozen,
             policy_snapshot_ref=policy_snapshot_ref,
             task_envelope=task_envelope,

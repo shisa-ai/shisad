@@ -428,6 +428,34 @@ def test_f3_scheduler_task_accessors_do_not_leak_mutable_retained_state(
     assert restarted.state_load_result("tasks").status == StateLoadStatus.OK
 
 
+def test_f3_scheduler_detaches_caller_owned_schedule_before_retention() -> None:
+    scheduler = SchedulerManager()
+    schedule = Schedule.from_event(
+        "message.received",
+        {"source": "trusted"},
+    )
+    created = scheduler.create_task(
+        name="isolated-input",
+        goal="summarize updates",
+        schedule=schedule,
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="policy-v1",
+        created_by=UserId("alice"),
+    )
+
+    schedule.expression = "attacker.changed"
+    schedule.event_type = "attacker.changed"
+    schedule.event_filter["source"] = "attacker"
+
+    retained = scheduler.get_task(created.id)
+    assert retained is not None
+    assert retained.schedule.expression == "message.received"
+    assert retained.schedule.event_type == "message.received"
+    assert retained.schedule.event_filter == {"source": "trusted"}
+    assert scheduler.trigger_event(event_type="attacker.changed", payload="ignored") == []
+    assert len(scheduler.trigger_event(event_type="message.received", payload="accepted")) == 1
+
+
 def test_f3_scheduler_revalidates_internal_task_before_persisting(tmp_path: Path) -> None:
     storage = tmp_path / "scheduler"
     scheduler = SchedulerManager(storage_dir=storage)
