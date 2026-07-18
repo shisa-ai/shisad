@@ -1089,22 +1089,23 @@ def test_f3_selfmod_apply_inventory_fault_precedes_behavior_runtime(
         if fault_stage == AtomicWriteStage.PARENT_FSYNC
         else "inventory_persist_failed"
     )
-    assert planner.defaults == [("neutral", "")]
+    assert planner.defaults[-1] == ("neutral", "")
     assert manager.state_degraded is (fault_stage == AtomicWriteStage.PARENT_FSYNC)
     restarted, restarted_planner = _build_manager(
         tmp_path,
         allowed_signers_path=allowed_signers,
     )
     if fault_stage == AtomicWriteStage.PARENT_FSYNC:
-        assert restarted.state_degraded is False
-        assert restarted_planner.defaults[-1] == ("strict", "Stay strict.")
+        assert manager._authority_block_path.exists()
+        assert restarted.state_degraded is True
+        assert restarted_planner.defaults == []
     else:
         assert restarted.inventory_load_result().status == StateLoadStatus.OK
         assert restarted.status()["behavior_packs"] == {}
         assert restarted_planner.defaults[-1] == ("neutral", "")
 
 
-def test_f3_selfmod_parent_fsync_restart_reconciles_signed_skill_activation(
+def test_f3_selfmod_parent_fsync_restart_guard_blocks_uncertain_skill_activation(
     tmp_path: Path,
 ) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
@@ -1135,8 +1136,9 @@ def test_f3_selfmod_parent_fsync_restart_reconciles_signed_skill_activation(
         allowed_signers_path=allowed_signers,
     )
 
-    assert restarted.state_degraded is False
-    assert restarted._skill_manager._tool_registry.get_tool(tool_name) is not None
+    assert manager._authority_block_path.exists()
+    assert restarted.state_degraded is True
+    assert restarted._skill_manager._tool_registry.get_tool(tool_name) is None
 
 
 @pytest.mark.parametrize(
@@ -2131,12 +2133,10 @@ def test_f3_selfmod_publication_recovery_failure_quarantines_authority_across_re
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
-@pytest.mark.parametrize("invalidation_failure", [False, True])
-def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
+def test_f3_selfmod_quarantine_write_failure_keeps_write_ahead_restart_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     artifact_type: str,
-    invalidation_failure: bool,
 ) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
@@ -2208,16 +2208,6 @@ def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
             "_remove_artifact_tree",
             staticmethod(_fail_candidate_eviction),
         )
-        if invalidation_failure:
-
-            def _fail_inventory_invalidation(*_args: object, **_kwargs: object) -> None:
-                raise OSError("inventory invalidation failed")
-
-            faults.setattr(
-                selfmod_manager_module,
-                "remove_owner_controlled_file_entries",
-                _fail_inventory_invalidation,
-            )
         result = manager.apply(proposal.proposal_id, confirm=True)
     manager._state_fault_injector = None
 
@@ -2233,10 +2223,7 @@ def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
         assert manager._skill_manager._tool_registry.list_tools() == []
     else:
         assert planner.defaults[-1] == ("neutral", "")
-    if invalidation_failure:
-        assert manager._authority_block_path.exists()
-    else:
-        assert not manager._inventory_path.exists()
+    assert manager._authority_block_path.exists()
 
     restarted, restarted_planner = _build_manager(
         tmp_path,
@@ -2248,6 +2235,285 @@ def test_f3_selfmod_quarantine_write_failure_invalidates_restart_authority(
         assert restarted._skill_manager._tool_registry.list_tools() == []
     else:
         assert restarted_planner.defaults == []
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+@pytest.mark.parametrize("publication_may_have_committed", [False, True])
+def test_f3_selfmod_write_ahead_guard_failure_aborts_before_authority_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+    publication_may_have_committed: bool,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        stable = _write_signed_skill_bundle(tmp_path / "stable", key_path=key_path)
+        candidate = _write_signed_skill_bundle(tmp_path / "candidate", key_path=key_path)
+        target = tmp_path / "selfmod" / "artifacts" / "skills" / "calendar-helper" / "1.0.0"
+    else:
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+        target = tmp_path / "selfmod" / "artifacts" / "behavior_packs" / "operator-tone" / "1.0.0"
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+    proposal = manager.propose(candidate)
+    target_stat = target.stat()
+    original_atomic_write = selfmod_manager_module.atomic_write_bytes
+
+    def _fail_guard_publication(path: Path, payload: bytes, **kwargs: Any) -> int:
+        if path == manager._authority_block_path:
+            if publication_may_have_committed:
+                original_atomic_write(path, payload, **kwargs)
+            raise AtomicWriteError(
+                path=path,
+                stage=(
+                    AtomicWriteStage.PARENT_FSYNC
+                    if publication_may_have_committed
+                    else AtomicWriteStage.TEMP_OPEN
+                ),
+                publication_may_have_committed=publication_may_have_committed,
+            )
+        return original_atomic_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(selfmod_manager_module, "atomic_write_bytes", _fail_guard_publication)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == (
+        "authority_guard_persistence_uncertain"
+        if publication_may_have_committed
+        else "authority_guard_persist_failed"
+    )
+    assert manager.state_degraded is publication_may_have_committed
+    assert manager._authority_block_path.exists() is publication_may_have_committed
+    assert (target.stat().st_dev, target.stat().st_ino) == (target_stat.st_dev, target_stat.st_ino)
+    assert not any(path.name.startswith(".1.0.0.tmp-") for path in target.parent.iterdir())
+    if publication_may_have_committed:
+        assert str(manager._authority_block_path) in manager.inventory_state_status()["remediation"]
+        restarted, restarted_planner = _build_manager(
+            tmp_path,
+            allowed_signers_path=allowed_signers,
+        )
+        assert restarted.state_degraded is True
+        if artifact_type == "skill_bundle":
+            assert restarted._skill_manager._tool_registry.list_tools() == []
+        else:
+            assert restarted_planner.defaults == []
+    elif artifact_type == "skill_bundle":
+        assert manager._skill_manager._tool_registry.list_tools()
+    else:
+        assert planner.defaults[-1] == ("friendly", "Stay warm.")
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_write_ahead_guard_cleanup_failure_remains_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill", key_path=key_path)
+        status_key = "skills"
+        artifact_name = "calendar-helper"
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+        status_key = "behavior_packs"
+        artifact_name = "operator-tone"
+    proposal = manager.propose(artifact)
+    original_atomic_write = selfmod_manager_module.atomic_write_bytes
+
+    def _fail_guard_completion(path: Path, payload: bytes, **kwargs: Any) -> int:
+        if (
+            path == manager._authority_block_path
+            and payload == selfmod_manager_module._SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER
+        ):
+            raise AtomicWriteError(
+                path=path,
+                stage=AtomicWriteStage.TEMP_OPEN,
+                publication_may_have_committed=False,
+            )
+        return original_atomic_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(selfmod_manager_module, "atomic_write_bytes", _fail_guard_completion)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "authority_guard_clear_failed"
+    assert result.active_version == ""
+    assert manager.state_degraded is True
+    assert manager._authority_block_path.exists()
+    assert manager.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
+    if artifact_type == "skill_bundle":
+        assert manager._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert planner.defaults[-1] == ("neutral", "")
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert restarted.state_degraded is True
+    assert restarted.status()[status_key] == {}
+    if artifact_type == "skill_bundle":
+        assert restarted._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert restarted_planner.defaults == []
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_completed_guard_allows_restart_when_gc_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill", key_path=key_path)
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    proposal = manager.propose(artifact)
+    original_remove = selfmod_manager_module.remove_owner_controlled_file_entries
+
+    def _fail_completed_guard_gc(
+        directory: Path,
+        names: tuple[str, ...],
+        **kwargs: Any,
+    ) -> int:
+        if names == (manager._authority_block_path.name,):
+            raise OSError("completed guard garbage collection failed")
+        return original_remove(directory, names, **kwargs)
+
+    monkeypatch.setattr(
+        selfmod_manager_module,
+        "remove_owner_controlled_file_entries",
+        _fail_completed_guard_gc,
+    )
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is True
+    assert manager.state_degraded is False
+    assert manager._authority_block_path.read_bytes() == (
+        selfmod_manager_module._SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER
+    )
+    restarted, restarted_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert restarted.state_degraded is False
+    if artifact_type == "skill_bundle":
+        assert restarted._skill_manager._tool_registry.list_tools()
+    else:
+        assert planner.defaults[-1] == ("strict", "Stay strict.")
+        assert restarted_planner.defaults[-1] == ("strict", "Stay strict.")
+
+
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+def test_f3_selfmod_authority_guard_status_describes_verified_restart_recovery(
+    tmp_path: Path,
+    artifact_type: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        artifact = _write_signed_skill_bundle(tmp_path / "skill", key_path=key_path)
+    else:
+        artifact = _write_signed_behavior_pack(
+            tmp_path / "behavior",
+            key_path=key_path,
+            version="1.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+    assert manager.apply(manager.propose(artifact).proposal_id, confirm=True).applied is True
+    selfmod_manager_module.atomic_write_bytes(
+        manager._authority_block_path,
+        selfmod_manager_module._SELFMOD_AUTHORITY_BLOCK_MARKER,
+        fault_injector=None,
+    )
+
+    blocked, blocked_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    status = blocked.inventory_state_status()
+    assert blocked.state_degraded is True
+    assert str(blocked._authority_block_path) in status["remediation"]
+    assert "verify" in status["remediation"].lower()
+    assert "inventory and artifact" in status["remediation"].lower()
+    if artifact_type == "skill_bundle":
+        assert blocked._skill_manager._tool_registry.list_tools() == []
+    else:
+        assert blocked_planner.defaults == []
+
+    selfmod_manager_module.remove_owner_controlled_file_entries(
+        blocked._root,
+        (blocked._authority_block_path.name,),
+    )
+    recovered, recovered_planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+    )
+    assert recovered.state_degraded is False
+    if artifact_type == "skill_bundle":
+        assert recovered._skill_manager._tool_registry.list_tools()
+    else:
+        assert recovered_planner.defaults[-1] == ("strict", "Stay strict.")
 
 
 @pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])

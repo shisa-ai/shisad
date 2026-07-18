@@ -59,6 +59,7 @@ _ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SELFMOD_INVENTORY_VERSION = 1
 _SELFMOD_INVENTORY_DOMAIN_MARKER = b"shisad-selfmod-inventory-domain-v1\n"
 _SELFMOD_AUTHORITY_BLOCK_MARKER = b"shisad-selfmod-authority-blocked-v1\n"
+_SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER = b"shisad-selfmod-authority-complete-v1\n"
 
 logger = logging.getLogger(__name__)
 
@@ -310,12 +311,12 @@ class SelfModificationManager:
                 reason="invalid_selfmod_root",
             )
             self._inventory = _Inventory()
-        elif authority_block_status != "missing":
+        elif authority_block_status not in {"missing", "complete"}:
             self._state_load_result = StateLoadResult(
                 StateLoadStatus.CORRUPT,
                 reason=(
                     "artifact_authority_blocked"
-                    if authority_block_status == "valid"
+                    if authority_block_status == "blocked"
                     else "invalid_authority_block_marker"
                 ),
             )
@@ -461,11 +462,53 @@ class SelfModificationManager:
             )
 
         try:
+            self._publish_authority_guard()
+        except AtomicWriteError as exc:
+            with suppress(OSError):
+                self._discard_staged_artifact(staged_copy)
+            if exc.publication_may_have_committed:
+                self._persistence_degradation = exc
+                self._mark_inventory_degraded("authority_guard_persistence_uncertain")
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                warnings=list(inspection.warnings),
+                capability_diff=dict(inspection.capability_diff),
+                active_version=self._active_version(
+                    proposal.artifact_type,
+                    proposal.name,
+                ),
+                reason=(
+                    "authority_guard_persistence_uncertain"
+                    if exc.publication_may_have_committed
+                    else "authority_guard_persist_failed"
+                ),
+            )
+
+        def _finish_guarded(result: SelfModificationApplyResult) -> SelfModificationApplyResult:
+            if self._complete_authority_guard():
+                return result
+            self._disable_in_memory_artifact_authority(
+                proposal.artifact_type,
+                proposal.name,
+                reason="authority_guard_clear_failed",
+            )
+            return result.model_copy(
+                update={
+                    "applied": False,
+                    "active_version": "",
+                    "tool_names": [],
+                    "reason": "authority_guard_clear_failed",
+                }
+            )
+
+        try:
             published_copy = self._publish_staged_artifact(staged_copy)
         except OSError as exc:
             reason = "artifact_store_copy_failed"
+            authority_is_durable = True
             if isinstance(exc, _ArtifactPublicationError) and exc.recovery_uncertain:
-                self._quarantine_artifact_authority(
+                authority_is_durable = self._quarantine_artifact_authority(
                     proposal.artifact_type,
                     proposal.name,
                 )
@@ -475,7 +518,7 @@ class SelfModificationManager:
                     reason="artifact_store_restore_failed",
                 )
                 reason = "artifact_store_restore_failed"
-            return SelfModificationApplyResult(
+            result = SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
                 warnings=list(inspection.warnings),
@@ -486,6 +529,7 @@ class SelfModificationManager:
                 ),
                 reason=reason,
             )
+            return _finish_guarded(result) if authority_is_durable else result
 
         previous_inventory = self._inventory.model_copy(deep=True)
         previous_entry = self._inventory_entry_from(
@@ -514,11 +558,17 @@ class SelfModificationManager:
         try:
             self._persist_inventory_snapshot(candidate_inventory)
         except AtomicWriteError as exc:
+            authority_is_durable = False
+            reason = (
+                "inventory_persistence_uncertain"
+                if exc.publication_may_have_committed
+                else "inventory_persist_failed"
+            )
             if not exc.publication_may_have_committed:
                 try:
                     self._restore_published_artifact(published_copy)
                 except OSError:
-                    self._quarantine_artifact_authority(
+                    authority_is_durable = self._quarantine_artifact_authority(
                         proposal.artifact_type,
                         proposal.name,
                     )
@@ -527,26 +577,29 @@ class SelfModificationManager:
                         artifact_path=str(published_copy.target_path),
                         reason="artifact_store_restore_failed",
                     )
-                    return SelfModificationApplyResult(
-                        applied=False,
-                        proposal_id=proposal_id,
-                        warnings=list(inspection.warnings),
-                        capability_diff=dict(inspection.capability_diff),
-                        active_version="",
-                        reason="artifact_store_restore_failed",
-                    )
-            return SelfModificationApplyResult(
+                    reason = "artifact_store_restore_failed"
+                else:
+                    authority_is_durable = True
+            else:
+                authority_is_durable = self._quarantine_artifact_authority(
+                    proposal.artifact_type,
+                    proposal.name,
+                )
+            result = SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
                 warnings=list(inspection.warnings),
                 capability_diff=dict(inspection.capability_diff),
-                active_version=previous_entry.active_version if previous_entry.enabled else "",
-                reason=(
-                    "inventory_persistence_uncertain"
-                    if exc.publication_may_have_committed
-                    else "inventory_persist_failed"
+                active_version=(
+                    previous_entry.active_version
+                    if authority_is_durable
+                    and reason == "inventory_persist_failed"
+                    and previous_entry.enabled
+                    else ""
                 ),
+                reason=reason,
             )
+            return _finish_guarded(result) if authority_is_durable else result
 
         try:
             tool_names = self._apply_runtime_for_inventory(
@@ -557,7 +610,11 @@ class SelfModificationManager:
             self._commit_inventory_and_change(candidate_inventory, change)
         except _SelfModificationOperationError as exc:
             if not self._restore_inventory_after_failed_transition(previous_inventory):
-                return SelfModificationApplyResult(
+                authority_is_durable = self._quarantine_artifact_authority(
+                    proposal.artifact_type,
+                    proposal.name,
+                )
+                result = SelfModificationApplyResult(
                     applied=False,
                     proposal_id=proposal_id,
                     warnings=list(inspection.warnings),
@@ -565,13 +622,14 @@ class SelfModificationManager:
                     active_version="",
                     reason="inventory_restore_failed",
                 )
+                return _finish_guarded(result) if authority_is_durable else result
             restore_failed = False
             try:
                 self._restore_published_artifact(published_copy)
             except OSError:
                 restore_failed = True
             if restore_failed:
-                self._quarantine_artifact_authority(
+                authority_is_durable = self._quarantine_artifact_authority(
                     proposal.artifact_type,
                     proposal.name,
                 )
@@ -580,7 +638,7 @@ class SelfModificationManager:
                     artifact_path=str(published_copy.target_path),
                     reason="artifact_store_restore_failed",
                 )
-                return SelfModificationApplyResult(
+                result = SelfModificationApplyResult(
                     applied=False,
                     proposal_id=proposal_id,
                     warnings=list(inspection.warnings),
@@ -588,14 +646,19 @@ class SelfModificationManager:
                     active_version="",
                     reason="artifact_store_restore_failed",
                 )
+                return _finish_guarded(result) if authority_is_durable else result
             self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
-            return SelfModificationApplyResult(
-                applied=False,
-                proposal_id=proposal_id,
-                warnings=list(inspection.warnings),
-                capability_diff=dict(inspection.capability_diff),
-                active_version=previous_entry.active_version if previous_entry.enabled else "",
-                reason=exc.reason,
+            return _finish_guarded(
+                SelfModificationApplyResult(
+                    applied=False,
+                    proposal_id=proposal_id,
+                    warnings=list(inspection.warnings),
+                    capability_diff=dict(inspection.capability_diff),
+                    active_version=(
+                        previous_entry.active_version if previous_entry.enabled else ""
+                    ),
+                    reason=exc.reason,
+                )
             )
 
         self._inventory = candidate_inventory
@@ -606,15 +669,17 @@ class SelfModificationManager:
                 "self-modification artifact backup finalization failed for %s",
                 published_copy.target_path,
             )
-        return SelfModificationApplyResult(
-            applied=True,
-            proposal_id=proposal_id,
-            change_id=change_id,
-            warnings=list(inspection.warnings),
-            capability_diff=dict(inspection.capability_diff),
-            active_version=proposal.version,
-            tool_names=tool_names,
-            reason="ok",
+        return _finish_guarded(
+            SelfModificationApplyResult(
+                applied=True,
+                proposal_id=proposal_id,
+                change_id=change_id,
+                warnings=list(inspection.warnings),
+                capability_diff=dict(inspection.capability_diff),
+                active_version=proposal.version,
+                tool_names=tool_names,
+                reason="ok",
+            )
         )
 
     def rollback(self, change_id: str) -> SelfModificationRollbackResult:
@@ -1057,7 +1122,39 @@ class SelfModificationManager:
         except _SelfModificationOperationError:
             return None
 
-    def _quarantine_artifact_authority(self, artifact_type: str, name: str) -> None:
+    def _publish_authority_guard(self) -> None:
+        atomic_write_bytes(
+            self._authority_block_path,
+            _SELFMOD_AUTHORITY_BLOCK_MARKER,
+            fault_injector=None,
+        )
+
+    def _complete_authority_guard(self) -> bool:
+        try:
+            atomic_write_bytes(
+                self._authority_block_path,
+                _SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER,
+                fault_injector=None,
+            )
+        except AtomicWriteError:
+            logger.exception("failed to complete self-modification authority guard")
+            return False
+        try:
+            remove_owner_controlled_file_entries(
+                self._root,
+                (self._authority_block_path.name,),
+            )
+        except OSError:
+            logger.warning("failed to garbage-collect completed self-modification guard")
+        return True
+
+    def _disable_in_memory_artifact_authority(
+        self,
+        artifact_type: str,
+        name: str,
+        *,
+        reason: str,
+    ) -> None:
         quarantined_inventory = self._inventory.model_copy(deep=True)
         entries = (
             quarantined_inventory.skills
@@ -1066,30 +1163,29 @@ class SelfModificationManager:
         )
         if name in entries:
             entries[name] = _InventoryEntry(enabled=False, active_version="")
+        self._inventory = quarantined_inventory
+        self._restore_runtime(quarantined_inventory, artifact_type, name)
+        self._mark_inventory_degraded(reason)
+
+    def _quarantine_artifact_authority(self, artifact_type: str, name: str) -> bool:
+        quarantined_inventory = self._inventory.model_copy(deep=True)
+        entries = (
+            quarantined_inventory.skills
+            if artifact_type == "skill_bundle"
+            else quarantined_inventory.behavior_packs
+        )
+        if name in entries:
+            entries[name] = _InventoryEntry(enabled=False, active_version="")
+        authority_is_durable = True
         try:
             self._persist_inventory_snapshot(quarantined_inventory)
         except AtomicWriteError as exc:
+            authority_is_durable = False
             self._persistence_degradation = exc
-            try:
-                remove_owner_controlled_file_entries(
-                    self._root,
-                    (self._inventory_path.name,),
-                )
-            except OSError:
-                logger.exception(
-                    "failed to invalidate self-modification inventory after quarantine failure"
-                )
-                try:
-                    atomic_write_bytes(
-                        self._authority_block_path,
-                        _SELFMOD_AUTHORITY_BLOCK_MARKER,
-                        fault_injector=None,
-                    )
-                except AtomicWriteError:
-                    logger.exception("failed to persist self-modification authority block marker")
         self._inventory = quarantined_inventory
         self._restore_runtime(quarantined_inventory, artifact_type, name)
         self._mark_inventory_degraded("artifact_store_restore_uncertain")
+        return authority_is_durable
 
     def _persist_inventory_snapshot(self, inventory: _Inventory) -> None:
         encoded = encode_versioned_json_snapshot(
@@ -1377,7 +1473,11 @@ class SelfModificationManager:
             return "invalid"
         if marker is None:
             return "invalid"
-        return "valid" if marker == _SELFMOD_AUTHORITY_BLOCK_MARKER else "invalid"
+        if marker == _SELFMOD_AUTHORITY_BLOCK_MARKER:
+            return "blocked"
+        if marker == _SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER:
+            return "complete"
+        return "invalid"
 
     def _ensure_inventory_domain_marker(self) -> bool:
         if self._inventory_domain_marker_status == "valid":
@@ -1479,6 +1579,15 @@ class SelfModificationManager:
     def inventory_state_status(self) -> dict[str, Any]:
         load_result = self._state_load_result
         persistence = self._persistence_degradation
+        authority_guard_problem = self._inspect_authority_block_marker() in {
+            "blocked",
+            "invalid",
+        } or load_result.reason in {
+            "artifact_authority_blocked",
+            "authority_guard_clear_failed",
+            "authority_guard_persistence_uncertain",
+            "invalid_authority_block_marker",
+        }
         problems: list[str] = []
         if persistence is not None:
             problems.append("selfmod_inventory_persistence_degraded")
@@ -1498,11 +1607,23 @@ class SelfModificationManager:
             "fail_closed": self.state_degraded,
             "stage": persistence.stage.value if persistence is not None else "",
             "remediation": (
-                "Restore the self-modification inventory from a trusted backup, or remove "
-                "it only after verifying that no self-modified artifacts should remain "
-                "active, then restart shisad."
-                if self.state_degraded
-                else ""
+                (
+                    "A self-modification transition guard is present at "
+                    f"{self._authority_block_path}. Before removing it, verify that the "
+                    "inventory and artifact store form one coherent trusted state. Restore "
+                    "both from the same trusted snapshot, or remove the entire self-"
+                    "modification state domain only after verifying that no self-modified "
+                    "artifacts should remain active. Only then remove the guard and restart "
+                    "shisad."
+                )
+                if authority_guard_problem
+                else (
+                    "Restore the self-modification inventory from a trusted backup, or "
+                    "remove it only after verifying that no self-modified artifacts should "
+                    "remain active, then restart shisad."
+                    if self.state_degraded
+                    else ""
+                )
             ),
         }
 

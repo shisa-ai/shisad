@@ -188,6 +188,21 @@ reported as corrupt or unsupported rather than missing. Inspect `shisad status`,
 selfmod` before restoring a trusted snapshot or explicitly resetting a state
 domain.
 
+Before self-modification replaces an authoritative artifact version path, it
+durably publishes an owner-only transition guard. The guard is atomically marked
+complete only after the inventory and artifact namespace have reached a durable
+coherent old, disabled, or new state. If initial guard publication cannot be
+acknowledged, the namespace mutation does not begin. If guard completion cannot
+be acknowledged, the current manager fails closed; restart observes either the
+old incomplete marker and blocks or the new completed marker alongside the
+already coherent authority state. A completed guard is safe if physical cleanup
+is interrupted because startup distinguishes it from an incomplete transition.
+Recovery from an incomplete or invalid guard requires verifying that the self-
+modification inventory and artifact store form one coherent trusted state (or
+restoring both from the same trusted snapshot) before removing the guard and
+restarting shisad. The component status reports the exact guard path and this
+ordering requirement.
+
 Auxiliary security-control artifacts use narrower contracts based on their
 role. Pairing requests are owner-only append records whose file and containing
 directory are fsynced before acknowledgement; generated
