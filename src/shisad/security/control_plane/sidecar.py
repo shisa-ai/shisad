@@ -9,7 +9,7 @@ import logging
 import os
 import signal
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
@@ -19,14 +19,7 @@ from shisad.core.api.transport import (
     ControlClient,
     ControlServer,
     JsonRpcCallError,
-    OwnedSocketIdentity,
     PeerCredentials,
-)
-from shisad.core.atomic_state import ensure_owner_only_directory
-from shisad.core.authority import (
-    DaemonAuthorityClaim,
-    DaemonAuthorityLease,
-    verify_inherited_daemon_authority_lease,
 )
 from shisad.core.config import ModelConfig
 from shisad.core.errors import ShisadError
@@ -76,10 +69,6 @@ class ControlPlaneGateway(Protocol):
     """Async control-plane gateway consumed by daemon handlers."""
 
     async def ping(self) -> bool: ...
-
-    async def state_status(self) -> dict[str, Any]: ...
-
-    async def reset_state(self) -> dict[str, int]: ...
 
     async def begin_precontent_plan(
         self,
@@ -172,18 +161,6 @@ class _EmptyParams(BaseModel):
 
 class _PingResult(BaseModel):
     ok: bool = True
-
-
-class _StateStatusResult(BaseModel):
-    status: str = "ok"
-    problems: list[str] = Field(default_factory=list)
-    fail_closed: bool = False
-    domains: dict[str, Any] = Field(default_factory=dict)
-    remediation: str = ""
-
-
-class _ResetStateResult(BaseModel):
-    cleared: dict[str, int] = Field(default_factory=dict)
 
 
 class _PlanHashResult(BaseModel):
@@ -355,22 +332,6 @@ class _ControlPlaneSidecarHandlers:
     ) -> _PingResult:
         _ = (params, ctx)
         return _PingResult()
-
-    async def handle_state_status(
-        self,
-        params: _EmptyParams,
-        ctx: RequestContext,
-    ) -> _StateStatusResult:
-        _ = (params, ctx)
-        return _StateStatusResult.model_validate(self._engine.state_status())
-
-    async def handle_reset_state(
-        self,
-        params: _EmptyParams,
-        ctx: RequestContext,
-    ) -> _ResetStateResult:
-        _ = (params, ctx)
-        return _ResetStateResult(cleared=self._engine.reset_state())
 
     async def handle_begin_precontent_plan(
         self,
@@ -545,22 +506,6 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             timeout_seconds=_SIDECAR_PING_TIMEOUT_SECONDS,
         )
         return bool(result.ok)
-
-    async def state_status(self) -> dict[str, Any]:
-        result = await self._call(
-            "control_plane.state_status",
-            {},
-            _StateStatusResult,
-        )
-        return result.model_dump(mode="json")
-
-    async def reset_state(self) -> dict[str, int]:
-        result = await self._call(
-            "control_plane.reset_state",
-            {},
-            _ResetStateResult,
-        )
-        return dict(result.cleared)
 
     async def begin_precontent_plan(
         self,
@@ -808,119 +753,59 @@ class ControlPlaneSidecarHandle:
     client: ControlPlaneSidecarClient
     startup_timeout_seconds: float = _SIDECAR_STARTUP_TIMEOUT_SECONDS
     termination_timeout_seconds: float = _SIDECAR_TERMINATION_TIMEOUT_SECONDS
-    socket_identity: OwnedSocketIdentity | None = None
-    _close_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
-    async def _close_terminal(self) -> None:
+    async def close(self) -> None:
         if self.process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                self.process.terminate()
+            self.process.terminate()
             try:
                 await asyncio.wait_for(
                     self.process.wait(),
                     timeout=self.termination_timeout_seconds,
                 )
             except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    self.process.kill()
+                self.process.kill()
                 await self.process.wait()
-        identity = self.socket_identity
-        self.socket_identity = None
-        if identity is not None:
-            try:
-                with contextlib.suppress(OSError):
-                    identity.unlink_if_current()
-            finally:
-                identity.close()
-
-    async def close(self) -> None:
-        """Join the child before returning, even when this caller is cancelled."""
-
-        if self._close_task is None:
-            self._close_task = asyncio.create_task(self._close_terminal())
-        cancelled = False
-        while not self._close_task.done():
-            try:
-                await asyncio.shield(self._close_task)
-            except asyncio.CancelledError:
-                cancelled = True
-        await self._close_task
-        if cancelled:
-            raise asyncio.CancelledError
+        if self.socket_path.exists():
+            with contextlib.suppress(OSError):
+                self.socket_path.unlink()
 
 
 async def start_control_plane_sidecar(
     *,
     data_dir: Path,
     policy_path: Path,
-    authority_claim: DaemonAuthorityClaim,
     assistant_fs_roots: list[Path] | None = None,
     startup_timeout_seconds: float = _SIDECAR_STARTUP_TIMEOUT_SECONDS,
 ) -> ControlPlaneSidecarHandle:
     socket_path = data_dir / "control_plane" / "sidecar.sock"
-    lease = authority_claim.duplicate_lease()
-    spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
-    spawn_cancelled = False
-    try:
-        verify_inherited_daemon_authority_lease(lease, data_dir=data_dir)
-        ensure_owner_only_directory(socket_path.parent)
-        pass_fds = tuple(
-            fd for fd in (lease.fd, getattr(lease, "namespace_fd", -1)) if fd >= 0
-        )
-        namespace_args = (
-            ["--authority-namespace-fd", str(lease.namespace_fd)]
-            if getattr(lease, "namespace_fd", -1) >= 0
-            else []
-        )
-        spawn_task = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "shisad.security.control_plane.sidecar",
-                "--socket-path",
-                str(socket_path),
-                "--data-dir",
-                str(data_dir),
-                "--policy-path",
-                str(policy_path),
-                "--parent-pid",
-                str(os.getpid()),
-                "--authority-lease-fd",
-                str(lease.fd),
-                "--authority-record-path",
-                str(lease.record_path),
-                *namespace_args,
-                *[
-                    token
-                    for root in (assistant_fs_roots or [])
-                    for token in ("--assistant-fs-root", str(root))
-                ],
-                pass_fds=pass_fds,
-            )
-        )
-        while True:
-            try:
-                process = await asyncio.shield(spawn_task)
-                break
-            except asyncio.CancelledError:
-                if spawn_task.cancelled():
-                    raise
-                spawn_cancelled = True
-    finally:
-        lease.close()
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "shisad.security.control_plane.sidecar",
+        "--socket-path",
+        str(socket_path),
+        "--data-dir",
+        str(data_dir),
+        "--policy-path",
+        str(policy_path),
+        "--parent-pid",
+        str(os.getpid()),
+        *[
+            token
+            for root in (assistant_fs_roots or [])
+            for token in ("--assistant-fs-root", str(root))
+        ],
+    )
     handle = ControlPlaneSidecarHandle(
         socket_path=socket_path,
         process=process,
         client=ControlPlaneSidecarClient(socket_path),
         startup_timeout_seconds=float(startup_timeout_seconds),
     )
-    if spawn_cancelled:
-        await handle.close()
-        raise asyncio.CancelledError
     try:
         await _wait_for_sidecar_ready(handle)
-        handle.socket_identity = OwnedSocketIdentity.capture(socket_path)
-    except BaseException:
+    except Exception:
         await handle.close()
         raise
     return handle
@@ -967,7 +852,7 @@ async def _watch_parent(parent_pid: int, shutdown_event: asyncio.Event) -> None:
             return
 
 
-async def _run_claimed_sidecar(
+async def _run_sidecar(
     *,
     socket_path: Path,
     data_dir: Path,
@@ -1002,16 +887,6 @@ async def _run_claimed_sidecar(
     server.register_method(
         "control_plane.ping",
         cast(Any, handlers.handle_ping),
-        params_model=_EmptyParams,
-    )
-    server.register_method(
-        "control_plane.state_status",
-        cast(Any, handlers.handle_state_status),
-        params_model=_EmptyParams,
-    )
-    server.register_method(
-        "control_plane.reset_state",
-        cast(Any, handlers.handle_reset_state),
         params_model=_EmptyParams,
     )
     server.register_method(
@@ -1076,28 +951,6 @@ async def _run_claimed_sidecar(
         await server.stop()
 
 
-async def _run_sidecar(
-    *,
-    socket_path: Path,
-    data_dir: Path,
-    policy_path: Path,
-    parent_pid: int,
-    authority_lease: DaemonAuthorityLease,
-    assistant_fs_roots: list[Path] | None = None,
-) -> None:
-    try:
-        verify_inherited_daemon_authority_lease(authority_lease, data_dir=data_dir)
-        await _run_claimed_sidecar(
-            socket_path=socket_path,
-            data_dir=data_dir,
-            policy_path=policy_path,
-            parent_pid=parent_pid,
-            assistant_fs_roots=assistant_fs_roots,
-        )
-    finally:
-        authority_lease.close()
-
-
 def _is_authorized_sidecar_peer(*, peer: PeerCredentials, expected_parent_pid: int) -> bool:
     if expected_parent_pid <= 0:
         return False
@@ -1112,9 +965,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--policy-path", required=True)
     parser.add_argument("--parent-pid", type=int, default=0)
-    parser.add_argument("--authority-lease-fd", type=int, required=True)
-    parser.add_argument("--authority-record-path", required=True)
-    parser.add_argument("--authority-namespace-fd", type=int, default=-1)
     parser.add_argument("--assistant-fs-root", action="append", default=[])
     return parser.parse_args(argv)
 
@@ -1128,11 +978,6 @@ def main(argv: list[str] | None = None) -> int:
                 data_dir=Path(args.data_dir),
                 policy_path=Path(args.policy_path),
                 parent_pid=int(args.parent_pid),
-                authority_lease=DaemonAuthorityLease(
-                    fd=int(args.authority_lease_fd),
-                    record_path=Path(args.authority_record_path),
-                    namespace_fd=int(args.authority_namespace_fd),
-                ),
                 assistant_fs_roots=[Path(item) for item in args.assistant_fs_root],
             )
         )

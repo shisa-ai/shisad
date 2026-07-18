@@ -11,14 +11,7 @@ import contextlib
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import (
-    ChannelMessage,
-    DeliveryTarget,
-    InMemoryChannel,
-    ReplayEventVariant,
-    ReplayIdentity,
-    provider_account_fingerprint,
-)
+from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
 
 try:  # pragma: no cover - optional dependency.
     import nio  # type: ignore
@@ -51,26 +44,11 @@ class MatrixChannel(InMemoryChannel):
     def available(self) -> bool:
         return nio is not None
 
-    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
-        return ReplayIdentity(
-            provider="matrix",
-            account_id=provider_account_fingerprint(
-                "matrix",
-                f"{self._config.homeserver}\0{self._config.user_id}",
-            ),
-            tenant_id=self._config.homeserver,
-            delivery_id=message.reply_target,
-            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
-            message_id=message.message_id,
-        )
-
     @property
     def e2ee_enabled(self) -> bool:
         return bool(self.available and self._config.enable_e2ee)
 
     async def connect(self) -> None:
-        if self._sync_task is not None and self._sync_task.done():
-            await self.disconnect()
         await super().connect()
         if nio is not None:
             client_config = None
@@ -102,7 +80,6 @@ class MatrixChannel(InMemoryChannel):
             sync_forever = getattr(self._client, "sync_forever", None)
             if callable(sync_forever):
                 self._sync_task = asyncio.create_task(self._sync_loop())
-                self._observe_consumer_task(self._sync_task)
 
     async def disconnect(self) -> None:
         if self._sync_task is not None:
@@ -171,8 +148,7 @@ class MatrixChannel(InMemoryChannel):
             await sync_forever(timeout=30_000, full_state=True)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            self._record_consumer_failure(exc)
+        except Exception:
             return
 
     async def _on_room_message(self, room: Any, event: Any) -> None:

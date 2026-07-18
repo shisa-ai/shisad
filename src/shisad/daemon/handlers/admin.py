@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
-from shisad.channels.base import direct_replay_identity
 from shisad.core.api.schema import (
     AdminSelfModApplyParams,
     AdminSelfModApplyResult,
@@ -20,8 +17,6 @@ from shisad.core.api.schema import (
     ChannelIngestResult,
     ChannelPairingProposalParams,
     ChannelPairingProposalResult,
-    ChannelReplayRebaselineParams,
-    ChannelReplayRebaselineResult,
     DaemonResetResult,
     DaemonShutdownResult,
     DaemonStatusResult,
@@ -44,8 +39,6 @@ from shisad.core.api.schema import (
     PolicyExplainResult,
     RiskCalibrateResult,
 )
-from shisad.core.atomic_state import StatePersistenceDegradedError
-from shisad.core.errors import ChannelError
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
 from shisad.daemon.handlers._impl import HandlerImplementation
@@ -148,40 +141,7 @@ class AdminHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
-        if ctx.is_internal_ingress:
-            return ChannelIngestResult.model_validate(await self._impl.do_channel_ingest(payload))
-
-        services = getattr(self._impl, "_services", None)
-        state_store = getattr(services, "channel_state_store", None)
-        if state_store is None:
-            raise StatePersistenceDegradedError(
-                authority="channel_replay:direct",
-                transition="reserve",
-                stage="runtime",
-                reason="replay_state_store_unavailable",
-            )
-
-        identity = direct_replay_identity(
-            message_id=params.message.message_id,
-            rpc_peer=ctx.rpc_peer,
-        )
-        is_replay = await asyncio.to_thread(state_store.reserve, identity=identity)
-        if is_replay:
-            raise ChannelError(
-                "Channel ingress replay rejected",
-                reason_code="channel.ingress_replay",
-                rpc_code=-32602,
-                expose_message=True,
-            )
-        try:
-            result = ChannelIngestResult.model_validate(
-                await self._impl.do_channel_ingest(payload)
-            )
-        except Exception:
-            await asyncio.to_thread(state_store.mark_uncertain, identity=identity)
-            raise
-        await asyncio.to_thread(state_store.mark_terminal, identity=identity)
-        return result
+        return ChannelIngestResult.model_validate(await self._impl.do_channel_ingest(payload))
 
     async def handle_channel_pairing_propose(
         self,
@@ -195,30 +155,6 @@ class AdminHandlers:
         )
         return ChannelPairingProposalResult.model_validate(
             await self._impl.do_channel_pairing_propose(payload)
-        )
-
-    async def handle_channel_replay_rebaseline(
-        self,
-        params: ChannelReplayRebaselineParams,
-        ctx: RequestContext,
-    ) -> ChannelReplayRebaselineResult:
-        _ = ctx
-        if not params.confirm:
-            raise ValueError("channel replay rebaseline requires confirm=true")
-        services = getattr(self._impl, "_services", None)
-        state_store = getattr(services, "channel_state_store", None)
-        if state_store is None:
-            raise StatePersistenceDegradedError(
-                authority=f"channel_replay:{params.channel}",
-                transition="rebaseline",
-                stage="runtime",
-                reason="replay_state_store_unavailable",
-            )
-        files_removed = await asyncio.to_thread(state_store.rebaseline, params.channel)
-        return ChannelReplayRebaselineResult(
-            status="rebaselined",
-            channel=params.channel,
-            files_removed=files_removed,
         )
 
     async def handle_admin_selfmod_propose(

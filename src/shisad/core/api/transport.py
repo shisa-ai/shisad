@@ -31,7 +31,6 @@ from shisad.core.api.schema import (
     JsonRpcRequest,
     JsonRpcResponse,
 )
-from shisad.core.atomic_state import StatePersistenceDegradedError
 from shisad.core.errors import ShisadError
 from shisad.core.interfaces import TypedHandler, TypedMethodRegistration
 from shisad.core.request_context import RequestContext
@@ -39,7 +38,6 @@ from shisad.core.request_context import RequestContext
 logger = logging.getLogger(__name__)
 
 PERMISSION_DENIED = -32001
-_SOCKET_LIVENESS_TIMEOUT_SECONDS = 1.0
 
 
 def _current_euid() -> int:
@@ -69,214 +67,22 @@ def _private_socket_dirs_for(socket_path: Path) -> tuple[Path, ...]:
     runtime_dir = _configured_xdg_runtime_dir()
     if runtime_dir is not None and parent == runtime_dir / "shisad":
         return (runtime_dir, parent)
+
     return ()
-
-
-def _socket_directory_open_flags() -> int:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    return flags | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-
-
-def _shared_sticky_socket_directory(directory_stat: os.stat_result) -> bool:
-    return bool(directory_stat.st_mode & stat.S_ISVTX) and bool(
-        directory_stat.st_mode & 0o002
-    )
-
-
-def _walk_custom_socket_parent(socket_path: Path, *, create: bool) -> None:
-    parent = Path(os.path.abspath(os.fspath(socket_path.parent)))
-    current = Path(parent.anchor)
-    current_fd = os.open(current, _socket_directory_open_flags())
-    creation_boundary = False
-    try:
-        for component in parent.parts[1:]:
-            current /= component
-            created = False
-            try:
-                next_fd = os.open(
-                    component,
-                    _socket_directory_open_flags(),
-                    dir_fd=current_fd,
-                )
-            except FileNotFoundError:
-                if not create:
-                    return
-                creation_boundary = True
-                try:
-                    os.mkdir(component, 0o700, dir_fd=current_fd)
-                    created = True
-                except FileExistsError:
-                    pass
-                try:
-                    next_fd = os.open(
-                        component,
-                        _socket_directory_open_flags(),
-                        dir_fd=current_fd,
-                    )
-                except OSError as exc:
-                    raise PermissionError(
-                        f"Refusing to use unsafe socket ancestor {current}"
-                    ) from exc
-            except OSError as exc:
-                raise PermissionError(
-                    f"Refusing to use unsafe socket ancestor {current}: symlink or not a directory"
-                ) from exc
-
-            directory_stat = os.fstat(next_fd)
-            try:
-                if not stat.S_ISDIR(directory_stat.st_mode):
-                    raise PermissionError(
-                        f"Refusing to use unsafe socket ancestor {current}: not a directory"
-                    )
-                shared_sticky = _shared_sticky_socket_directory(directory_stat)
-                mode = stat.S_IMODE(directory_stat.st_mode)
-                if directory_stat.st_uid not in {0, _current_euid()}:
-                    raise PermissionError(
-                        "Refusing to use unsafe socket ancestor "
-                        f"{current}: owned by uid {directory_stat.st_uid}, "
-                        f"expected root or {_current_euid()}"
-                    )
-                if creation_boundary and directory_stat.st_uid != _current_euid():
-                    raise PermissionError(
-                        f"Created socket ancestry is not owner-controlled: {current}"
-                    )
-                if mode & 0o022 and not shared_sticky:
-                    raise PermissionError(
-                        f"Refusing to use unsafe socket directory {current}: mode {mode:04o}"
-                    )
-                if created:
-                    os.fchmod(next_fd, 0o700)
-                    os.fsync(next_fd)
-                    os.fsync(current_fd)
-            except BaseException:
-                os.close(next_fd)
-                raise
-            os.close(current_fd)
-            current_fd = next_fd
-    finally:
-        os.close(current_fd)
 
 
 def _ensure_socket_parent(socket_path: Path) -> None:
     private_dirs = _private_socket_dirs_for(socket_path)
     if not private_dirs:
-        _walk_custom_socket_parent(socket_path, create=True)
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
         return
-
-    if len(private_dirs) > 1:
-        _walk_custom_socket_parent(socket_path, create=True)
 
     for directory in private_dirs:
         _ensure_private_socket_dir(directory)
 
 
-def _open_owned_socket_identity(socket_path: Path) -> int:
-    flags = getattr(os, "O_PATH", os.O_RDONLY)
-    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(socket_path, flags)
-    try:
-        socket_stat = os.fstat(fd)
-        if not stat.S_ISSOCK(socket_stat.st_mode):
-            raise OSError(f"Refusing to replace control path that is not a socket: {socket_path}")
-        if socket_stat.st_uid != _current_euid():
-            raise PermissionError(
-                "Refusing to replace control socket owned by uid "
-                f"{socket_stat.st_uid}, expected {_current_euid()}: {socket_path}"
-            )
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
-
-
-def _unlink_socket_identity(socket_path: Path, identity_fd: int) -> bool:
-    try:
-        current_stat = socket_path.lstat()
-    except FileNotFoundError:
-        return False
-    identity_stat = os.fstat(identity_fd)
-    if (current_stat.st_dev, current_stat.st_ino) != (
-        identity_stat.st_dev,
-        identity_stat.st_ino,
-    ):
-        return False
-    if not stat.S_ISSOCK(current_stat.st_mode) or current_stat.st_uid != _current_euid():
-        return False
-    socket_path.unlink()
-    return True
-
-
-@dataclass(slots=True)
-class OwnedSocketIdentity:
-    """An open owner-socket inode used for replacement-safe cleanup."""
-
-    path: Path
-    _fd: int
-
-    @classmethod
-    def capture(cls, path: Path) -> OwnedSocketIdentity:
-        return cls(path=path, _fd=_open_owned_socket_identity(path))
-
-    @property
-    def closed(self) -> bool:
-        return self._fd < 0
-
-    def unlink_if_current(self) -> bool:
-        if self.closed:
-            return False
-        return _unlink_socket_identity(self.path, self._fd)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        fd = self._fd
-        self._fd = -1
-        os.close(fd)
-
-
-async def _remove_owned_stale_socket(socket_path: Path) -> None:
-    try:
-        identity_fd = _open_owned_socket_identity(socket_path)
-    except FileNotFoundError:
-        return
-    try:
-        try:
-            _reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(str(socket_path)),
-                timeout=_SOCKET_LIVENESS_TIMEOUT_SECONDS,
-            )
-        except FileNotFoundError:
-            return
-        except ConnectionRefusedError:
-            if not _unlink_socket_identity(socket_path, identity_fd):
-                raise OSError(
-                    f"Control socket identity changed during stale cleanup: {socket_path}"
-                ) from None
-            return
-        except OSError as exc:
-            raise OSError(f"Cannot prove existing control socket is stale: {socket_path}") from exc
-        writer.close()
-        with contextlib.suppress(ConnectionError):
-            await writer.wait_closed()
-        raise OSError(f"Control socket is already active: {socket_path}")
-    finally:
-        os.close(identity_fd)
-
-
-async def preflight_claimed_control_socket(socket_path: Path) -> None:
-    """Reject an active/unsafe control path or remove its proven-stale socket."""
-
-    await _remove_owned_stale_socket(socket_path)
-
-
 def _validate_socket_parent(socket_path: Path) -> None:
-    private_dirs = _private_socket_dirs_for(socket_path)
-    if not private_dirs:
-        _walk_custom_socket_parent(socket_path, create=False)
-        return
-    if len(private_dirs) > 1:
-        _walk_custom_socket_parent(socket_path, create=False)
-    for directory in private_dirs:
+    for directory in _private_socket_dirs_for(socket_path):
         try:
             directory_stat = os.lstat(directory)
         except FileNotFoundError:
@@ -422,7 +228,6 @@ class ControlServer:
     ) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
-        self._socket_identity: OwnedSocketIdentity | None = None
         self._methods: dict[str, TypedMethodRegistration] = {}
         self._event_subscribers: dict[asyncio.StreamWriter, _EventSubscription] = {}
         self._event_queue_size = event_queue_size
@@ -446,26 +251,17 @@ class ControlServer:
     async def start(self) -> None:
         """Start listening on the Unix socket."""
         _ensure_socket_parent(self._socket_path)
-        await _remove_owned_stale_socket(self._socket_path)
 
-        server = await asyncio.start_unix_server(
+        # Remove stale socket
+        if self._socket_path.exists():
+            self._socket_path.unlink()
+
+        self._server = await asyncio.start_unix_server(
             self._handle_connection,
             path=str(self._socket_path),
         )
-        identity: OwnedSocketIdentity | None = None
-        try:
-            identity = OwnedSocketIdentity.capture(self._socket_path)
-            os.chmod(self._socket_path, 0o600, follow_symlinks=False)
-        except BaseException:
-            server.close()
-            await server.wait_closed()
-            if identity is not None:
-                with contextlib.suppress(OSError):
-                    identity.unlink_if_current()
-                identity.close()
-            raise
-        self._server = server
-        self._socket_identity = identity
+        # Restrict socket permissions to owner only
+        os.chmod(self._socket_path, 0o600)
         logger.info("Control API listening on %s", self._socket_path)
 
     async def stop(self) -> None:
@@ -479,13 +275,9 @@ class ControlServer:
         for writer in list(self._event_subscribers):
             await self._remove_subscription(writer, close_writer=True)
 
-        identity = self._socket_identity
-        self._socket_identity = None
-        if identity is not None:
-            try:
-                identity.unlink_if_current()
-            finally:
-                identity.close()
+        # Clean up socket file
+        if self._socket_path.exists():
+            self._socket_path.unlink()
 
         logger.info("Control API stopped")
 
@@ -651,22 +443,6 @@ class ControlServer:
             else:
                 payload = result
             return self._success_response(request.id, payload)
-        except StatePersistenceDegradedError as exc:
-            logger.warning(
-                "Method %s blocked by degraded state: authority=%s transition=%s "
-                "stage=%s reason=%s",
-                request.method,
-                exc.authority,
-                exc.transition,
-                exc.stage,
-                exc.reason,
-            )
-            return self._error_response(
-                request.id,
-                INTERNAL_ERROR,
-                "State authority unavailable; inspect daemon status and doctor diagnostics",
-                reason_code="state.persistence_degraded",
-            )
         except ShisadError as exc:
             logger.warning(
                 "Method %s failed (%s); reason_code=%s",
@@ -897,20 +673,7 @@ class ControlClient:
     async def connect(self) -> None:
         """Connect to the daemon."""
         _validate_socket_parent(self._socket_path)
-        socket_identity = OwnedSocketIdentity.capture(self._socket_path)
-        try:
-            reader, writer = await asyncio.open_unix_connection(str(self._socket_path))
-            peer = ControlServer._get_peer_credentials(writer)
-            if peer.uid != _current_euid():
-                writer.close()
-                raise PermissionError(
-                    "Refusing control server peer owned by uid "
-                    f"{peer.uid}, expected {_current_euid()}"
-                )
-            self._reader = reader
-            self._writer = writer
-        finally:
-            socket_identity.close()
+        self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
 
     async def close(self) -> None:
         """Close the connection."""

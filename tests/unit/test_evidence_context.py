@@ -5,13 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
 
 from shisad.channels.base import DeliveryTarget
-from shisad.core.atomic_state import encode_versioned_json_snapshot
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -562,77 +560,6 @@ def test_build_planner_conversation_context_carries_recent_evidence_refs(
     assert TaintLabel.UNTRUSTED in taints
 
 
-@pytest.mark.asyncio
-async def test_f3_pep_and_planner_metadata_routes_ignore_held_ledger_writer(
-    tmp_path,
-) -> None:
-    transcript_store = TranscriptStore(tmp_path / "sessions")
-    evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
-    sid = SessionId("sess-a")
-    ref = evidence_store.store(
-        sid,
-        "lock-free metadata",
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="lock-free metadata",
-    )
-    transcript_store.append(
-        sid,
-        role="assistant",
-        content="Evidence is available.",
-        taint_labels={TaintLabel.UNTRUSTED},
-        metadata={"evidence_ref_ids": [ref.ref_id]},
-        evidence_ref_id=ref.ref_id,
-    )
-    pep = PEP(
-        PolicyBundle(default_require_confirmation=False),
-        _registry_for_evidence(),
-        evidence_store=evidence_store,
-    )
-    lock_held = Event()
-    release_writer = Event()
-    holder_timed_out = Event()
-
-    def _hold_writer() -> None:
-        with evidence_store._lock:
-            lock_held.set()
-            if not release_writer.wait(timeout=3.0):
-                holder_timed_out.set()
-
-    holder = Thread(target=_hold_writer)
-    holder.start()
-    assert await asyncio.to_thread(lock_held.wait, 1.0)
-    heartbeat_ticks = 0
-
-    async def _heartbeat() -> None:
-        nonlocal heartbeat_ticks
-        for _ in range(5):
-            heartbeat_ticks += 1
-            await asyncio.sleep(0)
-        release_writer.set()
-
-    heartbeat = asyncio.create_task(_heartbeat())
-    decision = pep.evaluate(
-        ToolName("evidence.promote"),
-        {"ref_id": ref.ref_id},
-        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
-    )
-    rendered, _taints = _build_planner_conversation_context(
-        transcript_store=transcript_store,
-        session_id=sid,
-        context_window=10,
-        exclude_latest_turn=False,
-        evidence_store=evidence_store,
-    )
-    await heartbeat
-    await asyncio.to_thread(holder.join, 1.0)
-
-    assert holder_timed_out.is_set() is False
-    assert heartbeat_ticks == 5
-    assert decision.kind.value == "require_confirmation"
-    assert ref.ref_id in rendered
-
-
 def test_build_evidence_supplemental_entries_marks_read_ephemeral_and_promote_persistent() -> None:
     records = [
         {
@@ -1099,11 +1026,10 @@ def test_pep_rejects_promote_when_endorsement_metadata_is_tampered_offline(tmp_p
         summary="hello",
     )
     index_path = evidence_root / "refs_index.json"
-    envelope = json.loads(index_path.read_text(encoding="utf-8"))
-    raw_index = envelope["payload"]
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     raw_index[str(sid)][ref.ref_id]["endorsement_state"] = "user_endorsed"
     raw_index[str(sid)][ref.ref_id]["endorsed_by"] = "forged-offline"
-    index_path.write_bytes(encode_versioned_json_snapshot(raw_index, version=1))
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
     pep = PEP(
         PolicyBundle(default_require_confirmation=False),
@@ -1135,11 +1061,10 @@ def test_pep_rejects_promote_when_metadata_mac_is_stripped_and_summary_tampered(
         summary="hello",
     )
     index_path = evidence_root / "refs_index.json"
-    envelope = json.loads(index_path.read_text(encoding="utf-8"))
-    raw_index = envelope["payload"]
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     raw_index[str(sid)][ref.ref_id]["metadata_mac"] = ""
     raw_index[str(sid)][ref.ref_id]["summary"] = "tampered summary from disk"
-    index_path.write_bytes(encode_versioned_json_snapshot(raw_index, version=1))
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
     pep = PEP(
         PolicyBundle(default_require_confirmation=False),

@@ -30,8 +30,6 @@ from shisad.core.api.schema import (
     ChannelIngestResult,
     ChannelPairingProposalParams,
     ChannelPairingProposalResult,
-    ChannelReplayRebaselineParams,
-    ChannelReplayRebaselineResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
     DaemonResetResult,
@@ -893,13 +891,6 @@ class DaemonControlHandlers:
         self, params: ChannelPairingProposalParams, ctx: RequestContext
     ) -> ChannelPairingProposalResult:
         return await self._admin.handle_channel_pairing_propose(params, ctx)
-
-    async def handle_channel_replay_rebaseline(
-        self,
-        params: ChannelReplayRebaselineParams,
-        ctx: RequestContext,
-    ) -> ChannelReplayRebaselineResult:
-        return await self._admin.handle_channel_replay_rebaseline(params, ctx)
 
     async def handle_tool_execute(
         self, params: ToolExecuteParams, ctx: RequestContext

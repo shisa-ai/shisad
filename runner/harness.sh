@@ -120,6 +120,11 @@ _socket_dir_requires_private() {
     return 0
   fi
 
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
+    && [[ "${dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -166,57 +171,15 @@ _preflight_socket_parent() {
   socket_dir="$(dirname "${SHISAD_SOCKET_PATH}")"
 
   if ! _socket_dir_requires_private "${socket_dir}"; then
-    case "${socket_dir}" in
-      /*) ;;
-      *) _die "custom socket directory must be absolute: ${socket_dir}" ;;
-    esac
-    case "${socket_dir}" in
-      /*/../*|*/..|/*/./*|*/.)
-        _die "unsafe socket directory path components: ${socket_dir}"
-        ;;
-    esac
-    local -a ancestors=()
-    local current owner mode mode_value uid
-    current="${socket_dir}"
-    while true; do
-      ancestors=("${current}" "${ancestors[@]}")
-      [[ "${current}" == "/" ]] && break
-      current="$(dirname "${current}")"
-    done
-    uid="$(id -u)"
-    for current in "${ancestors[@]}"; do
-      if [[ -L "${current}" ]]; then
-        _die "unsafe socket directory: ${current} is a symlink"
-      fi
-      if [[ ! -e "${current}" ]]; then
-        if [[ "${create}" == true ]]; then
-          mkdir -m 700 -- "${current}" || _die "unable to create socket directory: ${current}"
-        else
-          return 0
-        fi
-      fi
-      if [[ ! -d "${current}" ]]; then
-        _die "unsafe socket directory: ${current} is not a directory"
-      fi
-      owner="$(_stat_uid "${current}")" || _die "unable to stat socket directory owner: ${current}"
-      mode="$(stat -c '%a' "${current}" 2>/dev/null || stat -f '%Lp' "${current}")"
-      mode_value=$((8#${mode}))
-      if [[ "${owner}" != "0" ]] && [[ "${owner}" != "${uid}" ]]; then
-        _die "unsafe socket directory: ${current} is owned by uid ${owner}, expected root or ${uid}"
-      fi
-      if (( (mode_value & 0022) != 0 )) \
-        && ! (( (mode_value & 01000) != 0 && (mode_value & 0002) != 0 )); then
-        _die "unsafe socket directory: ${current} has mode ${mode}"
-      fi
-    done
-    if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
-      && [[ "${socket_dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
-      _ensure_private_dir "${XDG_RUNTIME_DIR}" "${create}"
-      _ensure_private_dir "${socket_dir}" "${create}"
-    elif [[ "${create}" == true ]]; then
-      chmod 700 -- "${socket_dir}" || _die "unable to restrict socket directory: ${socket_dir}"
+    if [[ "${create}" == true ]]; then
+      mkdir -p "${socket_dir}"
     fi
     return 0
+  fi
+
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ "${XDG_RUNTIME_DIR}" = /* ]] \
+    && [[ "${socket_dir}" == "${XDG_RUNTIME_DIR}/shisad" ]]; then
+    _ensure_private_dir "${XDG_RUNTIME_DIR}" "${create}"
   fi
 
   _ensure_private_dir "${socket_dir}" "${create}"
@@ -255,7 +218,7 @@ _clear_inherited_shisad_env() {
 _export_defaults() {
   export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-dev}"
   export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-$(_default_user_socket_path)}"
-  export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$(_runner_state_dir)/policy.yaml}"
+  export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$REPO_ROOT/.local/policy.yaml}"
   export SHISAD_LOG_LEVEL="${SHISAD_LOG_LEVEL:-INFO}"
   export SHISAD_CODING_REPO_ROOT="${SHISAD_CODING_REPO_ROOT:-$REPO_ROOT}"
   export SHISAD_ASSISTANT_FS_ROOTS="${SHISAD_ASSISTANT_FS_ROOTS:-[\"$REPO_ROOT\"]}"
@@ -280,102 +243,18 @@ _export_defaults() {
   export SHISAD_SLACK_ENABLED="${SHISAD_SLACK_ENABLED:-false}"
 }
 
-_validate_runner_name() {
-  local kind="$1"
-  local name="$2"
-  case "${name}" in
-    ""|.|..|*[!A-Za-z0-9_.-]*)
-      _die "unsafe runner tmux ${kind} name: ${name}"
-      ;;
-  esac
-}
-
-
-_runner_state_root() {
-  printf '/tmp/shisad-runner-%s\n' "$(id -u)"
-}
-
-
-_runner_socket_state_dir() {
-  local socket_name
-  socket_name="$(_tmux_socket_name)"
-  _validate_runner_name socket "${socket_name}"
-  printf '%s/sockets/%s\n' "$(_runner_state_root)" "${socket_name}"
-}
-
-
-_runner_state_dir() {
-  local session_name
-  session_name="$(_tmux_session_name)"
-  _validate_runner_name session "${session_name}"
-  printf '%s/sessions/%s\n' "$(_runner_socket_state_dir)" "${session_name}"
-}
-
-
-_ensure_runner_state_dir() {
-  local sockets_root socket_dir sessions_root state_dir state_root
-  state_root="$(_runner_state_root)"
-  sockets_root="${state_root}/sockets"
-  socket_dir="$(_runner_socket_state_dir)"
-  sessions_root="${socket_dir}/sessions"
-  state_dir="$(_runner_state_dir)"
-  _ensure_private_dir "${state_root}" true
-  _ensure_private_dir "${sockets_root}" true
-  _ensure_private_dir "${socket_dir}" true
-  _ensure_private_dir "${sessions_root}" true
-  _ensure_private_dir "${state_dir}" true
-}
-
-
 _daemon_log_path() {
-  printf '%s/daemon.log\n' "$(_runner_state_dir)"
+  printf '%s\n' "${SHISAD_DATA_DIR}/daemon.log"
 }
-
 
 _daemon_pid_path() {
-  printf '%s/daemon.pid\n' "$(_runner_state_dir)"
+  printf '%s\n' "${SHISAD_DATA_DIR}/daemon.pid"
 }
 
 _ensure_bootstrap_dirs() {
-  _ensure_runner_state_dir
-  _preflight_socket_parent false
-}
-
-_absolute_normalized_path() {
-  local path="$1"
-  if [[ "${path}" != /* ]]; then
-    path="${PWD}/${path}"
-  fi
-  realpath -m -- "${path}"
-}
-
-_path_contains() {
-  local ancestor descendant
-  ancestor="$(_absolute_normalized_path "$1")"
-  descendant="$(_absolute_normalized_path "$2")"
-  if [[ "${ancestor}" == "/" ]]; then
-    return 0
-  fi
-  [[ "${descendant}" == "${ancestor}" || "${descendant}" == "${ancestor}/"* ]]
-}
-
-_paths_overlap() {
-  _path_contains "$1" "$2" || _path_contains "$2" "$1"
-}
-
-_first_missing_path_component() {
-  local current first_missing parent
-  current="$(_absolute_normalized_path "$1")"
-  first_missing=""
-  while [[ ! -e "${current}" && ! -L "${current}" ]]; do
-    first_missing="${current}"
-    parent="$(dirname "${current}")"
-    if [[ "${parent}" == "${current}" ]]; then
-      break
-    fi
-    current="${parent}"
-  done
-  printf '%s\n' "${first_missing}"
+  mkdir -p "${SHISAD_DATA_DIR}"
+  mkdir -p "$(dirname "${SHISAD_POLICY_PATH}")"
+  _preflight_socket_parent true
 }
 
 _ensure_policy_file() {
@@ -388,22 +267,6 @@ _ensure_policy_file() {
     _die "policy template not found: ${template}"
   fi
 
-  local creation_root policy_parent socket_parent
-  policy_parent="$(dirname "${SHISAD_POLICY_PATH}")"
-  socket_parent="$(dirname "${SHISAD_SOCKET_PATH}")"
-  if _paths_overlap "${SHISAD_POLICY_PATH}" "${SHISAD_DATA_DIR}" \
-    || _paths_overlap "${SHISAD_POLICY_PATH}" "${SHISAD_SOCKET_PATH}"; then
-    _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
-  fi
-  creation_root="$(_first_missing_path_component "${policy_parent}")"
-  if [[ -n "${creation_root}" ]]; then
-    if _paths_overlap "${creation_root}" "${SHISAD_DATA_DIR}" \
-      || { [[ ! -d "${socket_parent}" ]] \
-        && _paths_overlap "${creation_root}" "${socket_parent}"; }; then
-      _die "refusing to bootstrap a missing policy across daemon data/socket authority: ${SHISAD_POLICY_PATH}"
-    fi
-  fi
-  (umask 077 && mkdir -p -- "${policy_parent}")
   cp "${template}" "${SHISAD_POLICY_PATH}"
   chmod 600 "${SHISAD_POLICY_PATH}" || true
 }
@@ -579,6 +442,10 @@ _cmd_start() {
     return 0
   fi
 
+  if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
+    rm -f "${SHISAD_SOCKET_PATH}" || true
+  fi
+
   if [[ "${fg}" == true ]]; then
     printf '%s\n' "Starting shisad in foreground (debug=${debug})"
     printf '%s\n' "  socket   : ${SHISAD_SOCKET_PATH}"
@@ -618,15 +485,8 @@ _cmd_start() {
     daemon_args="--foreground"
   fi
 
-  # Run in tmux so the daemon survives across non-interactive shells. The
-  # runner log stays outside daemon-owned authority, allowing the daemon to
-  # create/admit SHISAD_DATA_DIR only after publishing its lifetime claim.
-  local entrypoint_command
-  printf -v entrypoint_command \
-    'bash runner/daemon_entrypoint.sh %q --log-path %q' \
-    "${daemon_args}" \
-    "${log_path}"
-  _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "${entrypoint_command}"
+  # Run in tmux so the daemon survives across non-interactive shells.
+  _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "bash runner/daemon_entrypoint.sh ${daemon_args}"
 
   # Wait for socket + status to succeed.
   local i
@@ -661,6 +521,10 @@ _cmd_stop() {
   fi
 
   rm -f "${pid_path}" || true
+
+  if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
+    rm -f "${SHISAD_SOCKET_PATH}" || true
+  fi
 
   printf '%s\n' "Daemon stop requested."
 }

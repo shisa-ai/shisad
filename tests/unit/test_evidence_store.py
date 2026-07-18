@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from stat import S_IMODE
-from typing import Any
 
 import pytest
 
-from shisad.core.atomic_state import StateLoadStatus, encode_versioned_json_snapshot
 from shisad.core.evidence import (
     ArtifactBlobCodecError,
     ArtifactEndorsementState,
@@ -27,24 +23,6 @@ from shisad.core.evidence import (
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall
 from tests.helpers.artifact_kms import StubArtifactKmsService
-
-
-def _read_index_payload(index_path: Path) -> dict[str, Any]:
-    raw = json.loads(index_path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict) and set(raw) == {"version", "checksum", "payload"}:
-        payload = raw["payload"]
-        assert isinstance(payload, dict)
-        return payload
-    assert isinstance(raw, dict)
-    return raw
-
-
-def _write_index_payload(index_path: Path, payload: dict[str, Any]) -> None:
-    index_path.write_bytes(encode_versioned_json_snapshot(payload))
-
-
-def _quarantined_entries_for_hash(evidence_root: Path, content_hash: str) -> list[Path]:
-    return list((evidence_root / "quarantine").glob(f"v1.*.*.{content_hash}.txt"))
 
 
 def test_evidence_store_round_trips_content_and_metadata(tmp_path) -> None:
@@ -86,7 +64,7 @@ def test_evidence_store_restores_metadata_after_restart(tmp_path) -> None:
     assert restarted.validate_ref_id(sid, created.ref_id) is True
 
 
-def test_evidence_store_degrades_and_retains_tampered_metadata_mac_on_restart(tmp_path) -> None:
+def test_evidence_store_drops_refs_with_tampered_metadata_mac_on_restart(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -99,22 +77,18 @@ def test_evidence_store_degrades_and_retains_tampered_metadata_mac_on_restart(tm
         summary="restart-stable evidence",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = _read_index_payload(index_path)
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     raw_index[str(sid)][created.ref_id]["endorsement_state"] = "user_endorsed"
     raw_index[str(sid)][created.ref_id]["endorsed_by"] = "forged-offline"
-    _write_index_payload(index_path, raw_index)
-    tampered_bytes = index_path.read_bytes()
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
 
     assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.validate_ref_id(sid, created.ref_id) is False
-    assert restarted.state_load_result().status is StateLoadStatus.CORRUPT
-    assert restarted.state_load_result().reason == "metadata_mac_mismatch"
-    assert index_path.read_bytes() == tampered_bytes
 
 
-def test_evidence_store_degrades_when_metadata_mac_is_stripped_and_summary_tampered(
+def test_evidence_store_drops_refs_when_metadata_mac_is_stripped_and_summary_tampered(
     tmp_path,
 ) -> None:
     evidence_root = tmp_path / "evidence"
@@ -129,18 +103,15 @@ def test_evidence_store_degrades_when_metadata_mac_is_stripped_and_summary_tampe
         summary="restart-stable evidence",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = _read_index_payload(index_path)
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     raw_index[str(sid)][created.ref_id]["metadata_mac"] = ""
     raw_index[str(sid)][created.ref_id]["summary"] = "tampered summary from disk"
-    _write_index_payload(index_path, raw_index)
-    tampered_bytes = index_path.read_bytes()
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
 
     assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.validate_ref_id(sid, created.ref_id) is False
-    assert restarted.state_load_result().reason == "metadata_mac_missing"
-    assert index_path.read_bytes() == tampered_bytes
 
 
 def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
@@ -176,14 +147,14 @@ def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) 
         summary="restart-stable evidence",
     )
     index_path = evidence_root / "refs_index.json"
-    raw_index = _read_index_payload(index_path)
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     modified = created.model_copy(update={"storage_codec": "alternate-codec", "metadata_mac": ""})
     raw_index[str(sid)][created.ref_id] = modified.model_dump(mode="json")
     raw_index[str(sid)][created.ref_id]["metadata_mac"] = first._make_metadata_mac(
         str(sid),
         modified,
     )
-    _write_index_payload(index_path, raw_index)
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
     blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
@@ -191,7 +162,7 @@ def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) 
     assert restarted.read(sid, created.ref_id) is None
     assert created.ref_id in restarted._refs[str(sid)]
     assert blob_path.exists() is True
-    reloaded_index = _read_index_payload(index_path)
+    reloaded_index = json.loads(index_path.read_text(encoding="utf-8"))
     assert created.ref_id in reloaded_index[str(sid)]
 
 
@@ -211,7 +182,7 @@ def test_evidence_store_ignores_malformed_index_without_quarantining_blobs(tmp_p
     assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is False
 
 
-def test_evidence_store_missing_blob_requires_explicit_reset_before_reuse(tmp_path) -> None:
+def test_evidence_store_drops_refs_with_missing_blobs_on_restart(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -230,8 +201,6 @@ def test_evidence_store_missing_blob_requires_explicit_reset_before_reuse(tmp_pa
 
     assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.validate_ref_id(sid, created.ref_id) is False
-    assert restarted.state_load_result().reason == "blob_missing"
-    restarted.reset_domain()
     recreated = restarted.store(
         sid,
         "restart-stable evidence",
@@ -239,7 +208,7 @@ def test_evidence_store_missing_blob_requires_explicit_reset_before_reuse(tmp_pa
         source="web.fetch:example.com",
         summary="restart-stable evidence",
     )
-    assert recreated.ref_id != created.ref_id
+    assert recreated.ref_id == created.ref_id
     assert blob_path.exists() is True
     assert restarted.read(sid, recreated.ref_id) == "restart-stable evidence"
 
@@ -270,7 +239,7 @@ def test_evidence_store_missing_blob_self_heal_degrades_when_index_rewrite_fails
     assert restarted.read(sid, created.ref_id) is None
 
 
-def test_evidence_store_retains_partial_index_and_blocks_cleanup(tmp_path) -> None:
+def test_evidence_store_sanitizes_partial_index_and_still_runs_cleanup(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -291,18 +260,19 @@ def test_evidence_store_retains_partial_index_and_blocks_cleanup(tmp_path) -> No
     os.utime(old_quarantined, (old, old))
 
     index_path = evidence_root / "refs_index.json"
-    raw_index = _read_index_payload(index_path)
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     raw_index["bad-session"] = "not-a-dict"
-    _write_index_payload(index_path, raw_index)
-    invalid_index_bytes = index_path.read_bytes()
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
 
-    assert restarted.get_ref(sid, created.ref_id) is None
-    assert restarted.state_load_result().reason == "invalid_session_refs"
-    assert orphan_blob.read_text(encoding="utf-8") == "orphaned evidence"
-    assert old_quarantined.read_text(encoding="utf-8") == "old quarantined evidence"
-    assert index_path.read_bytes() == invalid_index_bytes
+    assert restarted.get_ref(sid, created.ref_id) == created
+    assert orphan_blob.exists() is False
+    assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is True
+    assert old_quarantined.exists() is False
+
+    sanitized_index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert "bad-session" not in sanitized_index
 
 
 def test_evidence_store_deduplicates_same_session_same_content(tmp_path) -> None:
@@ -455,9 +425,7 @@ def test_artifact_ledger_collect_garbage_evicts_expired_refs_and_quarantines_orp
     assert store.get_ref(sid, ref.ref_id) is None
     assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is False
     assert orphan_blob.exists() is False
-    quarantined = _quarantined_entries_for_hash(evidence_root, orphan_hash)
-    assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"orphan blob"
+    assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is True
 
 
 def test_artifact_ledger_collect_garbage_with_kms_blob_codec_preserves_encrypted_orphans(
@@ -491,9 +459,9 @@ def test_artifact_ledger_collect_garbage_with_kms_blob_codec_preserves_encrypted
     assert evicted == [ref.ref_id]
     assert store.get_ref(sid, ref.ref_id) is None
     assert orphan_blob.exists() is False
-    quarantined = _quarantined_entries_for_hash(evidence_root, orphan_hash)
-    assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"\x01\x02encrypted-orphan"
+    quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
+    assert quarantined.exists() is True
+    assert quarantined.read_bytes() == b"\x01\x02encrypted-orphan"
 
 
 def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
@@ -522,186 +490,6 @@ def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
     loaded = ledger.get_ref(sid, ref.ref_id)
     assert loaded is not None
     assert loaded.storage_codec == "reverse"
-
-
-def test_artifact_ledger_store_replaces_unindexed_blob_before_publishing_ref(tmp_path) -> None:
-    evidence_root = tmp_path / "evidence"
-    ledger = ArtifactLedger(evidence_root, salt=b"a" * 32)
-    sid = SessionId("sess-a")
-    content = "retained artifact body"
-    content_hash = hashlib.sha256(content.encode()).hexdigest()
-    blob_path = evidence_root / "blobs" / f"{content_hash}.txt"
-    blob_path.write_bytes(b"orphaned attacker bytes")
-
-    ref = ledger.store(
-        sid,
-        content,
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="retained artifact body",
-    )
-
-    assert ledger.read(sid, ref.ref_id) == content
-    assert blob_path.read_bytes() == content.encode()
-
-
-def test_artifact_ledger_kms_store_replaces_unindexed_blob_before_publishing_ref(
-    tmp_path,
-) -> None:
-    evidence_root = tmp_path / "evidence"
-    sid = SessionId("sess-a")
-    content = "encrypted retained artifact body"
-    content_hash = hashlib.sha256(content.encode()).hexdigest()
-    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
-        ledger = ArtifactLedger(
-            evidence_root,
-            salt=b"b" * 32,
-            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
-        )
-        blob_path = evidence_root / "blobs" / f"{content_hash}.txt"
-        blob_path.write_bytes(b"orphaned incompatible ciphertext")
-
-        ref = ledger.store(
-            sid,
-            content,
-            taint_labels={TaintLabel.UNTRUSTED},
-            source="web.fetch:example.com",
-            summary="encrypted retained artifact body",
-        )
-
-        assert ledger.read(sid, ref.ref_id) == content
-        assert blob_path.read_bytes() != b"orphaned incompatible ciphertext"
-
-
-def test_artifact_ledger_reuses_owned_blob_across_sessions_without_republication(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
-    content = "shared retained artifact body"
-    first_sid = SessionId("sess-a")
-    second_sid = SessionId("sess-b")
-    first = ledger.store(
-        first_sid,
-        content,
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="shared retained artifact body",
-    )
-
-    original_atomic_write = ledger._atomic_write
-
-    def _fail_republication(path: Path, payload: bytes) -> None:
-        if path.parent == tmp_path / "evidence" / "blobs":
-            raise AssertionError("owned blob must not be republished")
-        original_atomic_write(path, payload)
-
-    monkeypatch.setattr(ledger, "_atomic_write", _fail_republication)
-    second = ledger.store(
-        second_sid,
-        content,
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="shared retained artifact body",
-    )
-
-    assert first.ref_id != second.ref_id
-    assert ledger.read(first_sid, first.ref_id) == content
-    assert ledger.read(second_sid, second.ref_id) == content
-
-
-def test_artifact_ledger_kms_reuses_owned_blob_across_sessions_without_republication(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    evidence_root = tmp_path / "evidence"
-    content = "shared encrypted retained artifact body"
-    first_sid = SessionId("sess-a")
-    second_sid = SessionId("sess-b")
-    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
-        ledger = ArtifactLedger(
-            evidence_root,
-            salt=b"b" * 32,
-            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
-        )
-        first = ledger.store(
-            first_sid,
-            content,
-            taint_labels={TaintLabel.UNTRUSTED},
-            source="web.fetch:example.com",
-            summary="shared encrypted retained artifact body",
-        )
-
-        def _fail_republication(
-            _codec: KmsArtifactBlobCodec,
-            _content: str,
-        ) -> bytes:
-            raise AssertionError("owned KMS blob must not be re-encoded")
-
-        monkeypatch.setattr(KmsArtifactBlobCodec, "encode", _fail_republication)
-        second = ledger.store(
-            second_sid,
-            content,
-            taint_labels={TaintLabel.UNTRUSTED},
-            source="web.fetch:example.com",
-            summary="shared encrypted retained artifact body",
-        )
-
-        assert first.ref_id != second.ref_id
-        assert ledger.read(first_sid, first.ref_id) == content
-        assert ledger.read(second_sid, second.ref_id) == content
-
-
-@pytest.mark.parametrize("target_kind", ["same_session", "cross_session"])
-def test_artifact_ledger_store_fails_without_index_mutation_when_owned_kms_blob_unreadable(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-    target_kind: str,
-) -> None:
-    evidence_root = tmp_path / "evidence"
-    content = "temporarily unreadable encrypted artifact body"
-    first_sid = SessionId("sess-a")
-    second_sid = SessionId("sess-b")
-    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
-        ledger = ArtifactLedger(
-            evidence_root,
-            salt=b"b" * 32,
-            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
-        )
-        first = ledger.store(
-            first_sid,
-            content,
-            taint_labels={TaintLabel.UNTRUSTED},
-            source="web.fetch:example.com",
-            summary="original summary",
-        )
-        index_path = evidence_root / "refs_index.json"
-        index_before = index_path.read_bytes()
-        blob_path = evidence_root / "blobs" / f"{first.content_hash}.txt"
-        blob_before = blob_path.read_bytes()
-
-        def _fail_decode(
-            _codec: KmsArtifactBlobCodec,
-            _payload: bytes,
-        ) -> str:
-            raise ArtifactBlobCodecError("kms temporarily unavailable")
-
-        monkeypatch.setattr(KmsArtifactBlobCodec, "decode", _fail_decode)
-        target_sid = first_sid if target_kind == "same_session" else second_sid
-
-        with pytest.raises(ArtifactBlobCodecError, match="kms temporarily unavailable"):
-            ledger.store(
-                target_sid,
-                content,
-                taint_labels={TaintLabel.UNTRUSTED, TaintLabel.USER_REVIEWED},
-                source="realitycheck.read:/tmp/example.txt",
-                summary="must not publish",
-            )
-
-        assert index_path.read_bytes() == index_before
-        assert blob_path.read_bytes() == blob_before
-        assert ledger._refs[str(first_sid)][first.ref_id] == first
-        assert ledger._refs.get(str(second_sid), {}) == {}
 
 
 def test_artifact_ledger_kms_blob_codec_round_trips_and_restarts(tmp_path) -> None:
@@ -958,9 +746,9 @@ def test_artifact_ledger_kms_blob_codec_still_verifies_metadata_mac_when_key_is_
         )
 
     index_path = evidence_root / "refs_index.json"
-    raw_index = _read_index_payload(index_path)
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
     raw_index[str(sid)][ref.ref_id]["summary"] = "forged offline summary"
-    _write_index_payload(index_path, raw_index)
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
 
     with StubArtifactKmsService(key_material=b"c" * 32).run() as endpoint_url:
         restarted = ArtifactLedger(
@@ -1094,20 +882,20 @@ def test_evidence_store_hardens_directory_and_file_permissions(tmp_path) -> None
 
 def test_evidence_store_quarantines_orphan_blobs_on_startup(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
-    EvidenceStore(evidence_root, salt=b"a" * 32)
     blob_dir = evidence_root / "blobs"
+    blob_dir.mkdir(parents=True)
     orphan_hash = "deadbeef" * 8
     orphan_blob = blob_dir / f"{orphan_hash}.txt"
     orphan_blob.write_text("orphaned evidence", encoding="utf-8")
 
     store = EvidenceStore(evidence_root, salt=b"a" * 32)
 
+    quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
     assert orphan_blob.exists() is False
-    quarantined = _quarantined_entries_for_hash(evidence_root, orphan_hash)
-    assert len(quarantined) == 1
-    assert quarantined[0].read_text(encoding="utf-8") == "orphaned evidence"
+    assert quarantined.exists() is True
+    assert quarantined.read_text(encoding="utf-8") == "orphaned evidence"
     assert store._refs == {}
-    assert S_IMODE(quarantined[0].stat().st_mode) == 0o600
+    assert S_IMODE(quarantined.stat().st_mode) == 0o600
 
 
 def test_artifact_ledger_quarantined_refs_are_not_readable_by_default(tmp_path) -> None:
@@ -1132,8 +920,8 @@ def test_artifact_ledger_quarantined_refs_are_not_readable_by_default(tmp_path) 
 
 def test_evidence_store_quarantine_retention_starts_at_quarantine_time(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
-    EvidenceStore(evidence_root, salt=b"a" * 32)
     blob_dir = evidence_root / "blobs"
+    blob_dir.mkdir(parents=True)
     orphan_hash = "deadbeef" * 8
     orphan_blob = blob_dir / f"{orphan_hash}.txt"
     orphan_blob.write_text("orphaned evidence", encoding="utf-8")
@@ -1142,14 +930,14 @@ def test_evidence_store_quarantine_retention_starts_at_quarantine_time(tmp_path)
 
     EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
 
-    quarantined = _quarantined_entries_for_hash(evidence_root, orphan_hash)
-    assert len(quarantined) == 1
+    quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
+    assert quarantined.exists() is True
 
 
-def test_evidence_store_migrates_legacy_quarantine_with_new_retention_time(tmp_path) -> None:
+def test_evidence_store_prunes_old_quarantined_blobs(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
-    EvidenceStore(evidence_root, salt=b"a" * 32)
     quarantine_dir = evidence_root / "quarantine"
+    quarantine_dir.mkdir(parents=True)
     old_quarantined = quarantine_dir / ("deadbeef" * 8 + ".txt")
     old_quarantined.write_text("old quarantined evidence", encoding="utf-8")
     old = datetime.now(UTC).timestamp() - 3600
@@ -1158,9 +946,6 @@ def test_evidence_store_migrates_legacy_quarantine_with_new_retention_time(tmp_p
     EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
 
     assert old_quarantined.exists() is False
-    migrated = _quarantined_entries_for_hash(evidence_root, "deadbeef" * 8)
-    assert len(migrated) == 1
-    assert migrated[0].read_text(encoding="utf-8") == "old quarantined evidence"
 
 
 def test_generate_safe_summary_preserves_normal_extract(tmp_path) -> None:

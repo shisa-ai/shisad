@@ -3,35 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import stat
 import subprocess
-import uuid
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from shisad.assistant.boundary_helpers import _is_within, _read_limited
-from shisad.core.atomic_state import _open_directory_chain
-from shisad.core.authority import (
-    DaemonAuthorityCandidate,
-    daemon_authority_protects_path,
-)
-from shisad.core.file_descriptors import duplicate_fd_above_standard_streams
-
-
-def _directory_open_flags() -> int:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    return flags | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-
-
-def _descriptor_path(fd: int) -> str:
-    for root in (Path("/proc/self/fd"), Path("/dev/fd")):
-        candidate = root / str(fd)
-        if candidate.exists():
-            return os.fspath(candidate)
-    raise OSError("directory descriptor path is unavailable")
 
 
 @dataclass(slots=True)
@@ -42,8 +19,6 @@ class FsGitToolkit:
     max_read_bytes: int
     git_timeout_seconds: float = 10.0
     protected_write_paths: tuple[Path, ...] = field(default_factory=tuple)
-    protected_write_roots: tuple[Path, ...] = field(default_factory=tuple)
-    protected_write_authorities: tuple[DaemonAuthorityCandidate, ...] = field(default_factory=tuple)
 
     def list_dir(self, *, path: str, recursive: bool = False, limit: int = 200) -> dict[str, Any]:
         resolved = self._resolve_path(path)
@@ -54,24 +29,24 @@ class FsGitToolkit:
         if not resolved.is_dir():
             return self._error("not_a_directory", path=str(resolved))
 
+        rows: list[dict[str, Any]] = []
         max_items = max(1, min(limit, 1000))
-        directory_fd = -1
-        try:
-            _absolute, directory_fd, _created = _open_directory_chain(
-                resolved,
-                create=False,
+        iterator = resolved.rglob("*") if recursive else resolved.iterdir()
+        for candidate in iterator:
+            try:
+                stat = candidate.stat()
+            except OSError:
+                continue
+            rows.append(
+                {
+                    "name": candidate.name,
+                    "path": str(candidate),
+                    "type": "dir" if candidate.is_dir() else "file",
+                    "size": stat.st_size,
+                }
             )
-            rows = self._list_directory_fd(
-                directory_fd,
-                display_path=resolved,
-                recursive=recursive,
-                max_items=max_items,
-            )
-        except OSError:
-            return self._error("list_failed", path=str(resolved))
-        finally:
-            if directory_fd >= 0:
-                os.close(directory_fd)
+            if len(rows) >= max_items:
+                break
         return {
             "ok": True,
             "path": str(resolved),
@@ -91,29 +66,11 @@ class FsGitToolkit:
 
         byte_limit = self.max_read_bytes if max_bytes is None else int(max_bytes)
         byte_limit = max(1024, min(byte_limit, 2 * 1024 * 1024))
-        fd = -1
         try:
-            _absolute, parent_fd, _created = _open_directory_chain(
-                resolved.parent,
-                create=False,
-            )
-            try:
-                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-                fd = os.open(resolved.name, flags, dir_fd=parent_fd)
-            finally:
-                os.close(parent_fd)
-            opened_stat = os.fstat(fd)
-            if not stat.S_ISREG(opened_stat.st_mode):
-                raise OSError("assistant read target is not a regular file")
-            with os.fdopen(fd, "rb") as handle:
-                fd = -1
+            with resolved.open("rb") as handle:
                 payload, truncated = _read_limited(handle, limit=byte_limit)
         except OSError:
             return self._error("read_failed", path=str(resolved))
-        finally:
-            if fd >= 0:
-                os.close(fd)
         text = payload.decode("utf-8", errors="replace")
         return {
             "ok": True,
@@ -140,15 +97,9 @@ class FsGitToolkit:
                 "error": "explicit_confirmation_required",
             }
         try:
-            _absolute, parent_fd, _created = _open_directory_chain(
-                resolved.parent,
-                create=True,
-            )
+            resolved.parent.mkdir(parents=True, exist_ok=True)
             payload = content.encode("utf-8")
-            try:
-                self._replace_file_bytes(parent_fd, resolved.name, payload)
-            finally:
-                os.close(parent_fd)
+            resolved.write_bytes(payload)
         except OSError:
             return {
                 "ok": False,
@@ -166,49 +117,6 @@ class FsGitToolkit:
             "bytes_written": len(payload),
             "error": "",
         }
-
-    @staticmethod
-    def _replace_file_bytes(parent_fd: int, target_name: str, payload: bytes) -> None:
-        mode = 0o666
-        try:
-            current_stat = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            if stat.S_ISREG(current_stat.st_mode):
-                mode = stat.S_IMODE(current_stat.st_mode)
-            else:
-                raise OSError("assistant write target is not a regular file")
-        temp_name = f".shisad-write-{uuid.uuid4().hex}.tmp"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        fd = -1
-        replaced = False
-        try:
-            fd = os.open(temp_name, flags, mode, dir_fd=parent_fd)
-            if mode != 0o666:
-                os.fchmod(fd, mode)
-            view = memoryview(payload)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError("short filesystem write")
-                view = view[written:]
-            os.close(fd)
-            fd = -1
-            os.replace(
-                temp_name,
-                target_name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            replaced = True
-        finally:
-            if fd >= 0:
-                os.close(fd)
-            if not replaced:
-                with suppress(FileNotFoundError):
-                    os.unlink(temp_name, dir_fd=parent_fd)
 
     def git_status(self, *, repo_path: str) -> dict[str, Any]:
         return self._run_git(repo_path=repo_path, args=["status", "--short", "--branch"])
@@ -243,37 +151,21 @@ class FsGitToolkit:
             return resolved
         if not resolved.exists() or not resolved.is_dir():
             return self._error("repo_not_found", path=str(resolved))
-        directory_fd = -1
-        subprocess_directory_fd = -1
+        if not (resolved / ".git").exists():
+            return self._error("not_a_git_repo", path=str(resolved))
+        command = ["git", "-C", str(resolved), *args]
         try:
-            _absolute, directory_fd, _created = _open_directory_chain(
-                resolved,
-                create=False,
-            )
-            git_stat = os.stat(".git", dir_fd=directory_fd, follow_symlinks=False)
-            if not (stat.S_ISDIR(git_stat.st_mode) or stat.S_ISREG(git_stat.st_mode)):
-                return self._error("not_a_git_repo", path=str(resolved))
-            subprocess_directory_fd = duplicate_fd_above_standard_streams(directory_fd)
-            command = ["git", "-C", _descriptor_path(subprocess_directory_fd), *args]
             completed = subprocess.run(
                 command,
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=max(0.1, float(self.git_timeout_seconds)),
-                pass_fds=(subprocess_directory_fd,),
             )
-        except FileNotFoundError:
-            return self._error("not_a_git_repo", path=str(resolved))
         except subprocess.TimeoutExpired:
             return self._error("git_execution_timeout", path=str(resolved))
         except (OSError, ValueError):
             return self._error("git_execution_failed", path=str(resolved))
-        finally:
-            if subprocess_directory_fd >= 0:
-                os.close(subprocess_directory_fd)
-            if directory_fd >= 0:
-                os.close(directory_fd)
         if completed.returncode != 0:
             return {
                 "ok": False,
@@ -300,63 +192,7 @@ class FsGitToolkit:
             return self._error("path_not_allowlisted", path=str(resolved))
         return resolved
 
-    @classmethod
-    def _list_directory_fd(
-        cls,
-        directory_fd: int,
-        *,
-        display_path: Path,
-        recursive: bool,
-        max_items: int,
-    ) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for name in sorted(os.listdir(directory_fd)):
-            try:
-                entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            except OSError:
-                continue
-            if stat.S_ISLNK(entry_stat.st_mode):
-                continue
-            candidate = display_path / name
-            is_directory = stat.S_ISDIR(entry_stat.st_mode)
-            rows.append(
-                {
-                    "name": name,
-                    "path": str(candidate),
-                    "type": "dir" if is_directory else "file",
-                    "size": entry_stat.st_size,
-                }
-            )
-            if len(rows) >= max_items:
-                break
-            if recursive and is_directory:
-                child_fd = -1
-                try:
-                    child_fd = os.open(name, _directory_open_flags(), dir_fd=directory_fd)
-                    child_rows = cls._list_directory_fd(
-                        child_fd,
-                        display_path=candidate,
-                        recursive=True,
-                        max_items=max_items - len(rows),
-                    )
-                    rows.extend(child_rows)
-                except OSError:
-                    continue
-                finally:
-                    if child_fd >= 0:
-                        os.close(child_fd)
-                if len(rows) >= max_items:
-                    break
-        return rows
-
     def _is_protected_write_path(self, resolved: Path) -> bool:
-        for raw_root in self.protected_write_roots:
-            protected_root = Path(raw_root).expanduser().resolve(strict=False)
-            if resolved == protected_root or resolved.is_relative_to(protected_root):
-                return True
-        for candidate in self.protected_write_authorities:
-            if daemon_authority_protects_path(candidate, resolved):
-                return True
         for raw_path in self.protected_write_paths:
             protected = Path(raw_path).expanduser().resolve(strict=False)
             if resolved == protected or self._same_existing_file(resolved, protected):

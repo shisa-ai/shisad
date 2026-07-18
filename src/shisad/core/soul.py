@@ -6,17 +6,10 @@ import hashlib
 import os
 import re
 import stat
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    atomic_write_bytes,
-    read_owned_regular_file,
-    validate_owner_controlled_parent_ancestry,
-)
 
 DEFAULT_SOUL_MAX_BYTES = 64 * 1024
 SOUL_FILENAME = "SOUL.md"
@@ -62,21 +55,21 @@ def load_soul_text(raw_path: str | Path, *, max_bytes: int = DEFAULT_SOUL_MAX_BY
     _validate_max_bytes(max_bytes)
     if _existing_regular_soul_stat(path) is None:
         return ""
+    flags = _soul_open_flags(os.O_RDONLY)
     try:
-        validate_owner_controlled_parent_ancestry(path)
-        data = read_owned_regular_file(
-            path,
-            required_mode=0o600,
-            max_bytes=max_bytes + 1,
-        )
-    except PermissionError as exc:
-        raise SoulFileError(
-            "SOUL.md must be an owner-only mode-0600 regular file"
-        ) from exc
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return ""
     except OSError as exc:
         raise SoulFileError(f"SOUL.md read failed: {exc}") from exc
-    if data is None:
-        return ""
+    try:
+        _validate_open_soul_regular_file(fd)
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read(max_bytes + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if len(data) > max_bytes:
         raise SoulFileError(f"SOUL.md exceeds configured size limit ({max_bytes} bytes)")
     try:
@@ -119,7 +112,6 @@ def write_soul_text(
     content: str,
     *,
     max_bytes: int = DEFAULT_SOUL_MAX_BYTES,
-    fault_injector: AtomicWriteFaultInjector | None = None,
 ) -> SoulWriteResult:
     """Write trusted SOUL.md text to the configured operator path."""
     path = validate_soul_path(raw_path)
@@ -128,22 +120,24 @@ def write_soul_text(
     data = normalized.encode("utf-8")
     if len(data) > max_bytes:
         raise SoulFileError(f"SOUL.md exceeds configured size limit ({max_bytes} bytes)")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _reject_symlink_components(path)
     _existing_regular_soul_stat(path)
+    flags = _soul_open_flags(os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
     try:
-        validate_owner_controlled_parent_ancestry(path)
+        fd = os.open(path, flags, 0o600)
     except OSError as exc:
-        raise SoulFileError(f"SOUL.md has unsafe parent ancestry: {path.parent}") from exc
-    try:
-        atomic_write_bytes(
-            path,
-            data,
-            fault_injector=fault_injector,
-            preserve_existing_parent_mode=True,
-            require_safe_parent_ancestry=True,
-        )
-    except AtomicWriteError as exc:
         raise SoulFileError(f"SOUL.md write failed: {exc}") from exc
+    try:
+        _validate_open_soul_regular_file(fd)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(data)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    with suppress(PermissionError):
+        path.chmod(0o600)
     return SoulWriteResult(
         path=path,
         sha256=_sha256_text(normalized),
@@ -176,6 +170,21 @@ def _existing_regular_soul_stat(path: Path) -> os.stat_result | None:
     if not stat.S_ISREG(file_stat.st_mode):
         raise SoulFileError("SOUL.md path must point to a regular file")
     return file_stat
+
+
+def _soul_open_flags(base_flags: int) -> int:
+    flags = base_flags
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    return flags
+
+
+def _validate_open_soul_regular_file(fd: int) -> None:
+    file_stat = os.fstat(fd)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise SoulFileError("SOUL.md path must point to a regular file")
 
 
 def _reject_symlink_components(path: Path) -> None:

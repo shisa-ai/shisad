@@ -7,22 +7,9 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    DurableAppendError,
-    DurableAppendFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes_with_identity,
-    decode_json_document,
-    durable_append_bytes,
-    read_owner_only_regular_file_with_identity,
-)
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin
 
 logger = logging.getLogger(__name__)
@@ -58,10 +45,8 @@ def execution_action_surface_hash(action: ControlPlaneAction) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-class ActionHistoryRecord(BaseModel):
+class ActionHistoryRecord(BaseModel, frozen=True):
     """Append-only metadata record used by control-plane analyzers."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     session_id: str
@@ -69,21 +54,14 @@ class ActionHistoryRecord(BaseModel):
     action_kind: ActionKind
     resource_id: str = ""
     tool_name: str
-    observation_kind: Literal["action", "denied_action"] = "action"
-    decision_status: Literal["", "allow", "block", "require_confirmation", "deny"] = ""
-    execution_status: Literal["", "success", "failed", "outcome_unknown"] = ""
+    observation_kind: str = "action"
+    decision_status: str = ""
+    execution_status: str = ""
     reason_code: str = ""
     source: str = ""
     idempotency_key: str = ""
     trace_plan_hash: str = ""
     execution_action_surface_hash: str = ""
-
-    @field_validator("timestamp")
-    @classmethod
-    def _require_timezone_aware_timestamp(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("timestamp must be timezone-aware")
-        return value
 
 
 class SessionActionHistoryStore:
@@ -93,78 +71,7 @@ class SessionActionHistoryStore:
         self._storage_path = storage_path
         self._records: dict[str, list[ActionHistoryRecord]] = {}
         self._idempotent_records: dict[str, ActionHistoryRecord] = {}
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK if storage_path is None else StateLoadStatus.MISSING
-        )
-        self._persistence_degradation: AtomicWriteError | DurableAppendError | None = None
-        self._file_identity: tuple[int, int] | None = None
-        self._state_fault_injector: DurableAppendFaultInjector | None = None
         self._load()
-
-    @property
-    def state_load_result(self) -> StateLoadResult:
-        return self._state_load_result
-
-    @property
-    def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None or self._state_load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }
-
-    def state_status(self) -> dict[str, Any]:
-        persistence = self._persistence_degradation
-        load_result = self._state_load_result
-        return {
-            "status": "degraded" if self.state_degraded else "ok",
-            "problems": ["control_plane_history_state_degraded"] if self.state_degraded else [],
-            "path": str(self._storage_path or ""),
-            "load_status": load_result.status.value,
-            "reason": load_result.reason,
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-            "fail_closed": self.state_degraded,
-            "stage": persistence.stage.value if persistence is not None else "",
-            "remediation": (
-                "Restore or explicitly reset the retained control-plane history, then restart "
-                "shisad."
-                if self.state_degraded
-                else ""
-            ),
-        }
-
-    def reset_state(self) -> int:
-        """Durably publish an empty history and clear its typed degradation."""
-
-        cleared = sum(len(records) for records in self._records.values())
-        if self._storage_path is not None:
-            try:
-                reset_identity = atomic_write_bytes_with_identity(self._storage_path, b"")
-            except AtomicWriteError as exc:
-                self._persistence_degradation = exc
-                raise
-        self._records.clear()
-        self._idempotent_records.clear()
-        if self._storage_path is not None:
-            self._file_identity = reset_identity
-        self._persistence_degradation = None
-        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
-        return cleared
-
-    def _require_available(self, *, transition: str) -> None:
-        if not self.state_degraded:
-            return
-        persistence = self._persistence_degradation
-        raise StatePersistenceDegradedError(
-            authority="control_plane_history",
-            transition=transition,
-            stage=persistence.stage.value if persistence is not None else "load",
-            reason=(
-                "publication_commit_uncertain"
-                if persistence is not None
-                else self._state_load_result.reason or self._state_load_result.status.value
-            ),
-        )
 
     def append(self, record: ActionHistoryRecord) -> bool:
         idempotency_key = record.idempotency_key.strip()
@@ -174,29 +81,17 @@ class SessionActionHistoryStore:
                 if existing != record:
                     raise ValueError("control_plane_history_idempotency_conflict")
                 return False
-        self._require_available(transition="append")
         session_id = record.session_id
+        self._records.setdefault(session_id, []).append(record)
         if self._storage_path is None:
-            self._records.setdefault(session_id, []).append(record)
             if idempotency_key:
                 self._idempotent_records[idempotency_key] = record
             return True
-        try:
-            self._file_identity = durable_append_bytes(
-                self._storage_path,
-                (record.model_dump_json() + "\n").encode("utf-8"),
-                fault_injector=self._state_fault_injector,
-                expected_identity=self._file_identity,
-                require_missing=self._file_identity is None,
-            )
-        except DurableAppendError as exc:
-            if exc.publication_may_have_committed or exc.authority_changed:
-                self._persistence_degradation = exc
-            raise
-        self._records.setdefault(session_id, []).append(record)
+        self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._storage_path.open("a", encoding="utf-8") as handle:
+            handle.write(record.model_dump_json() + "\n")
         if idempotency_key:
             self._idempotent_records[idempotency_key] = record
-        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
         return True
 
     def append_action(
@@ -329,75 +224,28 @@ class SessionActionHistoryStore:
         )
 
     def _load(self) -> None:
-        if self._storage_path is None:
+        if self._storage_path is None or not self._storage_path.exists():
             return
-        try:
-            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(
-                self._storage_path
-            )
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="history_read_failed",
-            )
-            return
-        if raw_bytes is None:
-            return
-        self._file_identity = file_identity
-        if raw_bytes and not raw_bytes.endswith(b"\n"):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="history_unterminated_row",
-            )
-            logger.warning("control-plane history: retained unterminated final record")
-            return
-        candidate_records: dict[str, list[ActionHistoryRecord]] = {}
-        candidate_idempotent: dict[str, ActionHistoryRecord] = {}
-        try:
-            lines = raw_bytes.decode("utf-8").splitlines()
-        except UnicodeError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="history_invalid_encoding",
-            )
-            return
-        for line_number, line in enumerate(lines, start=1):
-            text = line.strip()
-            if not text:
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason=f"blank_history_record:{line_number}",
-                )
-                return
-            document_result, payload = decode_json_document(text.encode("utf-8"))
-            try:
-                if document_result.status is not StateLoadStatus.OK:
-                    raise ValueError("invalid_json")
-                record = ActionHistoryRecord.model_validate(payload)
-            except (TypeError, ValueError, ValidationError):
-                logger.warning(
-                    "control-plane history: retained malformed record line %s",
-                    line_number,
-                )
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason=f"invalid_history_record:{line_number}",
-                )
-                return
-            idempotency_key = record.idempotency_key.strip()
-            if idempotency_key:
-                existing = candidate_idempotent.get(idempotency_key)
-                if existing is not None and existing != record:
-                    self._state_load_result = StateLoadResult(
-                        StateLoadStatus.CORRUPT,
-                        reason="history_idempotency_conflict",
+        with self._storage_path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    record = ActionHistoryRecord.model_validate_json(text)
+                except ValidationError:
+                    logger.warning(
+                        "control-plane history: skipping malformed record line %s",
+                        line_number,
                     )
-                    return
-                candidate_idempotent[idempotency_key] = record
-            candidate_records.setdefault(record.session_id, []).append(record)
-        self._records = candidate_records
-        self._idempotent_records = candidate_idempotent
-        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
+                    continue
+                idempotency_key = record.idempotency_key.strip()
+                if idempotency_key:
+                    existing = self._idempotent_records.get(idempotency_key)
+                    if existing is not None and existing != record:
+                        raise ValueError("control_plane_history_idempotency_conflict")
+                    self._idempotent_records[idempotency_key] = record
+                self._records.setdefault(record.session_id, []).append(record)
 
     def dump_json(self) -> str:
         payload = {

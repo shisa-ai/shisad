@@ -8,7 +8,6 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any
 
@@ -33,7 +32,6 @@ from shisad.core.plan_steps import PlanStepStore
 from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
-    Planner,
     PlannerOutput,
     PlannerResult,
 )
@@ -802,130 +800,6 @@ class _PlannerContextControlPlane:
         self.last_begin_precontent_plan = dict(kwargs)
         self._active_plan_hash = "plan-gh28"
         return self._active_plan_hash
-
-
-class _EvidencePromoteProvider:
-    async def complete(
-        self,
-        _messages: list[Message],
-        _tools: list[dict[str, Any]] | None = None,
-    ) -> ProviderResponse:
-        return ProviderResponse(
-            message=Message(
-                role="assistant",
-                content="Promoting the selected evidence.",
-                tool_calls=[
-                    {
-                        "id": "call-evidence-promote",
-                        "type": "function",
-                        "function": {
-                            "name": "evidence.promote",
-                            "arguments": json.dumps({"ref_id": self.ref_id}),
-                        },
-                    }
-                ],
-            )
-        )
-
-    def __init__(self, ref_id: str) -> None:
-        self.ref_id = ref_id
-
-
-@pytest.mark.asyncio
-async def test_f3_actual_planner_turn_and_session_pep_ignore_held_evidence_writer(
-    tmp_path: Path,
-) -> None:
-    harness = _PlannerContextBuildHarness(tmp_path)
-    memory_dir = tmp_path / "planner-memory"
-    harness._ingestion = IngestionPipeline(memory_dir)
-    harness._memory_manager = MemoryManager(memory_dir)
-    evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
-    sid = SessionId("sess-g1")
-    ref = evidence_store.store(
-        sid,
-        "planner evidence",
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="planner evidence",
-    )
-    registry = ToolRegistry()
-    registry.register(
-        ToolDefinition(
-            name=ToolName("evidence.promote"),
-            description="promote evidence",
-            parameters=[ToolParameter(name="ref_id", type="string", required=True)],
-            capabilities_required=[Capability.MEMORY_READ],
-        )
-    )
-    pep = PEP(
-        PolicyBundle(default_require_confirmation=False),
-        registry,
-        evidence_store=evidence_store,
-    )
-    harness._registry = registry
-    harness._evidence_store = evidence_store
-    harness._pep = pep
-    harness._planner = Planner(
-        _EvidencePromoteProvider(ref.ref_id),
-        pep,
-        max_retries=0,
-        tool_registry=registry,
-    )
-    harness._trace_recorder = None
-    harness._transcript_store.append(
-        sid,
-        role="assistant",
-        content="Evidence is ready.",
-        taint_labels={TaintLabel.UNTRUSTED},
-        metadata={"evidence_ref_ids": [ref.ref_id]},
-        evidence_ref_id=ref.ref_id,
-    )
-    current_turn = harness._transcript_store.append(
-        sid,
-        role="user",
-        content="Promote that evidence.",
-    )
-    validated = _validation_result(
-        params={"session_id": str(sid), "content": "Promote that evidence."},
-        user_transcript_entry=current_turn,
-    )
-    validated.session.capabilities = {Capability.MEMORY_READ}
-    lock_held = Event()
-    release_writer = Event()
-    holder_timed_out = Event()
-
-    def _hold_writer() -> None:
-        with evidence_store._lock:
-            lock_held.set()
-            if not release_writer.wait(timeout=3.0):
-                holder_timed_out.set()
-
-    holder = Thread(target=_hold_writer)
-    holder.start()
-    assert await asyncio.to_thread(lock_held.wait, 1.0)
-    heartbeat_ticks = 0
-
-    async def _heartbeat() -> None:
-        nonlocal heartbeat_ticks
-        for _ in range(5):
-            heartbeat_ticks += 1
-            await asyncio.sleep(0)
-        release_writer.set()
-
-    heartbeat = asyncio.create_task(_heartbeat())
-    planner_context = await SessionImplMixin._build_context_for_planner(harness, validated)
-    dispatch = await SessionImplMixin._dispatch_to_planner(harness, planner_context)
-    await heartbeat
-    await asyncio.to_thread(holder.join, 1.0)
-
-    assert holder_timed_out.is_set() is False
-    assert heartbeat_ticks == 5
-    assert ref.ref_id in planner_context.conversation_context
-    assert len(dispatch.planner_result.evaluated) == 1
-    assert (
-        dispatch.planner_result.evaluated[0].decision.kind
-        is PEPDecisionKind.REQUIRE_CONFIRMATION
-    )
 
 
 @pytest.mark.asyncio
@@ -8568,7 +8442,7 @@ async def test_finalize_response_targets_new_totp_when_older_totp_is_visible() -
 
 
 @pytest.mark.asyncio
-async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
+async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evidence_pep_check(
     tmp_path,
 ) -> None:
     sid = SessionId("sess-g1")
@@ -8606,35 +8480,10 @@ async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
         )
         harness = _PendingPolicySnapshotHarness()
         harness._registry = registry
-        lock_held = Event()
-        release_writer = Event()
-        holder_timed_out = Event()
-        heartbeat_tasks: list[asyncio.Task[None]] = []
+        harness._pep = pep
 
-        def _hold_writer() -> None:
-            with store._lock:
-                lock_held.set()
-                if not release_writer.wait(timeout=3.0):
-                    holder_timed_out.set()
-
-        holder = Thread(target=_hold_writer)
-
-        async def _heartbeat() -> None:
-            for _ in range(5):
-                await asyncio.sleep(0)
-            release_writer.set()
-
-        def _evaluate_with_held_writer(*args: Any, **kwargs: Any) -> PEPDecision:
-            holder.start()
-            assert lock_held.wait(timeout=1.0)
-            heartbeat_tasks.append(asyncio.create_task(_heartbeat()))
-            return pep.evaluate(*args, **kwargs)
-
-        harness._pep = SimpleNamespace(
-            evaluate=_evaluate_with_held_writer,
-        )
-
-        async def _evaluate_action(**_kwargs: object) -> object:
+        async def _slow_evaluate_action(**_kwargs: object) -> object:
+            await asyncio.sleep(0.25)
             return SimpleNamespace(
                 decision=ControlDecision.ALLOW,
                 reason_codes=[],
@@ -8652,7 +8501,7 @@ async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
                 ),
             )
 
-        harness._control_plane = SimpleNamespace(evaluate_action=_evaluate_action)
+        harness._control_plane = SimpleNamespace(evaluate_action=_slow_evaluate_action)
 
         planner_context = SessionMessagePlannerContextResult(
             validated=_validation_result(params={"session_id": str(sid), "content": "promote"}),
@@ -8712,11 +8561,21 @@ async def test_f3_session_pep_reevaluation_ignores_held_evidence_writer(
             trace_tool_calls=[],
         )
 
-        result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
-        assert len(heartbeat_tasks) == 1
-        await heartbeat_tasks[0]
-        await asyncio.to_thread(holder.join, 1.0)
+        sleep_task = asyncio.create_task(asyncio.sleep(0.05))
+        execute_task = asyncio.create_task(
+            SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+        )
+
+        done, pending = await asyncio.wait(
+            {sleep_task, execute_task},
+            timeout=0.15,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        assert sleep_task in done
+        assert execute_task in pending
+
+        result = await execute_task
 
     assert result.pending_confirmation == 1
-    assert holder_timed_out.is_set() is False
     assert len(service.requests) == request_count

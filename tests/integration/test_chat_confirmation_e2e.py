@@ -1627,7 +1627,7 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
                     "external_user_id": "alice",
                     "workspace_hint": "guild-1",
                     "content": "reject 1",
-                    "message_id": "m-7",
+                    "message_id": "m-6",
                     "reply_target": "chan-1",
                 }
             ),

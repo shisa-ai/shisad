@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 
-from shisad.channels.base import ReplayEventVariant, ReplayIdentity
 from shisad.core.events import (
     CapabilityGranted,
     SessionArchiveExported,
@@ -62,16 +61,6 @@ class _MatrixChannelStub:
             return self._message
         await asyncio.sleep(1)
         return self._message
-
-    def replay_identity(self, message: _MatrixMessage) -> ReplayIdentity:
-        return ReplayIdentity(
-            provider=message.channel,
-            account_id="matrix-account",
-            tenant_id="matrix.example",
-            delivery_id=message.reply_target or "!room:matrix.example",
-            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
-            message_id=message.message_id,
-        )
 
 
 class _ChannelIngestHandlerStub:
@@ -217,8 +206,6 @@ async def test_matrix_receive_pump_forwards_message_as_internal_ingress() -> Non
             external_user_id="@user:example.com",
             workspace_hint="ops",
             content="hello",
-            message_id="event-1",
-            reply_target="!ops:example.com",
         )
     )
 
@@ -236,7 +223,7 @@ async def test_matrix_receive_pump_forwards_message_as_internal_ingress() -> Non
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_reserves_before_ingest_and_marks_terminal() -> None:
+async def test_channel_receive_pump_marks_replay_after_successful_ingest() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -249,18 +236,14 @@ async def test_channel_receive_pump_reserves_before_ingest_and_marks_terminal() 
 
     class _StateStore:
         def __init__(self) -> None:
-            self.transitions: list[str] = []
+            self.marked: list[str] = []
 
-        def reserve(self, *, identity: ReplayIdentity) -> bool:
-            self.transitions.append(f"reserve:{identity.provider}:{identity.message_id}")
+        def has_seen(self, *, channel: str, message_id: str) -> bool:
             return False
 
-        def mark_terminal(self, *, identity: ReplayIdentity) -> None:
-            self.transitions.append(f"terminal:{identity.provider}:{identity.message_id}")
+        def mark_seen(self, *, channel: str, message_id: str) -> None:
+            self.marked.append(f"{channel}:{message_id}")
             shutdown_event.set()
-
-        def mark_uncertain(self, *, identity: ReplayIdentity) -> None:
-            self.transitions.append(f"uncertain:{identity.provider}:{identity.message_id}")
 
     class _Handler:
         async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
@@ -275,14 +258,11 @@ async def test_channel_receive_pump_reserves_before_ingest_and_marks_terminal() 
         state_store=state_store,  # type: ignore[arg-type]
     )
 
-    assert state_store.transitions == [
-        "reserve:discord:m-1",
-        "terminal:discord:m-1",
-    ]
+    assert state_store.marked == ["discord:m-1"]
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_marks_reserved_ingest_uncertain_when_handler_fails() -> None:
+async def test_channel_receive_pump_does_not_mark_replay_when_ingest_fails() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -295,17 +275,13 @@ async def test_channel_receive_pump_marks_reserved_ingest_uncertain_when_handler
 
     class _StateStore:
         def __init__(self) -> None:
-            self.transitions: list[str] = []
+            self.marked: list[str] = []
 
-        def reserve(self, *, identity: ReplayIdentity) -> bool:
-            self.transitions.append(f"reserve:{identity.provider}:{identity.message_id}")
+        def has_seen(self, *, channel: str, message_id: str) -> bool:
             return False
 
-        def mark_terminal(self, *, identity: ReplayIdentity) -> None:
-            self.transitions.append(f"terminal:{identity.provider}:{identity.message_id}")
-
-        def mark_uncertain(self, *, identity: ReplayIdentity) -> None:
-            self.transitions.append(f"uncertain:{identity.provider}:{identity.message_id}")
+        def mark_seen(self, *, channel: str, message_id: str) -> None:
+            self.marked.append(f"{channel}:{message_id}")
 
     class _FailingHandler:
         async def handle_channel_ingest(self, params: Any, ctx: Any) -> None:
@@ -322,14 +298,11 @@ async def test_channel_receive_pump_marks_reserved_ingest_uncertain_when_handler
         state_store=state_store,  # type: ignore[arg-type]
     )
 
-    assert state_store.transitions == [
-        "reserve:discord:m-1",
-        "uncertain:discord:m-1",
-    ]
+    assert state_store.marked == []
 
 
 @pytest.mark.asyncio
-async def test_channel_receive_pump_blocks_when_replay_reservation_fails() -> None:
+async def test_channel_receive_pump_continues_when_replay_guard_read_fails() -> None:
     shutdown_event = asyncio.Event()
     message = _MatrixMessage(
         channel="discord",
@@ -341,16 +314,13 @@ async def test_channel_receive_pump_blocks_when_replay_reservation_fails() -> No
     channel = _MatrixChannelStub(message)
 
     class _StateStore:
-        def reserve(self, *, identity: ReplayIdentity) -> bool:
-            _ = identity
-            shutdown_event.set()
+        def has_seen(self, *, channel: str, message_id: str) -> bool:
+            _ = (channel, message_id)
             raise RuntimeError("state read failed")
 
-        def mark_terminal(self, *, identity: ReplayIdentity) -> None:
-            _ = identity
-
-        def mark_uncertain(self, *, identity: ReplayIdentity) -> None:
-            _ = identity
+        def mark_seen(self, *, channel: str, message_id: str) -> None:
+            _ = (channel, message_id)
+            shutdown_event.set()
 
     class _Handler:
         def __init__(self) -> None:
@@ -369,53 +339,7 @@ async def test_channel_receive_pump_blocks_when_replay_reservation_fails() -> No
         state_store=_StateStore(),  # type: ignore[arg-type]
     )
 
-    assert handler.calls == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["missing", "provider_mismatch", "message_mismatch"])
-async def test_channel_receive_pump_blocks_missing_or_mismatched_adapter_identity(
-    fault: str,
-) -> None:
-    shutdown_event = asyncio.Event()
-    message = _MatrixMessage(
-        channel="discord",
-        external_user_id="u1",
-        workspace_hint="guild-1",
-        content="hello",
-        message_id="m-1",
-        reply_target="channel-1",
-    )
-
-    class _Channel(_MatrixChannelStub):
-        def replay_identity(self, current: _MatrixMessage) -> ReplayIdentity | None:
-            shutdown_event.set()
-            if fault == "missing":
-                return None
-            return ReplayIdentity(
-                provider="slack" if fault == "provider_mismatch" else "discord",
-                account_id="acct-1",
-                tenant_id="guild-1",
-                delivery_id="channel-1",
-                event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
-                message_id="m-2" if fault == "message_mismatch" else current.message_id,
-            )
-
-    class _Handler:
-        calls = 0
-
-        async def handle_channel_ingest(self, _params: Any, _ctx: Any) -> None:
-            self.calls += 1
-
-    handler = _Handler()
-    await channel_receive_pump(
-        channel_name="discord",
-        channel=_Channel(message),  # type: ignore[arg-type]
-        shutdown_event=shutdown_event,
-        handlers=handler,  # type: ignore[arg-type]
-        state_store=None,
-    )
-    assert handler.calls == 0
+    assert handler.calls == 1
 
 
 @pytest.mark.asyncio

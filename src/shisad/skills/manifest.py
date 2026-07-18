@@ -222,30 +222,9 @@ def parse_manifest(
     """Parse and strictly validate a skill manifest from YAML."""
 
     try:
-        manifest_bytes = manifest_path.read_bytes()
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise SkillManifestError(f"Manifest not found: {manifest_path}") from exc
-    return parse_manifest_bytes(
-        manifest_bytes,
-        previous_manifest=previous_manifest,
-        allowed_dependency_sources=allowed_dependency_sources,
-    )
-
-
-def parse_manifest_bytes(
-    manifest_bytes: bytes,
-    *,
-    previous_manifest: SkillManifest | None = None,
-    allowed_dependency_sources: set[str] | None = None,
-) -> SkillManifest:
-    """Parse and strictly validate one already-captured skill manifest."""
-
-    try:
-        manifest_text = manifest_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise SkillManifestError("Invalid manifest UTF-8") from exc
-    try:
-        raw = yaml.safe_load(manifest_text)
     except yaml.YAMLError as exc:
         raise SkillManifestError(f"Invalid manifest YAML: {exc}") from exc
 

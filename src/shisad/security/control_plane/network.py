@@ -10,28 +10,15 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
-from pathlib import Path
 from statistics import pstdev
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    atomic_write_bytes,
-    decode_json_document,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-    read_owner_only_regular_file,
-)
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.security.control_plane.schema import Origin, RiskTier, risk_rank
 
 logger = logging.getLogger(__name__)
-_NETWORK_BASELINE_STATE_VERSION = 1
 
 
 class NetworkMetadata(BaseModel, frozen=True):
@@ -48,8 +35,8 @@ class NetworkMetadata(BaseModel, frozen=True):
 class BaselineEntry(BaseModel):
     first_seen: datetime
     last_seen: datetime
-    count: int = Field(default=0, ge=0, strict=True)
-    average_request_size: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    count: int = 0
+    average_request_size: float = 0.0
 
 
 class NetworkMonitorDecisionKind(StrEnum):
@@ -95,73 +82,10 @@ class BaselineDatabase:
     """Per-origin/per-host baseline with poisoning-resistant update rules."""
 
     def __init__(self, storage_path: str | None = None, *, learning_rate: float = 0.1) -> None:
-        self._storage_path = Path(storage_path) if storage_path else None
+        self._storage_path = storage_path
         self._learning_rate = max(0.01, min(learning_rate, 0.5))
         self._entries: dict[str, BaselineEntry] = {}
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK if self._storage_path is None else StateLoadStatus.MISSING
-        )
-        self._persistence_degradation: AtomicWriteError | None = None
-        self._state_fault_injector: AtomicWriteFaultInjector | None = None
         self._load()
-
-    @property
-    def state_load_result(self) -> StateLoadResult:
-        return self._state_load_result
-
-    @property
-    def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None or self._state_load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }
-
-    def state_status(self) -> dict[str, Any]:
-        persistence = self._persistence_degradation
-        load_result = self._state_load_result
-        return {
-            "status": "degraded" if self.state_degraded else "ok",
-            "problems": ["control_plane_network_state_degraded"] if self.state_degraded else [],
-            "path": str(self._storage_path or ""),
-            "load_status": load_result.status.value,
-            "reason": load_result.reason,
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-            "fail_closed": False,
-            "learning_enabled": not self.state_degraded,
-            "stage": persistence.stage.value if persistence is not None else "",
-            "remediation": (
-                "Restore or explicitly reset the retained network baseline, then restart "
-                "shisad to re-enable learning."
-                if self.state_degraded
-                else ""
-            ),
-        }
-
-    def reset_state(self) -> int:
-        """Durably replace the learned baseline with an empty snapshot."""
-
-        cleared = len(self._entries)
-        if self._storage_path is not None:
-            try:
-                atomic_write_bytes(
-                    self._storage_path,
-                    encode_versioned_json_snapshot(
-                        {},
-                        version=_NETWORK_BASELINE_STATE_VERSION,
-                    ),
-                    fault_injector=self._state_fault_injector,
-                )
-            except AtomicWriteError as exc:
-                self._persistence_degradation = exc
-                raise
-        self._entries.clear()
-        self._persistence_degradation = None
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_NETWORK_BASELINE_STATE_VERSION,
-        )
-        return cleared
 
     def key_for(self, origin: Origin, host: str) -> str:
         skill = origin.skill_name or "none"
@@ -170,10 +94,7 @@ class BaselineDatabase:
         return f"{workspace}:{user}:{skill}:{host.lower()}"
 
     def get(self, *, origin: Origin, host: str) -> BaselineEntry | None:
-        entry = self._entries.get(self.key_for(origin, host))
-        if entry is None:
-            return None
-        return entry.model_copy(deep=True)
+        return self._entries.get(self.key_for(origin, host))
 
     def record(
         self,
@@ -183,8 +104,6 @@ class BaselineDatabase:
         suspicious: bool,
         lockdown: bool,
     ) -> None:
-        if self.state_degraded:
-            return
         if not allow_or_confirmed:
             return
         if suspicious or lockdown:
@@ -192,29 +111,24 @@ class BaselineDatabase:
 
         key = self.key_for(metadata.origin, metadata.destination_host)
         current = self._entries.get(key)
-        candidate = {
-            entry_key: entry.model_copy(deep=True) for entry_key, entry in self._entries.items()
-        }
         if current is None:
-            candidate[key] = BaselineEntry(
+            current = BaselineEntry(
                 first_seen=metadata.timestamp,
                 last_seen=metadata.timestamp,
                 count=1,
                 average_request_size=float(metadata.request_size),
             )
-            if self._persist(candidate):
-                self._entries = candidate
+            self._entries[key] = current
+            self._persist()
             return
 
-        candidate_current = candidate[key]
-        candidate_current.last_seen = metadata.timestamp
-        candidate_current.count += 1
+        current.last_seen = metadata.timestamp
+        current.count += 1
         alpha = self._learning_rate
-        candidate_current.average_request_size = (
-            1.0 - alpha
-        ) * candidate_current.average_request_size + alpha * float(metadata.request_size)
-        if self._persist(candidate):
-            self._entries = candidate
+        current.average_request_size = (1.0 - alpha) * current.average_request_size + alpha * float(
+            metadata.request_size
+        )
+        self._persist()
 
     def known_hosts_for_origin(self, origin: Origin) -> set[str]:
         prefix = (
@@ -230,107 +144,33 @@ class BaselineDatabase:
                     hosts.add(host)
         return hosts
 
-    def _persist(self, entries: dict[str, BaselineEntry]) -> bool:
-        if self._storage_path is None:
-            return True
+    def _persist(self) -> None:
+        if not self._storage_path:
+            return
         payload = {
             key: entry.model_dump(mode="json")
-            for key, entry in sorted(entries.items(), key=lambda item: item[0])
+            for key, entry in sorted(self._entries.items(), key=lambda item: item[0])
         }
-        try:
-            atomic_write_bytes(
-                self._storage_path,
-                encode_versioned_json_snapshot(
-                    payload,
-                    version=_NETWORK_BASELINE_STATE_VERSION,
-                ),
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            return False
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_NETWORK_BASELINE_STATE_VERSION,
-        )
-        return True
+        with open(self._storage_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
 
     def _load(self) -> None:
-        if self._storage_path is None:
+        if not self._storage_path:
             return
         try:
-            raw_bytes = read_owner_only_regular_file(self._storage_path)
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="network_baseline_read_failed",
-            )
+            with open(self._storage_path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
             return
-        if raw_bytes is None:
-            return
-        document_result, raw_payload = decode_json_document(raw_bytes)
-        if document_result.status is not StateLoadStatus.OK:
-            self._state_load_result = document_result
-            return
-        if not isinstance(raw_payload, dict):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_network_baseline_payload",
-            )
-            return
-
-        envelope_keys = {"version", "checksum", "payload"}
-        legacy = not bool(envelope_keys.intersection(raw_payload))
-        if legacy:
-            payload: Any = raw_payload
-            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-        else:
-            load_result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_NETWORK_BASELINE_STATE_VERSION,
-            )
-            if load_result.status != StateLoadStatus.OK:
-                self._state_load_result = load_result
-                return
         if not isinstance(payload, dict):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_network_baseline_payload",
-                schema_version=load_result.schema_version,
-                legacy=legacy,
-            )
             return
-
-        candidate: dict[str, BaselineEntry] = {}
         for key, value in payload.items():
             if not isinstance(key, str):
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="invalid_network_baseline_key",
-                    schema_version=load_result.schema_version,
-                    legacy=legacy,
-                )
-                return
+                continue
             try:
-                candidate[key] = BaselineEntry.model_validate(value)
+                self._entries[key] = BaselineEntry.model_validate(value)
             except ValidationError:
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason=f"invalid_network_baseline_entry:{key}",
-                    schema_version=load_result.schema_version,
-                    legacy=legacy,
-                )
-                return
-        self._entries = candidate
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=load_result.schema_version,
-            legacy=legacy,
-        )
-        if legacy:
-            previous_result = self._state_load_result
-            if self._persist(candidate):
-                self._state_load_result = previous_result
+                continue
 
 
 class NetworkIntelligenceMonitor:
@@ -359,15 +199,6 @@ class NetworkIntelligenceMonitor:
             tuple[datetime, NetworkMonitorDecision],
         ] = {}
         self._recent: dict[str, list[NetworkMetadata]] = defaultdict(list)
-
-    def state_status(self) -> dict[str, Any]:
-        return self._baseline_db.state_status()
-
-    def reset_state(self) -> int:
-        cleared = self._baseline_db.reset_state()
-        self._cache.clear()
-        self._recent.clear()
-        return cleared
 
     async def evaluate(
         self,

@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from shisad.core.action_state import current_turn_value_is_structurally_anchored
 from shisad.core.tools.names import canonical_tool_name
@@ -100,10 +100,8 @@ def control_plane_trace_action_idempotency_key(
     return f"{normalized_key}:action" if normalized_key else ""
 
 
-class Origin(BaseModel):
+class Origin(BaseModel, frozen=True):
     """Frozen origin metadata propagated across execution paths."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     session_id: str = ""
     user_id: str = ""

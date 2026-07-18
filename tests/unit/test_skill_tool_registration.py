@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 import yaml
 
-from shisad.core.atomic_state import encode_versioned_json_snapshot
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolRetryClass, tool_definitions_to_openai
@@ -184,10 +183,9 @@ async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
     legacy_hash = hashlib.sha256(legacy_canonical.encode()).hexdigest()
     assert legacy_hash != current_hash
     inventory_path = state_dir / "inventory.json"
-    inventory_envelope = json.loads(inventory_path.read_text(encoding="utf-8"))
-    inventory = inventory_envelope["payload"]
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     inventory[0]["tool_schema_hashes"]["lookup"] = legacy_hash
-    inventory_path.write_bytes(encode_versioned_json_snapshot(inventory, version=1))
+    inventory_path.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
 
     restarted_registry = ToolRegistry()
     SkillManager(
@@ -202,7 +200,7 @@ async def test_f2_legacy_skill_hash_migrates_to_typed_unknown_without_disabling(
     restored = restarted_registry.get_tool(tool_name)
     assert restored is not None
     assert restored.retry_class == ToolRetryClass.UNKNOWN
-    migrated_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))["payload"]
+    migrated_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     assert migrated_inventory[0]["tool_schema_hashes"]["lookup"] == current_hash
 
 
@@ -421,7 +419,6 @@ async def test_m6_skill_tool_schema_drift_blocks_reregistration_on_restart(
     decision = await manager.install(skill, approve_untrusted=True)
     assert decision.allowed is True
     assert first_registry.has_tool(ToolName("skill.calendar-helper.lookup")) is True
-    installed_path = Path(manager.list_installed()[0].path)
 
     manifest = _manifest_payload(
         tools=[
@@ -439,7 +436,7 @@ async def test_m6_skill_tool_schema_drift_blocks_reregistration_on_restart(
             }
         ]
     )
-    (installed_path / "skill.manifest.yaml").write_text(
+    (skill / "skill.manifest.yaml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",
     )
@@ -495,7 +492,6 @@ async def test_h5_skill_tool_schema_drift_emits_metadata_only_restart_diagnostic
 
     decision = await manager.install(skill, approve_untrusted=True)
     assert decision.allowed is True
-    installed_path = Path(manager.list_installed()[0].path)
 
     manifest = _manifest_payload(
         tools=[
@@ -513,7 +509,7 @@ async def test_h5_skill_tool_schema_drift_emits_metadata_only_restart_diagnostic
             }
         ]
     )
-    (installed_path / "skill.manifest.yaml").write_text(
+    (skill / "skill.manifest.yaml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",
     )
@@ -631,7 +627,6 @@ async def test_m6_runtime_authorization_denies_manifest_drift(tmp_path: Path) ->
 
     decision = await manager.install(skill, approve_untrusted=True)
     assert decision.allowed is True
-    installed_path = Path(manager.list_installed()[0].path)
 
     manifest = _manifest_payload(
         description="calendar helper with drift",
@@ -650,7 +645,7 @@ async def test_m6_runtime_authorization_denies_manifest_drift(tmp_path: Path) ->
             }
         ],
     )
-    (installed_path / "skill.manifest.yaml").write_text(
+    (skill / "skill.manifest.yaml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",
     )

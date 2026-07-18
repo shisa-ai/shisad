@@ -19,15 +19,8 @@ from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.state import ChannelStateStore
 from shisad.coding.manager import CodingAgentManager
-from shisad.core.api.transport import ControlServer, preflight_claimed_control_socket
-from shisad.core.atomic_state import remove_owner_controlled_directory_contents
+from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
-from shisad.core.authority import (
-    DaemonAuthorityClaim,
-    acquire_daemon_authority_claim,
-    initialize_claimed_daemon_authorities,
-    verify_claimed_daemon_authorities,
-)
 from shisad.core.config import (
     DaemonConfig,
     ModelConfig,
@@ -105,37 +98,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-async def _await_task_terminal[T](
-    task: asyncio.Task[T],
-) -> tuple[T, bool]:
-    """Wait through repeated caller cancellation without cancelling *task*."""
-
-    cancellation_requested = False
-    while True:
-        try:
-            return await asyncio.shield(task), cancellation_requested
-        except asyncio.CancelledError:
-            if task.done() and task.cancelled():
-                raise
-            cancellation_requested = True
-
-
-async def _release_authority_claim_terminal(
-    claim: DaemonAuthorityClaim,
-) -> bool:
-    release_task = asyncio.create_task(asyncio.to_thread(claim.release))
-    _result, cancellation_requested = await _await_task_terminal(release_task)
-    return cancellation_requested
-
-
 def _wipe_dir_contents(directory: Path) -> None:
     """Remove all files and subdirectories inside *directory* without removing it."""
+    import shutil
 
-    remove_owner_controlled_directory_contents(
-        directory,
-        allow_nested_directories=True,
-    )
+    if not directory.is_dir():
+        return
+    for child in directory.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
 
 
 def _count_files(directory: Path) -> int:
@@ -574,7 +547,6 @@ class DaemonServices:
     """Container for initialized daemon subsystems."""
 
     config: DaemonConfig
-    authority_claim: DaemonAuthorityClaim
     audit_log: AuditLog
     event_bus: EventBus
     policy_loader: PolicyLoader
@@ -641,70 +613,15 @@ class DaemonServices:
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
     identity_allowlists_baseline: dict[str, frozenset[str]]
-    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(default_factory=dict)
+    idempotent_recovery_adapters: dict[str, StableIdempotencyAdapter] = field(
+        default_factory=dict
+    )
     active_rpc_calls: int = field(default=0)
     rpc_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reset_in_progress: bool = field(default=False)
 
     @classmethod
-    async def build(
-        cls,
-        config: DaemonConfig,
-        *,
-        authority_claim: DaemonAuthorityClaim | None = None,
-    ) -> DaemonServices:
-        """Admit mutable authorities before constructing runtime services."""
-
-        if authority_claim is None:
-            acquire_task = asyncio.create_task(
-                asyncio.to_thread(acquire_daemon_authority_claim, config)
-            )
-            claim, acquisition_cancelled = await _await_task_terminal(acquire_task)
-            if acquisition_cancelled:
-                with contextlib.suppress(OSError, RuntimeError):
-                    await _release_authority_claim_terminal(claim)
-                raise asyncio.CancelledError
-        else:
-            claim = authority_claim
-        try:
-            verify_task = asyncio.create_task(
-                asyncio.to_thread(verify_claimed_daemon_authorities, config, claim)
-            )
-            candidates, verification_cancelled = await _await_task_terminal(verify_task)
-            if verification_cancelled:
-                raise asyncio.CancelledError
-            claimed_data_root = next(
-                candidate.path for candidate in candidates if candidate.role == "data_root"
-            )
-            control_socket_path = next(
-                candidate.path for candidate in candidates if candidate.role == "control_socket"
-            )
-            claimed_config = config.model_copy(
-                update={
-                    "data_dir": claimed_data_root,
-                    "socket_path": control_socket_path,
-                }
-            )
-            await preflight_claimed_control_socket(control_socket_path)
-            initialize_task = asyncio.create_task(
-                asyncio.to_thread(initialize_claimed_daemon_authorities, config, claim)
-            )
-            _result, initialization_cancelled = await _await_task_terminal(initialize_task)
-            if initialization_cancelled:
-                raise asyncio.CancelledError
-            return await cls._build_claimed(claimed_config, authority_claim=claim)
-        except BaseException:
-            with contextlib.suppress(OSError, RuntimeError):
-                await _release_authority_claim_terminal(claim)
-            raise
-
-    @classmethod
-    async def _build_claimed(
-        cls,
-        config: DaemonConfig,
-        *,
-        authority_claim: DaemonAuthorityClaim,
-    ) -> DaemonServices:
+    async def build(cls, config: DaemonConfig) -> DaemonServices:
         """Construct all runtime services in a deterministic order."""
         audit_log = AuditLog(config.data_dir / "audit.jsonl")
         event_bus = EventBus(persister=audit_log)
@@ -1023,7 +940,6 @@ class DaemonServices:
             control_plane_sidecar = await start_control_plane_sidecar(
                 data_dir=config.data_dir,
                 policy_path=config.policy_path,
-                authority_claim=authority_claim,
                 assistant_fs_roots=list(config.assistant_fs_roots),
                 startup_timeout_seconds=config.control_plane_startup_timeout_seconds,
             )
@@ -1140,7 +1056,6 @@ class DaemonServices:
             }
             services = cls(
                 config=config,
-                authority_claim=authority_claim,
                 audit_log=audit_log,
                 event_bus=event_bus,
                 policy_loader=policy_loader,
@@ -1276,15 +1191,16 @@ class DaemonServices:
             _wipe_dir_contents(self.session_manager._state_dir)
 
         # -- Scheduler --
-        (
-            cleared["scheduler_tasks"],
-            cleared["scheduler_pending_confirmations"],
-        ) = self.scheduler.reset_state()
-
-        # -- Control-plane retained state (owned by the sidecar) --
-        control_plane_cleared = await self.control_plane.reset_state()
-        for authority, count in control_plane_cleared.items():
-            cleared[f"control_plane_{authority}"] = count
+        cleared["scheduler_tasks"] = len(self.scheduler._tasks)
+        cleared["scheduler_pending_confirmations"] = sum(
+            len(rows) for rows in self.scheduler._pending_confirmations.values()
+        )
+        self.scheduler._tasks.clear()
+        self.scheduler._pending_confirmations.clear()
+        if self.scheduler._tasks_file is not None:
+            _unlink_if_exists(self.scheduler._tasks_file)
+        if self.scheduler._pending_file is not None:
+            _unlink_if_exists(self.scheduler._pending_file)
 
         # -- Memory --
         self._reset_memory_surfaces_for_test(cleared)
@@ -1306,20 +1222,28 @@ class DaemonServices:
         self.rate_limiter._by_tool_burst.clear()
 
         # -- Audit log --
-        # Capture the pre-reset count now, but clear after the evidence reset's
-        # thread yield so queued pre-reset event handlers cannot repopulate it.
         cleared["audit_entries"] = self.audit_log.entry_count
+        from shisad.core.audit import _GENESIS_HASH
+
+        self.audit_log._previous_hash = _GENESIS_HASH
+        self.audit_log._entry_count = 0
+        if self.audit_log._log_path.exists():
+            self.audit_log._log_path.write_text("", encoding="utf-8")
 
         # -- Checkpoints --
         cleared["checkpoints"] = _count_files_recursive(self.checkpoint_store._dir)
         _wipe_dir_contents(self.checkpoint_store._dir)
 
         # -- Channel state --
-        channel_state_channels, channel_state_files = await asyncio.to_thread(
-            self.channel_state_store.reset_state
-        )
-        cleared["channel_state_channels"] = channel_state_channels
-        cleared["channel_state_files"] = channel_state_files
+        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
+        channel_state_root = self.channel_state_store._root_dir
+        cleared["channel_state_files"] = _count_files_recursive(channel_state_root)
+        self.channel_state_store._seen_ids.clear()
+        self.channel_state_store._seen_id_sets.clear()
+        self.channel_state_store._journal_appends_since_compaction.clear()
+        self.channel_state_store._loaded_channels.clear()
+        self.channel_state_store._compaction_warning_logged.clear()
+        _wipe_dir_contents(channel_state_root)
 
         # -- Transcripts --
         cleared["transcripts"] = _count_files_recursive(
@@ -1330,32 +1254,69 @@ class DaemonServices:
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
         # -- Evidence --
-        evidence_refs, evidence_files = await asyncio.to_thread(
-            self.evidence_store.domain_reset_inspection
+        cleared["evidence_refs"] = len(self.evidence_store._refs)
+        cleared["evidence_files"] = _count_files_recursive(self.evidence_store._blob_dir) + int(
+            self.evidence_store._metadata_path.exists()
         )
-        cleared["evidence_refs"] = evidence_refs
-        cleared["evidence_files"] = evidence_files
-        await asyncio.to_thread(self.evidence_store.reset_domain)
+        self.evidence_store._refs.clear()
+        self.evidence_store._temporarily_unreadable_refs.clear()
+        _wipe_dir_contents(self.evidence_store._blob_dir)
+        _wipe_dir_contents(self.evidence_store._quarantine_dir)
+        _unlink_if_exists(self.evidence_store._metadata_path)
 
         # -- Self-modification --
-        (
-            cleared["selfmod_entries"],
-            cleared["selfmod_artifacts"],
-        ) = self.selfmod_manager.reset_state()
+        cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
+            self.selfmod_manager._inventory.behavior_packs
+        )
+        cleared["selfmod_artifacts"] = (
+            _count_files_recursive(self.selfmod_manager._proposal_dir)
+            + _count_files_recursive(self.selfmod_manager._change_dir)
+            + _count_files_recursive(self.selfmod_manager._artifact_root)
+            + int(self.selfmod_manager._inventory_path.exists())
+            + int(self.selfmod_manager._incident_path.exists())
+        )
+        self.selfmod_manager._inventory = self.selfmod_manager._inventory.__class__()
+        _wipe_dir_contents(self.selfmod_manager._proposal_dir)
+        _wipe_dir_contents(self.selfmod_manager._change_dir)
+        _wipe_dir_contents(self.selfmod_manager._artifact_root)
+        _unlink_if_exists(self.selfmod_manager._inventory_path)
+        _unlink_if_exists(self.selfmod_manager._incident_path)
+        self.selfmod_manager._proposal_dir.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._change_dir.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._artifact_root.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._apply_behavior_overlay()
 
         # -- Skills --
-        (
-            cleared["skill_entries"],
-            cleared["skill_tool_registrations"],
-            cleared["skill_pending_events"],
-        ) = self.skill_manager.reset_state()
+        cleared["skill_entries"] = len(self.skill_manager._inventory)
+        cleared["skill_tool_registrations"] = sum(
+            len(items) for items in self.skill_manager._skill_tool_map.values()
+        )
+        cleared["skill_pending_events"] = len(self.skill_manager._pending_registration_events)
+        for skill_name in list(self.skill_manager._skill_tool_map):
+            self.skill_manager._unregister_skill_tools(skill_name)
+        self.skill_manager._inventory.clear()
+        self.skill_manager._pending_registration_events.clear()
+        _wipe_dir_contents(self.skill_manager._storage_dir)
 
         # -- Credentials / approvals --
-        (
-            cleared["approval_factors"],
-            cleared["signer_keys"],
-            cleared["approval_store_artifacts"],
-        ) = self.credential_store.reset_approval_state()
+        approval_store_path = self.credential_store._approval_store_path
+        approval_store_artifacts = 0
+        if approval_store_path is not None:
+            approval_store_artifacts += int(approval_store_path.exists())
+            approval_store_artifacts += len(
+                list(approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*"))
+            )
+        cleared["approval_factors"] = len(self.credential_store._approval_factors)
+        cleared["signer_keys"] = len(self.credential_store._signer_keys)
+        cleared["approval_store_artifacts"] = approval_store_artifacts
+        self.credential_store._approval_factors.clear()
+        self.credential_store._signer_keys.clear()
+        self.credential_store._local_fido2_realm_id = None
+        if approval_store_path is not None:
+            _unlink_if_exists(approval_store_path)
+            corrupt_glob = f"{approval_store_path.name}.corrupt.*"
+            for artifact in approval_store_path.parent.glob(corrupt_glob):
+                artifact.unlink(missing_ok=True)
 
         # -- Channel identity map --
         cleared["identity_bindings"] = len(self.identity_map._map)
@@ -1394,8 +1355,6 @@ class DaemonServices:
         self.policy_loader.policy.risk_policy.block_threshold = (
             default_risk_policy.thresholds.block_threshold
         )
-
-        self.audit_log.reset()
 
         logger.info("Test state reset: %s", cleared)
         return {"status": "reset", "cleared": cleared}
@@ -1438,40 +1397,6 @@ class DaemonServices:
             raise
 
     async def shutdown(self) -> None:
-        """Close every service and claim before propagating caller cancellation."""
-
-        cancellation_requested = False
-        caller_task = asyncio.current_task()
-        while True:
-            cancellation_count = caller_task.cancelling() if caller_task is not None else 0
-            try:
-                await self._shutdown_claimed_services()
-            except asyncio.CancelledError:
-                cancellation_requested = True
-                continue
-            if caller_task is not None and caller_task.cancelling() > cancellation_count:
-                cancellation_requested = True
-                continue
-            break
-
-        authority_claim = getattr(self, "authority_claim", None)
-        if authority_claim is not None:
-            try:
-                cancellation_requested = (
-                    await _release_authority_claim_terminal(authority_claim)
-                    or cancellation_requested
-                )
-            except BaseException as result:
-                if result.__class__.__name__ == "CancelledError":
-                    raise
-                logger.error(
-                    "Error releasing daemon mutable-authority claim",
-                    exc_info=(type(result), result, result.__traceback__),
-                )
-        if cancellation_requested:
-            raise asyncio.CancelledError
-
-    async def _shutdown_claimed_services(self) -> None:
         """Close async/sync resources in reverse runtime order."""
         shutdown_ops: list[tuple[str, Any]] = []
 
@@ -1535,12 +1460,13 @@ class DaemonServices:
             try:
                 await mcp_manager.shutdown()
             except BaseException as result:
-                if result.__class__.__name__ != "CancelledError":
-                    logger.error(
-                        "Error stopping daemon service %s",
-                        "mcp_manager",
-                        exc_info=(type(result), result, result.__traceback__),
-                    )
+                if result.__class__.__name__ == "CancelledError":
+                    return
+                logger.error(
+                    "Error stopping daemon service %s",
+                    "mcp_manager",
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
 
 async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:

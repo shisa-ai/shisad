@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
-import os
 import re
 import shutil
-import stat
 import subprocess
-import tempfile
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
@@ -19,68 +15,21 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
-
-from shisad.core.artifact_staging import (
-    DEFAULT_ARTIFACT_STAGE_MAX_BYTES as _ARTIFACT_STAGE_MAX_BYTES,
-)
-from shisad.core.artifact_staging import (
-    DEFAULT_ARTIFACT_STAGE_MAX_ENTRIES as _ARTIFACT_STAGE_MAX_ENTRIES,
-)
-from shisad.core.artifact_staging import (
-    capture_bounded_regular_tree,
-    copy_bounded_regular_tree,
-    fsync_directory,
-)
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes,
-    decode_json_document,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-    ensure_owner_only_directory,
-    read_owned_regular_file,
-    remove_owner_controlled_directory_contents,
-    remove_owner_controlled_file_entries,
-    validate_directory_ancestry,
-)
-from shisad.core.file_descriptors import duplicate_fd_above_standard_streams
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 _IDENTIFIER_RE = re.compile(r"^[a-f0-9]{32}$")
 _ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
-_SELFMOD_INVENTORY_VERSION = 1
-_SELFMOD_INVENTORY_DOMAIN_MARKER = b"shisad-selfmod-inventory-domain-v1\n"
-_SELFMOD_AUTHORITY_BLOCK_MARKER = b"shisad-selfmod-authority-blocked-v1\n"
-_SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER = b"shisad-selfmod-authority-complete-v1\n"
-_SIGNATURE_VERIFY_TIMEOUT_SECONDS = 10.0
-
-logger = logging.getLogger(__name__)
 
 
 class ArtifactFileRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     path: str
     sha256: str
     size: int
 
 
 class ArtifactManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["1"]
+    schema_version: str
     type: Literal["skill_bundle", "behavior_pack"]
     name: str
     version: str
@@ -145,81 +94,28 @@ class SelfModificationRollbackResult(BaseModel):
 
 
 class _InventoryEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = Field(default=False, strict=True)
+    enabled: bool = False
     active_version: str = ""
 
 
 class _Inventory(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     skills: dict[str, _InventoryEntry] = Field(default_factory=dict)
     behavior_packs: dict[str, _InventoryEntry] = Field(default_factory=dict)
 
 
 class _ProposalRecord(SelfModificationProposal):
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_type: Literal["skill_bundle", "behavior_pack"]
-    valid: bool = Field(strict=True)
-    manifest: ArtifactManifest | None = None
-
-    @model_validator(mode="after")
-    def _validate_record_semantics(self) -> _ProposalRecord:
-        if not _is_valid_identifier(self.proposal_id):
-            raise ValueError("invalid proposal id")
-        if self.name and not _ARTIFACT_NAME_RE.fullmatch(self.name):
-            raise ValueError("invalid proposal name")
-        if self.version and not _ARTIFACT_VERSION_RE.fullmatch(self.version):
-            raise ValueError("invalid proposal version")
-        if self.valid:
-            if self.manifest is None:
-                raise ValueError("valid proposal is missing its manifest")
-            if (
-                not self.name
-                or not self.version
-                or self.artifact_type != self.manifest.type
-                or self.name != self.manifest.name
-                or self.version != self.manifest.version
-            ):
-                raise ValueError("proposal identity does not match manifest")
-        return self
+    manifest: ArtifactManifest
 
 
 class _ChangeRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     change_id: str
     proposal_id: str
-    artifact_type: Literal["skill_bundle", "behavior_pack"]
+    artifact_type: str
     name: str
     previous_active_version: str = ""
-    previous_enabled: bool = Field(default=False, strict=True)
+    previous_enabled: bool = False
     new_active_version: str
     applied_at: str
-
-    @model_validator(mode="after")
-    def _validate_record_semantics(self) -> _ChangeRecord:
-        if not _is_valid_identifier(self.change_id) or not _is_valid_identifier(self.proposal_id):
-            raise ValueError("invalid change identity")
-        if not _ARTIFACT_NAME_RE.fullmatch(self.name):
-            raise ValueError("invalid change name")
-        for version in (self.previous_active_version, self.new_active_version):
-            if version and not _ARTIFACT_VERSION_RE.fullmatch(version):
-                raise ValueError("invalid change version")
-        if not self.new_active_version:
-            raise ValueError("missing new active version")
-        return self
-
-
-class _IncidentRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    proposal_id: str
-    artifact_path: str
-    reason: str
-    recorded_at: str
 
 
 class _ArtifactInspection(BaseModel):
@@ -230,7 +126,6 @@ class _ArtifactInspection(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     capability_diff: dict[str, Any] = Field(default_factory=dict)
     instructions: BehaviorPackInstructions | None = None
-    artifact_files: dict[str, bytes] = Field(default_factory=dict, exclude=True)
 
 
 class _SelfModificationOperationError(RuntimeError):
@@ -239,20 +134,8 @@ class _SelfModificationOperationError(RuntimeError):
         self.reason = reason
 
 
-class _ArtifactPublicationError(OSError):
-    def __init__(self, reason: str, *, recovery_uncertain: bool) -> None:
-        super().__init__(reason)
-        self.recovery_uncertain = recovery_uncertain
-
-
 @dataclass(frozen=True, slots=True)
 class _StagedArtifactCopy:
-    target_path: Path
-    staging_path: Path
-
-
-@dataclass(frozen=True, slots=True)
-class _PublishedArtifactCopy:
     target_path: Path
     backup_path: Path | None = None
 
@@ -270,7 +153,7 @@ class SelfModificationManager:
         default_persona_tone: str,
         default_persona_text: str,
     ) -> None:
-        self._root = Path(root)
+        self._root = root
         self._allowed_signers_path = allowed_signers_path
         self._skill_manager = skill_manager
         self._planner = planner
@@ -280,73 +163,14 @@ class SelfModificationManager:
         self._change_dir = self._root / "changes"
         self._artifact_root = self._root / "artifacts"
         self._inventory_path = self._root / "inventory.yaml"
-        self._inventory_domain_marker_path = self._root / ".inventory-domain-v1"
-        self._authority_block_path = self._root / ".authority-blocked-v1"
         self._incident_path = self._root / "last_incident.json"
-        self._root_invalid = False
-        try:
-            self._root_existed_at_start = validate_directory_ancestry(self._root)
-            self._root_was_legacy_empty_at_start = (
-                _selfmod_root_is_legacy_empty(self._root) if self._root_existed_at_start else True
-            )
-            ensure_owner_only_directory(self._root)
-            ensure_owner_only_directory(self._proposal_dir)
-            ensure_owner_only_directory(self._change_dir)
-            ensure_owner_only_directory(self._artifact_root)
-        except OSError:
-            self._root_invalid = True
-            self._root_existed_at_start = True
-            self._root_was_legacy_empty_at_start = False
-        self._state_fault_injector: AtomicWriteFaultInjector | None = None
-        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation: AtomicWriteError | None = None
-        self._record_load_results: dict[str, StateLoadResult] = {
-            "proposal": StateLoadResult(StateLoadStatus.MISSING),
-            "change": StateLoadResult(StateLoadStatus.MISSING),
-            "incident": StateLoadResult(StateLoadStatus.MISSING),
-        }
-        self._inventory_domain_marker_status = (
-            "invalid" if self._root_invalid else self._inspect_inventory_domain_marker()
-        )
-        authority_block_status = (
-            "invalid" if self._root_invalid else self._inspect_authority_block_marker()
-        )
-        if self._root_invalid:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_selfmod_root",
-            )
-            self._inventory = _Inventory()
-        elif authority_block_status not in {"missing", "complete"}:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason=(
-                    "artifact_authority_blocked"
-                    if authority_block_status == "blocked"
-                    else "invalid_authority_block_marker"
-                ),
-            )
-            self._inventory = _Inventory()
-        else:
-            self._inventory = self._load_inventory()
-        if not self._root_invalid and self._state_load_result.status is StateLoadStatus.MISSING:
-            initial_result = self._state_load_result
-            if self._ensure_inventory_domain_marker():
-                try:
-                    self._persist_inventory_snapshot(self._inventory)
-                except AtomicWriteError as exc:
-                    self._persistence_degradation = exc
-                else:
-                    self._state_load_result = initial_result
-        elif not self._root_invalid and self._state_load_result.status is StateLoadStatus.OK:
-            self._ensure_inventory_domain_marker()
-        if self.state_degraded:
-            self._block_coupled_skill_authority()
-        else:
-            self._apply_startup_runtime()
+        self._proposal_dir.mkdir(parents=True, exist_ok=True)
+        self._change_dir.mkdir(parents=True, exist_ok=True)
+        self._artifact_root.mkdir(parents=True, exist_ok=True)
+        self._inventory = self._load_inventory()
+        self._apply_behavior_overlay()
 
     def propose(self, artifact_path: Path) -> SelfModificationProposal:
-        self._require_inventory_available(transition="propose")
         inspection = self._inspect_artifact(artifact_path)
         proposal = _ProposalRecord(
             proposal_id=uuid.uuid4().hex,
@@ -359,17 +183,15 @@ class SelfModificationManager:
             capability_diff=dict(inspection.capability_diff),
             signer=inspection.signer,
             reason=inspection.reason,
-            manifest=inspection.manifest if inspection.valid else None,
+            manifest=inspection.manifest,
         )
-        self._write_record_atomic(
+        _write_text_atomic(
             self._proposal_path(proposal.proposal_id),
-            proposal.model_dump(mode="json"),
-            record_kind="proposal",
+            proposal.model_dump_json(indent=2),
         )
         return SelfModificationProposal.model_validate(proposal.model_dump(mode="json"))
 
     def apply(self, proposal_id: str, *, confirm: bool) -> SelfModificationApplyResult:
-        self._require_inventory_available(transition="apply")
         if not _is_valid_identifier(proposal_id):
             return SelfModificationApplyResult(
                 applied=False,
@@ -378,11 +200,10 @@ class SelfModificationManager:
             )
         proposal = self._load_proposal(proposal_id)
         if proposal is None:
-            load_result = self._record_load_results["proposal"]
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
-                reason=_record_unavailable_reason("proposal", load_result),
+                reason="proposal_not_found",
             )
         if not proposal.valid:
             return SelfModificationApplyResult(
@@ -406,29 +227,8 @@ class SelfModificationManager:
                 reason="confirmation_required",
             )
 
-        try:
-            staged_copy = self._stage_artifact_copy(
-                artifact_type=proposal.artifact_type,
-                name=proposal.name,
-                version=proposal.version,
-                source_path=Path(proposal.artifact_path),
-            )
-        except OSError:
-            return SelfModificationApplyResult(
-                applied=False,
-                proposal_id=proposal_id,
-                warnings=list(proposal.warnings),
-                capability_diff=dict(proposal.capability_diff),
-                active_version=self._active_version(
-                    proposal.artifact_type,
-                    proposal.name,
-                ),
-                reason="artifact_store_copy_failed",
-            )
-
-        inspection = self._inspect_artifact(staged_copy.staging_path)
+        inspection = self._inspect_artifact(Path(proposal.artifact_path))
         if not inspection.valid:
-            self._discard_staged_artifact(staged_copy)
             reason = _normalize_integrity_reason(inspection.reason)
             self._record_incident(
                 proposal_id=proposal.proposal_id,
@@ -446,10 +246,7 @@ class SelfModificationManager:
                 ),
                 reason=reason,
             )
-        if proposal.manifest is None or (
-            inspection.manifest.model_dump(mode="json") != proposal.manifest.model_dump(mode="json")
-        ):
-            self._discard_staged_artifact(staged_copy)
+        if inspection.manifest.model_dump(mode="json") != proposal.manifest.model_dump(mode="json"):
             self._record_incident(
                 proposal_id=proposal.proposal_id,
                 artifact_path=proposal.artifact_path,
@@ -467,76 +264,6 @@ class SelfModificationManager:
                 reason="proposal_artifact_changed",
             )
 
-        try:
-            self._publish_authority_guard()
-        except AtomicWriteError as exc:
-            with suppress(OSError):
-                self._discard_staged_artifact(staged_copy)
-            if exc.publication_may_have_committed:
-                self._persistence_degradation = exc
-                self._mark_inventory_degraded("authority_guard_persistence_uncertain")
-            return SelfModificationApplyResult(
-                applied=False,
-                proposal_id=proposal_id,
-                warnings=list(inspection.warnings),
-                capability_diff=dict(inspection.capability_diff),
-                active_version=self._active_version(
-                    proposal.artifact_type,
-                    proposal.name,
-                ),
-                reason=(
-                    "authority_guard_persistence_uncertain"
-                    if exc.publication_may_have_committed
-                    else "authority_guard_persist_failed"
-                ),
-            )
-
-        def _finish_guarded(result: SelfModificationApplyResult) -> SelfModificationApplyResult:
-            if self._complete_authority_guard():
-                return result
-            self._disable_in_memory_artifact_authority(
-                proposal.artifact_type,
-                proposal.name,
-                reason="authority_guard_clear_failed",
-            )
-            return result.model_copy(
-                update={
-                    "applied": False,
-                    "active_version": "",
-                    "tool_names": [],
-                    "reason": "authority_guard_clear_failed",
-                }
-            )
-
-        try:
-            published_copy = self._publish_staged_artifact(staged_copy)
-        except OSError as exc:
-            reason = "artifact_store_copy_failed"
-            authority_is_durable = True
-            if isinstance(exc, _ArtifactPublicationError) and exc.recovery_uncertain:
-                authority_is_durable = self._quarantine_artifact_authority(
-                    proposal.artifact_type,
-                    proposal.name,
-                )
-                self._record_incident(
-                    proposal_id=proposal.proposal_id,
-                    artifact_path=str(staged_copy.target_path),
-                    reason="artifact_store_restore_failed",
-                )
-                reason = "artifact_store_restore_failed"
-            result = SelfModificationApplyResult(
-                applied=False,
-                proposal_id=proposal_id,
-                warnings=list(inspection.warnings),
-                capability_diff=dict(inspection.capability_diff),
-                active_version=self._active_version(
-                    proposal.artifact_type,
-                    proposal.name,
-                ),
-                reason=reason,
-            )
-            return _finish_guarded(result) if authority_is_durable else result
-
         previous_inventory = self._inventory.model_copy(deep=True)
         previous_entry = self._inventory_entry_from(
             previous_inventory,
@@ -550,62 +277,25 @@ class SelfModificationManager:
             proposal.name,
             _InventoryEntry(enabled=True, active_version=proposal.version),
         )
-        change_id = uuid.uuid4().hex
-        change = _ChangeRecord(
-            change_id=change_id,
-            proposal_id=proposal_id,
-            artifact_type=proposal.artifact_type,
-            name=proposal.name,
-            previous_active_version=previous_entry.active_version,
-            previous_enabled=previous_entry.enabled,
-            new_active_version=proposal.version,
-            applied_at=datetime.now(UTC).isoformat(),
-        )
         try:
-            self._persist_inventory_snapshot(candidate_inventory)
-        except AtomicWriteError as exc:
-            authority_is_durable = False
-            reason = (
-                "inventory_persistence_uncertain"
-                if exc.publication_may_have_committed
-                else "inventory_persist_failed"
+            staged_copy = self._stage_artifact_copy(
+                artifact_type=proposal.artifact_type,
+                name=proposal.name,
+                version=proposal.version,
+                source_path=Path(proposal.artifact_path),
             )
-            if not exc.publication_may_have_committed:
-                try:
-                    self._restore_published_artifact(published_copy)
-                except OSError:
-                    authority_is_durable = self._quarantine_artifact_authority(
-                        proposal.artifact_type,
-                        proposal.name,
-                    )
-                    self._record_incident(
-                        proposal_id=proposal.proposal_id,
-                        artifact_path=str(published_copy.target_path),
-                        reason="artifact_store_restore_failed",
-                    )
-                    reason = "artifact_store_restore_failed"
-                else:
-                    authority_is_durable = True
-            else:
-                authority_is_durable = self._quarantine_artifact_authority(
-                    proposal.artifact_type,
-                    proposal.name,
-                )
-            result = SelfModificationApplyResult(
+        except OSError:
+            return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
                 warnings=list(inspection.warnings),
                 capability_diff=dict(inspection.capability_diff),
-                active_version=(
-                    previous_entry.active_version
-                    if authority_is_durable
-                    and reason == "inventory_persist_failed"
-                    and previous_entry.enabled
-                    else ""
+                active_version=self._active_version(
+                    proposal.artifact_type,
+                    proposal.name,
                 ),
-                reason=reason,
+                reason="artifact_store_copy_failed",
             )
-            return _finish_guarded(result) if authority_is_durable else result
 
         try:
             tool_names = self._apply_runtime_for_inventory(
@@ -613,100 +303,59 @@ class SelfModificationManager:
                 proposal.artifact_type,
                 proposal.name,
             )
+            change_id = uuid.uuid4().hex
+            change = _ChangeRecord(
+                change_id=change_id,
+                proposal_id=proposal_id,
+                artifact_type=proposal.artifact_type,
+                name=proposal.name,
+                previous_active_version=previous_entry.active_version,
+                previous_enabled=previous_entry.enabled,
+                new_active_version=proposal.version,
+                applied_at=datetime.now(UTC).isoformat(),
+            )
             self._commit_inventory_and_change(candidate_inventory, change)
         except _SelfModificationOperationError as exc:
-            if not self._restore_inventory_after_failed_transition(previous_inventory):
-                authority_is_durable = self._quarantine_artifact_authority(
-                    proposal.artifact_type,
-                    proposal.name,
-                )
-                result = SelfModificationApplyResult(
-                    applied=False,
-                    proposal_id=proposal_id,
-                    warnings=list(inspection.warnings),
-                    capability_diff=dict(inspection.capability_diff),
-                    active_version="",
-                    reason="inventory_restore_failed",
-                )
-                return _finish_guarded(result) if authority_is_durable else result
-            restore_failed = False
             try:
-                self._restore_published_artifact(published_copy)
+                self._restore_staged_artifact(staged_copy)
             except OSError:
-                restore_failed = True
-            if restore_failed:
-                authority_is_durable = self._quarantine_artifact_authority(
-                    proposal.artifact_type,
-                    proposal.name,
-                )
                 self._record_incident(
                     proposal_id=proposal.proposal_id,
-                    artifact_path=str(published_copy.target_path),
+                    artifact_path=str(staged_copy.target_path),
                     reason="artifact_store_restore_failed",
-                )
-                result = SelfModificationApplyResult(
-                    applied=False,
-                    proposal_id=proposal_id,
-                    warnings=list(inspection.warnings),
-                    capability_diff=dict(inspection.capability_diff),
-                    active_version="",
-                    reason="artifact_store_restore_failed",
-                )
-                return _finish_guarded(result) if authority_is_durable else result
-            if not self._restore_runtime(
-                previous_inventory,
-                proposal.artifact_type,
-                proposal.name,
-            ):
-                self._disable_in_memory_artifact_authority(
-                    proposal.artifact_type,
-                    proposal.name,
-                    reason="runtime_restore_failed",
                 )
                 return SelfModificationApplyResult(
                     applied=False,
                     proposal_id=proposal_id,
                     warnings=list(inspection.warnings),
                     capability_diff=dict(inspection.capability_diff),
-                    active_version="",
-                    reason="runtime_restore_failed",
+                    active_version=previous_entry.active_version if previous_entry.enabled else "",
+                    reason="artifact_store_restore_failed",
                 )
-            return _finish_guarded(
-                SelfModificationApplyResult(
-                    applied=False,
-                    proposal_id=proposal_id,
-                    warnings=list(inspection.warnings),
-                    capability_diff=dict(inspection.capability_diff),
-                    active_version=(
-                        previous_entry.active_version if previous_entry.enabled else ""
-                    ),
-                    reason=exc.reason,
-                )
+            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                warnings=list(inspection.warnings),
+                capability_diff=dict(inspection.capability_diff),
+                active_version=previous_entry.active_version if previous_entry.enabled else "",
+                reason=exc.reason,
             )
 
         self._inventory = candidate_inventory
-        try:
-            self._finalize_published_artifact(published_copy)
-        except OSError:
-            logger.exception(
-                "self-modification artifact backup finalization failed for %s",
-                published_copy.target_path,
-            )
-        return _finish_guarded(
-            SelfModificationApplyResult(
-                applied=True,
-                proposal_id=proposal_id,
-                change_id=change_id,
-                warnings=list(inspection.warnings),
-                capability_diff=dict(inspection.capability_diff),
-                active_version=proposal.version,
-                tool_names=tool_names,
-                reason="ok",
-            )
+        self._finalize_staged_artifact(staged_copy)
+        return SelfModificationApplyResult(
+            applied=True,
+            proposal_id=proposal_id,
+            change_id=change_id,
+            warnings=list(inspection.warnings),
+            capability_diff=dict(inspection.capability_diff),
+            active_version=proposal.version,
+            tool_names=tool_names,
+            reason="ok",
         )
 
     def rollback(self, change_id: str) -> SelfModificationRollbackResult:
-        self._require_inventory_available(transition="rollback")
         if not _is_valid_identifier(change_id):
             return SelfModificationRollbackResult(
                 rolled_back=False,
@@ -715,11 +364,10 @@ class SelfModificationManager:
             )
         change = self._load_change(change_id)
         if change is None:
-            load_result = self._record_load_results["change"]
             return SelfModificationRollbackResult(
                 rolled_back=False,
                 change_id=change_id,
-                reason=_record_unavailable_reason("change", load_result),
+                reason="change_not_found",
             )
         current_inventory = self._inventory.model_copy(deep=True)
         candidate_inventory = current_inventory.model_copy(deep=True)
@@ -766,54 +414,24 @@ class SelfModificationManager:
             )
             restored_version = ""
         try:
+            self._apply_runtime_for_inventory(
+                candidate_inventory,
+                change.artifact_type,
+                change.name,
+            )
             self._persist_inventory_snapshot(candidate_inventory)
-        except AtomicWriteError as exc:
+        except OSError:
+            self._restore_runtime(current_inventory, change.artifact_type, change.name)
             return SelfModificationRollbackResult(
                 rolled_back=False,
                 change_id=change_id,
                 artifact_type=change.artifact_type,
                 name=change.name,
                 active_version=self._active_version(change.artifact_type, change.name),
-                reason=(
-                    "inventory_persistence_uncertain"
-                    if exc.publication_may_have_committed
-                    else "inventory_persist_failed"
-                ),
-            )
-        try:
-            self._apply_runtime_for_inventory(
-                candidate_inventory,
-                change.artifact_type,
-                change.name,
+                reason="inventory_persist_failed",
             )
         except _SelfModificationOperationError as exc:
-            if not self._restore_inventory_after_failed_transition(current_inventory):
-                return SelfModificationRollbackResult(
-                    rolled_back=False,
-                    change_id=change_id,
-                    artifact_type=change.artifact_type,
-                    name=change.name,
-                    active_version="",
-                    reason="inventory_restore_failed",
-                )
-            if not self._restore_runtime(
-                current_inventory,
-                change.artifact_type,
-                change.name,
-            ):
-                self._disable_in_memory_artifact_authority(
-                    change.artifact_type,
-                    change.name,
-                    reason="runtime_restore_failed",
-                )
-                return SelfModificationRollbackResult(
-                    rolled_back=False,
-                    change_id=change_id,
-                    artifact_type=change.artifact_type,
-                    name=change.name,
-                    active_version="",
-                    reason="runtime_restore_failed",
-                )
+            self._restore_runtime(current_inventory, change.artifact_type, change.name)
             return SelfModificationRollbackResult(
                 rolled_back=False,
                 change_id=change_id,
@@ -835,11 +453,14 @@ class SelfModificationManager:
         )
 
     def status(self) -> dict[str, Any]:
-        incident_record = self._load_incident()
-        incident = incident_record.model_dump(mode="json") if incident_record is not None else {}
+        incident: dict[str, Any] = {}
+        if self._incident_path.exists():
+            try:
+                incident = json.loads(self._incident_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                incident = {}
         return {
             "inventory_path": str(self._inventory_path),
-            "inventory": self.inventory_state_status(),
             "skills": {
                 name: entry.model_dump(mode="json")
                 for name, entry in self._inventory.skills.items()
@@ -849,49 +470,33 @@ class SelfModificationManager:
                 for name, entry in self._inventory.behavior_packs.items()
             },
             "incident": incident,
-            "records": {
-                kind: self._record_state_status(kind) for kind in ("proposal", "change", "incident")
-            },
         }
 
     def _inspect_artifact(self, artifact_path: Path) -> _ArtifactInspection:
-        try:
-            snapshot = capture_bounded_regular_tree(
-                artifact_path,
-                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
-            )
-        except (OSError, ValueError):
-            return _ArtifactInspection(
-                manifest=_empty_manifest(),
-                valid=False,
-                reason="artifact_read_failed",
-            )
-        artifact_files = dict(snapshot.files)
-        manifest_bytes = artifact_files.get("manifest.json")
-        if manifest_bytes is None:
+        manifest_path = artifact_path / "manifest.json"
+        signature_path = artifact_path / "manifest.json.sig"
+        if not manifest_path.exists():
             return _ArtifactInspection(
                 manifest=_empty_manifest(),
                 valid=False,
                 reason="manifest_missing",
             )
-        manifest = _load_manifest_bytes(manifest_bytes)
+        manifest = _load_manifest(manifest_path)
         if manifest is None:
             return _ArtifactInspection(
                 manifest=_empty_manifest(),
                 valid=False,
                 reason="invalid_manifest_schema",
             )
-        signature_bytes = artifact_files.get("manifest.json.sig")
-        if signature_bytes is None:
+        if not signature_path.exists():
             return _ArtifactInspection(
                 manifest=manifest,
                 valid=False,
                 reason="signature_missing",
             )
         verified, signer, signature_reason = _verify_signature(
-            manifest_bytes=manifest_bytes,
-            signature_bytes=signature_bytes,
+            manifest_path=manifest_path,
+            signature_path=signature_path,
             allowed_signers_path=self._allowed_signers_path,
         )
         if not verified:
@@ -902,7 +507,7 @@ class SelfModificationManager:
                 reason=signature_reason,
             )
         files_valid, files_reason = _validate_manifest_files(
-            artifact_files=artifact_files,
+            artifact_path=artifact_path,
             manifest=manifest,
         )
         if not files_valid:
@@ -914,7 +519,7 @@ class SelfModificationManager:
             )
         if manifest.type == "skill_bundle":
             bundle_valid, bundle_reason, _instructions = _validate_skill_bundle(
-                artifact_files=artifact_files,
+                artifact_path=artifact_path,
                 manifest=manifest,
             )
             if not bundle_valid:
@@ -943,10 +548,9 @@ class SelfModificationManager:
                     manifest.name,
                     manifest.declared_capabilities,
                 ),
-                artifact_files=artifact_files,
             )
         instructions = _validate_behavior_pack(
-            artifact_files=artifact_files,
+            artifact_path=artifact_path,
             manifest=manifest,
         )
         if instructions is None:
@@ -976,101 +580,29 @@ class SelfModificationManager:
                 manifest.declared_capabilities,
             ),
             instructions=instructions,
-            artifact_files=artifact_files,
         )
 
     def _apply_behavior_overlay(self) -> None:
-        try:
-            self._apply_behavior_overlay_for_inventory(self._inventory)
-        except _SelfModificationOperationError as exc:
-            self._mark_inventory_degraded(exc.reason)
-            raise
-        except Exception:
-            self._mark_inventory_degraded("behavior_overlay_failed")
-            raise
-
-    def _apply_startup_runtime(self) -> None:
-        for artifact_type, bucket in (
-            ("skill_bundle", self._inventory.skills),
-            ("behavior_pack", self._inventory.behavior_packs),
-        ):
-            for name, entry in sorted(bucket.items()):
-                if not entry.enabled or not entry.active_version:
-                    continue
-                try:
-                    artifact_path = self._artifact_version_path(
-                        artifact_type,
-                        name,
-                        entry.active_version,
-                    )
-                except ValueError:
-                    self._mark_inventory_degraded("active_artifact_identity_invalid")
-                    return
-                try:
-                    artifact_exists = validate_directory_ancestry(artifact_path)
-                except OSError:
-                    artifact_exists = False
-                if not artifact_exists:
-                    self._mark_inventory_degraded("active_artifact_invalid")
-                    return
-                try:
-                    inspection = self._inspect_artifact(artifact_path)
-                except Exception:
-                    self._mark_inventory_degraded("active_artifact_invalid")
-                    return
-                if (
-                    not inspection.valid
-                    or inspection.manifest.type != artifact_type
-                    or inspection.manifest.name != name
-                    or inspection.manifest.version != entry.active_version
-                ):
-                    self._mark_inventory_degraded("active_artifact_invalid")
-                    return
-        for name in sorted(self._inventory.skills):
-            try:
-                self._apply_runtime_for_inventory(
-                    self._inventory,
-                    "skill_bundle",
-                    name,
-                )
-            except _SelfModificationOperationError:
-                self._mark_inventory_degraded("skill_replay_failed")
-                return
-        try:
-            self._apply_behavior_overlay()
-        except Exception:
-            return
-
-    def _mark_inventory_degraded(self, reason: str) -> None:
-        current = self._state_load_result
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.CORRUPT,
-            reason=reason,
-            schema_version=current.schema_version,
-            legacy=current.legacy,
-        )
-        self._block_coupled_skill_authority()
+        self._apply_behavior_overlay_for_inventory(self._inventory)
 
     def _apply_behavior_overlay_for_inventory(self, inventory: _Inventory) -> None:
-        blocker = getattr(self._planner, "block_persona_defaults", None)
-        unblocker = getattr(self._planner, "unblock_persona_defaults", None)
-        if not callable(blocker) or not callable(unblocker):
-            raise RuntimeError("planner persona authority gate is unavailable")
-        blocker()
         tone = self._default_persona_tone
         text_parts: list[str] = []
         for name in sorted(inventory.behavior_packs):
-            validated = self._validated_runtime_artifact(
-                inventory,
-                "behavior_pack",
-                name,
-            )
-            if validated is None:
+            entry = inventory.behavior_packs[name]
+            if not entry.enabled or not entry.active_version:
                 continue
-            _artifact_path, inspection = validated
-            instructions = inspection.instructions
+            try:
+                artifact_path = self._artifact_version_path(
+                    "behavior_pack",
+                    name,
+                    entry.active_version,
+                )
+            except ValueError:
+                continue
+            instructions = _load_behavior_pack_instructions(artifact_path / "instructions.yaml")
             if instructions is None:
-                raise _SelfModificationOperationError("active_artifact_invalid")
+                continue
             if instructions.tone:
                 # Deterministic precedence: alphabetical-last enabled pack wins on tone.
                 tone = instructions.tone
@@ -1078,10 +610,8 @@ class SelfModificationManager:
                 text_parts.append(instructions.custom_persona_text.strip())
         custom_text = "\n\n".join(text_parts).strip() or self._default_persona_text
         setter = getattr(self._planner, "set_persona_defaults", None)
-        if not callable(setter):
-            raise RuntimeError("planner persona defaults setter is unavailable")
-        setter(tone=tone, custom_text=custom_text)
-        unblocker()
+        if callable(setter):
+            setter(tone=tone, custom_text=custom_text)
 
     def _capability_diff(
         self,
@@ -1157,27 +687,16 @@ class SelfModificationManager:
         entry = self._inventory_entry_from(inventory, artifact_type, name)
         if artifact_type == "skill_bundle":
             try:
-                if entry.enabled:
-                    validated = self._validated_runtime_artifact(
-                        inventory,
-                        artifact_type,
-                        name,
+                if entry.enabled and entry.active_version:
+                    payload_root = (
+                        self._artifact_version_path(
+                            artifact_type,
+                            name,
+                            entry.active_version,
+                        )
+                        / "payload"
                     )
-                    if validated is None:
-                        raise _SelfModificationOperationError("active_artifact_invalid")
-                    artifact_path, inspection = validated
-                    payload_root = artifact_path / "payload"
-                    payload_files = {
-                        relative.removeprefix("payload/"): data
-                        for relative, data in inspection.artifact_files.items()
-                        if relative.startswith("payload/")
-                    }
-                    if not payload_files:
-                        raise _SelfModificationOperationError("active_artifact_invalid")
-                    installed = self._skill_manager.activate_bundle_snapshot(
-                        payload_root,
-                        payload_files,
-                    )
+                    installed = self._skill_manager.activate_bundle(payload_root)
                     if installed is None:
                         raise _SelfModificationOperationError("skill_activation_failed")
                     return list(self._skill_manager.tool_names_for_skill(name))
@@ -1193,128 +712,16 @@ class SelfModificationManager:
             raise _SelfModificationOperationError("behavior_overlay_failed") from exc
         return []
 
-    def _validated_runtime_artifact(
-        self,
-        inventory: _Inventory,
-        artifact_type: str,
-        name: str,
-    ) -> tuple[Path, _ArtifactInspection] | None:
-        entry = self._inventory_entry_from(inventory, artifact_type, name)
-        if not entry.enabled:
-            return None
-        if not entry.active_version:
-            raise _SelfModificationOperationError("active_artifact_invalid")
-        try:
-            artifact_path = self._artifact_version_path(
-                artifact_type,
-                name,
-                entry.active_version,
-            )
-            artifact_exists = validate_directory_ancestry(artifact_path)
-            inspection = self._inspect_artifact(artifact_path) if artifact_exists else None
-        except Exception as exc:
-            raise _SelfModificationOperationError("active_artifact_invalid") from exc
-        if (
-            inspection is None
-            or not inspection.valid
-            or inspection.manifest.type != artifact_type
-            or inspection.manifest.name != name
-            or inspection.manifest.version != entry.active_version
-        ):
-            raise _SelfModificationOperationError("active_artifact_invalid")
-        return artifact_path, inspection
-
-    def _restore_runtime(self, inventory: _Inventory, artifact_type: str, name: str) -> bool:
+    def _restore_runtime(self, inventory: _Inventory, artifact_type: str, name: str) -> None:
         try:
             self._apply_runtime_for_inventory(inventory, artifact_type, name)
         except _SelfModificationOperationError:
-            return False
-        return True
-
-    def _publish_authority_guard(self) -> None:
-        atomic_write_bytes(
-            self._authority_block_path,
-            _SELFMOD_AUTHORITY_BLOCK_MARKER,
-            fault_injector=None,
-        )
-
-    def _complete_authority_guard(self) -> bool:
-        try:
-            atomic_write_bytes(
-                self._authority_block_path,
-                _SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER,
-                fault_injector=None,
-            )
-        except AtomicWriteError:
-            logger.exception("failed to complete self-modification authority guard")
-            return False
-        try:
-            remove_owner_controlled_file_entries(
-                self._root,
-                (self._authority_block_path.name,),
-            )
-        except OSError:
-            logger.warning("failed to garbage-collect completed self-modification guard")
-        return True
-
-    def _disable_in_memory_artifact_authority(
-        self,
-        artifact_type: str,
-        name: str,
-        *,
-        reason: str,
-    ) -> None:
-        quarantined_inventory = self._inventory.model_copy(deep=True)
-        entries = (
-            quarantined_inventory.skills
-            if artifact_type == "skill_bundle"
-            else quarantined_inventory.behavior_packs
-        )
-        if name in entries:
-            entries[name] = _InventoryEntry(enabled=False, active_version="")
-        self._inventory = quarantined_inventory
-        self._restore_runtime(quarantined_inventory, artifact_type, name)
-        self._mark_inventory_degraded(reason)
-
-    def _quarantine_artifact_authority(self, artifact_type: str, name: str) -> bool:
-        quarantined_inventory = self._inventory.model_copy(deep=True)
-        entries = (
-            quarantined_inventory.skills
-            if artifact_type == "skill_bundle"
-            else quarantined_inventory.behavior_packs
-        )
-        if name in entries:
-            entries[name] = _InventoryEntry(enabled=False, active_version="")
-        authority_is_durable = True
-        try:
-            self._persist_inventory_snapshot(quarantined_inventory)
-        except AtomicWriteError as exc:
-            authority_is_durable = False
-            self._persistence_degradation = exc
-        self._inventory = quarantined_inventory
-        self._restore_runtime(quarantined_inventory, artifact_type, name)
-        self._mark_inventory_degraded("artifact_store_restore_uncertain")
-        return authority_is_durable
+            return None
 
     def _persist_inventory_snapshot(self, inventory: _Inventory) -> None:
-        encoded = encode_versioned_json_snapshot(
-            inventory.model_dump(mode="json"),
-            version=_SELFMOD_INVENTORY_VERSION,
-        )
-        try:
-            atomic_write_bytes(
-                self._inventory_path,
-                encoded,
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            if exc.publication_may_have_committed:
-                self._persistence_degradation = exc
-                self._block_coupled_skill_authority()
-            raise
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_SELFMOD_INVENTORY_VERSION,
+        _write_text_atomic(
+            self._inventory_path,
+            yaml.safe_dump(inventory.model_dump(mode="json"), sort_keys=False),
         )
 
     def _commit_inventory_and_change(
@@ -1322,14 +729,18 @@ class SelfModificationManager:
         inventory: _Inventory,
         change: _ChangeRecord,
     ) -> None:
-        _ = inventory
         try:
-            self._write_record_atomic(
+            self._persist_inventory_snapshot(inventory)
+        except OSError as exc:
+            raise _SelfModificationOperationError("inventory_persist_failed") from exc
+        try:
+            _write_text_atomic(
                 self._change_path(change.change_id),
-                change.model_dump(mode="json"),
-                record_kind="change",
+                change.model_dump_json(indent=2),
             )
-        except AtomicWriteError as exc:
+        except OSError as exc:
+            with suppress(OSError):
+                self._persist_inventory_snapshot(self._inventory)
             raise _SelfModificationOperationError("change_record_persist_failed") from exc
 
     def _stage_artifact_copy(
@@ -1341,459 +752,52 @@ class SelfModificationManager:
         source_path: Path,
     ) -> _StagedArtifactCopy:
         target_path = self._artifact_version_path(artifact_type, name, version)
-        ensure_owner_only_directory(target_path.parent)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         staging_path = target_path.parent / f".{target_path.name}.tmp-{uuid.uuid4().hex}"
+        backup_path = target_path.parent / f".{target_path.name}.bak-{uuid.uuid4().hex}"
+        staged_backup: Path | None = None
         try:
-            copy_bounded_regular_tree(
-                source_path,
-                staging_path,
-                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
-            )
+            shutil.copytree(source_path, staging_path)
+            if target_path.exists():
+                target_path.replace(backup_path)
+                staged_backup = backup_path
+            staging_path.replace(target_path)
+            return _StagedArtifactCopy(target_path=target_path, backup_path=staged_backup)
         except OSError:
             if staging_path.exists():
                 shutil.rmtree(staging_path, ignore_errors=True)
+            if staged_backup is not None and staged_backup.exists() and not target_path.exists():
+                backup_path.replace(target_path)
             raise
-        return _StagedArtifactCopy(
-            target_path=target_path,
-            staging_path=staging_path,
-        )
 
     @staticmethod
-    def _remove_artifact_tree(path: Path) -> None:
-        remove_owner_controlled_directory_contents(
-            path,
-            allow_nested_directories=True,
-        )
-        path.rmdir()
+    def _restore_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
+        if staged_copy.target_path.exists():
+            shutil.rmtree(staged_copy.target_path, ignore_errors=True)
+        if staged_copy.backup_path is not None and staged_copy.backup_path.exists():
+            staged_copy.backup_path.replace(staged_copy.target_path)
 
-    @classmethod
-    def _discard_staged_artifact(cls, staged_copy: _StagedArtifactCopy) -> None:
-        if staged_copy.staging_path.exists():
-            cls._remove_artifact_tree(staged_copy.staging_path)
-            fsync_directory(staged_copy.staging_path.parent)
-
-    @classmethod
-    def _publish_staged_artifact(
-        cls,
-        staged_copy: _StagedArtifactCopy,
-    ) -> _PublishedArtifactCopy:
-        backup_path = staged_copy.target_path.parent / (
-            f".{staged_copy.target_path.name}.bak-{uuid.uuid4().hex}"
-        )
-        staged_backup: Path | None = None
-        candidate_published = False
-        try:
-            if staged_copy.target_path.exists():
-                staged_copy.target_path.replace(backup_path)
-                staged_backup = backup_path
-            staged_copy.staging_path.replace(staged_copy.target_path)
-            candidate_published = True
-            fsync_directory(staged_copy.target_path.parent)
-        except OSError:
-            try:
-                if candidate_published and staged_copy.target_path.exists():
-                    cls._remove_artifact_tree(staged_copy.target_path)
-                if (
-                    staged_backup is not None
-                    and staged_backup.exists()
-                    and not staged_copy.target_path.exists()
-                ):
-                    staged_backup.replace(staged_copy.target_path)
-                if staged_copy.staging_path.exists():
-                    cls._remove_artifact_tree(staged_copy.staging_path)
-                fsync_directory(staged_copy.target_path.parent)
-            except OSError as recovery_error:
-                raise _ArtifactPublicationError(
-                    "artifact publication recovery durability is uncertain",
-                    recovery_uncertain=True,
-                ) from recovery_error
-            raise
-        return _PublishedArtifactCopy(
-            target_path=staged_copy.target_path,
-            backup_path=staged_backup,
-        )
-
-    @classmethod
-    def _restore_published_artifact(cls, published_copy: _PublishedArtifactCopy) -> None:
-        if published_copy.target_path.exists():
-            cls._remove_artifact_tree(published_copy.target_path)
-        if published_copy.backup_path is not None and published_copy.backup_path.exists():
-            published_copy.backup_path.replace(published_copy.target_path)
-        fsync_directory(published_copy.target_path.parent)
-
-    @classmethod
-    def _finalize_published_artifact(cls, published_copy: _PublishedArtifactCopy) -> None:
-        if published_copy.backup_path is not None and published_copy.backup_path.exists():
-            cls._remove_artifact_tree(published_copy.backup_path)
-            fsync_directory(published_copy.target_path.parent)
+    @staticmethod
+    def _finalize_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
+        if staged_copy.backup_path is not None and staged_copy.backup_path.exists():
+            shutil.rmtree(staged_copy.backup_path, ignore_errors=True)
 
     def _load_inventory(self) -> _Inventory:
-        try:
-            target_stat = self._inventory_path.lstat()
-        except FileNotFoundError:
-            new_or_legacy_empty_domain = not self._root_existed_at_start or (
-                self._inventory_domain_marker_status == "missing"
-                and self._root_was_legacy_empty_at_start
-            )
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.MISSING if new_or_legacy_empty_domain else StateLoadStatus.CORRUPT,
-                reason=("" if new_or_legacy_empty_domain else "inventory_missing_existing_root"),
-            )
-            return _Inventory()
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="inventory_stat_failed",
-            )
-            return _Inventory()
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_target",
-            )
+        if not self._inventory_path.exists():
             return _Inventory()
         try:
-            raw_bytes = read_owned_regular_file(self._inventory_path, required_mode=0o600)
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="inventory_read_failed",
-            )
+            payload = yaml.safe_load(self._inventory_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
             return _Inventory()
-        if raw_bytes is None:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="inventory_read_failed",
-            )
-            return _Inventory()
-
-        legacy = False
-        document_result, json_payload = decode_json_document(raw_bytes)
-        if document_result.status is not StateLoadStatus.OK and raw_bytes.lstrip().startswith(
-            (b"{", b"[")
-        ):
-            self._state_load_result = document_result
-            return _Inventory()
-        envelope_candidate = (
-            isinstance(json_payload, dict)
-            and bool({"version", "checksum", "payload"}.intersection(json_payload))
-        ) or (json_payload is None and raw_bytes.lstrip().startswith(b"{"))
-        if envelope_candidate:
-            load_result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_SELFMOD_INVENTORY_VERSION,
-            )
-            if load_result.status is not StateLoadStatus.OK:
-                self._state_load_result = load_result
-                return _Inventory()
-        else:
-            try:
-                payload = yaml.safe_load(raw_bytes.decode("utf-8"))
-            except (UnicodeError, yaml.YAMLError, RecursionError):
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="invalid_yaml",
-                )
-                return _Inventory()
-            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            legacy = True
         if not isinstance(payload, dict):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_payload",
-                schema_version=load_result.schema_version,
-                legacy=legacy,
-            )
-            return _Inventory()
-        if set(payload) != {"skills", "behavior_packs"}:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_payload",
-                schema_version=load_result.schema_version,
-                legacy=legacy,
-            )
             return _Inventory()
         try:
-            inventory = _Inventory.model_validate(payload)
+            return _Inventory.model_validate(payload)
         except ValidationError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_entry",
-                schema_version=load_result.schema_version,
-                legacy=legacy,
-            )
             return _Inventory()
-        for bucket in (inventory.skills, inventory.behavior_packs):
-            for name, entry in bucket.items():
-                if (
-                    not _ARTIFACT_NAME_RE.fullmatch(name)
-                    or (entry.enabled and not entry.active_version)
-                    or (
-                        entry.active_version
-                        and not _ARTIFACT_VERSION_RE.fullmatch(entry.active_version)
-                    )
-                ):
-                    self._state_load_result = StateLoadResult(
-                        StateLoadStatus.CORRUPT,
-                        reason="invalid_inventory_entry",
-                        schema_version=load_result.schema_version,
-                        legacy=legacy,
-                    )
-                    return _Inventory()
-        self._state_load_result = load_result
-        return inventory
-
-    def _inspect_inventory_domain_marker(self) -> str:
-        try:
-            target_stat = self._inventory_domain_marker_path.lstat()
-        except FileNotFoundError:
-            return "missing"
-        except OSError:
-            return "invalid"
-        if not stat.S_ISREG(target_stat.st_mode):
-            return "invalid"
-        try:
-            marker = read_owned_regular_file(
-                self._inventory_domain_marker_path,
-                required_mode=0o600,
-            )
-        except OSError:
-            return "invalid"
-        if marker is None:
-            return "invalid"
-        return "valid" if marker == _SELFMOD_INVENTORY_DOMAIN_MARKER else "invalid"
-
-    def _inspect_authority_block_marker(self) -> str:
-        try:
-            target_stat = self._authority_block_path.lstat()
-        except FileNotFoundError:
-            return "missing"
-        except OSError:
-            return "invalid"
-        if not stat.S_ISREG(target_stat.st_mode):
-            return "invalid"
-        try:
-            marker = read_owned_regular_file(
-                self._authority_block_path,
-                required_mode=0o600,
-            )
-        except OSError:
-            return "invalid"
-        if marker is None:
-            return "invalid"
-        if marker == _SELFMOD_AUTHORITY_BLOCK_MARKER:
-            return "blocked"
-        if marker == _SELFMOD_AUTHORITY_GUARD_COMPLETE_MARKER:
-            return "complete"
-        return "invalid"
-
-    def _ensure_inventory_domain_marker(self) -> bool:
-        if self._inventory_domain_marker_status == "valid":
-            return True
-        if self._inventory_domain_marker_status == "invalid":
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_domain_marker",
-            )
-            return False
-        try:
-            atomic_write_bytes(
-                self._inventory_domain_marker_path,
-                _SELFMOD_INVENTORY_DOMAIN_MARKER,
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            return False
-        self._inventory_domain_marker_status = "valid"
-        return True
 
     def _persist_inventory(self) -> None:
         self._persist_inventory_snapshot(self._inventory)
-
-    @property
-    def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None or self._state_load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }
-
-    def inventory_load_result(self) -> StateLoadResult:
-        return self._state_load_result
-
-    def reset_state(self) -> tuple[int, int]:
-        """Reset self-modification artifacts and typed control state together."""
-
-        entry_count = len(self._inventory.skills) + len(self._inventory.behavior_packs)
-        try:
-            artifact_count = remove_owner_controlled_directory_contents(
-                self._root,
-                allow_nested_directories=True,
-            )
-            self._inventory = _Inventory()
-            self._root_invalid = False
-            self._inventory_domain_marker_status = "missing"
-            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-            self._persistence_degradation = None
-            self._record_load_results = {
-                "proposal": StateLoadResult(StateLoadStatus.MISSING),
-                "change": StateLoadResult(StateLoadStatus.MISSING),
-                "incident": StateLoadResult(StateLoadStatus.MISSING),
-            }
-            ensure_owner_only_directory(self._root)
-            ensure_owner_only_directory(self._proposal_dir)
-            ensure_owner_only_directory(self._change_dir)
-            ensure_owner_only_directory(self._artifact_root)
-            if not self._ensure_inventory_domain_marker():
-                degradation = self._persistence_degradation
-                if degradation is not None:
-                    raise degradation
-                raise RuntimeError("selfmod inventory reset marker publication failed")
-            self._persist_inventory_snapshot(self._inventory)
-        except Exception as exc:
-            if isinstance(exc, AtomicWriteError):
-                self._persistence_degradation = exc
-            self._mark_reset_failed(apply_empty_overlay=True)
-            raise
-        try:
-            self._apply_behavior_overlay()
-        except Exception:
-            self._mark_reset_failed(apply_empty_overlay=False)
-            raise
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_SELFMOD_INVENTORY_VERSION,
-        )
-        return entry_count, artifact_count
-
-    def _mark_reset_failed(self, *, apply_empty_overlay: bool) -> None:
-        self._inventory = _Inventory()
-        self._root_invalid = True
-        self._inventory_domain_marker_status = "invalid"
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.CORRUPT,
-            reason="reset_failed",
-        )
-        self._record_load_results = {
-            "proposal": StateLoadResult(StateLoadStatus.CORRUPT, reason="reset_failed"),
-            "change": StateLoadResult(StateLoadStatus.CORRUPT, reason="reset_failed"),
-            "incident": StateLoadResult(StateLoadStatus.CORRUPT, reason="reset_failed"),
-        }
-        self._block_coupled_skill_authority()
-        if apply_empty_overlay:
-            with suppress(Exception):
-                self._apply_behavior_overlay()
-
-    def inventory_state_status(self) -> dict[str, Any]:
-        load_result = self._state_load_result
-        persistence = self._persistence_degradation
-        authority_guard_problem = self._inspect_authority_block_marker() in {
-            "blocked",
-            "invalid",
-        } or load_result.reason in {
-            "artifact_authority_blocked",
-            "authority_guard_clear_failed",
-            "authority_guard_persistence_uncertain",
-            "invalid_authority_block_marker",
-        }
-        problems: list[str] = []
-        if persistence is not None:
-            problems.append("selfmod_inventory_persistence_degraded")
-        elif load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            problems.append(f"selfmod_inventory_{load_result.status.value}")
-        return {
-            "status": "degraded" if self.state_degraded else "ok",
-            "problems": problems,
-            "path": str(self._inventory_path),
-            "load_status": load_result.status.value,
-            "reason": load_result.reason,
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-            "fail_closed": self.state_degraded,
-            "stage": persistence.stage.value if persistence is not None else "",
-            "remediation": (
-                (
-                    "A self-modification transition guard is present at "
-                    f"{self._authority_block_path}. Before removing it, verify that the "
-                    "inventory and artifact store form one coherent trusted state. Restore "
-                    "both from the same trusted snapshot, or remove the entire self-"
-                    "modification state domain only after verifying that no self-modified "
-                    "artifacts should remain active. Only then remove the guard and restart "
-                    "shisad."
-                )
-                if authority_guard_problem
-                else (
-                    "Restore the self-modification inventory from a trusted backup, or "
-                    "remove it only after verifying that no self-modified artifacts should "
-                    "remain active, then restart shisad."
-                    if self.state_degraded
-                    else ""
-                )
-            ),
-        }
-
-    def doctor_status(self) -> dict[str, Any]:
-        self._load_incident()
-        inventory_status = self.inventory_state_status()
-        records = {
-            kind: self._record_state_status(kind) for kind in ("proposal", "change", "incident")
-        }
-        problems = list(inventory_status["problems"])
-        for kind, record_status in records.items():
-            load_status = str(record_status["load_status"])
-            if load_status in {
-                StateLoadStatus.CORRUPT.value,
-                StateLoadStatus.UNSUPPORTED_SCHEMA.value,
-            }:
-                problems.append(f"selfmod_{kind}_{load_status}")
-        return {
-            **inventory_status,
-            "status": "degraded" if problems else "ok",
-            "problems": problems,
-            "records": records,
-        }
-
-    def _require_inventory_available(self, *, transition: str) -> None:
-        persistence = self._persistence_degradation
-        if persistence is not None:
-            raise StatePersistenceDegradedError(
-                authority="selfmod_inventory",
-                transition=transition,
-                stage=persistence.stage.value,
-                reason=(
-                    "commit_uncertain"
-                    if persistence.publication_may_have_committed
-                    else "publication_failed"
-                ),
-            )
-        load_result = self._state_load_result
-        if load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            raise StatePersistenceDegradedError(
-                authority="selfmod_inventory",
-                transition=transition,
-                stage="load",
-                reason=load_result.reason or load_result.status.value,
-            )
-
-    def _block_coupled_skill_authority(self) -> None:
-        blocker = getattr(self._skill_manager, "degrade_from_external_authority", None)
-        if callable(blocker):
-            persistence = self._persistence_degradation
-            blocker(
-                authority="selfmod_inventory",
-                reason=(
-                    "commit_uncertain"
-                    if persistence is not None and persistence.publication_may_have_committed
-                    else self._state_load_result.reason or "persistence_uncertain"
-                ),
-            )
 
     def _proposal_path(self, proposal_id: str) -> Path:
         return self._proposal_dir / f"{proposal_id}.json"
@@ -1804,170 +808,24 @@ class SelfModificationManager:
     def _load_proposal(self, proposal_id: str) -> _ProposalRecord | None:
         if not _is_valid_identifier(proposal_id):
             return None
-        record = self._load_record(
-            self._proposal_path(proposal_id),
-            model_type=_ProposalRecord,
-            record_kind="proposal",
-        )
-        if record is not None and record.proposal_id != proposal_id:
-            self._mark_record_corrupt("proposal", "record_identity_mismatch")
+        path = self._proposal_path(proposal_id)
+        if not path.exists():
             return None
-        return record
+        try:
+            return _ProposalRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValidationError):
+            return None
 
     def _load_change(self, change_id: str) -> _ChangeRecord | None:
         if not _is_valid_identifier(change_id):
             return None
-        record = self._load_record(
-            self._change_path(change_id),
-            model_type=_ChangeRecord,
-            record_kind="change",
-        )
-        if record is not None and record.change_id != change_id:
-            self._mark_record_corrupt("change", "record_identity_mismatch")
-            return None
-        return record
-
-    def _load_incident(self) -> _IncidentRecord | None:
-        return self._load_record(
-            self._incident_path,
-            model_type=_IncidentRecord,
-            record_kind="incident",
-        )
-
-    def _write_record_atomic(
-        self,
-        path: Path,
-        payload: dict[str, Any],
-        *,
-        record_kind: str,
-    ) -> None:
-        try:
-            atomic_write_bytes(
-                path,
-                encode_versioned_json_snapshot(payload, version=1),
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError:
-            raise
-        self._record_load_results[record_kind] = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=1,
-        )
-
-    def _load_record(
-        self,
-        path: Path,
-        *,
-        model_type: type[BaseModel],
-        record_kind: str,
-    ) -> Any | None:
-        try:
-            target_stat = path.lstat()
-        except FileNotFoundError:
-            self._record_load_results[record_kind] = StateLoadResult(StateLoadStatus.MISSING)
-            return None
-        except OSError:
-            self._record_load_results[record_kind] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="record_stat_failed",
-            )
-            return None
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._record_load_results[record_kind] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_record_target",
-            )
+        path = self._change_path(change_id)
+        if not path.exists():
             return None
         try:
-            raw_bytes = read_owned_regular_file(path, required_mode=0o600)
-        except OSError:
-            self._record_load_results[record_kind] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="record_read_failed",
-            )
+            return _ChangeRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValidationError):
             return None
-        if raw_bytes is None:
-            self._record_load_results[record_kind] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="record_read_failed",
-            )
-            return None
-        document_result, raw_payload = decode_json_document(raw_bytes)
-        envelope_candidate = (
-            isinstance(raw_payload, dict)
-            and (
-                "checksum" in raw_payload
-                or "payload" in raw_payload
-                or (
-                    isinstance(raw_payload.get("version"), int)
-                    and not isinstance(raw_payload.get("version"), bool)
-                )
-            )
-        ) or (raw_payload is None and raw_bytes.lstrip().startswith(b"{"))
-        if isinstance(raw_payload, dict) and not envelope_candidate:
-            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            payload: Any = raw_payload
-        else:
-            if (
-                document_result.status is not StateLoadStatus.OK
-                and not raw_bytes.lstrip().startswith(b"{")
-            ):
-                self._record_load_results[record_kind] = document_result
-                return None
-            load_result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=1,
-            )
-            if load_result.status is not StateLoadStatus.OK:
-                self._record_load_results[record_kind] = load_result
-                return None
-        if not isinstance(payload, dict):
-            self._record_load_results[record_kind] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_record_payload",
-                schema_version=load_result.schema_version,
-                legacy=load_result.legacy,
-            )
-            return None
-        try:
-            record = model_type.model_validate(payload)
-        except ValidationError:
-            self._record_load_results[record_kind] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_record_entry",
-                schema_version=load_result.schema_version,
-                legacy=load_result.legacy,
-            )
-            return None
-        self._record_load_results[record_kind] = load_result
-        return record
-
-    def _record_state_status(self, record_kind: str) -> dict[str, Any]:
-        load_result = self._record_load_results[record_kind]
-        return {
-            "load_status": load_result.status.value,
-            "reason": load_result.reason,
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-        }
-
-    def _mark_record_corrupt(self, record_kind: str, reason: str) -> None:
-        current = self._record_load_results[record_kind]
-        self._record_load_results[record_kind] = StateLoadResult(
-            StateLoadStatus.CORRUPT,
-            reason=reason,
-            schema_version=current.schema_version,
-            legacy=current.legacy,
-        )
-
-    def _restore_inventory_after_failed_transition(self, inventory: _Inventory) -> bool:
-        try:
-            self._persist_inventory_snapshot(inventory)
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            self._block_coupled_skill_authority()
-            return False
-        return True
 
     def _artifact_version_path(self, artifact_type: str, name: str, version: str) -> Path:
         if not _ARTIFACT_NAME_RE.fullmatch(name) or not _ARTIFACT_VERSION_RE.fullmatch(version):
@@ -1976,35 +834,13 @@ class SelfModificationManager:
         return self._artifact_root / bucket / name / version
 
     def _record_incident(self, *, proposal_id: str, artifact_path: str, reason: str) -> None:
-        record = _IncidentRecord(
-            proposal_id=proposal_id,
-            artifact_path=artifact_path,
-            reason=reason,
-            recorded_at=datetime.now(UTC).isoformat(),
-        )
-        self._write_record_atomic(
-            self._incident_path,
-            record.model_dump(mode="json"),
-            record_kind="incident",
-        )
-
-
-def _selfmod_root_is_legacy_empty(path: Path) -> bool:
-    allowed_children = {"proposals", "changes", "artifacts"}
-    try:
-        children = list(path.iterdir())
-    except OSError:
-        return False
-    for child in children:
-        if child.name not in allowed_children:
-            return False
-        try:
-            child_stat = child.lstat()
-            if not stat.S_ISDIR(child_stat.st_mode) or next(child.iterdir(), None) is not None:
-                return False
-        except OSError:
-            return False
-    return True
+        payload = {
+            "proposal_id": proposal_id,
+            "artifact_path": artifact_path,
+            "reason": reason,
+            "recorded_at": datetime.now(UTC).isoformat(),
+        }
+        _write_text_atomic(self._incident_path, json.dumps(payload, indent=2))
 
 
 def _is_valid_identifier(value: str) -> bool:
@@ -2018,12 +854,16 @@ def _normalize_integrity_reason(reason: str) -> str:
     return normalized
 
 
-def _record_unavailable_reason(record_kind: str, load_result: StateLoadResult) -> str:
-    if load_result.status is StateLoadStatus.CORRUPT:
-        return f"{record_kind}_corrupt"
-    if load_result.status is StateLoadStatus.UNSUPPORTED_SCHEMA:
-        return f"{record_kind}_unsupported_schema"
-    return f"{record_kind}_not_found"
+def _write_text_atomic(path: Path, content: str) -> None:
+    tmp_path = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _empty_manifest() -> ArtifactManifest:
@@ -2041,16 +881,8 @@ def _empty_manifest() -> ArtifactManifest:
 
 def _load_manifest(path: Path) -> ArtifactManifest | None:
     try:
-        manifest_bytes = path.read_bytes()
-    except OSError:
-        return None
-    return _load_manifest_bytes(manifest_bytes)
-
-
-def _load_manifest_bytes(manifest_bytes: bytes) -> ArtifactManifest | None:
-    try:
-        payload = json.loads(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     try:
         return ArtifactManifest.model_validate(payload)
@@ -2068,24 +900,26 @@ def _safe_relative_path(value: str) -> bool:
 
 def _validate_manifest_files(
     *,
-    artifact_files: dict[str, bytes],
+    artifact_path: Path,
     manifest: ArtifactManifest,
 ) -> tuple[bool, str]:
     declared = {item.path: item for item in manifest.files}
     if any(not _safe_relative_path(path) for path in declared):
         return False, "unsafe_relative_path"
-    actual = {
-        relative: data
-        for relative, data in artifact_files.items()
-        if relative not in {"manifest.json", "manifest.json.sig"}
-    }
-    for relative in actual:
+    actual: dict[str, Path] = {}
+    for path in sorted(artifact_path.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name in {"manifest.json", "manifest.json.sig"}:
+            continue
+        relative = str(path.relative_to(artifact_path))
         if not _safe_relative_path(relative):
             return False, "unsafe_relative_path"
+        actual[relative] = path
     if set(actual) != set(declared):
         return False, "file_set_mismatch"
     for relative, record in declared.items():
-        data = actual[relative]
+        data = actual[relative].read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         if digest != record.sha256:
             return False, "file_hash_mismatch"
@@ -2096,18 +930,19 @@ def _validate_manifest_files(
 
 def _validate_skill_bundle(
     *,
-    artifact_files: dict[str, bytes],
+    artifact_path: Path,
     manifest: ArtifactManifest,
 ) -> tuple[bool, str, None]:
     try:
-        from shisad.skills.manifest import parse_manifest_bytes
+        from shisad.skills.manifest import parse_manifest
     except Exception:
         return False, "skill_manifest_loader_unavailable", None
-    manifest_bytes = artifact_files.get("payload/skill.manifest.yaml")
-    if manifest_bytes is None:
+    payload_root = artifact_path / "payload"
+    manifest_path = payload_root / "skill.manifest.yaml"
+    if not manifest_path.exists():
         return False, "skill_manifest_missing", None
     try:
-        skill_manifest = parse_manifest_bytes(manifest_bytes)
+        skill_manifest = parse_manifest(manifest_path)
     except Exception:
         return False, "invalid_skill_manifest", None
     declared = _skill_declared_capabilities(skill_manifest)
@@ -2118,7 +953,7 @@ def _validate_skill_bundle(
 
 def _validate_behavior_pack(
     *,
-    artifact_files: dict[str, bytes],
+    artifact_path: Path,
     manifest: ArtifactManifest,
 ) -> BehaviorPackInstructions | None:
     allowed = {"instructions.yaml"}
@@ -2128,18 +963,15 @@ def _validate_behavior_pack(
         if file_record.path.startswith("templates/"):
             continue
         return None
-    instructions_bytes = artifact_files.get("instructions.yaml")
-    return _load_behavior_pack_instructions(instructions_bytes)
+    return _load_behavior_pack_instructions(artifact_path / "instructions.yaml")
 
 
-def _load_behavior_pack_instructions(
-    instructions_bytes: bytes | None,
-) -> BehaviorPackInstructions | None:
-    if instructions_bytes is None:
+def _load_behavior_pack_instructions(path: Path) -> BehaviorPackInstructions | None:
+    if not path.exists():
         return None
     try:
-        payload = yaml.safe_load(instructions_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError):
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -2198,62 +1030,34 @@ def _allowed_signer_principals(path: Path) -> list[str]:
 
 def _verify_signature(
     *,
-    manifest_bytes: bytes,
-    signature_bytes: bytes,
+    manifest_path: Path,
+    signature_path: Path,
     allowed_signers_path: Path,
 ) -> tuple[bool, str, str]:
     principals = _allowed_signer_principals(allowed_signers_path)
     if not principals:
         return False, "", "trust_store_missing"
-    try:
-        manifest_text = manifest_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        return False, "", "invalid_manifest_encoding"
-    try:
-        with tempfile.TemporaryFile(prefix="shisad-selfmod-signature-") as signature_file:
-            signature_file.write(signature_bytes)
-            signature_file.flush()
-            signature_fd = duplicate_fd_above_standard_streams(signature_file.fileno())
-            try:
-                os.fchmod(signature_fd, 0o400)
-                signature_descriptor_path = _held_descriptor_path(signature_fd)
-                if signature_descriptor_path is None:
-                    return False, "", "signature_descriptor_unavailable"
-                for principal in principals:
-                    os.lseek(signature_fd, 0, os.SEEK_SET)
-                    result = subprocess.run(
-                        [
-                            "ssh-keygen",
-                            "-Y",
-                            "verify",
-                            "-f",
-                            str(allowed_signers_path),
-                            "-I",
-                            principal,
-                            "-n",
-                            "file",
-                            "-s",
-                            str(signature_descriptor_path),
-                        ],
-                        input=manifest_text,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        pass_fds=(signature_fd,),
-                        timeout=_SIGNATURE_VERIFY_TIMEOUT_SECONDS,
-                    )
-                    if result.returncode == 0:
-                        return True, principal, "signature_verified"
-            finally:
-                os.close(signature_fd)
-    except (OSError, subprocess.TimeoutExpired):
-        return False, "", "signature_verification_failed"
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    for principal in principals:
+        result = subprocess.run(
+            [
+                "ssh-keygen",
+                "-Y",
+                "verify",
+                "-f",
+                str(allowed_signers_path),
+                "-I",
+                principal,
+                "-n",
+                "file",
+                "-s",
+                str(signature_path),
+            ],
+            input=manifest_text,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True, principal, "signature_verified"
     return False, "", "signature_verification_failed"
-
-
-def _held_descriptor_path(fd: int) -> Path | None:
-    for root in (Path("/proc/self/fd"), Path("/dev/fd")):
-        candidate = root / str(fd)
-        if candidate.exists():
-            return candidate
-    return None

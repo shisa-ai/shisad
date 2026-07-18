@@ -334,53 +334,6 @@ def test_cli_a2a_keygen_writes_valid_owner_only_private_key(
     assert f"Verified public fingerprint: {local_identity.fingerprint}" in result.output
 
 
-@pytest.mark.parametrize(
-    ("key_kind", "unsafe_shape"),
-    [
-        ("private", "permissive"),
-        ("private", "hardlink"),
-        ("private", "symlink"),
-        ("public", "hardlink"),
-        ("public", "symlink"),
-    ],
-)
-def test_f3_a2a_identity_reopen_rejects_unsafe_key_files(
-    tmp_path: Path,
-    key_kind: str,
-    unsafe_shape: str,
-) -> None:
-    private_key_path = tmp_path / "a2a-private.pem"
-    public_key_path = tmp_path / "a2a-public.pem"
-    write_ed25519_keypair(private_key_path, public_key_path)
-    target = private_key_path if key_kind == "private" else public_key_path
-    retained_bytes = target.read_bytes()
-    external = tmp_path / f"external-{target.name}"
-    if unsafe_shape == "permissive":
-        target.chmod(0o644)
-    elif unsafe_shape == "hardlink":
-        external.hardlink_to(target)
-    else:
-        target.replace(external)
-        target.symlink_to(external)
-    config = A2aIdentityConfig(
-        agent_id="local-agent",
-        private_key_path=private_key_path,
-        public_key_path=public_key_path,
-    )
-
-    with pytest.raises(OSError):
-        load_local_identity(config)
-
-    retained = external if unsafe_shape == "symlink" else target
-    assert retained.read_bytes() == retained_bytes
-    if unsafe_shape == "permissive":
-        assert stat.S_IMODE(target.stat().st_mode) == 0o644
-    elif unsafe_shape == "hardlink":
-        assert target.stat().st_nlink == 2
-    else:
-        assert target.is_symlink() is True
-
-
 def test_cli_a2a_keygen_rejects_existing_key_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

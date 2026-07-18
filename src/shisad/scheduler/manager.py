@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import copy
+import json
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -12,19 +12,6 @@ from typing import Any
 from pydantic import ValidationError
 
 from shisad.core.action_state import action_lifecycle_state
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes,
-    decode_json_document,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-    ensure_owner_only_directory,
-    read_owner_only_regular_file,
-)
 from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.scheduler.rendering import parse_interval_seconds, task_schedule_rendering
 from shisad.scheduler.schema import (
@@ -37,44 +24,6 @@ from shisad.scheduler.schema import (
 
 _MAX_RESOLVED_CONFIRMATIONS_PER_TASK = 32
 _MAX_CRON_LOOKAHEAD_DAYS = 400 * 366
-_SCHEDULER_STATE_VERSION = 1
-_PENDING_STRING_FIELDS = frozenset(
-    {
-        "action_id",
-        "confirmation_id",
-        "event_type",
-        "execution_attempt_id",
-        "expires_at",
-        "lifecycle_state",
-        "payload_taint",
-        "plan_commitment",
-        "processing_started_at",
-        "queued_at",
-        "reason",
-        "resolved_at",
-        "result_id",
-        "session_id",
-        "status",
-        "status_reason",
-        "task_id",
-        "tool_name",
-        "trigger_payload",
-    }
-)
-_PENDING_IDENTITY_STRING_FIELDS = frozenset(
-    {
-        "action_id",
-        "confirmation_id",
-        "execution_attempt_id",
-        "followup_id",
-        "origin_turn_id",
-        "result_id",
-        "session_id",
-        "task_id",
-        "user_id",
-        "workspace_id",
-    }
-)
 
 
 class SchedulerManager:
@@ -94,119 +43,13 @@ class SchedulerManager:
         self._pending_file = (
             self._storage_dir / "pending_confirmations.json" if self._storage_dir else None
         )
-        self._state_fault_injector: AtomicWriteFaultInjector | None = None
-        self._state_load_results = {
-            "tasks": StateLoadResult(StateLoadStatus.MISSING),
-            "pending_confirmations": StateLoadResult(StateLoadStatus.MISSING),
-        }
-        self._state_persistence_degradation: dict[str, AtomicWriteError] = {}
-        self._durable_tasks: dict[str, ScheduledTask] = {}
-        self._durable_pending_confirmations: defaultdict[str, list[dict[str, Any]]] = defaultdict(
-            list
-        )
         if self._storage_dir is not None:
-            ensure_owner_only_directory(self._storage_dir)
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._load_tasks()
         pending_confirmation_state_loaded = self._load_pending_confirmations()
         if pending_confirmation_state_loaded:
             for task_id in self._tasks:
                 self._prune_confirmation_outcome_dedup(task_id)
-
-    @property
-    def state_degraded(self) -> bool:
-        return bool(self._state_persistence_degradation) or any(
-            result.status in {StateLoadStatus.CORRUPT, StateLoadStatus.UNSUPPORTED_SCHEMA}
-            for result in self._state_load_results.values()
-        )
-
-    def state_load_result(self, authority: str) -> StateLoadResult:
-        try:
-            return self._state_load_results[authority]
-        except KeyError as exc:
-            raise ValueError(f"unknown scheduler state authority: {authority}") from exc
-
-    def state_status(self) -> dict[str, Any]:
-        domains: dict[str, dict[str, Any]] = {}
-        for authority, load_result in self._state_load_results.items():
-            persistence = self._state_persistence_degradation.get(authority)
-            degraded = persistence is not None or load_result.status in {
-                StateLoadStatus.CORRUPT,
-                StateLoadStatus.UNSUPPORTED_SCHEMA,
-            }
-            domains[authority] = {
-                "status": "degraded" if degraded else "ok",
-                "problems": [f"scheduler_{authority}_state_degraded"] if degraded else [],
-                "load_status": load_result.status.value,
-                "reason": load_result.reason,
-                "schema_version": load_result.schema_version,
-                "legacy": load_result.legacy,
-                "fail_closed": degraded,
-                "stage": persistence.stage.value if persistence is not None else "",
-            }
-        degraded = any(domain["status"] == "degraded" for domain in domains.values())
-        return {
-            "status": "degraded" if degraded else "ok",
-            "problems": [problem for domain in domains.values() for problem in domain["problems"]],
-            "fail_closed": degraded,
-            "domains": domains,
-            "remediation": (
-                "Restore scheduler tasks and pending-confirmation state from a trusted backup "
-                "or explicitly reset both authorities, then restart shisad."
-                if degraded
-                else ""
-            ),
-        }
-
-    def reset_state(self) -> tuple[int, int]:
-        """Durably reset scheduler authority and every rollback/load snapshot."""
-
-        task_count = len(self._tasks)
-        pending_count = sum(len(rows) for rows in self._pending_confirmations.values())
-        empty_tasks = encode_versioned_json_snapshot(
-            [],
-            version=_SCHEDULER_STATE_VERSION,
-        )
-        empty_pending = encode_versioned_json_snapshot(
-            {},
-            version=_SCHEDULER_STATE_VERSION,
-        )
-        try:
-            if self._tasks_file is not None:
-                atomic_write_bytes(
-                    self._tasks_file,
-                    empty_tasks,
-                    fault_injector=self._state_fault_injector,
-                )
-            if self._pending_file is not None:
-                atomic_write_bytes(
-                    self._pending_file,
-                    empty_pending,
-                    fault_injector=self._state_fault_injector,
-                )
-        except AtomicWriteError as exc:
-            # A partially published multi-file reset is blocked as one coupled
-            # authority until restart can validate the durable pair.
-            self._state_persistence_degradation["tasks"] = exc
-            self._state_persistence_degradation["pending_confirmations"] = exc
-            raise
-
-        self._tasks = {}
-        self._pending_confirmations = defaultdict(list)
-        self._durable_tasks = {}
-        self._durable_pending_confirmations = defaultdict(list)
-        self._state_persistence_degradation.clear()
-        reset_status = (
-            StateLoadStatus.OK if self._storage_dir is not None else StateLoadStatus.MISSING
-        )
-        schema_version = _SCHEDULER_STATE_VERSION if self._storage_dir is not None else None
-        self._state_load_results = {
-            "tasks": StateLoadResult(reset_status, schema_version=schema_version),
-            "pending_confirmations": StateLoadResult(
-                reset_status,
-                schema_version=schema_version,
-            ),
-        }
-        return task_count, pending_count
 
     def create_task(
         self,
@@ -227,40 +70,29 @@ class SchedulerManager:
         untrusted_payload_action: str = "require_confirmation",
         max_runs: int = 0,
     ) -> ScheduledTask:
-        self._require_state_writable("tasks", transition="create")
-        retained_schedule = Schedule.model_validate(schedule.model_dump(mode="python"))
-        self._validate_schedule(retained_schedule)
+        self._validate_schedule(schedule)
         capability_snapshot_frozen = frozenset(capability_snapshot)
-        owner_user_id = str(created_by)
-        owner = owner_user_id or "unknown"
+        owner = str(created_by or "unknown")
         workspace = str(workspace_id or WorkspaceId(""))
         orchestrator_provenance = f"scheduler:{owner}:{workspace}"
-        task_envelope = TaskEnvelope(
-            capability_snapshot=capability_snapshot_frozen,
-            parent_session_id="",
-            orchestrator_provenance=orchestrator_provenance,
-            owner_user_id=owner_user_id,
-            workspace_id=workspace,
-            audit_trail_ref="",
-            policy_snapshot_ref=policy_snapshot_ref,
-            lockdown_state_inheritance="inherit_runtime_restrictions",
-            credential_refs=tuple(credential_refs or ()),
-            resource_scope_ids=tuple(resource_scope_ids or ()),
-            resource_scope_prefixes=tuple(resource_scope_prefixes or ()),
-            untrusted_payload_action=untrusted_payload_action,
-        )
         task = ScheduledTask(
             name=name,
             goal=goal,
-            schedule=retained_schedule,
+            schedule=schedule,
             capability_snapshot=capability_snapshot_frozen,
             policy_snapshot_ref=policy_snapshot_ref,
-            task_envelope=task_envelope,
-            credential_refs=task_envelope.credential_refs,
-            resource_scope_ids=task_envelope.resource_scope_ids,
-            resource_scope_prefixes=task_envelope.resource_scope_prefixes,
-            resource_scope_authority=task_envelope.resource_scope_authority,
-            untrusted_payload_action=task_envelope.untrusted_payload_action,
+            task_envelope=TaskEnvelope(
+                capability_snapshot=capability_snapshot_frozen,
+                parent_session_id="",
+                orchestrator_provenance=orchestrator_provenance,
+                audit_trail_ref="",
+                policy_snapshot_ref=policy_snapshot_ref,
+                lockdown_state_inheritance="inherit_runtime_restrictions",
+                credential_refs=tuple(credential_refs or ()),
+                resource_scope_ids=tuple(resource_scope_ids or ()),
+                resource_scope_prefixes=tuple(resource_scope_prefixes or ()),
+                untrusted_payload_action=untrusted_payload_action,
+            ),
             allowed_recipients=allowed_recipients or [],
             allowed_domains=allowed_domains or [],
             delivery_target=dict(delivery_target or {}),
@@ -268,30 +100,18 @@ class SchedulerManager:
             workspace_id=workspace_id or WorkspaceId(""),
             max_runs=max(0, int(max_runs)),
         )
-        if mismatch_reason := task.envelope_binding_mismatch_reason():
-            raise ValueError(mismatch_reason)
         self._tasks[task.id] = task
         self._persist_tasks()
         self._audit("task.create", {"task_id": task.id, "name": name, "max_runs": task.max_runs})
-        return task.model_copy(deep=True)
+        return task
 
     def list_tasks(self) -> list[ScheduledTask]:
-        self._require_state_readable("tasks", transition="list")
-        return sorted(
-            (task.model_copy(deep=True) for task in self._tasks.values()),
-            key=lambda item: item.created_at,
-            reverse=True,
-        )
+        return sorted(self._tasks.values(), key=lambda item: item.created_at, reverse=True)
 
     def get_task(self, task_id: str) -> ScheduledTask | None:
-        self._require_state_readable("tasks", transition="get")
-        task = self._tasks.get(task_id)
-        if task is None:
-            return None
-        return task.model_copy(deep=True)
+        return self._tasks.get(task_id)
 
     def disable_task(self, task_id: str) -> bool:
-        self._require_state_writable("tasks", transition="disable")
         task = self._tasks.get(task_id)
         if task is None:
             return False
@@ -302,7 +122,6 @@ class SchedulerManager:
         return True
 
     def contain_task_for_recovery(self, task_id: str, *, token: str) -> bool:
-        self._require_state_writable("tasks", transition="contain_for_recovery")
         task = self._tasks.get(task_id)
         normalized_token = token.strip()
         if task is None or not normalized_token:
@@ -320,7 +139,6 @@ class SchedulerManager:
         token: str,
         enable: bool,
     ) -> bool:
-        self._require_state_writable("tasks", transition="release_recovery_containment")
         task = self._tasks.get(task_id)
         normalized_token = token.strip()
         if task is None or not normalized_token:
@@ -338,7 +156,6 @@ class SchedulerManager:
         return True
 
     def attach_execution_session(self, task_id: str, session_id: str) -> bool:
-        self._require_state_writable("tasks", transition="attach_execution_session")
         task = self._tasks.get(task_id)
         normalized = session_id.strip()
         if task is None or not normalized:
@@ -365,7 +182,6 @@ class SchedulerManager:
         - If runtime availability is provided, requested capabilities must also be
           available at execution time.
         """
-        self._require_state_readable("tasks", transition="capability_check")
         task = self._tasks.get(task_id)
         if task is None:
             return False
@@ -382,7 +198,6 @@ class SchedulerManager:
         event_type: str,
         payload: str,
     ) -> list[TaskRunRequest]:
-        self._require_state_writable("tasks", transition="trigger_event")
         requests: list[TaskRunRequest] = []
         dirty = False
         for task in self._tasks.values():
@@ -418,10 +233,7 @@ class SchedulerManager:
         *,
         now: datetime | None = None,
     ) -> list[TaskRunRequest]:
-        self._require_state_writable("tasks", transition="trigger_due")
         current = now or datetime.now(UTC)
-        if current.tzinfo is None or current.utcoffset() is None:
-            raise ValueError("scheduler due time must be timezone-aware")
         requests: list[TaskRunRequest] = []
         dirty = False
         current_minute = current.replace(second=0, microsecond=0)
@@ -485,45 +297,7 @@ class SchedulerManager:
         return requests
 
     def queue_confirmation(self, task_id: str, action: dict[str, Any]) -> None:
-        self._require_state_writable(
-            "pending_confirmations",
-            transition="queue_confirmation",
-        )
-        if task_id not in self._tasks:
-            raise ValueError("pending confirmation task does not exist")
-        payload = copy.deepcopy(action)
-        confirmation_id = payload.get("confirmation_id")
-        if not isinstance(confirmation_id, str) or not confirmation_id.strip():
-            raise ValueError("pending confirmation requires confirmation_id")
-        confirmation_id = confirmation_id.strip()
-        payload["confirmation_id"] = confirmation_id
-        row_task_id = payload.get("task_id")
-        if row_task_id is not None and (
-            not isinstance(row_task_id, str) or row_task_id.strip() != task_id
-        ):
-            raise ValueError("pending confirmation task identity mismatch")
-        payload["task_id"] = task_id
-        raw_identity = payload.get("identity")
-        if raw_identity is None:
-            identity: dict[str, Any] = {}
-        elif isinstance(raw_identity, dict):
-            identity = dict(raw_identity)
-        else:
-            raise ValueError("pending confirmation identity must be a mapping")
-        identity_task_id = identity.get("task_id")
-        if identity_task_id is not None and (
-            not isinstance(identity_task_id, str) or identity_task_id.strip() != task_id
-        ):
-            raise ValueError("pending confirmation nested task identity mismatch")
-        identity_confirmation_id = identity.get("confirmation_id")
-        if identity_confirmation_id is not None and (
-            not isinstance(identity_confirmation_id, str)
-            or identity_confirmation_id.strip() != confirmation_id
-        ):
-            raise ValueError("pending confirmation nested confirmation identity mismatch")
-        identity["task_id"] = task_id
-        identity["confirmation_id"] = confirmation_id
-        payload["identity"] = identity
+        payload = dict(action)
         payload["status"] = str(payload.get("status", "pending") or "pending")
         payload["run_outcome_recorded"] = False
         payload.pop("run_outcome_success", None)
@@ -532,14 +306,6 @@ class SchedulerManager:
         payload["queued_at"] = (
             str(payload.get("queued_at", "")).strip() or datetime.now(UTC).isoformat()
         )
-        if not self._pending_row_is_valid(payload, task_id=task_id):
-            raise ValueError("pending confirmation has invalid retained semantics")
-        if any(
-            str(row.get("confirmation_id", "")).strip() == confirmation_id
-            for rows in self._pending_confirmations.values()
-            for row in rows
-        ):
-            raise ValueError("pending confirmation identity already exists")
         self._pending_confirmations[task_id].append(payload)
         self._prune_confirmation_rows(task_id)
         self._persist_pending_confirmations()
@@ -547,11 +313,6 @@ class SchedulerManager:
         self._audit("task.confirmation_queued", {"task_id": task_id})
 
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
-        self._require_state_writable(
-            "pending_confirmations",
-            transition="list",
-        )
-        self._require_state_writable("tasks", transition="reconcile_expiry")
         pending: list[dict[str, Any]] = []
         current = datetime.now(UTC)
         reconciled_expiry = False
@@ -587,7 +348,7 @@ class SchedulerManager:
                 reconciled_expiry = True
                 continue
             if lifecycle_state == "pending":
-                payload = copy.deepcopy(row)
+                payload = dict(row)
                 payload["lifecycle_state"] = lifecycle_state
                 pending.append(payload)
         if reconciled_expiry:
@@ -629,15 +390,7 @@ class SchedulerManager:
             task.success_count += 1
         else:
             task.failure_count += 1
-        try:
-            self._persist_tasks()
-        except AtomicWriteError as exc:
-            if not exc.publication_may_have_committed:
-                self._restore_durable_pending_confirmations()
-            raise
-        except (TypeError, ValueError):
-            self._restore_durable_pending_confirmations()
-            raise
+        self._persist_tasks()
         self._persist_pending_confirmations()
         self._prune_confirmation_outcome_dedup(task_id)
         self._audit(
@@ -664,10 +417,6 @@ class SchedulerManager:
         execution_attempt_id: str = "",
         result_id: str = "",
     ) -> bool:
-        self._require_state_writable(
-            "pending_confirmations",
-            transition="resolve_confirmation",
-        )
         rows = self._pending_confirmations.get(task_id, [])
         normalized_confirmation = confirmation_id.strip()
         normalized_status = status.strip().lower()
@@ -725,11 +474,6 @@ class SchedulerManager:
         confirmation_id: str,
         success: bool,
     ) -> bool:
-        self._require_state_writable("tasks", transition="record_confirmation_outcome")
-        self._require_state_writable(
-            "pending_confirmations",
-            transition="record_confirmation_outcome",
-        )
         normalized_confirmation = confirmation_id.strip()
         if not normalized_confirmation:
             return False
@@ -745,10 +489,6 @@ class SchedulerManager:
         *,
         confirmation_id: str,
     ) -> bool | None:
-        self._require_state_readable(
-            "pending_confirmations",
-            transition="confirmation_outcome",
-        )
         normalized_confirmation = confirmation_id.strip()
         if not normalized_confirmation:
             return None
@@ -768,10 +508,6 @@ class SchedulerManager:
     ) -> bool:
         """Return whether the scheduler has a matching effect-terminal shadow."""
 
-        self._require_state_readable(
-            "pending_confirmations",
-            transition="terminal_confirmation_shadow",
-        )
         normalized_confirmation = confirmation_id.strip()
         if not normalized_confirmation:
             return False
@@ -787,29 +523,7 @@ class SchedulerManager:
             }
         return False
 
-    def has_any_terminal_confirmation_shadow(self, task_id: str) -> bool:
-        """Return whether a task has any independently retained terminal shadow."""
-
-        self._require_state_readable(
-            "pending_confirmations",
-            transition="terminal_confirmation_shadow",
-        )
-        return any(
-            str(row.get("status", "pending") or "pending").strip().lower()
-            in {
-                "executing",
-                "approved",
-                "failed",
-                "outcome_unknown",
-            }
-            for row in self._pending_confirmations.get(task_id, [])
-        )
-
     def task_ids_for_confirmation(self, confirmation_id: str) -> list[str]:
-        self._require_state_readable(
-            "pending_confirmations",
-            transition="task_ids_for_confirmation",
-        )
         normalized_confirmation = confirmation_id.strip()
         if not normalized_confirmation:
             return []
@@ -823,7 +537,6 @@ class SchedulerManager:
         )
 
     def record_run_outcome(self, task_id: str, *, success: bool) -> bool:
-        self._require_state_writable("tasks", transition="record_run_outcome")
         task = self._tasks.get(task_id)
         if task is None:
             return False
@@ -851,11 +564,6 @@ class SchedulerManager:
         workspace_id: WorkspaceId | None = None,
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        self._require_state_readable("tasks", transition="status_snapshot")
-        self._require_state_writable(
-            "pending_confirmations",
-            transition="status_snapshot",
-        )
         current = now or datetime.now(UTC)
         tasks = sorted(
             self._tasks.values(),
@@ -1251,477 +959,77 @@ class SchedulerManager:
         if self._audit_hook is not None:
             self._audit_hook(action, payload)
 
-    def _require_state_readable(self, authority: str, *, transition: str) -> None:
-        result = self._state_load_results[authority]
-        if result.status not in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            return
-        raise StatePersistenceDegradedError(
-            authority=f"scheduler.{authority}",
-            transition=transition,
-            stage="load",
-            reason=result.reason or result.status.value,
-        )
-
-    def _require_state_writable(self, authority: str, *, transition: str) -> None:
-        self._require_state_readable(authority, transition=transition)
-        degradation = self._state_persistence_degradation.get(authority)
-        if degradation is None:
-            return
-        raise StatePersistenceDegradedError(
-            authority=f"scheduler.{authority}",
-            transition=transition,
-            stage=degradation.stage.value,
-            reason="prior_publication_commit_uncertain",
-        )
-
-    @staticmethod
-    def _clone_tasks(tasks: Mapping[str, ScheduledTask]) -> dict[str, ScheduledTask]:
-        return {task_id: task.model_copy(deep=True) for task_id, task in tasks.items()}
-
-    @staticmethod
-    def _clone_pending_confirmations(
-        pending: Mapping[str, list[dict[str, Any]]],
-    ) -> defaultdict[str, list[dict[str, Any]]]:
-        cloned: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
-        for task_id, rows in pending.items():
-            cloned[task_id] = copy.deepcopy(rows)
-        return cloned
-
-    def _restore_durable_tasks(self) -> None:
-        self._tasks = self._clone_tasks(self._durable_tasks)
-
-    def _restore_durable_pending_confirmations(self) -> None:
-        self._pending_confirmations = self._clone_pending_confirmations(
-            self._durable_pending_confirmations
-        )
-
-    @staticmethod
-    def _semantic_corruption_result(
-        result: StateLoadResult,
-        reason: str,
-    ) -> StateLoadResult:
-        return StateLoadResult(
-            StateLoadStatus.CORRUPT,
-            reason=reason,
-            schema_version=result.schema_version,
-            legacy=result.legacy,
-        )
-
     def _persist_tasks(self) -> None:
         if self._tasks_file is None:
             return
-        try:
-            self._require_state_writable("tasks", transition="persist")
-        except StatePersistenceDegradedError:
-            self._restore_durable_tasks()
-            raise
-        try:
-            payload: list[dict[str, Any]] = []
-            validated_tasks: dict[str, ScheduledTask] = {}
-            for task_id, task in self._tasks.items():
-                for field in ("trigger_count", "success_count", "failure_count", "max_runs"):
-                    value = getattr(task, field)
-                    if type(value) is not int or value < 0:
-                        raise ValueError(f"scheduled task {field} must be a nonnegative integer")
-                if type(task.enabled) is not bool:
-                    raise ValueError("scheduled task enabled must be a native boolean")
-                validated = ScheduledTask.model_validate(task.model_dump(mode="python"))
-                if validated.id != task_id:
-                    raise ValueError("scheduled task id does not match retained key")
-                if mismatch_reason := validated.envelope_binding_mismatch_reason():
-                    raise ValueError(mismatch_reason)
-                self._validate_schedule(validated.schedule)
-                outcome_dedup = task.confirmation_outcome_dedup
-                if not isinstance(outcome_dedup, dict):
-                    raise ValueError("invalid scheduled task confirmation outcome map")
-                if any(
-                    not isinstance(confirmation_id, str)
-                    or not confirmation_id.strip()
-                    or type(outcome) is not bool
-                    for confirmation_id, outcome in outcome_dedup.items()
-                ):
-                    raise ValueError("invalid scheduled task confirmation outcome identity")
-                validated.confirmation_outcome_dedup = {
-                    confirmation_id.strip(): outcome
-                    for confirmation_id, outcome in outcome_dedup.items()
-                }
-                token = task.recovery_containment_token
-                if not isinstance(token, str):
-                    raise ValueError("invalid scheduled task recovery containment token")
-                validated.recovery_containment_token = token.strip()
-                task_payload = validated.model_dump(mode="json")
-                if validated.confirmation_outcome_dedup:
-                    task_payload["_confirmation_outcome_dedup"] = dict(
-                        validated.confirmation_outcome_dedup
-                    )
-                if validated.recovery_containment_token:
-                    task_payload["_recovery_containment_token"] = (
-                        validated.recovery_containment_token
-                    )
-                payload.append(task_payload)
-                validated_tasks[task_id] = validated
-            snapshot = encode_versioned_json_snapshot(
-                payload,
-                version=_SCHEDULER_STATE_VERSION,
-            )
-        except (TypeError, ValueError):
-            self._restore_durable_tasks()
-            raise
-        try:
-            atomic_write_bytes(
-                self._tasks_file,
-                snapshot,
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            if exc.publication_may_have_committed:
-                self._state_persistence_degradation["tasks"] = exc
-            else:
-                self._restore_durable_tasks()
-            raise
-        self._tasks = validated_tasks
-        self._durable_tasks = self._clone_tasks(validated_tasks)
-        self._state_load_results["tasks"] = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_SCHEDULER_STATE_VERSION,
-        )
+        payload: list[dict[str, Any]] = []
+        for task in self._tasks.values():
+            task_payload = task.model_dump(mode="json")
+            if task.confirmation_outcome_dedup:
+                task_payload["_confirmation_outcome_dedup"] = dict(task.confirmation_outcome_dedup)
+            if task.recovery_containment_token:
+                task_payload["_recovery_containment_token"] = task.recovery_containment_token
+            payload.append(task_payload)
+        self._tasks_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _load_tasks(self) -> None:
-        if self._tasks_file is None:
+        if self._tasks_file is None or not self._tasks_file.exists():
             return
         try:
-            raw_bytes = read_owner_only_regular_file(self._tasks_file)
-        except OSError:
-            self._state_load_results["tasks"] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="read_error",
-            )
+            raw = json.loads(self._tasks_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return
-        if raw_bytes is None:
-            self._state_load_results["tasks"] = StateLoadResult(StateLoadStatus.MISSING)
-            self._durable_tasks = {}
+        if not isinstance(raw, list):
             return
-        document_result, raw = decode_json_document(raw_bytes)
-        result: StateLoadResult
-        payload: Any
-        if document_result.status is not StateLoadStatus.OK:
-            result = document_result
-            payload = None
-        elif isinstance(raw, list):
-            result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            payload = raw
-        else:
-            result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_SCHEDULER_STATE_VERSION,
-            )
-        if result.status != StateLoadStatus.OK:
-            self._state_load_results["tasks"] = result
-            return
-        if not isinstance(payload, list):
-            self._state_load_results["tasks"] = self._semantic_corruption_result(
-                result,
-                "invalid_tasks_payload",
-            )
-            return
-        restored: dict[str, ScheduledTask] = {}
-        for item in payload:
+        for item in raw:
             if not isinstance(item, dict):
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_row",
-                )
-                return
-            retained_task_fields = (
-                set(ScheduledTask.model_fields)
-                - {"confirmation_outcome_dedup", "recovery_containment_token"}
-            ) | {"_confirmation_outcome_dedup", "_recovery_containment_token"}
-            if not set(item).issubset(retained_task_fields):
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_row",
-                )
-                return
-            counter_fields = ("trigger_count", "success_count", "failure_count", "max_runs")
-            if any(
-                type(item.get(field, 0)) is not int or item.get(field, 0) < 0
-                for field in counter_fields
-            ):
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_counters",
-                )
-                return
-            if type(item.get("enabled", True)) is not bool:
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_enabled",
-                )
-                return
+                continue
             try:
-                task = ScheduledTask.model_validate(
-                    {
-                        key: value
-                        for key, value in item.items()
-                        if key
-                        not in {
-                            "_confirmation_outcome_dedup",
-                            "_recovery_containment_token",
-                        }
-                    }
-                )
+                task = ScheduledTask.model_validate(item)
             except ValidationError:
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_row",
-                )
-                return
-            if mismatch_reason := task.envelope_binding_mismatch_reason():
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    mismatch_reason,
-                )
-                return
-            try:
-                self._validate_schedule(task.schedule)
-            except ValueError:
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_schedule",
-                )
-                return
+                continue
             outcome_dedup = item.get("_confirmation_outcome_dedup", {})
-            if not isinstance(outcome_dedup, dict):
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_outcome_dedup",
-                )
-                return
-            if any(
-                not isinstance(confirmation_id, str)
-                or not confirmation_id.strip()
-                or not isinstance(outcome, bool)
-                for confirmation_id, outcome in outcome_dedup.items()
-            ):
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_task_outcome_dedup",
-                )
-                return
-            task.confirmation_outcome_dedup = {
-                confirmation_id.strip(): outcome
-                for confirmation_id, outcome in outcome_dedup.items()
-                if isinstance(confirmation_id, str)
-                and confirmation_id.strip()
-                and isinstance(outcome, bool)
-            }
+            if isinstance(outcome_dedup, dict):
+                task.confirmation_outcome_dedup = {
+                    confirmation_id.strip(): outcome
+                    for confirmation_id, outcome in outcome_dedup.items()
+                    if isinstance(confirmation_id, str)
+                    and confirmation_id.strip()
+                    and isinstance(outcome, bool)
+                }
             recovery_containment_token = item.get("_recovery_containment_token", "")
-            if not isinstance(recovery_containment_token, str):
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "invalid_recovery_containment_token",
-                )
-                return
-            task.recovery_containment_token = recovery_containment_token.strip()
-            if task.id in restored:
-                self._state_load_results["tasks"] = self._semantic_corruption_result(
-                    result,
-                    "duplicate_task_id",
-                )
-                return
-            restored[task.id] = task
-        self._tasks = restored
-        self._durable_tasks = self._clone_tasks(restored)
-        self._state_load_results["tasks"] = result
+            if isinstance(recovery_containment_token, str):
+                task.recovery_containment_token = recovery_containment_token.strip()
+            self._tasks[task.id] = task
 
     def _persist_pending_confirmations(self) -> None:
         if self._pending_file is None:
             return
-        try:
-            self._require_state_writable(
-                "pending_confirmations",
-                transition="persist",
-            )
-        except StatePersistenceDegradedError:
-            self._restore_durable_pending_confirmations()
-            raise
         payload = {task_id: rows for task_id, rows in self._pending_confirmations.items()}
-        try:
-            snapshot = encode_versioned_json_snapshot(
-                payload,
-                version=_SCHEDULER_STATE_VERSION,
-            )
-        except (TypeError, ValueError):
-            self._restore_durable_pending_confirmations()
-            raise
-        try:
-            atomic_write_bytes(
-                self._pending_file,
-                snapshot,
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            if exc.publication_may_have_committed:
-                self._state_persistence_degradation["pending_confirmations"] = exc
-            else:
-                self._restore_durable_pending_confirmations()
-            raise
-        self._durable_pending_confirmations = self._clone_pending_confirmations(
-            self._pending_confirmations
-        )
-        self._state_load_results["pending_confirmations"] = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_SCHEDULER_STATE_VERSION,
-        )
+        self._pending_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _load_pending_confirmations(self) -> bool:
-        if self._pending_file is None:
+        if self._pending_file is None or not self._pending_file.exists():
             return False
         try:
-            raw_bytes = read_owner_only_regular_file(self._pending_file)
-        except OSError:
-            self._state_load_results["pending_confirmations"] = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="read_error",
-            )
+            raw = json.loads(self._pending_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return False
-        if raw_bytes is None:
-            self._state_load_results["pending_confirmations"] = StateLoadResult(
-                StateLoadStatus.MISSING
-            )
-            self._durable_pending_confirmations = defaultdict(list)
+        if not isinstance(raw, dict):
             return False
-        document_result, raw = decode_json_document(raw_bytes)
-        result: StateLoadResult
-        payload: Any
-        if document_result.status is not StateLoadStatus.OK:
-            result = document_result
-            payload = None
-        elif isinstance(raw, dict) and not {
-            "version",
-            "checksum",
-            "payload",
-        }.intersection(raw):
-            result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            payload = raw
-        else:
-            result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_SCHEDULER_STATE_VERSION,
-            )
-        if result.status != StateLoadStatus.OK:
-            self._state_load_results["pending_confirmations"] = result
-            return False
-        if not isinstance(payload, dict):
-            self._state_load_results["pending_confirmations"] = self._semantic_corruption_result(
-                result,
-                "invalid_pending_payload",
-            )
-            return False
+        authoritative = True
         restored: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
-        confirmation_ids: set[str] = set()
-        for task_id, rows in payload.items():
-            if not isinstance(task_id, str) or not task_id.strip():
-                self._state_load_results["pending_confirmations"] = (
-                    self._semantic_corruption_result(
-                        result,
-                        "invalid_pending_task_id",
-                    )
-                )
-                return False
-            if task_id not in self._tasks:
-                self._state_load_results["pending_confirmations"] = (
-                    self._semantic_corruption_result(
-                        result,
-                        "unknown_pending_task",
-                    )
-                )
-                return False
+        for task_id, rows in raw.items():
+            if not isinstance(task_id, str):
+                authoritative = False
+                continue
             if not isinstance(rows, list):
-                self._state_load_results["pending_confirmations"] = (
-                    self._semantic_corruption_result(
-                        result,
-                        "invalid_pending_rows",
-                    )
-                )
-                return False
-            for item in rows:
-                if not isinstance(item, dict) or not self._pending_row_is_valid(
-                    item,
-                    task_id=task_id,
-                ):
-                    self._state_load_results["pending_confirmations"] = (
-                        self._semantic_corruption_result(
-                            result,
-                            "invalid_pending_row",
-                        )
-                    )
-                    return False
-                confirmation_id = item["confirmation_id"].strip()
-                if item.get("run_outcome_recorded") is True:
-                    task_outcome = self._tasks[task_id].confirmation_outcome_dedup.get(
-                        confirmation_id
-                    )
-                    if task_outcome is None or task_outcome is not item.get("run_outcome_success"):
-                        self._state_load_results["pending_confirmations"] = (
-                            self._semantic_corruption_result(
-                                result,
-                                "invalid_pending_outcome_state",
-                            )
-                        )
-                        return False
-                if confirmation_id in confirmation_ids:
-                    self._state_load_results["pending_confirmations"] = (
-                        self._semantic_corruption_result(
-                            result,
-                            "duplicate_pending_confirmation",
-                        )
-                    )
-                    return False
-                confirmation_ids.add(confirmation_id)
-            if rows:
-                restored[task_id] = copy.deepcopy(rows)
+                authoritative = False
+                continue
+            cleaned_rows = [item for item in rows if isinstance(item, dict)]
+            if len(cleaned_rows) != len(rows):
+                authoritative = False
+            if cleaned_rows:
+                restored[task_id] = cleaned_rows
         self._pending_confirmations = restored
-        self._durable_pending_confirmations = self._clone_pending_confirmations(restored)
-        self._state_load_results["pending_confirmations"] = result
-        return True
-
-    @staticmethod
-    def _pending_row_is_valid(row: dict[str, Any], *, task_id: str) -> bool:
-        confirmation_id = row.get("confirmation_id")
-        if not isinstance(confirmation_id, str) or not confirmation_id.strip():
-            return False
-        for field in _PENDING_STRING_FIELDS:
-            if field in row and not isinstance(row[field], str):
-                return False
-        row_task_id = row.get("task_id")
-        if not isinstance(row_task_id, str) or row_task_id.strip() != task_id:
-            return False
-        for field in ("run_outcome_recorded", "run_outcome_success"):
-            if field in row and not isinstance(row[field], bool):
-                return False
-        if row.get("run_outcome_recorded") is True and not isinstance(
-            row.get("run_outcome_success"),
-            bool,
-        ):
-            return False
-        identity = row.get("identity")
-        if not isinstance(identity, dict):
-            return False
-        for field in _PENDING_IDENTITY_STRING_FIELDS:
-            if field in identity and not isinstance(identity[field], str):
-                return False
-        delivery_target = identity.get("delivery_target")
-        if delivery_target is not None and not isinstance(delivery_target, dict):
-            return False
-        identity_task_id = identity.get("task_id")
-        if not isinstance(identity_task_id, str) or identity_task_id.strip() != task_id:
-            return False
-        identity_confirmation_id = identity.get("confirmation_id")
-        return (
-            isinstance(identity_confirmation_id, str)
-            and identity_confirmation_id.strip() == confirmation_id.strip()
-        )
+        return authoritative

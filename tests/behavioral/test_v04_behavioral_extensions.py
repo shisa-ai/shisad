@@ -337,7 +337,7 @@ async def test_behavioral_soul_config_path_loads_and_admin_update_refreshes_plan
     monkeypatch.setattr(Planner, "propose", _capture_persona)
     soul_path = tmp_path / "SOUL.md"
     soul_path.write_text("Prefer concise answers.", encoding="utf-8")
-    daemon_task, client, config = await _start_daemon(
+    daemon_task, client, _config = await _start_daemon(
         tmp_path,
         config_overrides={
             "assistant_fs_roots": [tmp_path],
@@ -364,23 +364,12 @@ async def test_behavioral_soul_config_path_loads_and_admin_update_refreshes_plan
             "fs.write",
             {"path": str(soul_path), "content": "attacker persona", "confirm": True},
         )
-        blocked_data_write = await client.call(
-            "fs.write",
-            {
-                "path": str(config.data_dir / "attacker.json"),
-                "content": "attacker control state",
-                "confirm": True,
-            },
-        )
         await client.call("session.message", {"session_id": sid, "content": "hello again"})
 
         assert updated["updated"] is True
         assert "project_specific_memory_route_recommended" in updated["warnings"]
         assert blocked_write["ok"] is False
         assert blocked_write["error"] == "protected_control_plane_path"
-        assert blocked_data_write["ok"] is False
-        assert blocked_data_write["error"] == "protected_control_plane_path"
-        assert not (config.data_dir / "attacker.json").exists()
         assert "Prefer concise answers." not in captured_persona_text[-1]
         assert "prefer calm release-note wording" in captured_persona_text[-1]
     finally:

@@ -26,7 +26,6 @@ from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
 from shisad.memory.events import MemoryEvent, MemoryEventStore
 from shisad.memory.schema import MemoryScope
-from shisad.memory.sqlite_security import secure_sqlite_connect
 from shisad.memory.surfaces import (
     RecallPack,
     SufficiencyReport,
@@ -263,6 +262,7 @@ class IngestionPipeline:
         allow_embedding_fallback: bool = True,
     ) -> None:
         self._storage_dir = storage_dir
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._legacy_storage_dir = legacy_storage_dir
         self._db_path = self._storage_dir / "memory.sqlite3"
         self._backend = SQLiteRetrievalBackend(self._db_path)
@@ -1578,7 +1578,7 @@ class IngestionPipeline:
                     existing_chunk_ids.add(record.chunk_id)
 
     def _connect_db(self) -> sqlite3.Connection:
-        conn = secure_sqlite_connect(self._db_path)
+        conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

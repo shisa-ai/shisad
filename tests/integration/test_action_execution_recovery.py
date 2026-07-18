@@ -16,12 +16,7 @@ from shisad.core.approval import (
     canonical_sha256,
     legacy_software_confirmation_requirement,
 )
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteStage,
-    StateLoadStatus,
-    decode_versioned_json_snapshot,
-)
+from shisad.core.atomic_state import AtomicWriteError, AtomicWriteStage
 from shisad.core.config import DaemonConfig
 from shisad.core.events import ToolRejected
 from shisad.core.request_context import RequestContext
@@ -83,27 +78,6 @@ def _control_plane_history_rows(config: DaemonConfig) -> list[dict[str, object]]
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _control_plane_plans(config: DaemonConfig) -> dict[str, dict[str, object]]:
-    envelope = json.loads(
-        (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
-    )
-    assert envelope["version"] == 1
-    payload = envelope["payload"]
-    assert isinstance(payload, dict)
-    return payload
-
-
-def _pending_rows(path: Path) -> list[dict[str, object]]:
-    raw_bytes = path.read_bytes()
-    raw_payload = json.loads(raw_bytes)
-    if isinstance(raw_payload, list):
-        return raw_payload
-    load_result, payload = decode_versioned_json_snapshot(raw_bytes, supported_version=1)
-    assert load_result.status == StateLoadStatus.OK
-    assert isinstance(payload, list)
-    return payload
 
 
 def _replace_with_self_asserted_fabricated_evidence(row: dict[str, object]) -> None:
@@ -489,7 +463,7 @@ async def test_terminal_recovery_accounting_rejects_coherent_authority_drift(
         await restarted.shutdown()
 
     if mutation_phase == "durable":
-        durable_rows = _pending_rows(pending_path)
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
         if surface == "preflight":
             durable["preflight_action"]["resource_ids"] = ["forged://resource"]
@@ -667,7 +641,9 @@ async def test_terminal_purge_waits_for_recovery_accounting_convergence(
         assert blocked_purge["purged"] == 0
         assert blocked_purge["confirmation_ids"] == []
         assert impl._pending_actions.get(confirmation_id) is recovered
-        durable_rows = _pending_rows(config.data_dir / "pending_actions.json")
+        durable_rows = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )
         durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
         assert durable["recovery_accounting_pending"] is True
 
@@ -712,7 +688,7 @@ async def test_unsigned_predecision_recovery_marker_cannot_be_trust_laundered(
         await services.shutdown()
 
     pending_path = config.data_dir / "pending_actions.json"
-    durable_rows = _pending_rows(pending_path)
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
     durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
     durable["recovery_event_identity_untrusted"] = True
     durable["recovery_event_identity_untrusted_at"] = "2000-01-01T00:00:00+00:00"
@@ -977,7 +953,7 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
         async def _crash_after_effect(**_kwargs: object) -> object:
             nonlocal effect_calls
             if pending_path.exists():
-                durable_before_effect.extend(_pending_rows(pending_path))
+                durable_before_effect.extend(json.loads(pending_path.read_text(encoding="utf-8")))
             effect_calls += 1
             effect_started.set()
             if cancel_execution:
@@ -1030,7 +1006,11 @@ async def test_direct_scheduled_effect_has_durable_attempt_before_delivery_and_c
             if row.get("execution_status") == "outcome_unknown"
         ]
         assert len(execution_rows) == 1
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
         assert plans[str(execution_rows[0]["session_id"])]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -1102,7 +1082,7 @@ async def test_allowed_immediate_effect_has_durable_attempt_before_delivery_and_
     class _EffectDelivery:
         async def send(self, **_kwargs: object) -> object:
             durable_before_effect.extend(
-                _pending_rows(pending_path)
+                json.loads(pending_path.read_text(encoding="utf-8"))
             )
             effect_started.set()
             if cancel_execution:
@@ -1175,7 +1155,7 @@ async def test_allowed_immediate_effect_has_durable_attempt_before_delivery_and_
         assert pending.status_reason == "uncertain_effect_requires_fresh_approval"
         assert pending.recovery_effect_invoked is True
         assert pending.recovery_accounting_pending is True
-        durable_after_containment = _pending_rows(pending_path)
+        durable_after_containment = json.loads(pending_path.read_text(encoding="utf-8"))
         assert durable_after_containment[0]["status"] == "outcome_unknown"
     finally:
         await services.shutdown()
@@ -1244,7 +1224,9 @@ async def test_allowed_immediate_structural_read_recovers_authenticated_policy_a
                 persist_attempt_before_effect=True,
             )
 
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         confirmation_id = str(durable["confirmation_id"])
         assert durable["status"] == "executing"
         assert durable["status_reason"] == f"{approval_actor}_execution_started"
@@ -1355,7 +1337,9 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
                 persist_attempt_before_effect=True,
             )
 
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         confirmation_id = str(durable["confirmation_id"])
         stable_key = str(durable["stable_idempotency_key"])
         assert durable["status"] == "executing"
@@ -1375,7 +1359,7 @@ async def test_allowed_immediate_stable_key_recovers_authenticated_policy_allow(
 
     if restart_posture == "tampered":
         pending_path = config.data_dir / "pending_actions.json"
-        durable_rows = _pending_rows(pending_path)
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         durable_rows[0]["execution_authorization_kind"] = ""
         pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
 
@@ -1481,7 +1465,11 @@ async def test_confirmed_post_effect_exception_accounts_uncertain_effect(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -1566,7 +1554,9 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
 
         durable = next(
             row
-            for row in _pending_rows(config.data_dir / "pending_actions.json")
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
             if row["task_id"] == task.id
         )
         assert durable["status"] == (
@@ -1590,7 +1580,7 @@ async def test_direct_scheduled_terminal_write_failure_disables_before_pump_retr
 
     if authority_tamper != "none":
         pending_path = config.data_dir / "pending_actions.json"
-        durable_rows = _pending_rows(pending_path)
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         durable = next(row for row in durable_rows if row["task_id"] == task.id)
         durable["recovery_authority_mac"] = (
             "" if authority_tamper == "missing_mac" else "sha256:" + ("0" * 64)
@@ -1745,7 +1735,9 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
 
         durable = next(
             row
-            for row in _pending_rows(config.data_dir / "pending_actions.json")
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
             if row["confirmation_id"] == pending.confirmation_id
         )
         assert durable["status"] == "approved"
@@ -1758,7 +1750,7 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
 
     if authority_tamper != "none":
         pending_path = config.data_dir / "pending_actions.json"
-        durable_rows = _pending_rows(pending_path)
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         durable = next(
             row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id
         )
@@ -1788,7 +1780,9 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
                 assert len(cancellation_tasks) == 1
                 with pytest.raises(AtomicWriteError):
                     await asyncio.gather(*cancellation_tasks)
-                durable_rows = _pending_rows(config.data_dir / "pending_actions.json")
+                durable_rows = json.loads(
+                    (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+                )
                 durable_recovered = next(
                     row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id
                 )
@@ -1822,7 +1816,9 @@ async def test_confirmed_scheduled_terminal_state_reconciles_run_accounting_once
             assert scheduler_row["run_outcome_success"] is True
             durable = next(
                 row
-                for row in _pending_rows(config.data_dir / "pending_actions.json")
+                for row in json.loads(
+                    (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+                )
                 if row["confirmation_id"] == pending.confirmation_id
             )
             assert durable["scheduler_accounting_pending"] is False
@@ -1917,7 +1913,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
             ),
             max_runs=1,
         )
-        if corruption in {"task_mismatch", "confirmation_both_missing"}:
+        if "task_mismatch" in corruption_parts:
             decoy = services.scheduler.create_task(
                 name=f"terminal-corruption-decoy-{producer}",
                 goal="Do not account the original effect here",
@@ -1994,7 +1990,9 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
 
         durable = next(
             row
-            for row in _pending_rows(config.data_dir / "pending_actions.json")
+            for row in json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
             if row["confirmation_id"] == pending.confirmation_id
         )
         assert durable["status"] == "approved"
@@ -2007,7 +2005,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         await services.shutdown()
 
     pending_path = config.data_dir / "pending_actions.json"
-    durable_rows = _pending_rows(pending_path)
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
     durable = next(row for row in durable_rows if row["confirmation_id"] == pending.confirmation_id)
     if corruption_parts & {"marker", "marker_and_identity"}:
         durable["scheduler_accounting_pending"] = "not-a-boolean"
@@ -2090,7 +2088,7 @@ async def test_scheduled_terminal_accounting_intent_survives_corrupt_recovery_me
         if not unrecoverable_confirmation:
             durable = next(
                 row
-                for row in _pending_rows(pending_path)
+                for row in json.loads(pending_path.read_text(encoding="utf-8"))
                 if row["confirmation_id"] == pending.confirmation_id
             )
             assert durable["scheduler_accounting_pending"] is False
@@ -2260,7 +2258,7 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_trusted_marker
     config = _config(tmp_path)
     confirmation_id, _task_id = await _seed_unresolved_scheduled_time_attempt(config)
     pending_path = config.data_dir / "pending_actions.json"
-    durable_rows = _pending_rows(pending_path)
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
     durable = next(row for row in durable_rows if row["confirmation_id"] == confirmation_id)
     durable["confirmation_evidence"]["level"] = "not-a-confirmation-level"
     pending_path.write_text(json.dumps(durable_rows, indent=2), encoding="utf-8")
@@ -2292,7 +2290,7 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_trusted_marker
         assert len(recovery_rejections) == 1
         durable = next(
             row
-            for row in _pending_rows(pending_path)
+            for row in json.loads(pending_path.read_text(encoding="utf-8"))
             if row["confirmation_id"] == confirmation_id
         )
         trusted_marker_timestamp = str(durable["recovery_event_identity_untrusted_at"])
@@ -2320,7 +2318,7 @@ async def test_corrupt_confirmation_evidence_recovery_replay_uses_trusted_marker
         assert recovery_rejections[0].get("data", {}).get("approval_confirmation_id") == ""
         durable = next(
             row
-            for row in _pending_rows(pending_path)
+            for row in json.loads(pending_path.read_text(encoding="utf-8"))
             if row["confirmation_id"] == confirmation_id
         )
         assert durable["recovery_accounting_pending"] is False
@@ -2403,7 +2401,9 @@ async def test_time_now_structural_read_unresolved_attempt_retries_automatically
                 }
             )
 
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         assert durable["status"] == "executing"
         assert len(clock_calls) == 1
     finally:
@@ -2615,7 +2615,9 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
         with pytest.raises(expected_error):
             await asyncio.gather(*accounting_tasks)
 
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         assert durable["recovery_accounting_pending"] is True
         first_recovery_audit = [
             row
@@ -2675,7 +2677,9 @@ async def test_recovery_accounting_replay_is_idempotent_and_task_is_precontained
         ]
         assert len(total_control) == 1
         assert len({row["idempotency_key"] for row in total_control}) == 1
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         assert durable["recovery_accounting_pending"] is False
     finally:
         await replayed.shutdown()
@@ -2798,7 +2802,9 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
         assert public["uncertainty_evidence"]["execution_attempt_id"] == execution_attempt_id
         assert public["manual_retry"]["requires_fresh_approval"] is True
         assert public["manual_retry"]["reuse_confirmation_id"] is False
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         assert durable["status"] == "outcome_unknown"
         assert durable["execution_attempt_id"] == execution_attempt_id
         execution_rows = [
@@ -2808,7 +2814,11 @@ async def test_arbitrary_web_fetch_crash_never_auto_retries(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -2964,7 +2974,11 @@ async def test_authenticated_stable_retry_drift_accounts_uncertain_effect(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(
+                encoding="utf-8"
+            )
+        )
         assert plans[str(session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -3123,7 +3137,7 @@ async def test_time_now_recovery_rejects_drift_exhaustion_and_principal_mismatch
         await services.shutdown()
 
     pending_path = config.data_dir / "pending_actions.json"
-    durable_rows = _pending_rows(pending_path)
+    durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
     if tamper == "descriptor_schema_hash":
         durable_rows[0]["retry_descriptor"]["tool_schema_hash"] = "sha256:" + ("0" * 64)
     elif tamper == "missing_descriptor":
@@ -3415,7 +3429,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
                 }
             )
 
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         stable_key = str(durable["stable_idempotency_key"])
         assert durable["status"] == "executing"
         assert stable_key.startswith("shisad-")
@@ -3432,7 +3448,7 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
 
     if recovery_case in {"changed-key", "fabricated-evidence"}:
         pending_path = config.data_dir / "pending_actions.json"
-        durable_rows = _pending_rows(pending_path)
+        durable_rows = json.loads(pending_path.read_text(encoding="utf-8"))
         if recovery_case == "changed-key":
             durable_rows[0]["stable_idempotency_key"] = stable_key + "-changed"
         else:
@@ -3465,7 +3481,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
             public = restarted_handlers._impl._pending_to_dict(recovered, public=True)
             assert "recovery_scheduler_posture_captured" not in public
             assert "recovery_scheduler_restore_enabled" not in public
-            precontained_rows = _pending_rows(config.data_dir / "pending_actions.json")
+            precontained_rows = json.loads(
+                (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+            )
             assert precontained_rows[0]["recovery_scheduler_posture_captured"] is True
             assert precontained_rows[0]["recovery_scheduler_restore_enabled"] is (
                 not disable_before_restart
@@ -3565,7 +3583,9 @@ async def test_stable_idempotency_key_recovery_reuses_key_without_duplicate_effe
         assert len(all_execution_records) == 1
         expected_initial_status = "failed" if recovery_case == "failure-then-success" else "success"
         assert all_execution_records[0].get("execution_status") == expected_initial_status
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
         assert plans[str(recovered.session_id)]["executed_actions"] == (
             0 if expected_initial_status == "failed" else 1
         )
@@ -3725,7 +3745,9 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
         assert pending.decision_nonce == ""
         assert len(calls) == 1
         assert logical_effects == {calls[0]}
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         assert durable["status"] == "outcome_unknown"
         public = impl._pending_to_dict(pending, public=True)
         assert public["manual_retry"]["requires_fresh_approval"] is True
@@ -3743,7 +3765,9 @@ async def test_initial_stable_key_adapter_exception_preserves_outcome_unknown(
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
         assert plans[str(session_id)]["executed_actions"] == 1
         executed_audits = [
             row
@@ -3848,10 +3872,14 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
                 }
             )
 
-        durable = _pending_rows(config.data_dir / "pending_actions.json")[0]
+        durable = json.loads(
+            (config.data_dir / "pending_actions.json").read_text(encoding="utf-8")
+        )[0]
         assert durable["status"] == "executing"
         assert _control_plane_history_rows(config) == []
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
         assert plans[str(session_id)]["executed_actions"] == 0
         assert len(calls) == 1
         assert len(logical_effects) == 1
@@ -3878,7 +3906,9 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
         ]
         assert len(execution_rows) == 1
         assert execution_rows[0]["execution_status"] == "outcome_unknown"
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
         assert plans[str(recovered.session_id)]["executed_actions"] == 1
         recovery_audits = [
             row
@@ -3918,7 +3948,9 @@ async def test_recovered_stable_key_ambiguity_without_prior_status_consumes_trac
                 if row.get("tool_name") == str(tool_name)
             ]
         ) == 1
-        plans = _control_plane_plans(config)
+        plans = json.loads(
+            (config.data_dir / "control_plane" / "plans.json").read_text(encoding="utf-8")
+        )
         assert plans[str(pending.session_id)]["executed_actions"] == 1
         assert len(calls) == 2
     finally:

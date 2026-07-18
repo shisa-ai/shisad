@@ -12,7 +12,6 @@ from pydantic import (
     Field,
     StrictInt,
     StrictStr,
-    field_validator,
     model_validator,
 )
 
@@ -1800,18 +1799,10 @@ class ChannelMessageParams(_StrictParams):
     external_user_id: str
     workspace_hint: str = ""
     content: str
-    message_id: str
+    message_id: str = ""
     reply_target: str = ""
     thread_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("message_id")
-    @classmethod
-    def _require_replay_id(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("message_id must not be blank")
-        return normalized
 
 
 class ChannelIngestParams(_StrictParams):
@@ -1839,17 +1830,6 @@ class ChannelPairingProposalResult(BaseModel):
     count: int = 0
     config_patch: dict[str, list[str]] = Field(default_factory=dict)
     applied: bool = False
-
-
-class ChannelReplayRebaselineParams(_StrictParams):
-    channel: Literal["telegram", "slack", "discord", "matrix", "direct"]
-    confirm: bool = False
-
-
-class ChannelReplayRebaselineResult(BaseModel):
-    status: str
-    channel: str
-    files_removed: int = 0
 
 
 class ActionPendingParams(_StrictParams):
@@ -2321,15 +2301,8 @@ class DaemonStatusResult(BaseModel):
     yara_policy_required: bool = False
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
-    authority: dict[str, Any] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)
-    pairing_requests: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
-    approvals: dict[str, Any] = Field(default_factory=dict)
-    skills: dict[str, Any] = Field(default_factory=dict)
-    dashboard: dict[str, Any] = Field(default_factory=dict)
-    evidence: dict[str, Any] = Field(default_factory=dict)
-    control_plane: dict[str, Any] = Field(default_factory=dict)
     executors: dict[str, Any] = Field(default_factory=dict)
     selfmod: dict[str, Any] = Field(default_factory=dict)
     realitycheck: dict[str, Any] = Field(default_factory=dict)

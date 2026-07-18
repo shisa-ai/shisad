@@ -97,12 +97,6 @@ bash runner/harness.sh stop
 bash runner/harness.sh restart
 ```
 
-`stop` does not unlink an unproven control path when the shutdown RPC fails.
-The daemon/server removes only the owner socket identity it created; a later
-start removes an existing socket only after proving that same owner socket is
-stale. An unrelated file or an active/unproven socket is preserved for operator
-inspection.
-
 ## Isolated Dev Instances
 
 To run a second harness instance without disturbing an existing daemon,
@@ -120,13 +114,6 @@ SHISAD_POLICY_PATH=/tmp/shisad-feature-policy.yaml \
 
 The `RUNNER_INHERIT_SHISAD_ENV=1` flag tells the harness to keep your
 shell's `SHISAD_*` values instead of clearing them.
-
-For a custom socket path, every existing parent component must be a real
-directory rather than a symlink and must not be group/world-writable unless it
-is a shared sticky directory such as `/tmp`. Every component must belong to
-root or the current user; root-owned `/tmp` is admitted, but a sticky directory
-owned by another user is not. Missing parents are left for the daemon's secure
-owner-only creation path.
 
 ## Web Search Backend
 

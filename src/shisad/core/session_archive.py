@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import stat
 import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO
+from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -61,105 +59,6 @@ _UNTRUSTED_TRANSCRIPT_CONTROL_METADATA = frozenset(
         "lockdown_trigger",
     }
 )
-
-
-def _is_shared_sticky_directory(path_stat: os.stat_result) -> bool:
-    return bool(path_stat.st_mode & stat.S_ISVTX) and bool(path_stat.st_mode & 0o002)
-
-
-def _normalize_archive_path(path: Path) -> Path:
-    return Path(os.path.abspath(os.fspath(path.expanduser())))
-
-
-def _prepare_archive_directory(path: Path, *, restrict_existing: bool) -> None:
-    absolute = _normalize_archive_path(path)
-    chain = list(reversed((absolute, *absolute.parents)))
-    expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    created: set[Path] = set()
-    for directory in chain:
-        try:
-            directory_stat = directory.lstat()
-        except FileNotFoundError:
-            os.mkdir(directory, 0o700)
-            created.add(directory)
-            directory_stat = directory.lstat()
-        if stat.S_ISLNK(directory_stat.st_mode):
-            raise OSError(f"archive directory has symlink ancestry: {directory}")
-        if not stat.S_ISDIR(directory_stat.st_mode):
-            raise NotADirectoryError(f"archive parent is not a directory: {directory}")
-        if directory_stat.st_uid not in {0, expected_uid}:
-            raise PermissionError(
-                f"archive ancestry is foreign-owned by uid {directory_stat.st_uid}: {directory}"
-            )
-        if directory == absolute:
-            owner_ok = directory_stat.st_uid == expected_uid
-            shared_sticky = directory_stat.st_uid == 0 and _is_shared_sticky_directory(
-                directory_stat
-            )
-            if not owner_ok and not shared_sticky:
-                raise PermissionError(
-                    f"archive directory is owned by uid {directory_stat.st_uid}: {directory}"
-                )
-            if directory_stat.st_mode & 0o022 and not shared_sticky:
-                raise PermissionError(
-                    f"archive ancestry is writable by another uid: {directory}"
-                )
-            if restrict_existing or directory in created:
-                if not owner_ok:
-                    raise PermissionError(f"archive directory is not owner-controlled: {directory}")
-                directory.chmod(0o700)
-        elif directory_stat.st_mode & 0o022 and not (
-            directory_stat.st_uid == 0 and _is_shared_sticky_directory(directory_stat)
-        ):
-            raise PermissionError(f"archive ancestry is writable by another uid: {directory}")
-
-
-def _open_owner_archive(path: Path) -> BinaryIO:
-    expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        path_stat = path.lstat()
-    except FileNotFoundError:
-        flags |= os.O_CREAT | os.O_EXCL
-        existing = False
-    else:
-        existing = True
-        if stat.S_ISLNK(path_stat.st_mode):
-            raise OSError(f"archive path is a symlink: {path}")
-        if not stat.S_ISREG(path_stat.st_mode):
-            raise OSError(f"archive path is not a regular file: {path}")
-        if path_stat.st_uid != expected_uid:
-            raise PermissionError(f"archive path is owned by uid {path_stat.st_uid}: {path}")
-        if path_stat.st_nlink != 1:
-            raise OSError(f"archive path has multiple hard links: {path}")
-    fd = os.open(path, flags, 0o600)
-    try:
-        opened_stat = os.fstat(fd)
-        if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_uid != expected_uid:
-            raise PermissionError(f"archive path is not an owner-controlled regular file: {path}")
-        if opened_stat.st_nlink != 1:
-            raise OSError(f"archive path has multiple hard links: {path}")
-        current_stat = path.lstat()
-        if (
-            not stat.S_ISREG(current_stat.st_mode)
-            or current_stat.st_uid != expected_uid
-            or current_stat.st_nlink != 1
-        ):
-            raise PermissionError(f"archive path is not an owner-controlled inode: {path}")
-        if (opened_stat.st_dev, opened_stat.st_ino) != (
-            current_stat.st_dev,
-            current_stat.st_ino,
-        ):
-            raise OSError(f"archive path identity changed during open: {path}")
-        os.fchmod(fd, 0o600)
-        if existing:
-            os.ftruncate(fd, 0)
-        return os.fdopen(fd, "w+b")
-    except BaseException:
-        os.close(fd)
-        raise
-
-
 _UNTRUSTED_TRANSCRIPT_IMPORT_METADATA = (
     _UNTRUSTED_TRANSCRIPT_PUBLICATION_METADATA
     | _UNTRUSTED_TRANSCRIPT_SOURCE_METADATA
@@ -228,8 +127,8 @@ class SessionArchiveManager:
         self._transcript_store = transcript_store
         self._checkpoint_store = checkpoint_store
         self._lockdown_manager = lockdown_manager
-        self._archive_dir = _normalize_archive_path(archive_dir)
-        _prepare_archive_directory(self._archive_dir, restrict_existing=True)
+        self._archive_dir = archive_dir
+        self._archive_dir.mkdir(parents=True, exist_ok=True)
 
     def export_session(
         self,
@@ -247,17 +146,8 @@ class SessionArchiveManager:
             session = Session.model_validate(session_payload)
             transcript_rows = self._transcript_rows_for(session_id)
             checkpoints = self._checkpoint_store.list_for_session(session_id)
-            archive_path = _normalize_archive_path(
-                destination or self._default_archive_path(session.id)
-            )
-            archive_parent = archive_path.parent
-            archive_root = self._archive_dir
-            _prepare_archive_directory(
-                archive_path.parent,
-                restrict_existing=(
-                    archive_parent == archive_root or archive_parent.is_relative_to(archive_root)
-                ),
-            )
+            archive_path = destination or self._default_archive_path(session.id)
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
 
             members: dict[str, bytes] = {
                 _SESSION_PATH: json.dumps(
@@ -296,14 +186,7 @@ class SessionArchiveManager:
             )
             members[_MANIFEST_PATH] = manifest.model_dump_json(indent=2).encode("utf-8")
 
-            with (
-                _open_owner_archive(archive_path) as archive_file,
-                zipfile.ZipFile(
-                    archive_file,
-                    "w",
-                    compression=zipfile.ZIP_DEFLATED,
-                ) as archive,
-            ):
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for name, data in sorted(members.items()):
                     archive.writestr(name, data)
 

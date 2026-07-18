@@ -5,14 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from shisad.core.atomic_state import (
-    DurableAppendError,
-    DurableAppendStage,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-)
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 
 
@@ -64,11 +56,6 @@ def test_m6_control_plane_audit_verify_chain_invalid_entry(tmp_path: Path) -> No
     assert ok is False
     assert "invalid entry" in error
 
-    resumed = ControlPlaneAuditLog(path)
-    assert resumed.state_load_result.status == StateLoadStatus.CORRUPT
-    assert resumed.entry_count == 0
-    assert resumed.query() == []
-
 
 def test_m6_control_plane_audit_verify_chain_detects_data_hash_mismatch(tmp_path: Path) -> None:
     path = tmp_path / "control-plane-audit.jsonl"
@@ -87,132 +74,3 @@ def test_m6_control_plane_audit_verify_chain_detects_data_hash_mismatch(tmp_path
     ok, _, error = log.verify_chain()
     assert ok is False
     assert "data hash mismatch" in error
-
-
-def test_f3_control_plane_audit_corruption_is_retained_and_blocks_append(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "control-plane-audit.jsonl"
-    corrupt_bytes = b'{"event_type":"torn"'
-    path.write_bytes(corrupt_bytes)
-
-    log = ControlPlaneAuditLog(path)
-
-    assert log.state_load_result.status == StateLoadStatus.CORRUPT
-    assert log.entry_count == 0
-    with pytest.raises(StatePersistenceDegradedError, match="control_plane_audit"):
-        log.append(event_type="new", session_id="s", actor="a", data={})
-    assert path.read_bytes() == corrupt_bytes
-
-
-@pytest.mark.parametrize("corruption_kind", ["duplicate", "extra", "naive_timestamp"])
-def test_f3_control_plane_audit_rejects_ambiguous_or_noncanonical_rows(
-    tmp_path: Path,
-    corruption_kind: str,
-) -> None:
-    path = tmp_path / "control-plane-audit.jsonl"
-    first = ControlPlaneAuditLog(path)
-    first.append(event_type="retained", session_id="s", actor="a", data={"id": 1})
-    row = path.read_text(encoding="utf-8").strip()
-    if corruption_kind == "duplicate":
-        row = row.replace('"actor":"a"', '"actor":"attacker","actor":"a"', 1)
-    else:
-        payload = json.loads(row)
-        if corruption_kind == "extra":
-            payload["unexpected_authority"] = "ignored"
-        else:
-            payload["timestamp"] = payload["timestamp"].replace("Z", "")
-        row = json.dumps(payload, separators=(",", ":"))
-    retained = (row + "\n").encode()
-    path.write_bytes(retained)
-
-    restarted = ControlPlaneAuditLog(path)
-
-    assert restarted.state_load_result.status == StateLoadStatus.CORRUPT
-    assert restarted.entry_count == 0
-    assert path.read_bytes() == retained
-
-
-def test_f3_control_plane_audit_blank_row_is_retained_and_blocks_append(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "control-plane-audit.jsonl"
-    corrupt_bytes = b"\n"
-    path.write_bytes(corrupt_bytes)
-    path.chmod(0o600)
-
-    log = ControlPlaneAuditLog(path)
-
-    assert log.state_load_result.status == StateLoadStatus.CORRUPT
-    assert log.entry_count == 0
-    with pytest.raises(StatePersistenceDegradedError, match="control_plane_audit"):
-        log.append(event_type="new", session_id="s", actor="a", data={})
-    assert path.read_bytes() == corrupt_bytes
-
-
-def test_f3_control_plane_audit_commit_uncertainty_keeps_chain_state(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "control-plane-audit.jsonl"
-    log = ControlPlaneAuditLog(path)
-
-    def _inject(stage: DurableAppendStage) -> None:
-        if stage == DurableAppendStage.FILE_FSYNC:
-            raise OSError("fault:file_fsync")
-
-    log._state_fault_injector = _inject
-    with pytest.raises(DurableAppendError):
-        log.append(event_type="uncertain", session_id="s", actor="a", data={})
-
-    assert log.entry_count == 0
-    assert log.state_status()["stage"] == "file_fsync"
-    with pytest.raises(StatePersistenceDegradedError):
-        log.append(event_type="retry", session_id="s", actor="a", data={})
-
-
-def test_f3_control_plane_audit_rejects_same_path_replacement_before_append(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "control-plane-audit.jsonl"
-    log = ControlPlaneAuditLog(path)
-    log.append(event_type="retained", session_id="s", actor="a", data={"id": 1})
-    replacement = tmp_path / "replacement-control-plane-audit.jsonl"
-    replacement.write_bytes(b"")
-    replacement.chmod(0o600)
-    replacement.replace(path)
-
-    with pytest.raises(DurableAppendError):
-        log.append(event_type="blocked", session_id="s", actor="a", data={"id": 2})
-
-    assert log.state_degraded is True
-    assert path.read_bytes() == b""
-
-
-@pytest.mark.parametrize("read_surface", ["verify", "query"])
-@pytest.mark.parametrize("mutation", ["replacement", "disappearance", "unsafe"])
-def test_f3_control_plane_audit_reads_reject_departed_authority(
-    tmp_path: Path,
-    read_surface: str,
-    mutation: str,
-) -> None:
-    path = tmp_path / "control-plane-audit.jsonl"
-    log = ControlPlaneAuditLog(path)
-    log.append(event_type="retained", session_id="s", actor="a", data={"id": 1})
-    if mutation == "replacement":
-        replacement = tmp_path / "replacement-control-plane-read.jsonl"
-        replacement.write_bytes(b"")
-        replacement.chmod(0o600)
-        replacement.replace(path)
-    elif mutation == "disappearance":
-        path.unlink()
-    else:
-        path.unlink()
-        path.symlink_to(tmp_path)
-
-    if read_surface == "verify":
-        assert log.verify_chain()[0] is False
-    else:
-        assert log.query() == []
-    assert log.state_degraded is True
-    with pytest.raises(StatePersistenceDegradedError, match="control_plane_audit"):
-        log.append(event_type="blocked", session_id="s", actor="a", data={"id": 2})

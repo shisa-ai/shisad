@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shisad.channels.base import DeliveryTarget, InMemoryChannel, ReplayEventVariant
+from shisad.channels.base import DeliveryTarget, InMemoryChannel
 from shisad.channels.delivery import ChannelDeliveryService
 from shisad.channels.discord import (
     DiscordChannel,
@@ -340,7 +340,7 @@ def test_m4_channel_state_store_persists_journal_before_compaction(tmp_path) -> 
     assert reloaded.has_seen(channel="discord", message_id="m1") is True
 
 
-def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_recent_cache(tmp_path) -> None:
+def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_path) -> None:
     store = ChannelStateStore(
         tmp_path / "state",
         max_seen_ids=32,
@@ -351,11 +351,8 @@ def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_recent_cache(
         store.mark_seen(channel="slack", message_id=f"m{index:02d}")
 
     state_file = tmp_path / "state" / "slack.state.json"
-    envelope = json.loads(state_file.read_text(encoding="utf-8"))
-    assert len(envelope["payload"]["recent_identity_keys"]) == 32
-    assert {
-        row["identity"]["message_id"] for row in envelope["payload"]["records"]
-    } == {f"m{index:02d}" for index in range(34)}
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["seen_message_ids"] == [f"m{index:02d}" for index in range(2, 34)]
 
     journal = tmp_path / "state" / "slack.state.journal"
     if journal.exists():
@@ -366,9 +363,7 @@ def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_recent_cache(
         max_seen_ids=32,
         journal_compact_every=2,
     )
-    # The bounded recent list is an optimization; authoritative replay records
-    # survive eviction and compaction.
-    assert reloaded.has_seen(channel="slack", message_id="m00") is True
+    assert reloaded.has_seen(channel="slack", message_id="m00") is False
     assert reloaded.has_seen(channel="slack", message_id="m33") is True
 
 
@@ -409,11 +404,6 @@ def test_m5_channel_state_store_isolates_channels_with_sanitized_name_collision(
     assert store.has_seen(channel="matrix", message_id="m2") is False
     store.mark_seen(channel=" matrix ", message_id="m3")
     assert store.has_seen(channel="matrix", message_id="m3") is False
-    assert store.has_seen(channel=" matrix ", message_id="m3") is True
-
-    reloaded = ChannelStateStore(tmp_path / "state", max_seen_ids=64)
-    assert reloaded.has_seen(channel="matrix", message_id="m3") is False
-    assert reloaded.has_seen(channel=" matrix ", message_id="m3") is True
 
 
 def test_m5_channel_state_store_loads_legacy_filename_state(tmp_path) -> None:
@@ -550,15 +540,6 @@ async def test_discord_channel_registers_dispatchable_on_message_handler(
     assert received.channel == "discord"
     assert received.external_user_id == "u-1"
     assert received.reply_target == "c-1"
-    replay_identity = channel.replay_identity(received)
-    assert replay_identity.provider == "discord"
-    assert received.metadata["discord_account_id"] == "bot-999"
-    assert replay_identity.tenant_id == "g-1"
-    assert replay_identity.delivery_id == "c-1"
-    assert replay_identity.event_variant == ReplayEventVariant.ORDINARY_MESSAGE
-    assert replay_identity.message_id == "m-1"
-    rotated = DiscordChannel(DiscordConfig(bot_token="rotated-token"))
-    assert rotated.replay_identity(received).account_id == replay_identity.account_id
     # Bot mention tag should be stripped from content.
     assert received.content == "hello"
     await channel.disconnect()
@@ -616,7 +597,6 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
         user=SimpleNamespace(id="u-1", bot=False),
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="chan-1"),
-        message=SimpleNamespace(id="source-message-1"),
     )
 
     await channel._client.dispatch_interaction(interaction)
@@ -627,38 +607,10 @@ async def test_discord_channel_approval_component_enqueues_bound_confirmation(
     assert received.workspace_hint == "g-1"
     assert received.reply_target == "chan-1"
     assert received.content == "confirm c-1"
-    assert received.message_id == "i-1"
-    assert received.metadata["discord_interaction_id"] == "i-1"
-    assert received.metadata["discord_event_variant"] == "discord_interaction"
-    assert received.metadata["discord_source_message_id"] == "source-message-1"
     assert received.metadata["interaction_type"] == "approval_component"
     assert received.metadata["approval_component_action"] == "confirm"
     assert received.metadata["approval_confirmation_id"] == "c-1"
     assert received.metadata["approval_decision_nonce"] == "nonce-1"
-    replay_identity = channel.replay_identity(received)
-    assert replay_identity.event_variant == ReplayEventVariant.DISCORD_INTERACTION
-    assert replay_identity.message_id == "i-1"
-
-    changed_binding = received.model_copy(
-        update={
-            "metadata": {
-                **received.metadata,
-                "approval_interaction_type": "ordinary_message",
-                "approval_component_action": "reject",
-                "approval_confirmation_id": "different",
-                "approval_decision_nonce": "different",
-                "discord_source_message_id": "different",
-            }
-        }
-    )
-    assert channel.replay_identity(changed_binding) == replay_identity
-
-    second_interaction = interaction
-    second_interaction.id = "i-1-distinct"
-    await channel._client.dispatch_interaction(second_interaction)
-    distinct = await asyncio.wait_for(channel.receive(), timeout=0.2)
-    assert channel.replay_identity(distinct) != replay_identity
-    assert distinct.metadata["discord_interaction_id"] == "i-1-distinct"
     await channel.disconnect()
 
 
@@ -721,153 +673,16 @@ async def test_discord_channel_approval_modal_enqueues_totp_submission(
         user=SimpleNamespace(id="u-1", bot=False),
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="chan-1"),
-        message=SimpleNamespace(id="source-message-2"),
     )
 
     await channel._client.dispatch_interaction(interaction)
 
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert received.content == "confirm c-2 123456"
-    assert received.message_id == "i-2"
-    assert received.metadata["discord_interaction_id"] == "i-2"
-    assert received.metadata["discord_source_message_id"] == "source-message-2"
     assert received.metadata["interaction_type"] == "approval_modal"
     assert received.metadata["approval_component_action"] == "totp_submit"
     assert received.metadata["approval_confirmation_id"] == "c-2"
     assert received.metadata["approval_decision_nonce"] == "nonce-2"
-    assert (
-        channel.replay_identity(received).event_variant
-        == ReplayEventVariant.DISCORD_INTERACTION
-    )
-    await channel.disconnect()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("interaction_id", "include_interaction_id"),
-    [
-        pytest.param("unused", False, id="absent"),
-        pytest.param(None, True, id="none"),
-        pytest.param("   ", True, id="blank"),
-    ],
-)
-@pytest.mark.parametrize(
-    ("action", "components"),
-    [
-        pytest.param("confirm", None, id="confirm"),
-        pytest.param("reject", None, id="reject"),
-        pytest.param("totp", None, id="open-totp-modal"),
-        pytest.param(
-            "totp_submit",
-            [
-                {
-                    "components": [
-                        {"custom_id": "totp_code", "value": "123456"},
-                    ]
-                }
-            ],
-            id="submit-valid-totp",
-        ),
-        pytest.param("totp_submit", [], id="submit-missing-totp"),
-    ],
-)
-async def test_discord_channel_rejects_interaction_without_raw_identity_before_response(
-    monkeypatch: pytest.MonkeyPatch,
-    interaction_id: object,
-    include_interaction_id: bool,
-    action: str,
-    components: list[dict[str, object]] | None,
-) -> None:
-    from shisad.channels import discord as discord_module
-
-    effects: list[str] = []
-
-    class _FakeIntents:
-        @classmethod
-        def default(cls) -> _FakeIntents:
-            return cls()
-
-    class _FakeResponse:
-        async def send_message(self, _message: str, **_kwargs: object) -> None:
-            effects.append("send")
-
-        async def defer(self, **_kwargs: object) -> None:
-            effects.append("defer")
-
-        async def send_modal(self, _modal: object) -> None:
-            effects.append("modal")
-
-    class _FakeFollowup:
-        async def send(self, _message: str, **_kwargs: object) -> None:
-            effects.append("followup")
-
-    class _FakeModal:
-        def __init__(self, **_kwargs: object) -> None:
-            return None
-
-        def add_item(self, _item: object) -> None:
-            return None
-
-    class _FakeTextInput:
-        def __init__(self, **_kwargs: object) -> None:
-            return None
-
-    class _FakeClient:
-        def __init__(self, *, intents: _FakeIntents) -> None:
-            self.intents = intents
-            self.user = SimpleNamespace(id="bot-999")
-
-        def event(self, coro):
-            setattr(self, coro.__name__, coro)
-            return coro
-
-        async def start(self, _token: str) -> None:
-            return None
-
-        async def close(self) -> None:
-            return None
-
-        async def dispatch_interaction(self, interaction: object) -> None:
-            await self.on_interaction(interaction)
-
-    monkeypatch.setattr(
-        discord_module,
-        "discord",
-        SimpleNamespace(
-            Intents=_FakeIntents,
-            Client=_FakeClient,
-            ui=SimpleNamespace(Modal=_FakeModal, TextInput=_FakeTextInput),
-        ),
-    )
-    channel = DiscordChannel(DiscordConfig(bot_token="token"))
-    await channel.connect()
-    assert channel._client is not None
-    data: dict[str, object] = {
-        "custom_id": discord_approval_custom_id(
-            action=action,
-            confirmation_id="c-missing-id",
-            decision_nonce="nonce-missing-id",
-        )
-    }
-    if components is not None:
-        data["components"] = components
-    interaction_fields: dict[str, object] = {
-        "data": data,
-        "user": SimpleNamespace(id="u-1", bot=False),
-        "guild": SimpleNamespace(id="g-1"),
-        "channel": SimpleNamespace(id="chan-1"),
-        "response": _FakeResponse(),
-        "followup": _FakeFollowup(),
-    }
-    if include_interaction_id:
-        interaction_fields["id"] = interaction_id
-    interaction = SimpleNamespace(**interaction_fields)
-
-    await channel._client.dispatch_interaction(interaction)
-
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(channel.receive(), timeout=0.05)
-    assert effects == []
     await channel.disconnect()
 
 
@@ -2036,21 +1851,12 @@ async def test_slack_channel_handler_accepts_say_and_filters_bot_messages(
         await asyncio.wait_for(channel.receive(), timeout=0.05)
     await channel._app.invoke_message(
         event={"user": "U1", "text": "hello", "channel": "C1", "ts": "1.23"},
-        body={"team_id": "T1", "api_app_id": "A1"},
+        body={"team_id": "T1"},
     )
     message = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert message.channel == "slack"
     assert message.external_user_id == "U1"
     assert message.workspace_hint == "T1"
-    assert message.metadata["slack_team_id"] == "T1"
-    assert message.metadata["slack_account_id"] == "A1"
-    replay_identity = channel.replay_identity(message)
-    assert replay_identity.provider == "slack"
-    assert replay_identity.tenant_id == "T1"
-    assert replay_identity.delivery_id == "C1"
-    assert replay_identity.message_id == "1.23"
-    rotated = SlackChannel(SlackConfig(bot_token="rotated", app_token="rotated"))
-    assert rotated.replay_identity(message).account_id == replay_identity.account_id
     await channel.disconnect()
 
 
@@ -2082,7 +1888,7 @@ async def test_telegram_channel_ignores_bot_messages(
         def __init__(self) -> None:
             self.handlers: list[_FakeMessageHandler] = []
             self.updater = _FakeUpdater()
-            self.bot = SimpleNamespace(id="bot-account-1", send_message=self._send_message)
+            self.bot = SimpleNamespace(send_message=self._send_message)
 
         async def _send_message(self, **_kwargs: object) -> None:
             return None
@@ -2147,14 +1953,6 @@ async def test_telegram_channel_ignores_bot_messages(
     message = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert message.channel == "telegram"
     assert message.external_user_id == "u-1"
-    replay_identity = channel.replay_identity(message)
-    assert replay_identity.provider == "telegram"
-    assert message.metadata["telegram_account_id"] == "bot-account-1"
-    assert replay_identity.tenant_id == "chat-1"
-    assert replay_identity.delivery_id == "chat-1"
-    assert replay_identity.message_id == "m2"
-    rotated = TelegramChannel(TelegramConfig(bot_token="rotated-token"))
-    assert rotated.replay_identity(message).account_id == replay_identity.account_id
     await channel.disconnect()
 
 
@@ -2189,166 +1987,4 @@ async def test_matrix_channel_fallback_and_workspace_mapping(
     assert message.external_user_id == "@alice:example.org"
     assert channel.workspace_for_room("!room:example.org") == "workspace-1"
     assert channel.is_user_verified("@alice:example.org")
-    await channel.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_f3_telegram_polling_failure_is_visible(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from shisad.channels import telegram as telegram_module
-
-    class _FakeFilter:
-        def __and__(self, _other: object) -> _FakeFilter:
-            return self
-
-        def __invert__(self) -> _FakeFilter:
-            return self
-
-    class _FakeUpdater:
-        async def start_polling(self) -> None:
-            raise RuntimeError("duplicate consumer")
-
-        async def stop(self) -> None:
-            return None
-
-    class _FakeApplication:
-        updater = _FakeUpdater()
-
-        def add_handler(self, _handler: object) -> None:
-            return None
-
-        async def initialize(self) -> None:
-            return None
-
-        async def start(self) -> None:
-            return None
-
-        async def stop(self) -> None:
-            return None
-
-        async def shutdown(self) -> None:
-            return None
-
-    class _FakeBuilder:
-        def token(self, _token: str) -> _FakeBuilder:
-            return self
-
-        def build(self) -> _FakeApplication:
-            return _FakeApplication()
-
-    class _FakeApplicationFactory:
-        @staticmethod
-        def builder() -> _FakeBuilder:
-            return _FakeBuilder()
-
-    monkeypatch.setattr(telegram_module, "Application", _FakeApplicationFactory)
-    monkeypatch.setattr(telegram_module, "MessageHandler", lambda *_args: object())
-    monkeypatch.setattr(
-        telegram_module,
-        "filters",
-        SimpleNamespace(TEXT=_FakeFilter(), COMMAND=_FakeFilter()),
-    )
-    channel = TelegramChannel(TelegramConfig(bot_token="token"))
-
-    await channel.connect()
-
-    health = channel.health_status()
-    assert channel.connected is False
-    assert health["consumer_status"] == "failed"
-    assert health["consumer_error_type"] == "RuntimeError"
-    await channel.disconnect()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["slack", "discord", "matrix"])
-async def test_f3_background_consumer_failure_is_visible(
-    monkeypatch: pytest.MonkeyPatch,
-    provider: str,
-) -> None:
-    if provider == "slack":
-        from shisad.channels import slack as provider_module
-
-        class _FakeApp:
-            def __init__(self, *, token: str) -> None:
-                self.token = token
-
-            def event(self, _name: str):
-                return lambda callback: callback
-
-        class _FakeHandler:
-            def __init__(self, _app: object, _token: str) -> None:
-                return None
-
-            async def start_async(self) -> None:
-                raise RuntimeError("duplicate consumer")
-
-        monkeypatch.setattr(provider_module, "AsyncApp", _FakeApp)
-        monkeypatch.setattr(provider_module, "AsyncSocketModeHandler", _FakeHandler)
-        channel = SlackChannel(SlackConfig(bot_token="xoxb", app_token="xapp"))
-    elif provider == "discord":
-        from shisad.channels import discord as provider_module
-
-        class _FakeIntents:
-            message_content = False
-
-            @staticmethod
-            def default() -> _FakeIntents:
-                return _FakeIntents()
-
-        class _FakeClient:
-            def __init__(self, *, intents: object) -> None:
-                self.intents = intents
-
-            def event(self, callback):
-                return callback
-
-            async def start(self, _token: str) -> None:
-                raise RuntimeError("duplicate consumer")
-
-        monkeypatch.setattr(
-            provider_module,
-            "discord",
-            SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
-        )
-        channel = DiscordChannel(DiscordConfig(bot_token="token"))
-    else:
-        from shisad.channels import matrix as provider_module
-
-        class _FakeClient:
-            def __init__(self, *_args: object, **_kwargs: object) -> None:
-                self.access_token = ""
-
-            def add_event_callback(self, *_args: object) -> None:
-                return None
-
-            async def sync_forever(self, **_kwargs: object) -> None:
-                raise RuntimeError("duplicate consumer")
-
-        monkeypatch.setattr(
-            provider_module,
-            "nio",
-            SimpleNamespace(
-                AsyncClient=_FakeClient,
-                AsyncClientConfig=lambda **_kwargs: object(),
-                RoomMessageText=object(),
-            ),
-        )
-        channel = MatrixChannel(
-            MatrixConfig(
-                homeserver="https://matrix.example.org",
-                user_id="@bot:example.org",
-                access_token="token",
-                room_id="!room:example.org",
-            )
-        )
-
-    await channel.connect()
-    for _ in range(3):
-        await asyncio.sleep(0)
-
-    health = channel.health_status()
-    assert channel.connected is False
-    assert health["consumer_status"] == "failed"
-    assert health["consumer_error_type"] == "RuntimeError"
     await channel.disconnect()

@@ -123,44 +123,6 @@ async def test_facade_routes_across_handler_groups(
     assert "total" in dashboard
 
 
-async def test_direct_channel_ingress_replay_and_healthy_rebaseline_denial_are_wired(
-    recycled_handler_daemon: SharedDaemonController,
-) -> None:
-    message = {
-        "channel": "discord",
-        "external_user_id": "direct-replay-user",
-        "workspace_hint": "claimed-guild-1",
-        "content": "hello",
-        "message_id": "direct-runtime-replay-1",
-        "reply_target": "claimed-channel-1",
-        "metadata": {"discord_guild_id": "forged-guild"},
-    }
-
-    first = await recycled_handler_daemon.call("channel.ingest", {"message": message})
-    assert first["response"]
-    with pytest.raises(RuntimeError, match="Channel ingress replay rejected"):
-        await recycled_handler_daemon.call(
-            "channel.ingest",
-            {
-                "message": {
-                    **message,
-                    "channel": "telegram",
-                    "workspace_hint": "changed",
-                    "reply_target": "changed",
-                    "metadata": {"provider": "telegram", "account_id": "forged"},
-                }
-            },
-        )
-
-    with pytest.raises(RuntimeError, match="ambiguous legacy"):
-        await recycled_handler_daemon.call(
-            "channel.replay_rebaseline",
-            {"channel": "direct", "confirm": True},
-        )
-    with pytest.raises(RuntimeError, match="Channel ingress replay rejected"):
-        await recycled_handler_daemon.call("channel.ingest", {"message": message})
-
-
 async def test_note_and_todo_list_limits_are_type_aware(
     recycled_handler_daemon: SharedDaemonController,
 ) -> None:

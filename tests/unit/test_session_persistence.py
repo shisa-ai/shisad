@@ -662,66 +662,6 @@ def test_m2_session_manager_rejects_task_envelope_capability_mismatch(
     )
 
 
-@pytest.mark.parametrize(
-    ("envelope_owner", "envelope_workspace", "reason"),
-    [
-        ("mallory", "ws1", "task_envelope_owner_mismatch"),
-        ("alice", "ws-other", "task_envelope_workspace_mismatch"),
-    ],
-)
-def test_f3_session_manager_rejects_task_envelope_principal_mismatch(
-    tmp_path: Path,
-    envelope_owner: str,
-    envelope_workspace: str,
-    reason: str,
-) -> None:
-    state_dir = tmp_path / "sessions" / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    envelope = TaskEnvelope(
-        capability_snapshot=frozenset({Capability.FILE_READ}),
-        parent_session_id="parent-1",
-        orchestrator_provenance="scheduler:alice:ws1",
-        policy_snapshot_ref="policy-v1",
-    ).model_dump(mode="json")
-    envelope["owner_user_id"] = envelope_owner
-    envelope["workspace_id"] = envelope_workspace
-    session = Session(
-        id=SessionId(f"task-envelope-{reason}"),
-        channel="scheduler",
-        user_id=UserId("alice"),
-        workspace_id=WorkspaceId("ws1"),
-        mode=SessionMode.TASK,
-        role=SessionRole.SUBAGENT,
-        capabilities={Capability.FILE_READ},
-        metadata={
-            "parent_session_id": "parent-1",
-            "capability_sync_mode": "manual_override",
-            "task_envelope": envelope,
-        },
-    )
-    record = {
-        "schema_version": 1,
-        "session": session.model_dump(mode="json"),
-        "lockdown": LockdownManager().snapshot(session.id),
-    }
-    _session_state_path(state_dir, str(session.id)).write_text(
-        json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    audits: list[tuple[str, dict[str, object]]] = []
-
-    restored_manager = SessionManager(
-        state_dir=state_dir,
-        audit_hook=lambda action, data: audits.append((action, data)),
-    )
-
-    assert restored_manager.get(session.id) is None
-    assert any(
-        action == "session.rehydrate_rejected" and data.get("reason") == reason
-        for action, data in audits
-    )
-
-
 def test_m2_session_manager_rejects_unsupported_schema_version(
     tmp_path: Path,
 ) -> None:

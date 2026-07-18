@@ -7,7 +7,6 @@ import builtins
 import hashlib
 import json
 import os
-import stat
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -19,12 +18,6 @@ import pytest
 from click.testing import CliRunner, Result
 
 from shisad.cli import main as cli_main
-from shisad.core.authority import (
-    AuthorityClaimError,
-    AuthorityConflictError,
-    acquire_daemon_authority_claim,
-    acquire_fresh_config_authority_claim,
-)
 from shisad.core.config import DaemonConfig
 
 
@@ -70,19 +63,6 @@ def _audit_entry(
         "previous_event_hash": "0" * 64,
         "previous_hash": "0" * 64,
     }
-
-
-def _audit_snapshot(*entries: dict[str, object]) -> str:
-    previous_hash = hashlib.sha256(b"shisad-audit-genesis").hexdigest()
-    rows: list[str] = []
-    for raw_entry in entries:
-        entry = dict(raw_entry)
-        entry["previous_event_hash"] = previous_hash
-        entry["previous_hash"] = previous_hash
-        encoded = json.dumps(entry)
-        rows.append(encoded)
-        previous_hash = hashlib.sha256(encoded.encode()).hexdigest()
-    return "\n".join(rows) + "\n"
 
 
 def test_cli_commands_route_through_rpc_wrapper(
@@ -200,11 +180,6 @@ def test_cli_commands_route_through_rpc_wrapper(
             "count": 0,
             "config_patch": {},
             "applied": False,
-        },
-        "channel.replay_rebaseline": {
-            "status": "rebaselined",
-            "channel": "discord",
-            "files_removed": 2,
         },
         "admin.selfmod.propose": {
             "proposal_id": "selfmod-proposal-1",
@@ -630,11 +605,6 @@ def test_cli_commands_route_through_rpc_wrapper(
     ).output
     assert '"level": "quarantine"' in lockdown_status
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
-    replay_rebaseline = _invoke_ok(
-        runner,
-        ["channel", "replay-rebaseline", "--channel", "discord", "--confirm"],
-    ).output
-    assert '"status": "rebaselined"' in replay_rebaseline
     assert (
         "selfmod-proposal-1"
         in _invoke_ok(
@@ -2698,10 +2668,12 @@ def test_m9_audit_query_defaults_to_current_session_cache(
         }
 
     audit_path.write_text(
-        _audit_snapshot(_entry("e-other", "s-other"), _entry("e-cache", "s-cache")),
+        json.dumps(_entry("e-other", "s-other"))
+        + "\n"
+        + json.dumps(_entry("e-cache", "s-cache"))
+        + "\n",
         encoding="utf-8",
     )
-    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
     runner = CliRunner()
@@ -2724,18 +2696,19 @@ def test_gh18_audit_query_json_defaults_to_current_session_cache(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        _audit_snapshot(
-            _audit_entry("e-other", "s-other"),
+        json.dumps(_audit_entry("e-other", "s-other"))
+        + "\n"
+        + json.dumps(
             _audit_entry(
                 "e-cache",
                 "s-cache",
                 event_type="ToolRejected",
                 data={"tool_name": "fs.read", "reason_code": "pep:resource_denied"},
-            ),
-        ),
+            )
+        )
+        + "\n",
         encoding="utf-8",
     )
-    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     monkeypatch.setattr(cli_main, "_last_session_path", lambda: cache_path)
     runner = CliRunner()
@@ -2778,10 +2751,9 @@ def test_m9_audit_query_all_preserves_unfiltered_mode(
         }
 
     audit_path.write_text(
-        _audit_snapshot(_entry("e-one", "s-one"), _entry("e-two", "s-two")),
+        json.dumps(_entry("e-one", "s-one")) + "\n" + json.dumps(_entry("e-two", "s-two")) + "\n",
         encoding="utf-8",
     )
-    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -2800,18 +2772,19 @@ def test_gh18_audit_query_json_preserves_type_and_all_filters(
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(
-        _audit_snapshot(
-            _audit_entry("e-one", "s-one"),
+        json.dumps(_audit_entry("e-one", "s-one"))
+        + "\n"
+        + json.dumps(
             _audit_entry(
                 "e-alert",
                 "s-two",
                 event_type="OutputFirewallAlert",
                 data={"reason_codes": ["malicious_url", "entropy_secret_redaction"]},
-            ),
-        ),
+            )
+        )
+        + "\n",
         encoding="utf-8",
     )
-    audit_path.chmod(0o600)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -2838,8 +2811,7 @@ def test_gh18_audit_query_json_empty_results_are_array(
     config = _config(tmp_path)
     audit_path = config.data_dir / "audit.jsonl"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_path.write_text(_audit_snapshot(_audit_entry("e-one", "s-one")), encoding="utf-8")
-    audit_path.chmod(0o600)
+    audit_path.write_text(json.dumps(_audit_entry("e-one", "s-one")) + "\n", encoding="utf-8")
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     runner = CliRunner()
 
@@ -3298,46 +3270,6 @@ def test_start_default_routes_to_foreground_path(
     assert "only supported mode" in result.output
 
 
-@pytest.mark.parametrize(
-    ("debug", "runner_name"),
-    [
-        (False, "_run_daemon_foreground"),
-        (True, "_run_daemon_with_autoreload_sync"),
-    ],
-)
-def test_start_daemon_releases_transferred_claim_on_early_keyboard_interrupt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    debug: bool,
-    runner_name: str,
-) -> None:
-    released = 0
-
-    def _release() -> None:
-        nonlocal released
-        released += 1
-
-    claim = SimpleNamespace(release=_release)
-
-    def _interrupt_before_consumption(
-        _config: DaemonConfig,
-        **kwargs: object,
-    ) -> None:
-        assert kwargs["authority_claim"] is claim
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli_main, runner_name, _interrupt_before_consumption)
-
-    cli_main._start_daemon(
-        config=_config(tmp_path),
-        foreground=True,
-        debug=debug,
-        authority_claim=claim,  # type: ignore[arg-type]
-    )
-
-    assert released == 1
-
-
 def test_restart_default_shuts_down_then_starts_foreground(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3476,15 +3408,12 @@ def test_restart_fresh_config_reloads_before_start(
         effective_config: DaemonConfig,
         on_started: Callable[[DaemonConfig], None] | None = None,
         on_starting: Callable[[DaemonConfig], None] | None = None,
-        authority_claim: object | None = None,
     ) -> None:
         captured["config"] = effective_config
-        assert authority_claim is not None
         if on_starting is not None:
             on_starting(effective_config)
         if on_started is not None:
             on_started(effective_config)
-        authority_claim.release()  # type: ignore[attr-defined]
 
     def _fake_debug_start(_: DaemonConfig) -> None:
         raise AssertionError("debug/autoreload path should not be used without --debug")
@@ -3538,9 +3467,8 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_backup(config: DaemonConfig, claim: object) -> Path:
+    def _fake_backup(config: DaemonConfig) -> Path:
         assert config is initial_config
-        assert claim is not None
         return tmp_path / "config-backups" / "20260302-120000.json"
 
     def _fake_start(
@@ -3549,7 +3477,6 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
         on_starting: Callable[[DaemonConfig], None] | None = None,
-        authority_claim: object | None = None,
     ) -> None:
         assert config is expected_config
         assert foreground is False
@@ -3558,8 +3485,6 @@ def test_restart_fresh_config_prints_refreshed_confirmation(
         on_starting(config)
         assert on_started is not None
         on_started(config)
-        assert authority_claim is not None
-        authority_claim.release()  # type: ignore[attr-defined]
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
@@ -3706,7 +3631,7 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_backup(_config: DaemonConfig, _claim: object) -> Path:
+    def _fake_backup(_config: DaemonConfig) -> Path:
         raise OSError("backup failed")
 
     def _fake_start(
@@ -3730,8 +3655,6 @@ def test_restart_fresh_config_backup_failure_prints_partial_status(
         f"daemon restart failed: phase=fresh-config pid={os.getpid()} "
         f"data_dir={config.data_dir} socket={config.socket_path} error=backup failed"
     ) in result.output
-    successor = acquire_daemon_authority_claim(config)
-    successor.release()
 
 
 def test_restart_debug_autoreload_failure_reports_refreshed_config(
@@ -3787,7 +3710,7 @@ def test_restart_debug_autoreload_failure_reports_refreshed_config(
     ) in result.output
 
 
-def test_restart_fresh_config_reloads_and_admits_before_backup(
+def test_restart_fresh_config_creates_backup_before_reload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3795,15 +3718,13 @@ def test_restart_fresh_config_reloads_and_admits_before_backup(
     initial_config.socket_path.touch()
     refreshed_config = _config(tmp_path).model_copy(update={"log_level": "WARNING"})
     config_calls = {"count": 0}
-    transferred_claim = SimpleNamespace(release=lambda: None)
-    events: list[str] = []
+    captured_backup: dict[str, DaemonConfig] = {}
+    captured_start: dict[str, DaemonConfig] = {}
 
     def _fake_get_config() -> DaemonConfig:
         config_calls["count"] += 1
         if config_calls["count"] == 1:
-            events.append("initial-config")
             return initial_config
-        events.append("refreshed-config")
         return refreshed_config
 
     def _fake_rpc_call(
@@ -3813,7 +3734,6 @@ def test_restart_fresh_config_reloads_and_admits_before_backup(
         *,
         response_model: type[object] | None = None,
     ) -> object:
-        events.append("shutdown")
         assert _config is initial_config
         assert method == "daemon.shutdown"
         assert params is None
@@ -3822,28 +3742,9 @@ def test_restart_fresh_config_reloads_and_admits_before_backup(
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
 
-    def _fake_acquire(
-        prior: DaemonConfig,
-        refreshed: DaemonConfig,
-        *,
-        timeout_seconds: float,
-    ) -> object:
-        events.append("admit")
-        assert prior is initial_config
-        assert refreshed is refreshed_config
-        assert timeout_seconds > 0
-        return transferred_claim
-
-    def _fake_backup(config: DaemonConfig, claim: object) -> Path:
-        events.append("backup")
-        assert config is initial_config
-        assert claim is transferred_claim
+    def _fake_backup(config: DaemonConfig) -> Path:
+        captured_backup["config"] = config
         return tmp_path / "config-backups" / "20260302-120000.json"
-
-    def _fake_narrow(config: DaemonConfig, claim: object) -> None:
-        events.append("narrow")
-        assert config is refreshed_config
-        assert claim is transferred_claim
 
     def _fake_start(
         config: DaemonConfig,
@@ -3851,13 +3752,10 @@ def test_restart_fresh_config_reloads_and_admits_before_backup(
         debug: bool,
         on_started: Callable[[DaemonConfig], None] | None = None,
         on_starting: Callable[[DaemonConfig], None] | None = None,
-        authority_claim: object | None = None,
     ) -> None:
-        events.append("start")
         assert foreground is False
         assert debug is False
-        assert config is refreshed_config
-        assert authority_claim is transferred_claim
+        captured_start["config"] = config
         if on_starting is not None:
             on_starting(config)
         if on_started is not None:
@@ -3865,79 +3763,15 @@ def test_restart_fresh_config_reloads_and_admits_before_backup(
 
     monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
     monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
-    monkeypatch.setattr(
-        cli_main,
-        "acquire_fresh_config_authority_claim",
-        _fake_acquire,
-        raising=False,
-    )
     monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
-    monkeypatch.setattr(
-        cli_main,
-        "narrow_daemon_authority_claim",
-        _fake_narrow,
-        raising=False,
-    )
     monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
 
     runner = CliRunner()
     result = runner.invoke(cli_main.cli, ["restart", "--fresh-config"])
 
     assert result.exit_code == 0, result.output
-    assert events == [
-        "initial-config",
-        "shutdown",
-        "refreshed-config",
-        "admit",
-        "backup",
-        "narrow",
-        "start",
-    ]
-
-
-def test_restart_fresh_config_admission_failure_precedes_backup_and_start(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    initial_config = _config(tmp_path)
-    initial_config.socket_path.touch()
-    refreshed_config = initial_config.model_copy(
-        update={
-            "data_dir": tmp_path / "refreshed-data",
-            "socket_path": tmp_path / "refreshed.sock",
-        }
-    )
-    configs = iter((initial_config, refreshed_config))
-    monkeypatch.setattr(cli_main, "_get_config", lambda: next(configs))
-    monkeypatch.setattr(
-        cli_main,
-        "rpc_call",
-        lambda *_args, **_kwargs: {"status": "shutting_down"},
-    )
-    monkeypatch.setattr(
-        cli_main,
-        "acquire_fresh_config_authority_claim",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AuthorityConflictError("union conflict")
-        ),
-    )
-    monkeypatch.setattr(
-        cli_main,
-        "_backup_config_snapshot",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("backup reached")),
-    )
-    monkeypatch.setattr(
-        cli_main,
-        "_start_daemon",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("start reached")),
-    )
-
-    result = CliRunner().invoke(cli_main.cli, ["restart", "--fresh-config"])
-
-    assert result.exit_code == 1, result.output
-    assert "union conflict" in result.output
-    assert not initial_config.data_dir.exists()
-    assert not refreshed_config.data_dir.exists()
+    assert captured_backup["config"] is initial_config
+    assert captured_start["config"] is refreshed_config
 
 
 def test_backup_config_snapshot_writes_timestamped_file(tmp_path: Path) -> None:
@@ -3947,14 +3781,7 @@ def test_backup_config_snapshot_writes_timestamped_file(tmp_path: Path) -> None:
             "web_search_backend_url": "https://search.example",
         }
     )
-    claim = acquire_daemon_authority_claim(config)
-    previous_umask = os.umask(0)
-    try:
-        backup = cli_main._backup_config_snapshot(config, claim)
-        second_backup = cli_main._backup_config_snapshot(config, claim)
-    finally:
-        os.umask(previous_umask)
-        claim.release()
+    backup = cli_main._backup_config_snapshot(config)
 
     assert backup.parent == config.data_dir / "config-backups"
     assert backup.name.endswith(".json")
@@ -3963,149 +3790,10 @@ def test_backup_config_snapshot_writes_timestamped_file(tmp_path: Path) -> None:
     assert stem[8] == "-"
     assert stem.replace("-", "").isdigit()
     assert backup.exists()
-    assert second_backup.exists()
-    assert second_backup != backup
-    assert stat.S_IMODE(config.data_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE(backup.parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
-    assert backup.stat().st_nlink == 1
 
     raw = backup.read_text(encoding="utf-8")
     assert "secret-token" in raw
     assert "search.example" in raw
-
-
-def test_backup_config_snapshot_serialization_failure_precedes_tree_mutation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _config(tmp_path)
-    claim = acquire_daemon_authority_claim(config)
-    monkeypatch.setattr(
-        cli_main.json,
-        "dumps",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(TypeError("serialize failed")),
-    )
-    try:
-        with pytest.raises(TypeError, match="serialize failed"):
-            cli_main._backup_config_snapshot(config, claim)
-    finally:
-        claim.release()
-    assert not config.data_dir.exists()
-
-
-def test_backup_config_snapshot_rejects_claim_for_another_data_tree(
-    tmp_path: Path,
-) -> None:
-    config = _config(tmp_path)
-    other = config.model_copy(
-        update={
-            "data_dir": tmp_path / "other-data",
-            "socket_path": tmp_path / "other.sock",
-        }
-    )
-    claim = acquire_daemon_authority_claim(other)
-    try:
-        with pytest.raises(AuthorityClaimError, match="does not cover"):
-            cli_main._backup_config_snapshot(config, claim)
-    finally:
-        claim.release()
-    assert not config.data_dir.exists()
-
-
-def test_backup_config_snapshot_rejects_backup_directory_swap(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _config(tmp_path).model_copy(update={"discord_bot_token": "secret-token"})
-    refreshed = config.model_copy(
-        update={
-            "data_dir": tmp_path / "refreshed-data",
-            "socket_path": tmp_path / "refreshed.sock",
-        }
-    )
-    outside = tmp_path / "outside-backups"
-    outside.mkdir()
-    claim = acquire_fresh_config_authority_claim(config, refreshed, timeout_seconds=0)
-    original_ensure = cli_main._ensure_claimed_backup_directory
-
-    def _swap_after_open(data_root: Path, backup_dir: Path):
-        opened = original_ensure(data_root, backup_dir)
-        backup_dir.rename(outside / "displaced")
-        backup_dir.symlink_to(outside, target_is_directory=True)
-        return opened
-
-    monkeypatch.setattr(cli_main, "_ensure_claimed_backup_directory", _swap_after_open)
-    try:
-        with pytest.raises((AuthorityClaimError, OSError)):
-            cli_main._backup_config_snapshot(config, claim)
-    finally:
-        claim.release()
-
-    assert not any(item.is_file() for item in outside.rglob("*"))
-
-
-@pytest.mark.parametrize("fault", ["write", "publish"])
-def test_backup_config_snapshot_cleans_unpublished_stage(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    fault: str,
-) -> None:
-    config = _config(tmp_path)
-    claim = acquire_daemon_authority_claim(config)
-
-    if fault == "write":
-        monkeypatch.setattr(
-            cli_main,
-            "_write_all",
-            lambda _fd, _payload: (_ for _ in ()).throw(OSError("write failed")),
-        )
-    else:
-        monkeypatch.setattr(
-            cli_main.os,
-            "link",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("publish failed")),
-        )
-
-    try:
-        with pytest.raises(OSError, match="failed"):
-            cli_main._backup_config_snapshot(config, claim)
-        backup_dir = config.data_dir / "config-backups"
-        assert backup_dir.is_dir()
-        assert list(backup_dir.iterdir()) == []
-        assert stat.S_IMODE(backup_dir.stat().st_mode) == 0o700
-    finally:
-        claim.release()
-
-
-def test_backup_config_snapshot_retains_owner_only_recovery_after_publish_uncertainty(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _config(tmp_path)
-    backup_dir = config.data_dir / "config-backups"
-    backup_dir.mkdir(parents=True)
-    config.data_dir.chmod(0o700)
-    backup_dir.chmod(0o700)
-    claim = acquire_daemon_authority_claim(config)
-    monkeypatch.setattr(
-        cli_main,
-        "_fsync_backup_publication",
-        lambda _fd: (_ for _ in ()).throw(OSError("directory fsync failed")),
-    )
-
-    try:
-        with pytest.raises(OSError, match="directory fsync failed"):
-            cli_main._backup_config_snapshot(config, claim)
-        final_paths = list(backup_dir.glob("*.json"))
-        recovery_paths = list(backup_dir.glob(".*.tmp"))
-        assert len(final_paths) == 1
-        assert len(recovery_paths) == 1
-        assert stat.S_IMODE(final_paths[0].stat().st_mode) == 0o600
-        assert stat.S_IMODE(recovery_paths[0].stat().st_mode) == 0o600
-        assert final_paths[0].stat().st_ino == recovery_paths[0].stat().st_ino
-    finally:
-        claim.release()
 
 
 async def test_run_daemon_with_autoreload_restarts_when_source_changes(tmp_path: Path) -> None:
@@ -4223,18 +3911,14 @@ async def test_run_daemon_with_autoreload_started_callback_uses_refreshed_config
 
     started_configs: list[DaemonConfig] = []
     run_configs: list[DaemonConfig] = []
-    transferred_claim = SimpleNamespace(release=lambda: None)
-    run_claims: list[object | None] = []
     first_started = asyncio.Event()
     first_cancelled = asyncio.Event()
 
     async def _fake_run_daemon(
         run_config: DaemonConfig,
         on_started: Callable[[], None] | None = None,
-        authority_claim: object | None = None,
     ) -> None:
         run_configs.append(run_config)
-        run_claims.append(authority_claim)
         if on_started is not None:
             on_started()
         if len(run_configs) == 1:
@@ -4253,7 +3937,6 @@ async def test_run_daemon_with_autoreload_started_callback_uses_refreshed_config
             watch_roots=(tmp_path,),
             poll_interval=0.01,
             on_started=started_configs.append,
-            initial_authority_claim=transferred_claim,
         )
     )
 
@@ -4270,32 +3953,6 @@ async def test_run_daemon_with_autoreload_started_callback_uses_refreshed_config
         tmp_path / "control.sock",
         tmp_path / "control-refreshed.sock",
     ]
-    assert run_claims == [transferred_claim, None]
-
-
-async def test_run_daemon_with_autoreload_releases_claim_before_task_handoff(
-    tmp_path: Path,
-) -> None:
-    released = 0
-
-    def _release() -> None:
-        nonlocal released
-        released += 1
-
-    transferred_claim = SimpleNamespace(release=_release)
-
-    def _fail_before_start(_config: DaemonConfig) -> None:
-        raise RuntimeError("start hook failed")
-
-    with pytest.raises(RuntimeError, match="start hook failed"):
-        await cli_main._run_daemon_with_autoreload(
-            config=_config(tmp_path),
-            watch_roots=(tmp_path,),
-            on_starting=_fail_before_start,
-            initial_authority_claim=transferred_claim,
-        )
-
-    assert released == 1
 
 
 async def test_run_daemon_with_autoreload_exits_without_restart_when_daemon_stops(
@@ -6283,9 +5940,7 @@ def test_audit_query_reads_override_data_dir(
     override_dir = tmp_path / "daemon-dir"
     default_dir.mkdir()
     override_dir.mkdir()
-    override_audit = override_dir / "audit.jsonl"
-    override_audit.write_text("")
-    override_audit.chmod(0o600)
+    (override_dir / "audit.jsonl").write_text("")
 
     config = DaemonConfig(
         data_dir=default_dir,

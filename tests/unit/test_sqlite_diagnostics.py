@@ -141,31 +141,3 @@ def test_gh83_doctor_check_help_lists_storage_component() -> None:
 
     assert result.exit_code == 0
     assert "storage" in result.output
-
-
-def test_f3_doctor_check_help_lists_approvals_component() -> None:
-    result = CliRunner().invoke(cli_main.cli, ["doctor", "check", "--help"])
-
-    assert result.exit_code == 0
-    assert "approvals" in result.output
-
-
-def test_f3_doctor_check_help_lists_skills_component() -> None:
-    result = CliRunner().invoke(cli_main.cli, ["doctor", "check", "--help"])
-
-    assert result.exit_code == 0
-    assert "skills" in result.output
-
-
-def test_f3_doctor_check_help_lists_selfmod_component() -> None:
-    result = CliRunner().invoke(cli_main.cli, ["doctor", "check", "--help"])
-
-    assert result.exit_code == 0
-    assert "selfmod" in result.output
-
-
-def test_f3_doctor_check_help_lists_dashboard_component() -> None:
-    result = CliRunner().invoke(cli_main.cli, ["doctor", "check", "--help"])
-
-    assert result.exit_code == 0
-    assert "dashboard" in result.output

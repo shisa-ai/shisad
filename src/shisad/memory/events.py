@@ -12,8 +12,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.memory.sqlite_security import secure_sqlite_connect
-
 
 class MemoryEvent(BaseModel):
     """Canonical append-only memory event record."""
@@ -33,6 +31,7 @@ class MemoryEventStore:
     def __init__(self, path: Path, *, legacy_jsonl_path: Path | None = None) -> None:
         self._path = path
         self._legacy_jsonl_path = legacy_jsonl_path or path.with_suffix(".jsonl")
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             self._ensure_schema(conn)
             self._import_legacy_jsonl_if_needed(conn)
@@ -193,7 +192,7 @@ class MemoryEventStore:
         self._legacy_jsonl_path.unlink(missing_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = secure_sqlite_connect(self._path)
+        conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
         return conn
 

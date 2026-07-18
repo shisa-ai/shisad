@@ -16,7 +16,6 @@ from shisad.assistant.boundary_helpers import (
     _host_matches,
     _is_within,
     _NoRedirectHandler,
-    _open_nofollow_regular_file,
     _read_limited,
 )
 
@@ -221,7 +220,7 @@ class RealityCheckToolkit:
         byte_limit = self.max_read_bytes if max_bytes is None else int(max_bytes)
         byte_limit = max(1024, min(byte_limit, 2 * 1024 * 1024))
         try:
-            with _open_nofollow_regular_file(resolved) as handle:
+            with resolved.open("rb") as handle:
                 payload, truncated = _read_limited(handle, limit=byte_limit)
         except OSError:
             return self._read_error(reason="read_failed", path=str(resolved))
@@ -265,7 +264,7 @@ class RealityCheckToolkit:
                     break
                 searched_files += 1
                 try:
-                    with _open_nofollow_regular_file(resolved) as handle:
+                    with resolved.open("rb") as handle:
                         payload, truncated = _read_limited(handle, limit=self.max_read_bytes)
                 except OSError:
                     continue

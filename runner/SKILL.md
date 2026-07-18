@@ -7,8 +7,9 @@ This file is the "how to operate shisad locally" playbook intended for agentic c
 - `runner/harness.sh`: the one entrypoint. It sets a safe default env, starts/stops the daemon, tails logs, and wraps `uv run shisad ...` so the CLI always targets the same socket.
 - `runner/policy.default.yaml`: bootstrap policy template; copied to `SHISAD_POLICY_PATH` when no policy file exists. Edit this template to change the default tool/capability posture for all new harness runs.
 - `runner/.env.example`: template for private overrides (copy to `runner/.env`, which is gitignored).
-- Owner-only generated policy and runner log/PID paths under
-  `/tmp/shisad-runner-<uid>/`, reported by `bash runner/harness.sh env`.
+- `.local/`: runtime artifacts (gitignored):
+  - `.local/shisad-dev/daemon.log`, `.local/shisad-dev/daemon.pid`
+  - `.local/policy.yaml` (auto-created from template if missing)
 
 ## Preconditions
 
@@ -89,7 +90,7 @@ The harness sets defaults if you do not provide them:
 - `SHISAD_SOCKET_PATH` (default: `$XDG_RUNTIME_DIR/shisad/control.sock` when
   `XDG_RUNTIME_DIR` is an absolute path, otherwise
   `/tmp/shisad-<uid>/control.sock`)
-- `SHISAD_POLICY_PATH` (default: the current owner-only runner-instance state directory)
+- `SHISAD_POLICY_PATH` (default: `.local/policy.yaml`)
 - `SHISAD_CODING_REPO_ROOT` (default: repo root)
 
 Planner preset credentials:
@@ -117,7 +118,7 @@ RUNNER_INHERIT_SHISAD_ENV=1
 
 ```bash
 # Daemon lifecycle
-bash runner/harness.sh start            # start in background; `env` prints the owner-only log path
+bash runner/harness.sh start            # start in background; logs to .local/shisad-dev/daemon.log
 bash runner/harness.sh start --fg       # run in foreground (like ./run.sh)
 bash runner/harness.sh stop
 bash runner/harness.sh restart

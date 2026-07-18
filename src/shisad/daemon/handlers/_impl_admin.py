@@ -20,7 +20,6 @@ from shisad.channels.discord_components import (
     discord_approval_custom_id,
 )
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
-from shisad.core.atomic_state import DurableAppendError, atomic_write_bytes
 from shisad.core.events import (
     AnomalyReported,
     ChannelDeliveryAttempted,
@@ -71,15 +70,6 @@ logger = logging.getLogger(__name__)
 _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "dependencies",
     "storage",
-    "authority",
-    "scheduler",
-    "actions",
-    "approvals",
-    "skills",
-    "selfmod",
-    "dashboard",
-    "evidence",
-    "control_plane",
     "provider",
     "policy",
     "channels",
@@ -155,7 +145,6 @@ def _approval_interaction_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
         "approval_confirmation_id",
         "approval_decision_nonce",
         "discord_interaction_id",
-        "discord_source_message_id",
     }
     payload: dict[str, Any] = {}
     for key in allowed_keys:
@@ -318,8 +307,6 @@ def _migrated_channel_memory_key(
 
 
 class AdminImplMixin(HandlerMixinBase):
-    _pairing_publication_degradation: dict[str, str] | None
-
     _KEYED_CHANNEL_STATE_ENTRY_TYPES: ClassVar[set[str]] = {
         "channel_participation",
         "person_note",
@@ -1536,40 +1523,13 @@ class AdminImplMixin(HandlerMixinBase):
         result["operation"] = operation
         return result
 
-    async def _control_plane_state_status(self) -> dict[str, Any]:
-        try:
-            status = await self._control_plane.state_status()
-        except Exception as exc:
-            logger.warning(
-                "Control-plane state diagnostics unavailable: %s",
-                exc.__class__.__name__,
-            )
-            return {
-                "status": "degraded",
-                "problems": [f"control_plane_diagnostics_unavailable:{exc.__class__.__name__}"],
-                "fail_closed": True,
-                "domains": {},
-                "remediation": "Restart shisad and inspect the control-plane sidecar logs.",
-            }
-        if not isinstance(status, Mapping):
-            return {
-                "status": "degraded",
-                "problems": ["control_plane_diagnostics_invalid"],
-                "fail_closed": True,
-                "domains": {},
-                "remediation": "Restart shisad and inspect the control-plane sidecar logs.",
-            }
-        return dict(status)
-
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
         a2a_runtime = getattr(self._services, "a2a_runtime", None)
-        control_plane_status = await self._control_plane_state_status()
         return {
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
             "audit_entries": self._audit_log.entry_count,
-            "authority": self._services.authority_claim.diagnostic_status(),
             "policy_hash": (
                 self._policy_loader.file_hash[:12] if self._policy_loader.file_hash else "default"
             ),
@@ -1617,15 +1577,7 @@ class AdminImplMixin(HandlerMixinBase):
                     "connected": self._slack_channel.connected if self._slack_channel else False,
                 },
             },
-            "pairing_requests": self._pairing_request_publication_status(),
             "delivery": self._delivery.health_status(),
-            "scheduler": self._scheduler.state_status(),
-            "actions": self._pending_action_state_status(),
-            "approvals": self._credential_store.approval_state_status(),
-            "skills": self._skill_manager.state_status(),
-            "dashboard": self._dashboard.state_status(),
-            "evidence": self._evidence_store.state_status(),
-            "control_plane": control_plane_status,
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
                 "connect_path": self._sandbox.connect_path_status(),
@@ -1892,15 +1844,6 @@ class AdminImplMixin(HandlerMixinBase):
         component_factories = {
             "dependencies": self._doctor_dependencies_status,
             "storage": self._doctor_storage_status,
-            "authority": self._services.authority_claim.diagnostic_status,
-            "scheduler": self._scheduler.state_status,
-            "actions": self._pending_action_state_status,
-            "approvals": self._doctor_approval_status,
-            "skills": self._skill_manager.state_status,
-            "selfmod": self._selfmod_manager.doctor_status,
-            "dashboard": self._dashboard.state_status,
-            "evidence": self._evidence_store.state_status,
-            "control_plane": self._control_plane_state_status,
             "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,
@@ -2093,6 +2036,7 @@ class AdminImplMixin(HandlerMixinBase):
         proposal_id = uuid.uuid4().hex
         generated_at = datetime.now(UTC).isoformat()
         proposal_dir = self._config.data_dir / "proposals" / "channel_pairing"
+        proposal_dir.mkdir(parents=True, exist_ok=True)
         proposal_path = proposal_dir / f"{proposal_id}.json"
         proposal_payload = {
             "proposal_id": proposal_id,
@@ -2108,17 +2052,9 @@ class AdminImplMixin(HandlerMixinBase):
             "config_patch": {"channel_identity_allowlist": config_patch},
             "applied": False,
         }
-        atomic_write_bytes(
-            proposal_path,
-            (
-                json.dumps(
-                    proposal_payload,
-                    ensure_ascii=True,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n"
-            ).encode("utf-8"),
+        proposal_path.write_text(
+            json.dumps(proposal_payload, ensure_ascii=True, indent=2),
+            encoding="utf-8",
         )
         await self._event_bus.publish(
             ChannelPairingProposalGenerated(
@@ -2201,19 +2137,22 @@ class AdminImplMixin(HandlerMixinBase):
             if (
                 str(getattr(pending, "user_id", "")).strip() != normalized_principal_id
                 or normalized_principal_id not in allowed_channel_principals
-                or str(getattr(pending, "workspace_id", "")).strip() != normalized_workspace_id
+                or str(getattr(pending, "workspace_id", "")).strip()
+                != normalized_workspace_id
             ):
                 continue
             pending_delivery_target = getattr(pending, "delivery_target", None)
             if isinstance(pending_delivery_target, Mapping):
                 try:
-                    pending_delivery_target = DeliveryTarget.model_validate(pending_delivery_target)
+                    pending_delivery_target = DeliveryTarget.model_validate(
+                        pending_delivery_target
+                    )
                 except (TypeError, ValueError):
                     pending_delivery_target = None
-            if not isinstance(
-                pending_delivery_target, DeliveryTarget
-            ) or pending_delivery_target.model_dump(mode="json") != delivery_target.model_dump(
-                mode="json"
+            if (
+                not isinstance(pending_delivery_target, DeliveryTarget)
+                or pending_delivery_target.model_dump(mode="json")
+                != delivery_target.model_dump(mode="json")
             ):
                 continue
             decision_nonce = str(getattr(pending, "decision_nonce", "")).strip()
@@ -2371,7 +2310,6 @@ class AdminImplMixin(HandlerMixinBase):
             and discord_decision.reason in {"public_grant", "trusted_guest_grant"}
         )
         if not allowed_by_identity and not public_policy_access:
-            self._require_pairing_request_publication()
             pairing, is_new = self._identity_map.record_pairing_request(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
@@ -2379,28 +2317,12 @@ class AdminImplMixin(HandlerMixinBase):
                 reason="identity_not_allowlisted",
             )
             if is_new:
-                try:
-                    self._record_pairing_request_artifact(
-                        channel=pairing.channel,
-                        external_user_id=pairing.external_user_id,
-                        workspace_hint=pairing.workspace_hint,
-                        reason=pairing.reason,
-                    )
-                except DurableAppendError as exc:
-                    if exc.publication_may_have_committed:
-                        self._mark_pairing_publication_uncertain(exc)
-                    else:
-                        self._identity_map.discard_pairing_request(pairing)
-                        if exc.authority_changed:
-                            self._pairing_publication_degradation = {
-                                "stage": exc.stage.value,
-                                "reason": "artifact_identity_changed",
-                                "path": str(exc.path),
-                            }
-                    raise
-                except Exception:
-                    self._identity_map.discard_pairing_request(pairing)
-                    raise
+                self._record_pairing_request_artifact(
+                    channel=pairing.channel,
+                    external_user_id=pairing.external_user_id,
+                    workspace_hint=pairing.workspace_hint,
+                    reason=pairing.reason,
+                )
                 await self._event_bus.publish(
                     ChannelPairingRequested(
                         actor="channel_ingest",

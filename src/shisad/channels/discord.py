@@ -12,14 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import (
-    ChannelMessage,
-    DeliveryTarget,
-    InMemoryChannel,
-    ReplayEventVariant,
-    ReplayIdentity,
-    provider_account_fingerprint,
-)
+from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
 from shisad.channels.discord_components import (
     DiscordApprovalInteraction,
     discord_approval_custom_id,
@@ -99,33 +92,6 @@ class DiscordChannel(InMemoryChannel):
     def available(self) -> bool:
         return discord is not None
 
-    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
-        guild_id = str(message.metadata.get("discord_guild_id", "")).strip() or "@dm"
-        channel_id = (
-            str(message.metadata.get("discord_channel_id", "")).strip()
-            or message.reply_target.strip()
-        )
-        account_id = str(message.metadata.get("discord_account_id", "")).strip()
-        if not account_id and self._client is not None:
-            account_id = str(getattr(getattr(self._client, "user", None), "id", "")).strip()
-        if not account_id:
-            account_id = self._config.bot_token.partition(".")[0]
-        raw_event_variant = str(message.metadata.get("discord_event_variant", "")).strip()
-        if raw_event_variant == ReplayEventVariant.DISCORD_INTERACTION.value:
-            message_id = str(message.metadata.get("discord_interaction_id", "")).strip()
-            event_variant = ReplayEventVariant.DISCORD_INTERACTION
-        else:
-            message_id = message.message_id
-            event_variant = ReplayEventVariant.ORDINARY_MESSAGE
-        return ReplayIdentity(
-            provider="discord",
-            account_id=provider_account_fingerprint("discord", account_id),
-            tenant_id=guild_id,
-            delivery_id=channel_id,
-            event_variant=event_variant,
-            message_id=message_id,
-        )
-
     @property
     def supports_components(self) -> bool:
         if discord is None:
@@ -149,8 +115,6 @@ class DiscordChannel(InMemoryChannel):
         )
 
     async def connect(self) -> None:
-        if self._client_task is not None and self._client_task.done():
-            await self.disconnect()
         await super().connect()
         if discord is None or not self._config.bot_token:
             return
@@ -174,9 +138,6 @@ class DiscordChannel(InMemoryChannel):
                 guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
                 channel_obj = getattr(message, "channel", None)
                 channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
-                account_id = str(
-                    getattr(getattr(self._client, "user", None), "id", "")
-                ).strip()
                 author = getattr(message, "author", None)
                 if author is None:
                     logger.debug(
@@ -280,7 +241,6 @@ class DiscordChannel(InMemoryChannel):
                                         metadata={
                                             "discord_guild_id": guild_id,
                                             "discord_channel_id": channel_id,
-                                            "discord_account_id": account_id,
                                             "addressed": addressed,
                                             "interaction_type": "observed",
                                             "engagement_mode": policy_decision.engagement_mode,
@@ -386,7 +346,6 @@ class DiscordChannel(InMemoryChannel):
                         metadata={
                             "discord_guild_id": guild_id,
                             "discord_channel_id": channel_id,
-                            "discord_account_id": account_id,
                             "addressed": True,
                             "interaction_type": "direct",
                             "engagement_mode": "mention-only",
@@ -396,8 +355,6 @@ class DiscordChannel(InMemoryChannel):
                 )
 
             async def on_interaction(interaction: Any) -> None:
-                if not self._interaction_id(interaction):
-                    return
                 data = getattr(interaction, "data", None)
                 if not isinstance(data, Mapping):
                     return
@@ -439,7 +396,6 @@ class DiscordChannel(InMemoryChannel):
         start = getattr(self._client, "start", None)
         if callable(start):
             self._client_task = asyncio.create_task(start(self._config.bot_token))
-            self._observe_consumer_task(self._client_task)
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -451,7 +407,7 @@ class DiscordChannel(InMemoryChannel):
                         await result
         if self._client_task is not None:
             self._client_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._client_task
             self._client_task = None
         self._client = None
@@ -511,30 +467,23 @@ class DiscordChannel(InMemoryChannel):
         guild_id = str(getattr(guild, "id", "")).strip() if guild is not None else ""
         channel_obj = getattr(interaction, "channel", None)
         channel_id = str(getattr(channel_obj, "id", "")).strip() if channel_obj is not None else ""
-        interaction_id = self._interaction_id(interaction)
-        if not interaction_id:
-            return False
-        account_id = str(
-            getattr(getattr(self._client, "user", None), "id", "")
-        ).strip()
-        source_message_id = str(
-            getattr(getattr(interaction, "message", None), "id", "")
-        ).strip()
+        interaction_id = str(getattr(interaction, "id", "")).strip()
+        message_id = (
+            f"discord-interaction:{interaction_id}:{parsed.action}:{parsed.confirmation_id}"
+            if interaction_id
+            else ""
+        )
         await self._incoming.put(
             ChannelMessage(
                 channel="discord",
                 external_user_id=user_id,
                 workspace_hint=self.workspace_for_guild(guild_id),
                 content=content.strip(),
-                message_id=interaction_id,
+                message_id=message_id,
                 reply_target=channel_id,
                 metadata={
                     "discord_guild_id": guild_id,
                     "discord_channel_id": channel_id,
-                    "discord_account_id": account_id,
-                    "discord_event_variant": ReplayEventVariant.DISCORD_INTERACTION.value,
-                    "discord_interaction_id": interaction_id,
-                    "discord_source_message_id": source_message_id,
                     "addressed": True,
                     "interaction_type": interaction_type,
                     "approval_interaction_type": interaction_type,
@@ -547,13 +496,6 @@ class DiscordChannel(InMemoryChannel):
             )
         )
         return True
-
-    @staticmethod
-    def _interaction_id(interaction: Any) -> str:
-        raw_interaction_id = getattr(interaction, "id", None)
-        if raw_interaction_id is None:
-            return ""
-        return str(raw_interaction_id).strip()
 
     async def _open_totp_modal(
         self,

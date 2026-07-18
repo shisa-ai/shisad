@@ -8,28 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    DurableAppendError,
-    DurableAppendFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes_with_identity,
-    decode_json_document,
-    durable_append_bytes,
-    read_owner_only_regular_file_with_identity,
-)
 from shisad.security.control_plane.schema import sanitize_metadata_payload
 
 _GENESIS_HASH = hashlib.sha256(b"shisad-control-plane-audit-genesis").hexdigest()
 
 
-class ControlPlaneAuditEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
+class ControlPlaneAuditEntry(BaseModel, frozen=True):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     event_type: str
     session_id: str = ""
@@ -37,13 +23,6 @@ class ControlPlaneAuditEntry(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     data_hash: str
     previous_hash: str
-
-    @field_validator("timestamp")
-    @classmethod
-    def _require_timezone_aware_timestamp(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("timestamp must be timezone-aware")
-        return value
 
 
 class ControlPlaneAuditLog:
@@ -53,74 +32,7 @@ class ControlPlaneAuditLog:
         self._path = path
         self._previous_hash = _GENESIS_HASH
         self._entry_count = 0
-        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation: AtomicWriteError | DurableAppendError | None = None
-        self._file_identity: tuple[int, int] | None = None
-        self._state_fault_injector: DurableAppendFaultInjector | None = None
         self._resume()
-
-    @property
-    def state_load_result(self) -> StateLoadResult:
-        return self._state_load_result
-
-    @property
-    def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None or self._state_load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }
-
-    def state_status(self) -> dict[str, Any]:
-        persistence = self._persistence_degradation
-        load_result = self._state_load_result
-        return {
-            "status": "degraded" if self.state_degraded else "ok",
-            "problems": ["control_plane_audit_state_degraded"] if self.state_degraded else [],
-            "path": str(self._path),
-            "load_status": load_result.status.value,
-            "reason": load_result.reason,
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-            "fail_closed": self.state_degraded,
-            "stage": persistence.stage.value if persistence is not None else "",
-            "remediation": (
-                "Restore or explicitly reset the retained control-plane audit chain, then "
-                "restart shisad."
-                if self.state_degraded
-                else ""
-            ),
-        }
-
-    def reset_state(self) -> int:
-        """Durably publish an empty audit chain and reset its genesis cursor."""
-
-        cleared = self._entry_count
-        try:
-            reset_identity = atomic_write_bytes_with_identity(self._path, b"")
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            raise
-        self._previous_hash = _GENESIS_HASH
-        self._entry_count = 0
-        self._file_identity = reset_identity
-        self._persistence_degradation = None
-        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
-        return cleared
-
-    def _require_available(self, *, transition: str) -> None:
-        if not self.state_degraded:
-            return
-        persistence = self._persistence_degradation
-        raise StatePersistenceDegradedError(
-            authority="control_plane_audit",
-            transition=transition,
-            stage=persistence.stage.value if persistence is not None else "load",
-            reason=(
-                "publication_commit_uncertain"
-                if persistence is not None
-                else self._state_load_result.reason or self._state_load_result.status.value
-            ),
-        )
 
     @property
     def entry_count(self) -> int:
@@ -131,7 +43,6 @@ class ControlPlaneAuditLog:
         return self._path
 
     def append(self, *, event_type: str, session_id: str, actor: str, data: dict[str, Any]) -> None:
-        self._require_available(transition="append")
         cleaned = sanitize_metadata_payload(data)
         encoded_data = json.dumps(cleaned, sort_keys=True)
         data_hash = hashlib.sha256(encoded_data.encode("utf-8")).hexdigest()
@@ -144,58 +55,35 @@ class ControlPlaneAuditLog:
             previous_hash=self._previous_hash,
         )
         payload = entry.model_dump_json()
-        try:
-            self._file_identity = durable_append_bytes(
-                self._path,
-                (payload + "\n").encode("utf-8"),
-                fault_injector=self._state_fault_injector,
-                expected_identity=self._file_identity,
-                require_missing=self._file_identity is None,
-            )
-        except DurableAppendError as exc:
-            if exc.publication_may_have_committed or exc.authority_changed:
-                self._persistence_degradation = exc
-            raise
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as handle:
+            handle.write(payload + "\n")
         self._previous_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         self._entry_count += 1
-        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
 
     def verify_chain(self) -> tuple[bool, int, str]:
-        raw_bytes, error = self._read_bound_bytes()
-        if raw_bytes is None:
-            return (False, 0, error) if error else (True, 0, "")
-        return self._verify_chain_bytes(raw_bytes)
-
-    @staticmethod
-    def _verify_chain_bytes(raw_bytes: bytes) -> tuple[bool, int, str]:
-        try:
-            text = raw_bytes.decode("utf-8")
-        except UnicodeError as exc:
-            return (False, 0, f"invalid encoding ({exc})")
+        if not self._path.exists():
+            return (True, 0, "")
         previous = _GENESIS_HASH
         count = 0
-        for index, raw in enumerate(text.splitlines(keepends=True), start=1):
-            payload = raw[:-1] if raw.endswith("\n") else raw
-            if payload.endswith("\r"):
-                payload = payload[:-1]
-            if not payload.strip():
-                return (False, count, f"line {index}: blank entry")
-            document_result, document = decode_json_document(payload.encode("utf-8"))
-            try:
-                if document_result.status is not StateLoadStatus.OK:
-                    raise ValueError("invalid_json")
-                entry = ControlPlaneAuditEntry.model_validate(document)
-            except (TypeError, ValueError, ValidationError) as exc:
-                return (False, count, f"line {index}: invalid entry ({exc})")
-            if entry.previous_hash != previous:
-                return (False, count, f"line {index}: chain break")
-            expected_hash = hashlib.sha256(
-                json.dumps(entry.data, sort_keys=True).encode("utf-8")
-            ).hexdigest()
-            if expected_hash != entry.data_hash:
-                return (False, count, f"line {index}: data hash mismatch")
-            previous = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            count += 1
+        with self._path.open(encoding="utf-8") as handle:
+            for index, raw in enumerate(handle, start=1):
+                payload = raw[:-1] if raw.endswith("\n") else raw
+                if not payload.strip():
+                    continue
+                try:
+                    entry = ControlPlaneAuditEntry.model_validate_json(payload)
+                except ValidationError as exc:
+                    return (False, count, f"line {index}: invalid entry ({exc})")
+                if entry.previous_hash != previous:
+                    return (False, count, f"line {index}: chain break")
+                expected_hash = hashlib.sha256(
+                    json.dumps(entry.data, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                if expected_hash != entry.data_hash:
+                    return (False, count, f"line {index}: data hash mismatch")
+                previous = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                count += 1
         return (True, count, "")
 
     def query(
@@ -204,80 +92,32 @@ class ControlPlaneAuditLog:
         event_type: str | None = None,
         session_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        if self.state_degraded:
-            return []
-        raw_bytes, _error = self._read_bound_bytes()
-        if raw_bytes is None:
+        if not self._path.exists():
             return []
         rows: list[dict[str, Any]] = []
-        for raw in raw_bytes.splitlines():
-            text = raw.strip()
-            if not text:
-                continue
-            document_result, document = decode_json_document(text)
-            try:
-                if document_result.status is not StateLoadStatus.OK:
-                    raise ValueError("invalid_json")
-                entry = ControlPlaneAuditEntry.model_validate(document)
-            except (TypeError, ValueError, ValidationError):
-                return []
-            if event_type and entry.event_type != event_type:
-                continue
-            if session_id and entry.session_id != session_id:
-                continue
-            rows.append(entry.model_dump(mode="json"))
+        with self._path.open(encoding="utf-8") as handle:
+            for raw in handle:
+                text = raw.strip()
+                if not text:
+                    continue
+                try:
+                    entry = ControlPlaneAuditEntry.model_validate_json(text)
+                except ValidationError:
+                    continue
+                if event_type and entry.event_type != event_type:
+                    continue
+                if session_id and entry.session_id != session_id:
+                    continue
+                rows.append(entry.model_dump(mode="json"))
         return rows
 
-    def _read_bound_bytes(self) -> tuple[bytes | None, str]:
-        try:
-            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._path)
-        except OSError:
-            reason = "audit_read_failed"
-            self._state_load_result = StateLoadResult(StateLoadStatus.CORRUPT, reason=reason)
-            return None, reason
-        if raw_bytes is None:
-            if self._file_identity is None:
-                return None, ""
-            reason = "audit_authority_disappeared"
-            self._state_load_result = StateLoadResult(StateLoadStatus.CORRUPT, reason=reason)
-            return None, reason
-        if self._file_identity is None or file_identity != self._file_identity:
-            reason = "audit_authority_identity_changed"
-            self._state_load_result = StateLoadResult(StateLoadStatus.CORRUPT, reason=reason)
-            return None, reason
-        return raw_bytes, ""
-
     def _resume(self) -> None:
-        try:
-            raw_bytes, file_identity = read_owner_only_regular_file_with_identity(self._path)
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="audit_read_failed",
-            )
+        if not self._path.exists():
             return
-        if raw_bytes is None:
-            return
-        self._file_identity = file_identity
-        if raw_bytes and not raw_bytes.endswith(b"\n"):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="audit_unterminated_row",
-            )
-            return
-        ok, count, error = self._verify_chain_bytes(raw_bytes)
-        if not ok:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason=error,
-            )
-            return
-        previous = _GENESIS_HASH
-        for raw in raw_bytes.decode("utf-8").splitlines():
-            payload = raw[:-1] if raw.endswith("\r") else raw
-            if not payload.strip():
-                continue
-            previous = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        self._previous_hash = previous
-        self._entry_count = count
-        self._state_load_result = StateLoadResult(StateLoadStatus.OK)
+        with self._path.open(encoding="utf-8") as handle:
+            for raw in handle:
+                payload = raw[:-1] if raw.endswith("\n") else raw
+                if not payload.strip():
+                    continue
+                self._previous_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                self._entry_count += 1

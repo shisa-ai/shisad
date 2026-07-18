@@ -1303,6 +1303,6 @@ def test_runtime_component_wiring_uses_daemon_memory_paths(tmp_path: Path) -> No
 
 
 def test_daemon_and_sut_share_memory_runtime_builder() -> None:
-    build_source = inspect.getsource(daemon_services.DaemonServices._build_claimed)
+    build_source = inspect.getsource(daemon_services.DaemonServices.build)
 
     assert "build_memory_runtime_components(" in build_source

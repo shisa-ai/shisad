@@ -8,8 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from shisad.core.config import DaemonConfig
-from shisad.core.soul import SoulFileError, soul_text_sha256
-from shisad.daemon.handlers import _impl_admin
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 
 
@@ -150,69 +148,6 @@ async def test_s9_admin_soul_update_writes_config_path_and_refreshes_planner(tmp
     assert tone == "neutral"
     assert "Use direct prose." in custom_text
     assert "Prefer short replies." in custom_text
-
-
-@pytest.mark.asyncio
-async def test_f3_admin_soul_update_does_not_refresh_after_unacknowledged_write(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:  # type: ignore[no-untyped-def]
-    harness = _SoulAdminHarness(
-        DaemonConfig(
-            data_dir=tmp_path / "data",
-            assistant_persona_soul_path=tmp_path / "SOUL.md",
-        )
-    )
-
-    def _fail_write(*args: object, **kwargs: object) -> object:
-        raise SoulFileError("injected durability failure")
-
-    monkeypatch.setattr(_impl_admin, "write_soul_text", _fail_write)
-
-    with pytest.raises(SoulFileError, match="durability failure"):
-        await harness.do_admin_soul_update(
-            {
-                "content": "must not become live",
-                "_rpc_peer": {
-                    "uid": os.getuid(),
-                    "gid": os.getgid(),
-                    "pid": os.getpid(),
-                },
-            }
-        )
-
-    assert harness._planner.defaults == []
-
-
-@pytest.mark.asyncio
-async def test_f3_admin_soul_expected_sha_mismatch_does_not_write_or_refresh(
-    tmp_path,
-) -> None:  # type: ignore[no-untyped-def]
-    soul_path = tmp_path / "SOUL.md"
-    soul_path.write_text("current persona", encoding="utf-8")
-    harness = _SoulAdminHarness(
-        DaemonConfig(
-            data_dir=tmp_path / "data",
-            assistant_persona_soul_path=soul_path,
-        )
-    )
-
-    result = await harness.do_admin_soul_update(
-        {
-            "content": "stale update",
-            "expected_sha256": soul_text_sha256("older persona"),
-            "_rpc_peer": {
-                "uid": os.getuid(),
-                "gid": os.getgid(),
-                "pid": os.getpid(),
-            },
-        }
-    )
-
-    assert result["updated"] is False
-    assert result["reason"] == "sha256_mismatch"
-    assert soul_path.read_text(encoding="utf-8") == "current persona"
-    assert harness._planner.defaults == []
 
 
 @pytest.mark.asyncio

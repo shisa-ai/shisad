@@ -10,13 +10,8 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from shisad.core.api.schema import (
-    ChannelIngestParams,
-    JsonRpcResponse,
-    SessionCreateParams,
-)
+from shisad.core.api.schema import JsonRpcResponse, SessionCreateParams
 from shisad.core.api.transport import ControlServer
-from shisad.core.atomic_state import StatePersistenceDegradedError
 from shisad.core.errors import PolicyError
 from shisad.daemon.context import RequestContext
 
@@ -51,54 +46,6 @@ async def test_transport_rejects_extra_params_when_model_is_registered(tmp_path:
         assert response.error is not None
         assert response.error.code == -32602
         assert response.error.data == {"reason_code": "rpc.invalid_params"}
-    finally:
-        if writer is not None:
-            writer.close()
-            await writer.wait_closed()
-        await server.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("message_id", [None, "   "])
-async def test_channel_ingest_rejects_missing_or_blank_replay_id_before_dispatch(
-    tmp_path: Path,
-    message_id: str | None,
-) -> None:
-    server = ControlServer(tmp_path / "control.sock")
-    handler_calls = 0
-
-    async def _handler(params: ChannelIngestParams, ctx: RequestContext) -> dict[str, object]:
-        nonlocal handler_calls
-        _ = params, ctx
-        handler_calls += 1
-        return {"ok": True}
-
-    server.register_method("channel.ingest", _handler, params_model=ChannelIngestParams)
-    await server.start()
-    reader: asyncio.StreamReader | None = None
-    writer: asyncio.StreamWriter | None = None
-    try:
-        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
-        message: dict[str, object] = {
-            "channel": "discord",
-            "external_user_id": "alice",
-            "content": "hello",
-        }
-        if message_id is not None:
-            message["message_id"] = message_id
-        request = {
-            "jsonrpc": "2.0",
-            "method": "channel.ingest",
-            "params": {"message": message},
-            "id": 5,
-        }
-        writer.write(json.dumps(request).encode("utf-8") + b"\n")
-        await writer.drain()
-        response = JsonRpcResponse.model_validate_json(await reader.readline())
-        assert response.error is not None
-        assert response.error.code == -32602
-        assert response.error.data == {"reason_code": "rpc.invalid_params"}
-        assert handler_calls == 0
     finally:
         if writer is not None:
             writer.close()
@@ -324,50 +271,6 @@ async def test_transport_maps_shisad_errors_to_structured_reason_codes(
         assert response.error.code == -32602
         assert response.error.message == "capability denied"
         assert response.error.data == {"reason_code": "policy.capability_denied"}
-    finally:
-        if writer is not None:
-            writer.close()
-            await writer.wait_closed()
-        await server.stop()
-
-
-@pytest.mark.asyncio
-async def test_f3_transport_maps_state_degradation_without_leaking_store_detail(
-    tmp_path: Path,
-) -> None:
-    server = ControlServer(tmp_path / "control.sock")
-
-    async def _handler(params: SessionCreateParams, ctx: RequestContext) -> dict[str, object]:
-        _ = params, ctx
-        raise StatePersistenceDegradedError(
-            authority="approval_factors",
-            transition="list_factors",
-            stage="load",
-            reason="invalid_json_secret_path_detail",
-        )
-
-    server.register_method("session.create", _handler, params_model=SessionCreateParams)
-    await server.start()
-    reader: asyncio.StreamReader | None = None
-    writer: asyncio.StreamWriter | None = None
-    try:
-        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
-        request = {
-            "jsonrpc": "2.0",
-            "method": "session.create",
-            "params": {"channel": "cli"},
-            "id": 5,
-        }
-        writer.write(json.dumps(request).encode("utf-8") + b"\n")
-        await writer.drain()
-        response = JsonRpcResponse.model_validate_json(await reader.readline())
-        assert response.error is not None
-        assert response.error.code == -32603
-        assert response.error.message == (
-            "State authority unavailable; inspect daemon status and doctor diagnostics"
-        )
-        assert response.error.data == {"reason_code": "state.persistence_degraded"}
-        assert "invalid_json_secret_path_detail" not in response.model_dump_json()
     finally:
         if writer is not None:
             writer.close()

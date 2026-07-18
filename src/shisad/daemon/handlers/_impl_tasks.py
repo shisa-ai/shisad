@@ -179,28 +179,10 @@ class TasksImplMixin(HandlerMixinBase):
         existing_id = str(getattr(task, "execution_session_id", "")).strip()
         if existing_id:
             existing = self._session_manager.get(SessionId(existing_id))
-            if existing is not None and self._task_execution_session_matches(
-                task=task,
-                session=existing,
-            ):
+            if existing is not None:
                 return existing
 
         task_envelope = getattr(task, "task_envelope", None)
-        task_user_id = str(
-            getattr(task_envelope, "owner_user_id", "")
-            or getattr(task, "created_by", "")
-        )
-        task_workspace_id = str(
-            getattr(task_envelope, "workspace_id", "")
-            or getattr(task, "workspace_id", "")
-        )
-        task_capabilities = set(
-            getattr(
-                task_envelope,
-                "capability_snapshot",
-                getattr(task, "capability_snapshot", set()),
-            )
-        )
         parent_session_id = None
         if task_envelope is not None:
             raw_parent_session_id = str(getattr(task_envelope, "parent_session_id", "")).strip()
@@ -209,11 +191,11 @@ class TasksImplMixin(HandlerMixinBase):
 
         session = self._session_manager.create_subagent_session(
             channel="scheduler",
-            user_id=UserId(task_user_id),
-            workspace_id=WorkspaceId(task_workspace_id),
+            user_id=UserId(str(getattr(task, "created_by", ""))),
+            workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
             parent_session_id=parent_session_id,
             mode=SessionMode.DEFAULT,
-            capabilities=task_capabilities,
+            capabilities=set(getattr(task, "capability_snapshot", set())),
             metadata={
                 "trust_level": "internal",
                 "background_task_id": str(getattr(task, "id", "")),
@@ -226,29 +208,6 @@ class TasksImplMixin(HandlerMixinBase):
         return session
 
     @staticmethod
-    def _task_execution_session_matches(*, task: Any, session: Any) -> bool:
-        task_envelope = getattr(task, "task_envelope", None)
-        if task_envelope is None:
-            return False
-        metadata = getattr(session, "metadata", {})
-        if not isinstance(metadata, Mapping):
-            return False
-        return bool(
-            getattr(session, "state", None) == SessionState.ACTIVE
-            and getattr(session, "role", None) == SessionRole.SUBAGENT
-            and getattr(session, "mode", None) == SessionMode.DEFAULT
-            and str(getattr(session, "channel", "")) == "scheduler"
-            and str(getattr(session, "user_id", "")) == task_envelope.owner_user_id
-            and str(getattr(session, "workspace_id", "")) == task_envelope.workspace_id
-            and set(getattr(session, "capabilities", set()))
-            == set(task_envelope.capability_snapshot)
-            and str(metadata.get("background_task_id", "")) == str(getattr(task, "id", ""))
-            and metadata.get("task_envelope") == task_envelope.model_dump(mode="json")
-            and str(metadata.get("trust_level", "")) == "internal"
-            and str(metadata.get("capability_sync_mode", "")) == "manual_override"
-        )
-
-    @staticmethod
     def _task_origin_for(
         *,
         session: Any,
@@ -257,8 +216,8 @@ class TasksImplMixin(HandlerMixinBase):
     ) -> Origin:
         return Origin(
             session_id=str(session.id),
-            user_id=str(getattr(session, "user_id", "")),
-            workspace_id=str(getattr(session, "workspace_id", "")),
+            user_id=str(getattr(task, "created_by", "")),
+            workspace_id=str(getattr(task, "workspace_id", "")),
             task_id=str(getattr(task, "id", "")),
             actor="scheduler",
             channel=str(getattr(session, "channel", "scheduler")),

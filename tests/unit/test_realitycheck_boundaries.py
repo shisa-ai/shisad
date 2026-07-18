@@ -49,41 +49,6 @@ def test_m3_realitycheck_read_blocks_symlink_escape(tmp_path: Path) -> None:
     assert result["error"] == "path_not_allowlisted"
 
 
-def test_f3_realitycheck_parent_swap_cannot_escape_allowlisted_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo_root = tmp_path / "repo"
-    data_root = tmp_path / "data"
-    safe_parent = data_root / "safe"
-    outside_parent = tmp_path / "outside"
-    repo_root.mkdir()
-    safe_parent.mkdir(parents=True)
-    outside_parent.mkdir()
-    (safe_parent / "source.md").write_text("safe", encoding="utf-8")
-    (outside_parent / "source.md").write_text("outside", encoding="utf-8")
-    toolkit = _toolkit(repo_root=repo_root, data_roots=[data_root])
-    original_resolve = RealityCheckToolkit._resolve_data_path
-    moved_parent = data_root / "safe-before-swap"
-
-    def _resolve_then_swap(
-        self: RealityCheckToolkit,
-        path: str,
-    ) -> Path | dict[str, Any]:
-        resolved = original_resolve(self, path)
-        if not isinstance(resolved, dict):
-            safe_parent.rename(moved_parent)
-            safe_parent.symlink_to(outside_parent, target_is_directory=True)
-        return resolved
-
-    monkeypatch.setattr(RealityCheckToolkit, "_resolve_data_path", _resolve_then_swap)
-
-    result = toolkit.read_source(path="safe/source.md")
-
-    if result["ok"]:
-        assert result["content"] == "safe"
-
-
 def test_m3_realitycheck_search_remote_blocks_redirects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

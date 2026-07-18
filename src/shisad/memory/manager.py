@@ -26,7 +26,6 @@ from shisad.memory.remap import (
     resolve_legacy_source_origin,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
-from shisad.memory.sqlite_security import secure_sqlite_connect
 from shisad.memory.surfaces import (
     ActiveAttentionPack,
     IdentityPack,
@@ -161,6 +160,7 @@ class MemoryManager:
         pii_detector: PIIDetector | None = None,
     ) -> None:
         self._storage_dir = storage_dir
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self._storage_dir / "memory.sqlite3"
         self._entries: dict[str, MemoryEntry] = {}
         self._ensure_entry_schema()
@@ -2439,7 +2439,7 @@ class MemoryManager:
                 self._upsert_entry(conn, entry)
 
     def _connect_db(self) -> sqlite3.Connection:
-        conn = secure_sqlite_connect(self._db_path)
+        conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

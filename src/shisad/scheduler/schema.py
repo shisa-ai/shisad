@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from shisad.core.types import Capability, UserId, WorkspaceId
 
@@ -20,8 +20,6 @@ class ScheduleKind(StrEnum):
 
 
 class Schedule(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     kind: ScheduleKind
     expression: str
     event_type: str | None = None
@@ -40,14 +38,10 @@ class Schedule(BaseModel):
 class TaskEnvelope(BaseModel):
     """Immutable task-execution boundary metadata."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
     envelope_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset)
     parent_session_id: str = ""
     orchestrator_provenance: str = ""
-    owner_user_id: str = ""
-    workspace_id: str = ""
     audit_trail_ref: str = ""
     policy_snapshot_ref: str = ""
     lockdown_state_inheritance: str = "inherit_runtime_restrictions"
@@ -91,27 +85,22 @@ class TaskEnvelope(BaseModel):
         payload["untrusted_payload_action"] = action
         return payload
 
+    model_config = {"frozen": True}
+
 
 class ScheduledTask(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str
     schedule: Schedule
     goal: str
-    capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset, frozen=True)
-    policy_snapshot_ref: str = Field(frozen=True)
-    task_envelope: TaskEnvelope = Field(default_factory=TaskEnvelope, frozen=True)
-    credential_refs: tuple[str, ...] = Field(default=(), frozen=True)
-    resource_scope_ids: tuple[str, ...] = Field(default=(), frozen=True)
-    resource_scope_prefixes: tuple[str, ...] = Field(default=(), frozen=True)
-    resource_scope_authority: str = Field(default="", frozen=True)
-    untrusted_payload_action: str = Field(default="require_confirmation", frozen=True)
+    capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset)
+    policy_snapshot_ref: str
+    task_envelope: TaskEnvelope = Field(default_factory=TaskEnvelope)
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
-    created_by: UserId = Field(frozen=True)
-    workspace_id: WorkspaceId = Field(default_factory=lambda: WorkspaceId(""), frozen=True)
+    created_by: UserId
+    workspace_id: WorkspaceId = Field(default_factory=lambda: WorkspaceId(""))
     execution_session_id: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_triggered_at: datetime | None = None
@@ -133,13 +122,6 @@ class ScheduledTask(BaseModel):
         description="Internal ownership token for temporary recovery containment",
     )
 
-    @field_validator("created_at", "last_triggered_at")
-    @classmethod
-    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("scheduled task timestamps must be timezone-aware")
-        return value
-
     @model_validator(mode="before")
     @classmethod
     def _backfill_task_envelope(cls, value: object) -> object:
@@ -151,69 +133,22 @@ class ScheduledTask(BaseModel):
             workspace_id = str(payload.get("workspace_id", "")).strip()
             provenance = "scheduler"
             if created_by or workspace_id:
-                provenance = f"scheduler:{created_by or 'unknown'}:{workspace_id}"
+                provenance = f"scheduler:{created_by or 'unknown'}:{workspace_id or 'default'}"
             payload["task_envelope"] = {
                 "envelope_id": uuid.uuid4().hex,
                 "capability_snapshot": list(payload.get("capability_snapshot", [])),
                 "parent_session_id": "",
                 "orchestrator_provenance": provenance,
-                "owner_user_id": created_by,
-                "workspace_id": workspace_id,
                 "audit_trail_ref": "",
                 "policy_snapshot_ref": str(payload.get("policy_snapshot_ref", "")).strip(),
                 "lockdown_state_inheritance": "inherit_runtime_restrictions",
-                "credential_refs": payload.get("credential_refs", []),
-                "resource_scope_ids": payload.get("resource_scope_ids", []),
-                "resource_scope_prefixes": payload.get("resource_scope_prefixes", []),
-                "resource_scope_authority": payload.get("resource_scope_authority", ""),
-                "untrusted_payload_action": payload.get(
-                    "untrusted_payload_action",
-                    "require_confirmation",
-                ),
+                "credential_refs": [],
+                "resource_scope_ids": [],
+                "resource_scope_prefixes": [],
+                "resource_scope_authority": "",
+                "untrusted_payload_action": "require_confirmation",
             }
-        raw_envelope = payload.get("task_envelope")
-        if isinstance(raw_envelope, dict):
-            envelope = dict(raw_envelope)
-            envelope.setdefault("owner_user_id", str(payload.get("created_by", "")))
-            envelope.setdefault("workspace_id", str(payload.get("workspace_id", "")))
-            payload["task_envelope"] = envelope
-            for field, default in (
-                ("credential_refs", []),
-                ("resource_scope_ids", []),
-                ("resource_scope_prefixes", []),
-                ("resource_scope_authority", ""),
-                ("untrusted_payload_action", "require_confirmation"),
-            ):
-                if field not in payload:
-                    payload[field] = envelope.get(field, default)
         return payload
-
-    def envelope_binding_mismatch_reason(self) -> str:
-        """Return the exact structured authority disagreement, if any."""
-
-        envelope = self.task_envelope
-        if self.capability_snapshot != envelope.capability_snapshot:
-            return "task_envelope_capability_mismatch"
-        if self.policy_snapshot_ref != envelope.policy_snapshot_ref:
-            return "task_envelope_policy_mismatch"
-        if str(self.created_by) != envelope.owner_user_id:
-            return "task_envelope_owner_mismatch"
-        if str(self.workspace_id) != envelope.workspace_id:
-            return "task_envelope_workspace_mismatch"
-        expected_provenance = f"scheduler:{str(self.created_by) or 'unknown'}:{self.workspace_id}"
-        if envelope.orchestrator_provenance != expected_provenance:
-            return "task_envelope_provenance_mismatch"
-        if self.credential_refs != envelope.credential_refs:
-            return "task_envelope_credential_mismatch"
-        if self.resource_scope_ids != envelope.resource_scope_ids:
-            return "task_envelope_resource_ids_mismatch"
-        if self.resource_scope_prefixes != envelope.resource_scope_prefixes:
-            return "task_envelope_resource_prefixes_mismatch"
-        if self.resource_scope_authority != envelope.resource_scope_authority:
-            return "task_envelope_resource_authority_mismatch"
-        if self.untrusted_payload_action != envelope.untrusted_payload_action:
-            return "task_envelope_untrusted_payload_action_mismatch"
-        return ""
 
     def commitment_hash(self) -> str:
         payload = {
@@ -230,8 +165,6 @@ class ScheduledTask(BaseModel):
                 ),
                 "parent_session_id": self.task_envelope.parent_session_id,
                 "orchestrator_provenance": self.task_envelope.orchestrator_provenance,
-                "owner_user_id": self.task_envelope.owner_user_id,
-                "workspace_id": self.task_envelope.workspace_id,
                 "audit_trail_ref": self.task_envelope.audit_trail_ref,
                 "policy_snapshot_ref": self.task_envelope.policy_snapshot_ref,
                 "lockdown_state_inheritance": self.task_envelope.lockdown_state_inheritance,

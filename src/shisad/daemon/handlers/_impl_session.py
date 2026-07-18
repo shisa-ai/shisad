@@ -34,7 +34,6 @@ from shisad.core.action_state import (
     select_reminder_status_view,
 )
 from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
-from shisad.core.atomic_state import atomic_write_bytes
 from shisad.core.clock import current_time_frontmatter_lines
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
@@ -15925,14 +15924,26 @@ class SessionImplMixin(HandlerMixinBase):
         payload: str | Mapping[str, Any],
     ) -> str:
         artifact_root = self._config.data_dir / "task_artifacts" / str(task_session_id)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        try:
+            artifact_root.chmod(0o700)
+        except OSError:
+            logger.warning(
+                "Failed to set task artifact directory permissions for %s",
+                artifact_root,
+            )
         artifact_path = artifact_root / filename
         if isinstance(payload, str):
-            encoded = payload.encode("utf-8")
+            artifact_path.write_text(payload, encoding="utf-8")
         else:
-            encoded = (
-                json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-            ).encode("utf-8")
-        atomic_write_bytes(artifact_path, encoded)
+            artifact_path.write_text(
+                json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        try:
+            artifact_path.chmod(0o600)
+        except OSError:
+            logger.warning("Failed to set task artifact permissions for %s", artifact_path)
         return str(artifact_path)
 
     def _build_task_summary_firewall_checkpoint(

@@ -3,24 +3,11 @@
 from __future__ import annotations
 
 import json
-import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes,
-    decode_json_document,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-    read_owned_regular_file,
-)
 from shisad.core.audit import AuditLog
 
 ALERT_EVENT_TYPES = {
@@ -38,8 +25,6 @@ SKILL_PROVENANCE_EVENT_TYPES = {
     "SkillRevoked",
     "SkillToolRegistrationDropped",
 }
-
-_DASHBOARD_MARKS_VERSION = 1
 
 
 def _as_datetime(value: str) -> datetime:
@@ -72,9 +57,6 @@ class SecurityDashboard:
         self._audit_log = audit_log
         self._marks_path = marks_path
         self._marks: dict[str, str] = {}
-        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation: AtomicWriteError | None = None
-        self._state_fault_injector: AtomicWriteFaultInjector | None = None
         if marks_path is not None:
             self._load_marks()
 
@@ -160,190 +142,24 @@ class SecurityDashboard:
         normalized = event_id.strip()
         if not normalized:
             return
-        self._require_marks_available(transition="mark_false_positive")
-        candidate = dict(self._marks)
-        candidate[normalized] = reason.strip() or "false_positive"
-        self._persist_marks(candidate)
-        self._marks = candidate
-
-    @property
-    def state_load_result(self) -> StateLoadResult:
-        return self._state_load_result
-
-    @property
-    def state_degraded(self) -> bool:
-        return self._persistence_degradation is not None or self._state_load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }
-
-    def state_status(self) -> dict[str, Any]:
-        load_result = self._state_load_result
-        persistence = self._persistence_degradation
-        problems: list[str] = []
-        if persistence is not None:
-            problems.append("dashboard_marks_persistence_degraded")
-        elif load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            problems.append(f"dashboard_marks_{load_result.status.value}")
-        return {
-            "status": "degraded" if self.state_degraded else "ok",
-            "problems": problems,
-            "path": str(self._marks_path or ""),
-            "load_status": load_result.status.value,
-            "reason": load_result.reason,
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-            "fail_closed": self.state_degraded,
-            "stage": persistence.stage.value if persistence is not None else "",
-            "remediation": (
-                "Restore dashboard false-positive marks from a trusted backup or explicitly "
-                "reset the retained marks file after verification, then restart shisad."
-                if self.state_degraded
-                else ""
-            ),
-        }
-
-    def reset_state(self) -> int:
-        """Durably clear false-positive marks and all rollback/load metadata."""
-
-        mark_count = len(self._marks)
-        if self._marks_path is None:
-            self._marks = {}
-            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-            self._persistence_degradation = None
-            return mark_count
-        try:
-            atomic_write_bytes(
-                self._marks_path,
-                encode_versioned_json_snapshot({}, version=_DASHBOARD_MARKS_VERSION),
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            raise
-        self._marks = {}
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_DASHBOARD_MARKS_VERSION,
-        )
-        self._persistence_degradation = None
-        return mark_count
+        self._marks[normalized] = reason.strip() or "false_positive"
+        self._persist_marks()
 
     def _load_marks(self) -> None:
+        if self._marks_path is None or not self._marks_path.exists():
+            return
+        try:
+            payload = json.loads(self._marks_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(payload, dict):
+            self._marks = {str(key): str(value) for key, value in payload.items()}
+
+    def _persist_marks(self) -> None:
         if self._marks_path is None:
             return
-        try:
-            target_stat = self._marks_path.lstat()
-        except FileNotFoundError:
-            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-            return
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="marks_stat_failed",
-            )
-            return
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_marks_target",
-            )
-            return
-        try:
-            raw_bytes = read_owned_regular_file(self._marks_path, required_mode=0o600)
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="marks_read_failed",
-            )
-            return
-        if raw_bytes is None:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="marks_read_failed",
-            )
-            return
-        document_result, raw_payload = decode_json_document(raw_bytes)
-        if document_result.status is not StateLoadStatus.OK:
-            self._state_load_result = document_result
-            return
-        legacy_candidate = isinstance(raw_payload, dict) and all(
-            isinstance(key, str)
-            and bool(key.strip())
-            and isinstance(value, str)
-            and bool(value.strip())
-            for key, value in raw_payload.items()
+        self._marks_path.parent.mkdir(parents=True, exist_ok=True)
+        self._marks_path.write_text(
+            json.dumps(self._marks, indent=2, sort_keys=True),
+            encoding="utf-8",
         )
-        if legacy_candidate:
-            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            payload: Any = raw_payload
-        else:
-            load_result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_DASHBOARD_MARKS_VERSION,
-            )
-            if load_result.status is not StateLoadStatus.OK:
-                self._state_load_result = load_result
-                return
-        if not isinstance(payload, dict) or any(
-            not isinstance(key, str)
-            or not key.strip()
-            or not isinstance(value, str)
-            or not value.strip()
-            for key, value in payload.items()
-        ):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_marks_payload",
-                schema_version=load_result.schema_version,
-                legacy=load_result.legacy,
-            )
-            return
-        self._marks = dict(payload)
-        self._state_load_result = load_result
-
-    def _persist_marks(self, marks: dict[str, str]) -> None:
-        if self._marks_path is None:
-            return
-        try:
-            atomic_write_bytes(
-                self._marks_path,
-                encode_versioned_json_snapshot(marks, version=_DASHBOARD_MARKS_VERSION),
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            if exc.publication_may_have_committed:
-                self._persistence_degradation = exc
-            raise
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_DASHBOARD_MARKS_VERSION,
-        )
-
-    def _require_marks_available(self, *, transition: str) -> None:
-        persistence = self._persistence_degradation
-        if persistence is not None:
-            raise StatePersistenceDegradedError(
-                authority="dashboard_marks",
-                transition=transition,
-                stage=persistence.stage.value,
-                reason=(
-                    "commit_uncertain"
-                    if persistence.publication_may_have_committed
-                    else "publication_failed"
-                ),
-            )
-        load_result = self._state_load_result
-        if load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            raise StatePersistenceDegradedError(
-                authority="dashboard_marks",
-                transition=transition,
-                stage="load",
-                reason=load_result.reason or load_result.status.value,
-            )

@@ -11,30 +11,18 @@ are injected only at the egress proxy boundary for pre-approved hosts.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
+import json
 import logging
+import os
 import secrets
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes,
-    decode_json_document,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-    read_owner_only_regular_file,
-    validate_owner_controlled_parent_ancestry,
-)
 from shisad.core.host_matching import host_matches
 from shisad.core.types import CredentialRef
 
@@ -43,19 +31,6 @@ logger = logging.getLogger(__name__)
 # Placeholder prefix — these strings are inert and useless if exfiltrated
 _PLACEHOLDER_PREFIX = "SHISAD_SECRET_PLACEHOLDER_"
 _LOCAL_FIDO2_RP_SUFFIX = ".approver.shisad.invalid"
-_APPROVAL_STORE_VERSION = 3
-_LEGACY_APPROVAL_STORE_SCHEMAS = {
-    "shisad.approval_factor_store.v1",
-    "shisad.approval_factor_store.v2",
-}
-
-
-class _ApprovalStorePayloadError(ValueError):
-    """Semantic approval snapshot failure with a stable operator reason."""
-
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
-        super().__init__(reason)
 
 
 def _normalize_local_fido2_realm_id(value: str) -> str:
@@ -106,24 +81,13 @@ class CredentialEntry(BaseModel):
 class RecoveryCodeRecord(BaseModel):
     """Single recovery code entry for an approval factor."""
 
-    model_config = ConfigDict(extra="forbid")
-
     code_hash: str
     consumed_at: datetime | None = None
     consumed_confirmation_id: str = ""
 
-    @field_validator("consumed_at")
-    @classmethod
-    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("recovery-code timestamps must be timezone-aware")
-        return value
-
 
 class ApprovalFactorRecord(BaseModel):
     """Durable approval-factor state stored in the control-plane factor store."""
-
-    model_config = ConfigDict(extra="forbid")
 
     credential_id: str
     user_id: str
@@ -131,7 +95,7 @@ class ApprovalFactorRecord(BaseModel):
     principal_id: str
     secret_b32: str = ""
     webauthn_attested_credential_data_b64: str = ""
-    webauthn_sign_count: int = Field(default=0, ge=0, strict=True)
+    webauthn_sign_count: int = 0
     webauthn_rp_id: str = ""
     webauthn_transports: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -140,18 +104,9 @@ class ApprovalFactorRecord(BaseModel):
     used_time_steps: dict[str, str] = Field(default_factory=dict)
     recovery_codes: list[RecoveryCodeRecord] = Field(default_factory=list)
 
-    @field_validator("created_at", "last_verified_at", "last_used_at")
-    @classmethod
-    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("approval-factor timestamps must be timezone-aware")
-        return value
-
 
 class SignerKeyRecord(BaseModel):
     """Durable signer-key metadata stored alongside approval factors."""
-
-    model_config = ConfigDict(extra="forbid")
 
     credential_id: str
     user_id: str
@@ -165,13 +120,6 @@ class SignerKeyRecord(BaseModel):
     last_verified_at: datetime | None = None
     last_used_at: datetime | None = None
     revoked_at: datetime | None = None
-
-    @field_validator("created_at", "last_verified_at", "last_used_at", "revoked_at")
-    @classmethod
-    def _require_aware_timestamp(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("signer-key timestamps must be timezone-aware")
-        return value
 
 
 class CredentialStore(Protocol):
@@ -203,14 +151,6 @@ class ApprovalFactorStore(Protocol):
 
     def set_approval_store_path(self, path: Path) -> None:
         """Bind the store to a durable approval-factor path and load state."""
-        ...
-
-    def approval_state_load_result(self) -> StateLoadResult:
-        """Return the typed result from the current durable-state load."""
-        ...
-
-    def approval_state_status(self) -> dict[str, Any]:
-        """Return bounded operator diagnostics for the approval authority."""
         ...
 
     def get_or_create_local_fido2_realm_id(self, *, seed: str = "") -> str:
@@ -305,12 +245,6 @@ class InMemoryCredentialStore:
         self._approval_factors: dict[str, ApprovalFactorRecord] = {}
         self._signer_keys: dict[str, SignerKeyRecord] = {}
         self._local_fido2_realm_id: str | None = None
-        self._approval_state_fault_injector: AtomicWriteFaultInjector | None = None
-        self._approval_persistence_degradation: AtomicWriteError | None = None
-        self._approval_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._durable_approval_factors: dict[str, ApprovalFactorRecord] = {}
-        self._durable_signer_keys: dict[str, SignerKeyRecord] = {}
-        self._durable_local_fido2_realm_id: str | None = None
 
     def register(self, ref: CredentialRef, value: str, config: CredentialConfig) -> None:
         """Register a credential with its configuration."""
@@ -372,153 +306,10 @@ class InMemoryCredentialStore:
     def set_approval_store_path(self, path: Path) -> None:
         """Bind durable approval-factor storage to a JSON file."""
         self._approval_store_path = Path(path)
-        self._approval_persistence_degradation = None
         self._load_approval_factors()
-
-    @property
-    def approval_state_degraded(self) -> bool:
-        return self._approval_persistence_degradation is not None or (
-            self._approval_load_result.status
-            in {StateLoadStatus.CORRUPT, StateLoadStatus.UNSUPPORTED_SCHEMA}
-        )
-
-    def approval_state_load_result(self) -> StateLoadResult:
-        """Return the typed outcome of binding the durable approval authority."""
-        return self._approval_load_result
-
-    def reset_approval_state(self) -> tuple[int, int, int]:
-        """Durably reset approval factors, signer keys, and rollback authority."""
-
-        factor_count = len(self._approval_factors)
-        signer_count = len(self._signer_keys)
-        path = self._approval_store_path
-        artifact_count = 0
-        if path is not None:
-            try:
-                path.lstat()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                # Atomic publication below owns target validation and converts
-                # any persistent status failure into the typed write contract.
-                pass
-            else:
-                artifact_count += 1
-            encoded = encode_versioned_json_snapshot(
-                {
-                    "approval_factors": [],
-                    "signer_keys": [],
-                },
-                version=_APPROVAL_STORE_VERSION,
-            )
-            try:
-                artifact_count += atomic_write_bytes(
-                    path,
-                    encoded,
-                    fault_injector=self._approval_state_fault_injector,
-                    require_safe_parent_ancestry=True,
-                    cleanup_sibling_prefix=f"{path.name}.corrupt.",
-                )
-            except AtomicWriteError as exc:
-                self._approval_persistence_degradation = exc
-                raise
-
-        self._set_empty_approval_state()
-        self._approval_persistence_degradation = None
-        self._approval_load_result = StateLoadResult(
-            StateLoadStatus.OK if path is not None else StateLoadStatus.MISSING,
-            schema_version=_APPROVAL_STORE_VERSION if path is not None else None,
-        )
-        self._record_durable_approval_state()
-        return factor_count, signer_count, artifact_count
-
-    def approval_state_status(self) -> dict[str, Any]:
-        """Return actionable, bounded diagnostics without exposing factor data."""
-        result = self._approval_load_result
-        problems: list[str] = []
-        remediation = ""
-        stage = ""
-        reason = result.reason
-        if result.status == StateLoadStatus.CORRUPT:
-            problems.append("approval_store_corrupt")
-        elif result.status == StateLoadStatus.UNSUPPORTED_SCHEMA:
-            problems.append("approval_store_unsupported_schema")
-        degradation = self._approval_persistence_degradation
-        if degradation is not None:
-            problems.append("approval_store_publication_commit_uncertain")
-            stage = degradation.stage.value
-            reason = "prior_publication_commit_uncertain"
-        if problems:
-            remediation = (
-                "Restore the retained approval store from a trusted backup, or explicitly "
-                "audit and reset the complete approval authority before restarting shisad."
-            )
-        return {
-            "status": "degraded" if problems else "ok",
-            "problems": problems,
-            "path": str(self._approval_store_path or ""),
-            "load_status": result.status.value,
-            "reason": reason,
-            "schema_version": result.schema_version,
-            "legacy": result.legacy,
-            "fail_closed": bool(problems),
-            "stage": stage,
-            "remediation": remediation,
-        }
-
-    def _require_approval_state_available(self, *, transition: str) -> None:
-        load_result = self._approval_load_result
-        if load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            reason = load_result.reason or load_result.status.value
-            raise StatePersistenceDegradedError(
-                authority="approval_factors",
-                transition=transition,
-                stage="load",
-                reason=reason,
-            )
-        degradation = self._approval_persistence_degradation
-        if degradation is None:
-            return
-        raise StatePersistenceDegradedError(
-            authority="approval_factors",
-            transition=transition,
-            stage=degradation.stage.value,
-            reason="prior_publication_commit_uncertain",
-        )
-
-    @staticmethod
-    def _clone_approval_factors(
-        factors: dict[str, ApprovalFactorRecord],
-    ) -> dict[str, ApprovalFactorRecord]:
-        return {
-            credential_id: factor.model_copy(deep=True) for credential_id, factor in factors.items()
-        }
-
-    @staticmethod
-    def _clone_signer_keys(
-        signer_keys: dict[str, SignerKeyRecord],
-    ) -> dict[str, SignerKeyRecord]:
-        return {
-            credential_id: record.model_copy(deep=True)
-            for credential_id, record in signer_keys.items()
-        }
-
-    def _record_durable_approval_state(self) -> None:
-        self._durable_approval_factors = self._clone_approval_factors(self._approval_factors)
-        self._durable_signer_keys = self._clone_signer_keys(self._signer_keys)
-        self._durable_local_fido2_realm_id = self._local_fido2_realm_id
-
-    def _restore_durable_approval_state(self) -> None:
-        self._approval_factors = self._clone_approval_factors(self._durable_approval_factors)
-        self._signer_keys = self._clone_signer_keys(self._durable_signer_keys)
-        self._local_fido2_realm_id = self._durable_local_fido2_realm_id
 
     def get_or_create_local_fido2_realm_id(self, *, seed: str = "") -> str:
         """Return the durable local-helper realm id used for local_fido2 rpIds."""
-        self._require_approval_state_available(transition="get_or_create_realm")
         existing = (self._local_fido2_realm_id or "").strip()
         if existing:
             return existing
@@ -535,12 +326,7 @@ class InMemoryCredentialStore:
 
     def register_approval_factor(self, factor: ApprovalFactorRecord) -> None:
         """Persist a newly enrolled approval factor."""
-        self._require_approval_state_available(transition="register_factor")
-        validated = ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
-        candidate = self._clone_approval_factors(self._approval_factors)
-        candidate[validated.credential_id] = validated
-        self._validate_local_fido2_realm_consistency(candidate.values())
-        self._approval_factors = candidate
+        self._approval_factors[factor.credential_id] = factor.model_copy(deep=True)
         self._persist_approval_factors()
 
     def list_approval_factors(
@@ -550,7 +336,6 @@ class InMemoryCredentialStore:
         method: str | None = None,
     ) -> list[ApprovalFactorRecord]:
         """List approval factors, optionally filtered by user and method."""
-        self._require_approval_state_available(transition="list_factors")
         rows = [
             factor.model_copy(deep=True)
             for factor in self._approval_factors.values()
@@ -562,7 +347,6 @@ class InMemoryCredentialStore:
 
     def get_approval_factor(self, credential_id: str) -> ApprovalFactorRecord | None:
         """Fetch one approval factor by credential id."""
-        self._require_approval_state_available(transition="get_factor")
         factor = self._approval_factors.get(str(credential_id))
         if factor is None:
             return None
@@ -570,14 +354,9 @@ class InMemoryCredentialStore:
 
     def update_approval_factor(self, factor: ApprovalFactorRecord) -> None:
         """Persist an updated approval factor record."""
-        self._require_approval_state_available(transition="update_factor")
-        validated = ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
-        if validated.credential_id not in self._approval_factors:
-            raise KeyError(f"Unknown approval factor: {validated.credential_id}")
-        candidate = self._clone_approval_factors(self._approval_factors)
-        candidate[validated.credential_id] = validated
-        self._validate_local_fido2_realm_consistency(candidate.values())
-        self._approval_factors = candidate
+        if factor.credential_id not in self._approval_factors:
+            raise KeyError(f"Unknown approval factor: {factor.credential_id}")
+        self._approval_factors[factor.credential_id] = factor.model_copy(deep=True)
         self._persist_approval_factors()
 
     def revoke_approval_factor(
@@ -588,7 +367,6 @@ class InMemoryCredentialStore:
         credential_id: str | None = None,
     ) -> int:
         """Delete matching approval factors and return the removed count."""
-        self._require_approval_state_available(transition="revoke_factor")
         removed = 0
         candidates = [
             factor_id
@@ -606,11 +384,9 @@ class InMemoryCredentialStore:
 
     def register_signer_key(self, record: SignerKeyRecord) -> None:
         """Persist a newly registered signer key."""
-        self._require_approval_state_available(transition="register_signer")
-        validated = SignerKeyRecord.model_validate(record.model_dump(mode="python"))
-        if validated.credential_id in self._signer_keys:
-            raise KeyError(f"Signer key already exists: {validated.credential_id}")
-        self._signer_keys[validated.credential_id] = validated
+        if record.credential_id in self._signer_keys:
+            raise KeyError(f"Signer key already exists: {record.credential_id}")
+        self._signer_keys[record.credential_id] = record.model_copy(deep=True)
         self._persist_approval_factors()
 
     def list_signer_keys(
@@ -621,7 +397,6 @@ class InMemoryCredentialStore:
         include_revoked: bool = False,
     ) -> list[SignerKeyRecord]:
         """List signer keys, optionally filtered by user/backend."""
-        self._require_approval_state_available(transition="list_signers")
         rows = [
             record.model_copy(deep=True)
             for record in self._signer_keys.values()
@@ -636,7 +411,6 @@ class InMemoryCredentialStore:
 
     def get_signer_key(self, credential_id: str) -> SignerKeyRecord | None:
         """Fetch one signer key by credential id."""
-        self._require_approval_state_available(transition="get_signer")
         record = self._signer_keys.get(str(credential_id))
         if record is None:
             return None
@@ -644,16 +418,13 @@ class InMemoryCredentialStore:
 
     def update_signer_key(self, record: SignerKeyRecord) -> None:
         """Persist an updated signer-key record."""
-        self._require_approval_state_available(transition="update_signer")
-        validated = SignerKeyRecord.model_validate(record.model_dump(mode="python"))
-        if validated.credential_id not in self._signer_keys:
-            raise KeyError(f"Unknown signer key: {validated.credential_id}")
-        self._signer_keys[validated.credential_id] = validated
+        if record.credential_id not in self._signer_keys:
+            raise KeyError(f"Unknown signer key: {record.credential_id}")
+        self._signer_keys[record.credential_id] = record.model_copy(deep=True)
         self._persist_approval_factors()
 
     def revoke_signer_key(self, *, credential_id: str) -> int:
         """Mark a signer key revoked and return the affected-row count."""
-        self._require_approval_state_available(transition="revoke_signer")
         record = self._signer_keys.get(str(credential_id))
         if record is None or record.revoked_at is not None:
             return 0
@@ -668,292 +439,95 @@ class InMemoryCredentialStore:
         """Check if a host matches any pattern in the allowlist."""
         return any(host_matches(host, pattern) for pattern in allowed)
 
-    def _set_empty_approval_state(self) -> None:
-        self._approval_factors = {}
-        self._signer_keys = {}
-        self._local_fido2_realm_id = None
-        self._record_durable_approval_state()
-
-    def _set_approval_load_failure(self, result: StateLoadResult) -> None:
-        self._approval_load_result = result
-        self._set_empty_approval_state()
-        logger.warning(
-            "Approval-factor store load is fail-closed: path=%s status=%s reason=%s",
-            self._approval_store_path,
-            result.status.value,
-            result.reason,
-        )
-
-    @staticmethod
-    def _decode_approval_payload(
-        payload: Any,
-        *,
-        allow_missing_signer_keys: bool = False,
-        allow_legacy_schema_marker: bool = False,
-    ) -> tuple[
-        dict[str, ApprovalFactorRecord],
-        dict[str, SignerKeyRecord],
-        str | None,
-    ]:
-        if not isinstance(payload, dict):
-            raise _ApprovalStorePayloadError("invalid_payload")
-        allowed_payload_fields = {
-            "approval_factors",
-            "signer_keys",
-            "local_fido2_realm_id",
-        }
-        if allow_legacy_schema_marker:
-            allowed_payload_fields.add("schema_version")
-        if not set(payload).issubset(allowed_payload_fields):
-            raise _ApprovalStorePayloadError("invalid_payload")
-        if "approval_factors" not in payload:
-            raise _ApprovalStorePayloadError("missing_approval_factors")
-        factors = payload["approval_factors"]
-        if not isinstance(factors, list):
-            raise _ApprovalStorePayloadError("invalid_approval_factors")
-        loaded: dict[str, ApprovalFactorRecord] = {}
-        try:
-            for item in factors:
-                if not isinstance(item, dict):
-                    raise _ApprovalStorePayloadError("invalid_approval_factors")
-                factor = ApprovalFactorRecord.model_validate(item)
-                if factor.credential_id in loaded:
-                    raise _ApprovalStorePayloadError("duplicate_approval_factor")
-                loaded[factor.credential_id] = factor
-        except ValidationError as exc:
-            raise _ApprovalStorePayloadError("invalid_approval_factors") from exc
-
-        if "signer_keys" not in payload and not allow_missing_signer_keys:
-            raise _ApprovalStorePayloadError("missing_signer_keys")
-        signer_payload = payload.get("signer_keys", [])
-        if not isinstance(signer_payload, list):
-            raise _ApprovalStorePayloadError("invalid_signer_keys")
-        signer_keys: dict[str, SignerKeyRecord] = {}
-        try:
-            for item in signer_payload:
-                if not isinstance(item, dict):
-                    raise _ApprovalStorePayloadError("invalid_signer_keys")
-                record = SignerKeyRecord.model_validate(item)
-                if record.credential_id in signer_keys:
-                    raise _ApprovalStorePayloadError("duplicate_signer_key")
-                signer_keys[record.credential_id] = record
-        except ValidationError as exc:
-            raise _ApprovalStorePayloadError("invalid_signer_keys") from exc
-
-        local_fido2_realm_value = payload.get("local_fido2_realm_id", "")
-        if "local_fido2_realm_id" in payload and not isinstance(local_fido2_realm_value, str):
-            raise _ApprovalStorePayloadError("invalid_local_fido2_realm")
-        local_fido2_realm_id_raw = str(local_fido2_realm_value).strip()
-        realm_id: str | None
-        try:
-            derived_realm_id = InMemoryCredentialStore._derive_local_fido2_realm_id_from_records(
-                loaded.values()
-            )
-            if local_fido2_realm_id_raw:
-                realm_id = _normalize_local_fido2_realm_id(local_fido2_realm_id_raw)
-                if derived_realm_id is not None and realm_id != derived_realm_id:
-                    raise ValueError("stored local_fido2 realm does not match retained factors")
-            else:
-                realm_id = derived_realm_id
-        except ValueError as exc:
-            raise _ApprovalStorePayloadError("invalid_local_fido2_realm") from exc
-        return loaded, signer_keys, realm_id
-
     def _load_approval_factors(self) -> None:
         path = self._approval_store_path
-        if path is None:
-            self._approval_load_result = StateLoadResult(StateLoadStatus.MISSING)
-            self._set_empty_approval_state()
+        if path is None or not path.exists():
+            self._approval_factors = {}
+            self._signer_keys = {}
+            self._local_fido2_realm_id = None
             return
         try:
-            validate_owner_controlled_parent_ancestry(path)
-        except OSError:
-            self._set_approval_load_failure(
-                StateLoadResult(StateLoadStatus.CORRUPT, reason="read_error")
-            )
-            return
-        try:
-            path.lstat()
-            exists = True
-        except FileNotFoundError:
-            exists = False
-        except OSError:
-            self._set_approval_load_failure(
-                StateLoadResult(StateLoadStatus.CORRUPT, reason="target_status_error")
-            )
-            return
-        if not exists:
-            try:
-                prior_corrupt = next(
-                    path.parent.glob(f"{path.name}.corrupt.*"),
-                    None,
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("approval-factor store payload must be an object")
+            schema_version = str(payload.get("schema_version", "")).strip()
+            if schema_version not in {
+                "shisad.approval_factor_store.v1",
+                "shisad.approval_factor_store.v2",
+            }:
+                raise ValueError(
+                    f"unsupported approval-factor store schema_version: {schema_version}"
                 )
-            except OSError:
-                self._set_approval_load_failure(
-                    StateLoadResult(StateLoadStatus.CORRUPT, reason="artifact_scan_error")
+            factors = payload.get("approval_factors", [])
+            if not isinstance(factors, list):
+                raise ValueError("approval_factors must be a list")
+            loaded: dict[str, ApprovalFactorRecord] = {}
+            for item in factors:
+                if not isinstance(item, dict):
+                    raise ValueError("approval_factors entries must be objects")
+                factor = ApprovalFactorRecord.model_validate(item)
+                loaded[factor.credential_id] = factor
+            self._approval_factors = loaded
+            signer_payload = payload.get("signer_keys", [])
+            if not isinstance(signer_payload, list):
+                raise ValueError("signer_keys must be a list")
+            signer_keys: dict[str, SignerKeyRecord] = {}
+            for item in signer_payload:
+                if not isinstance(item, dict):
+                    raise ValueError("signer_keys entries must be objects")
+                record = SignerKeyRecord.model_validate(item)
+                signer_keys[record.credential_id] = record
+            self._signer_keys = signer_keys
+            local_fido2_realm_id_raw = str(payload.get("local_fido2_realm_id", "")).strip()
+            if local_fido2_realm_id_raw:
+                self._local_fido2_realm_id = _normalize_local_fido2_realm_id(
+                    local_fido2_realm_id_raw
                 )
-                return
-            if prior_corrupt is not None:
-                self._set_approval_load_failure(
-                    StateLoadResult(
-                        StateLoadStatus.CORRUPT,
-                        reason="prior_corrupt_artifact_present",
-                    )
+            else:
+                self._local_fido2_realm_id = self._derive_local_fido2_realm_id_from_records(
+                    loaded.values()
                 )
-                return
-            self._approval_load_result = StateLoadResult(StateLoadStatus.MISSING)
-            self._set_empty_approval_state()
-            return
-
-        try:
-            raw_bytes = read_owner_only_regular_file(path)
-        except OSError:
-            self._set_approval_load_failure(
-                StateLoadResult(StateLoadStatus.CORRUPT, reason="read_error")
+        except (OSError, ValidationError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "Failed to load approval-factor store %s; quarantining corrupt state and "
+                "starting with an empty factor set",
+                path,
+                exc_info=True,
             )
-            return
-        if raw_bytes is None:
-            self._set_approval_load_failure(
-                StateLoadResult(StateLoadStatus.CORRUPT, reason="read_error")
-            )
-            return
-
-        document_result, raw_payload = decode_json_document(raw_bytes)
-        if document_result.status is not StateLoadStatus.OK:
-            self._set_approval_load_failure(document_result)
-            return
-
-        has_legacy_marker = isinstance(raw_payload, dict) and "schema_version" in raw_payload
-        envelope_markers = (
-            {"version", "checksum", "payload"}.intersection(raw_payload)
-            if isinstance(raw_payload, dict)
-            else set()
-        )
-        if has_legacy_marker and envelope_markers:
-            self._set_approval_load_failure(
-                StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="ambiguous_snapshot_format",
-                )
-            )
-            return
-        payload: Any
-        allow_missing_signer_keys = False
-        if isinstance(raw_payload, dict) and has_legacy_marker:
-            schema = str(raw_payload.get("schema_version", "")).strip()
-            if schema not in _LEGACY_APPROVAL_STORE_SCHEMAS:
-                version: int | None = None
-                if schema.startswith("shisad.approval_factor_store.v"):
-                    with contextlib.suppress(ValueError):
-                        version = int(schema.rsplit("v", 1)[1])
-                self._set_approval_load_failure(
-                    StateLoadResult(
-                        StateLoadStatus.UNSUPPORTED_SCHEMA,
-                        reason="unsupported_schema",
-                        schema_version=version,
-                    )
-                )
-                return
-            payload = raw_payload
-            result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            allow_missing_signer_keys = schema == "shisad.approval_factor_store.v1"
-        else:
-            result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_APPROVAL_STORE_VERSION,
-            )
-            if result.status != StateLoadStatus.OK:
-                self._set_approval_load_failure(result)
-                return
-
-        try:
-            loaded, signer_keys, realm_id = self._decode_approval_payload(
-                payload,
-                allow_missing_signer_keys=allow_missing_signer_keys,
-                allow_legacy_schema_marker=has_legacy_marker,
-            )
-        except _ApprovalStorePayloadError as exc:
-            self._set_approval_load_failure(
-                StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason=exc.reason,
-                    schema_version=result.schema_version,
-                    legacy=result.legacy,
-                )
-            )
-            return
-        self._approval_factors = loaded
-        self._signer_keys = signer_keys
-        self._local_fido2_realm_id = realm_id
-        self._approval_load_result = result
-        self._record_durable_approval_state()
+            self._quarantine_approval_store(path)
+            self._approval_factors = {}
+            self._signer_keys = {}
+            self._local_fido2_realm_id = None
 
     def _persist_approval_factors(self) -> None:
         path = self._approval_store_path
         if path is None:
             return
-        self._require_approval_state_available(transition="persist")
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            factors = [
-                ApprovalFactorRecord.model_validate(factor.model_dump(mode="python"))
-                for factor in self._approval_factors.values()
-            ]
-            self._validate_local_fido2_realm_consistency(factors)
-            factors.sort(
-                key=lambda item: (
-                    item.created_at,
-                    item.user_id,
-                    item.method,
-                    item.credential_id,
-                )
-            )
-            signer_keys = [
-                SignerKeyRecord.model_validate(record.model_dump(mode="python"))
-                for record in self._signer_keys.values()
-            ]
-            signer_keys.sort(
-                key=lambda item: (
-                    item.created_at,
-                    item.user_id,
-                    item.backend,
-                    item.credential_id,
-                )
-            )
-            payload: dict[str, Any] = {
-                "approval_factors": [
-                    factor.model_dump(mode="json") for factor in factors
-                ],
-                "signer_keys": [
-                    record.model_dump(mode="json") for record in signer_keys
-                ],
-            }
-            if self._local_fido2_realm_id:
-                payload["local_fido2_realm_id"] = self._local_fido2_realm_id
-            encoded = encode_versioned_json_snapshot(
-                payload,
-                version=_APPROVAL_STORE_VERSION,
-            )
-        except (TypeError, ValueError):
-            self._restore_durable_approval_state()
-            raise
+            path.parent.chmod(0o700)
+        except OSError:
+            logger.debug("Unable to chmod approval-factor store directory: %s", path.parent)
+        payload = {
+            "schema_version": "shisad.approval_factor_store.v2",
+            "approval_factors": [
+                factor.model_dump(mode="json") for factor in self.list_approval_factors()
+            ],
+            "signer_keys": [
+                record.model_dump(mode="json")
+                for record in self.list_signer_keys(include_revoked=True)
+            ],
+        }
+        if self._local_fido2_realm_id:
+            payload["local_fido2_realm_id"] = self._local_fido2_realm_id
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
         try:
-            atomic_write_bytes(
-                path,
-                encoded,
-                fault_injector=self._approval_state_fault_injector,
-                require_safe_parent_ancestry=True,
-            )
-        except AtomicWriteError as exc:
-            if exc.publication_may_have_committed:
-                self._approval_persistence_degradation = exc
-            else:
-                self._restore_durable_approval_state()
-            raise
-        self._approval_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_APPROVAL_STORE_VERSION,
-        )
-        self._record_durable_approval_state()
+            os.chmod(path, 0o600)
+        except OSError:
+            logger.debug("Unable to chmod approval-factor store file: %s", path)
 
     @staticmethod
     def _derive_local_fido2_realm_id_from_records(
@@ -975,14 +549,22 @@ class InMemoryCredentialStore:
             raise ValueError("local_fido2 factors use inconsistent webauthn_rp_id values")
         return next(iter(derived_ids))
 
-    def _validate_local_fido2_realm_consistency(
-        self,
-        records: Iterable[ApprovalFactorRecord],
-    ) -> None:
-        derived = self._derive_local_fido2_realm_id_from_records(records)
-        stored = (self._local_fido2_realm_id or "").strip()
-        if not stored:
+    @staticmethod
+    def _quarantine_approval_store(path: Path) -> None:
+        if not path.exists():
             return
-        normalized = _normalize_local_fido2_realm_id(stored)
-        if derived is not None and derived != normalized:
-            raise ValueError("stored local_fido2 realm does not match approval factors")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = path.with_name(f"{path.name}.corrupt.{stamp}")
+        counter = 1
+        while target.exists():
+            target = path.with_name(f"{path.name}.corrupt.{stamp}.{counter}")
+            counter += 1
+        try:
+            os.replace(path, target)
+            os.chmod(target, 0o600)
+        except OSError:
+            logger.warning(
+                "Failed to quarantine corrupt approval-factor store %s",
+                path,
+                exc_info=True,
+            )

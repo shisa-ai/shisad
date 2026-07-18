@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
-from shisad.memory.sqlite_security import secure_sqlite_connect
-
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +107,7 @@ class SQLiteRetrievalBackend:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._search_index_mode: _SearchIndexMode = "fts5"
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             self._search_index_mode = self._ensure_schema(conn)
 
@@ -427,7 +426,7 @@ class SQLiteRetrievalBackend:
         return rebuilt
 
     def _connect(self) -> sqlite3.Connection:
-        conn = secure_sqlite_connect(self._db_path)
+        conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

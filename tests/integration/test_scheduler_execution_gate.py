@@ -14,21 +14,9 @@ from typing import Any
 import pytest
 
 from shisad.core.api.transport import ControlClient
-from shisad.core.atomic_state import encode_versioned_json_snapshot
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
-
-
-def _state_snapshot_payload(path: Path) -> object:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict) and {
-        "version",
-        "checksum",
-        "payload",
-    }.issubset(raw):
-        return raw["payload"]
-    return raw
 
 
 async def _wait_for_task_pending_confirmation(
@@ -630,18 +618,16 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
             str(item.get("confirmation_id", "")) == confirmation_id for item in remaining["pending"]
         )
 
-        tasks_payload = _state_snapshot_payload(
-            tmp_path / "data" / "tasks" / "tasks.json"
+        tasks_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
         )
-        assert isinstance(tasks_payload, list)
         task_row = next(item for item in tasks_payload if str(item.get("id", "")) == created["id"])
         assert int(task_row.get("failure_count", 0)) >= 1
         assert int(task_row.get("success_count", 0)) == 0
 
-        pending_payload = _state_snapshot_payload(
-            tmp_path / "data" / "tasks" / "pending_confirmations.json"
+        pending_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(encoding="utf-8")
         )
-        assert isinstance(pending_payload, dict)
         rows = list(pending_payload.get(str(created["id"]), []))
         matching = next(
             item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
@@ -691,15 +677,14 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
         await _shutdown_daemon(daemon_task, client)
 
     pending_actions_file = tmp_path / "data" / "pending_actions.json"
-    pending_actions = _state_snapshot_payload(pending_actions_file)
-    assert isinstance(pending_actions, list)
+    pending_actions = json.loads(pending_actions_file.read_text(encoding="utf-8"))
     for row in pending_actions:
         if str(row.get("confirmation_id", "")) == confirmation_id:
             row["created_at"] = (datetime.now(UTC) - timedelta(days=10)).isoformat()
             break
     else:
         raise AssertionError(f"Pending action not found: {confirmation_id}")
-    pending_actions_file.write_bytes(encode_versioned_json_snapshot(pending_actions))
+    pending_actions_file.write_text(json.dumps(pending_actions, indent=2), encoding="utf-8")
 
     daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
@@ -724,10 +709,9 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
         )
         assert action_pending["count"] == 0
 
-        pending_payload = _state_snapshot_payload(
-            tmp_path / "data" / "tasks" / "pending_confirmations.json"
+        pending_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(encoding="utf-8")
         )
-        assert isinstance(pending_payload, dict)
         rows = list(pending_payload.get(str(created["id"]), []))
         matching = next(
             item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
@@ -735,112 +719,13 @@ async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
         assert str(matching.get("status", "")) == "failed"
         assert str(matching.get("status_reason", "")) == "approval_contract_mismatch"
 
-        tasks_payload = _state_snapshot_payload(
-            tmp_path / "data" / "tasks" / "tasks.json"
+        tasks_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
         )
-        assert isinstance(tasks_payload, list)
         task_row = next(item for item in tasks_payload if str(item.get("id", "")) == created["id"])
         assert int(task_row.get("failure_count", 0)) >= 1
     finally:
         await _shutdown_daemon(daemon_task, client)
-
-
-@pytest.mark.asyncio
-async def test_f3_scheduler_restart_rejects_cross_wired_execution_session(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
-    try:
-        first = await client.call(
-            "task.create",
-            {
-                "name": "first-bound-task",
-                "goal": "send the first report",
-                "schedule": {
-                    "kind": "event",
-                    "expression": "first.ready",
-                    "event_type": "first.ready",
-                },
-                "capability_snapshot": ["message.send"],
-                "policy_snapshot_ref": "p1",
-                "created_by": "alice",
-                "workspace_id": "ws1",
-                "delivery_target": {"channel": "discord", "recipient": "first-room"},
-            },
-        )
-        second = await client.call(
-            "task.create",
-            {
-                "name": "second-bound-task",
-                "goal": "send the second report",
-                "schedule": {
-                    "kind": "event",
-                    "expression": "second.ready",
-                    "event_type": "second.ready",
-                },
-                "capability_snapshot": ["message.send"],
-                "policy_snapshot_ref": "p1",
-                "created_by": "bob",
-                "workspace_id": "ws2",
-                "delivery_target": {"channel": "discord", "recipient": "second-room"},
-            },
-        )
-        await client.call(
-            "task.trigger_event",
-            {"event_type": "first.ready", "payload": "first payload"},
-        )
-        await _wait_for_task_pending_confirmation(client, task_id=str(first["id"]))
-    finally:
-        await _shutdown_daemon(daemon_task, client)
-
-    tasks_path = tmp_path / "data" / "tasks" / "tasks.json"
-    task_rows = _state_snapshot_payload(tasks_path)
-    assert isinstance(task_rows, list)
-    first_row = next(row for row in task_rows if row["id"] == first["id"])
-    first_session_id = str(first_row["execution_session_id"])
-    assert first_session_id
-    second_row = next(row for row in task_rows if row["id"] == second["id"])
-    second_row["execution_session_id"] = first_session_id
-    tasks_path.write_bytes(encode_versioned_json_snapshot(task_rows))
-
-    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
-    try:
-        await client.call(
-            "task.trigger_event",
-            {"event_type": "second.ready", "payload": "second payload"},
-        )
-        await _wait_for_task_pending_confirmation(client, task_id=str(second["id"]))
-        sessions = await client.call("session.list", {})
-        rebound = next(
-            row
-            for row in sessions["sessions"]
-            if row["user_id"] == "bob" and row["workspace_id"] == "ws2"
-        )
-        second_session_id = str(rebound["id"])
-        assert second_session_id != first_session_id
-        assert rebound["user_id"] == "bob"
-        assert rebound["workspace_id"] == "ws2"
-        assert rebound["channel"] == "scheduler"
-        assert rebound["role"] == "subagent"
-        assert rebound["capabilities"] == ["message.send"]
-    finally:
-        await _shutdown_daemon(daemon_task, client)
-
-    rebound_task_rows = _state_snapshot_payload(tasks_path)
-    assert isinstance(rebound_task_rows, list)
-    rebound_task = next(row for row in rebound_task_rows if row["id"] == second["id"])
-    assert rebound_task["execution_session_id"] == second_session_id
-    session_path = (
-        tmp_path / "data" / "sessions" / "state" / f"{second_session_id}.json"
-    )
-    session_record = json.loads(session_path.read_text(encoding="utf-8"))
-    session_payload = session_record["session"]
-    assert session_payload["metadata"]["background_task_id"] == second["id"]
-    assert (
-        session_payload["metadata"]["task_envelope"]["envelope_id"]
-        == second["task_envelope"]["envelope_id"]
-    )
 
 
 @pytest.mark.asyncio

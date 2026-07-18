@@ -225,47 +225,6 @@ class ControlPlaneEngine:
     def audit(self) -> ControlPlaneAuditLog:
         return self._audit_log
 
-    def state_status(self) -> dict[str, Any]:
-        domains = {
-            "history": self._history_store.state_status(),
-            "trace": self._trace_verifier.state_status(),
-            "network": self._network_monitor.state_status(),
-            "audit": self._audit_log.state_status(),
-        }
-
-        problems = [
-            str(problem)
-            for domain in domains.values()
-            for problem in domain.get("problems", [])
-        ]
-        fail_closed = any(
-            bool(domains[name].get("fail_closed"))
-            for name in ("history", "trace", "audit")
-        )
-        degraded = any(domain.get("status") != "ok" for domain in domains.values())
-        return {
-            "status": "degraded" if degraded else "ok",
-            "problems": problems,
-            "fail_closed": fail_closed,
-            "domains": domains,
-            "remediation": (
-                "Inspect each degraded control-plane domain, restore or explicitly reset its "
-                "retained state, then restart shisad."
-                if degraded
-                else ""
-            ),
-        }
-
-    def reset_state(self) -> dict[str, int]:
-        """Reset every retained control-plane authority for test isolation."""
-
-        return {
-            "history_records": self._history_store.reset_state(),
-            "trace_plans": self._trace_verifier.reset_state(),
-            "network_baselines": self._network_monitor.reset_state(),
-            "audit_entries": self._audit_log.reset_state(),
-        }
-
     def begin_precontent_plan(
         self,
         *,

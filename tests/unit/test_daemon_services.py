@@ -2,35 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
-import fcntl
-import json
 import sqlite3
 import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime
-from pathlib import Path
-from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
-import shisad.core.authority as authority
-from shisad.channels.base import InMemoryChannel
-from shisad.channels.telegram import TelegramChannel, TelegramConfig
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteStage,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-)
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus, SessionCreated
-from shisad.core.evidence import ArtifactLedger
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelRouter
@@ -53,10 +36,8 @@ from shisad.daemon.services import (
     _warn_on_evidence_kms_endpoint_config,
     _warn_on_provider_route_gaps,
 )
-from shisad.interop.a2a_registry import A2aConfig, A2aIdentityConfig
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import Schedule
-from shisad.security.control_plane.schema import Origin
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.credentials import (
     ApprovalFactorRecord,
@@ -68,7 +49,6 @@ from shisad.security.lockdown import LockdownLevel
 from shisad.security.risk import RiskObservation, RiskPolicyVersion
 from shisad.skills.artifacts import ArtifactState
 from shisad.skills.manager import InstalledSkill
-from shisad.ui.tui import TuiSnapshot, _safe_channel_rows, render_plain
 
 
 def _write_browser_wrapper(path) -> None:
@@ -164,524 +144,10 @@ async def test_daemon_services_builds_with_local_provider(
     )
     services = await DaemonServices.build(config)
     try:
-        impl = HandlerImplementation(services=services)
-        pending = impl._queue_pending_action(
-            session_id=SessionId("clean-actions"),
-            user_id=UserId("alice"),
-            workspace_id=WorkspaceId("workspace"),
-            tool_name=ToolName("note.create"),
-            arguments={"content": "safe"},
-            reason="requires_confirmation",
-            capabilities={Capability.MEMORY_WRITE},
-        )
-        status = await impl.do_daemon_status({})
-        authority_doctor = await impl.do_doctor_check({"component": "authority"})
-        doctor = await impl.do_doctor_check({"component": "approvals"})
-        skill_doctor = await impl.do_doctor_check({"component": "skills"})
-        selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
-        dashboard_doctor = await impl.do_doctor_check({"component": "dashboard"})
-        scheduler_doctor = await impl.do_doctor_check({"component": "scheduler"})
-        actions_doctor = await impl.do_doctor_check({"component": "actions"})
-        control_plane_doctor = await impl.do_doctor_check({"component": "control_plane"})
-        channels_doctor = await impl.do_doctor_check({"component": "channels"})
         assert isinstance(services.provider, LocalPlannerProvider)
         assert services.matrix_channel is None
         assert services.server is not None
         assert services.internal_ingress_marker is not None
-        assert status["authority"] == {
-            "status": "ok",
-            "problems": [],
-            "claim_reference_held": True,
-            "lock_state": "held",
-            "record_owner": "current_user",
-            "record_mode": "0600",
-            "expected_record_mode": "0600",
-            "permissions_ok": True,
-            "record_identity": "matched",
-            "namespace_state": "bound",
-            "registry_owner": "current_user",
-            "registry_mode": "0700",
-            "expected_registry_mode": "0700",
-            "registry_permissions_ok": True,
-            "candidate_count": len(services.authority_claim.candidates),
-            "candidate_roles": sorted(
-                candidate.role for candidate in services.authority_claim.candidates
-            ),
-            "paths_redacted": True,
-            "remediation": "",
-        }
-        assert authority_doctor["status"] == "ok"
-        assert authority_doctor["checks"]["authority"] == status["authority"]
-        assert status["approvals"]["status"] == "ok"
-        assert status["approvals"]["load_status"] == "missing"
-        assert status["skills"]["status"] == "ok"
-        assert status["skills"]["load_status"] == "missing"
-        assert status["dashboard"]["status"] == "ok"
-        assert status["dashboard"]["load_status"] == "missing"
-        assert status["pairing_requests"]["status"] == "ok"
-        assert status["scheduler"]["status"] == "ok"
-        assert status["actions"]["status"] == "ok"
-        assert status["actions"]["load_status"] == "ok"
-        assert status["control_plane"]["status"] == "ok"
-        assert "pairing_requests" not in status["channels"]
-        assert channels_doctor["status"] == "ok"
-        assert all(
-            row["replay_state"]["status"] == "missing"
-            for row in channels_doctor["checks"]["channels"]["channels"].values()
-        )
-        channel_health = _safe_channel_rows(status["channels"])
-        assert {row["channel"] for row in channel_health} == {
-            "discord",
-            "matrix",
-            "slack",
-            "telegram",
-        }
-        assert "channels=0 connected_channels=0" in render_plain(
-            TuiSnapshot(channel_health=channel_health)
-        )
-        assert doctor["status"] == "ok"
-        assert doctor["checks"]["approvals"]["load_status"] == "missing"
-        assert skill_doctor["status"] == "ok"
-        assert skill_doctor["checks"]["skills"]["load_status"] == "missing"
-        assert selfmod_doctor["status"] == "ok"
-        assert selfmod_doctor["checks"]["selfmod"]["load_status"] == "missing"
-        assert dashboard_doctor["status"] == "ok"
-        assert dashboard_doctor["checks"]["dashboard"]["load_status"] == "missing"
-        assert scheduler_doctor["checks"]["scheduler"]["status"] == "ok"
-        assert actions_doctor["checks"]["actions"]["load_status"] == "ok"
-        assert control_plane_doctor["status"] == "ok"
-        assert control_plane_doctor["checks"]["control_plane"]["status"] == "ok"
-        assert pending.confirmation_id in impl._pending_actions
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "degradation",
-    ["record_permissions", "registry_permissions", "lock_not_held"],
-)
-async def test_f3_authority_diagnostics_are_redacted_and_report_degradation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    degradation: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-    services = await DaemonServices.build(config)
-    claim = services.authority_claim
-    claim_fd = claim._fd
-    assert claim_fd is not None
-    if degradation == "record_permissions":
-        claim._record_path.chmod(0o644)
-    elif degradation == "registry_permissions":
-        claim._registry_root.chmod(0o755)
-    else:
-        fcntl.flock(claim_fd, fcntl.LOCK_UN)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "authority"})
-
-        authority_status = status["authority"]
-        assert authority_status["status"] == "degraded"
-        assert authority_status["paths_redacted"] is True
-        assert str(tmp_path) not in json.dumps(authority_status, sort_keys=True)
-        assert str(claim_fd) not in json.dumps(authority_status, sort_keys=True)
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["authority"] == authority_status
-        if degradation == "record_permissions":
-            assert authority_status["record_mode"] == "0644"
-            assert authority_status["permissions_ok"] is False
-            assert "record_permissions_invalid" in authority_status["problems"]
-        elif degradation == "registry_permissions":
-            assert authority_status["registry_owner"] == "current_user"
-            assert authority_status["registry_mode"] == "0755"
-            assert authority_status["registry_permissions_ok"] is False
-            assert "registry_permissions_invalid" in authority_status["problems"]
-        else:
-            assert authority_status["lock_state"] == "not_held"
-            assert "lock_not_held" in authority_status["problems"]
-    finally:
-        claim._record_path.chmod(0o600)
-        claim._registry_root.chmod(0o700)
-        fcntl.flock(claim_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_channel_doctor_surfaces_consumer_failure(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-    services = await DaemonServices.build(config)
-    try:
-        channel = TelegramChannel(TelegramConfig(bot_token="token"))
-        await InMemoryChannel.connect(channel)
-        channel._record_consumer_failure(RuntimeError("duplicate consumer"))
-        services.config = config.model_copy(update={"telegram_enabled": True})
-        services.telegram_channel = channel
-        impl = HandlerImplementation(services=services)
-
-        doctor = await impl.do_doctor_check({"component": "channels"})
-
-        channels = doctor["checks"]["channels"]
-        telegram = channels["channels"]["telegram"]
-        assert doctor["status"] == "degraded"
-        assert channels["status"] == "degraded"
-        assert "telegram_consumer_failed" in channels["problems"]
-        assert telegram["status"] == "degraded"
-        assert telegram["consumer_status"] == "failed"
-        assert telegram["consumer_error_type"] == "RuntimeError"
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_handler_blocks_direct_write_to_a2a_private_key(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    private_key = workspace / "a2a-private.key"
-    private_key.write_text("secret", encoding="utf-8")
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        assistant_fs_roots=[workspace],
-    )
-    services = await DaemonServices.build(config)
-    try:
-        services.config = config.model_copy(
-            update={
-                "a2a": A2aConfig(
-                    enabled=True,
-                    identity=A2aIdentityConfig(
-                        agent_id="local-agent",
-                        private_key_path=private_key,
-                        public_key_path=workspace / "a2a-public.key",
-                    ),
-                )
-            }
-        )
-        impl = HandlerImplementation(services=services)
-
-        result = impl._fs_git_toolkit.write_file(
-            path=str(private_key),
-            content="replaced",
-            confirm=True,
-        )
-
-        assert result["error"] == "protected_control_plane_path"
-        assert private_key.read_text(encoding="utf-8") == "secret"
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_handler_blocks_confirmed_authority_guard_and_marker_replacement(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    registry_root = authority._registry_root()
-    workspace = registry_root.parent
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        assistant_fs_roots=[workspace],
-    )
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        marker = services.authority_claim._namespace_marker
-        assert marker is not None
-        protected_paths = (
-            authority._namespace_guard_path(registry_root),
-            marker.path,
-        )
-        original_identities = {
-            path: (path.stat().st_dev, path.stat().st_ino) for path in protected_paths
-        }
-
-        for path in protected_paths:
-            assert impl._fs_git_toolkit._is_protected_write_path(path)
-            result = impl._fs_git_toolkit.write_file(
-                path=str(path),
-                content="replacement",
-                confirm=True,
-            )
-            assert result["error"] == "protected_control_plane_path"
-            assert (path.stat().st_dev, path.stat().st_ino) == original_identities[path]
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "corrupt_bytes",
-    [
-        b'{"version":1,"payload":',
-        b'{"version":1,"checksum":"\\u00e9","payload":{}}',
-        b'{"version":1,"checksum":"unused","payload":{"text":"\\ud800"}}',
-        (
-            b'{"version":1,"checksum":"unused","payload":'
-            + (b"[" * 10000)
-            + b"0"
-            + (b"]" * 10000)
-            + b"}"
-        ),
-    ],
-)
-async def test_f3_corrupt_control_plane_state_is_visible_while_daemon_stays_up(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-    corrupt_bytes: bytes,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    plans_path = data_dir / "control_plane" / "plans.json"
-    plans_path.parent.mkdir(parents=True)
-    data_dir.chmod(0o700)
-    plans_path.write_bytes(corrupt_bytes)
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        assert await services.control_plane.ping() is True
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "control_plane"})
-
-        assert status["control_plane"]["status"] == "degraded"
-        assert status["control_plane"]["fail_closed"] is True
-        assert status["control_plane"]["domains"]["trace"]["load_status"] == "corrupt"
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["control_plane"]["status"] == "degraded"
-        assert plans_path.read_bytes() == corrupt_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_corrupt_evidence_domain_is_visible_while_daemon_stays_up(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    evidence_root = data_dir / "sessions" / "evidence"
-    ArtifactLedger(evidence_root, salt=b"a" * 32)
-    data_dir.chmod(0o700)
-    index_path = evidence_root / "refs_index.json"
-    corrupt_bytes = b'{"version":1,"payload":'
-    index_path.write_bytes(corrupt_bytes)
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        assert await services.control_plane.ping() is True
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "evidence"})
-        doctor_all = await impl.do_doctor_check({"component": "all"})
-
-        assert status["status"] == "running"
-        assert status["evidence"]["status"] == "degraded"
-        assert status["evidence"]["scope"] == "evidence_only"
-        assert status["evidence"]["fail_closed"] is True
-        assert status["evidence"]["load_status"] == "corrupt"
-        assert status["evidence"]["reason"] == "invalid_json"
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["evidence"]["problems"] == ["invalid_json"]
-        assert doctor_all["checks"]["evidence"]["problems"] == ["invalid_json"]
-        assert index_path.read_bytes() == corrupt_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_corrupt_dashboard_marks_start_visible_bounded_degraded(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    marks_path = data_dir / "dashboard" / "false_positives.json"
-    marks_path.parent.mkdir(parents=True)
-    data_dir.chmod(0o700)
-    corrupt_bytes = b'{"version":1,"payload":'
-    marks_path.write_bytes(corrupt_bytes)
-    marks_path.chmod(0o600)
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "dashboard"})
-
-        assert status["dashboard"]["status"] == "degraded"
-        assert status["dashboard"]["load_status"] == "corrupt"
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["dashboard"]["problems"] == ["dashboard_marks_corrupt"]
-        assert marks_path.read_bytes() == corrupt_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_corrupt_approval_store_starts_bounded_degraded_and_is_actionable(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(mode=0o700)
-    approval_path = data_dir / "approval-factors.json"
-    corrupt_bytes = b'{"version":3,"payload":'
-    approval_path.write_bytes(corrupt_bytes)
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "approvals"})
-
-        assert status["status"] == "running"
-        assert status["approvals"]["status"] == "degraded"
-        assert status["approvals"]["load_status"] == "corrupt"
-        assert status["approvals"]["fail_closed"] is True
-        assert str(approval_path) == status["approvals"]["path"]
-        assert "restore" in status["approvals"]["remediation"].lower()
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["approvals"]["problems"] == ["approval_store_corrupt"]
-        assert impl._confirmation_backend_registry.get_backend("software.default") is not None
-        assert impl._confirmation_backend_registry.get_backend("totp.default") is None
-        assert impl._confirmation_backend_registry.get_backend("approver.local_fido2") is None
-        assert approval_path.read_bytes() == corrupt_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_corrupt_skill_inventory_starts_bounded_degraded_and_is_actionable(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    skill_dir = data_dir / "skills"
-    skill_dir.mkdir(parents=True)
-    data_dir.chmod(0o700)
-    inventory_path = skill_dir / "inventory.json"
-    corrupt_bytes = b'{"version":1,"payload":'
-    inventory_path.write_bytes(corrupt_bytes)
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "skills"})
-
-        assert status["status"] == "running"
-        assert status["skills"]["status"] == "degraded"
-        assert status["skills"]["load_status"] == "corrupt"
-        assert status["skills"]["fail_closed"] is True
-        assert str(inventory_path) == status["skills"]["path"]
-        assert "restore" in status["skills"]["remediation"].lower()
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["skills"]["problems"] == ["skill_inventory_corrupt"]
-        assert not any(
-            str(tool.name).startswith("skill.") for tool in services.registry.list_tools()
-        )
-        assert inventory_path.read_bytes() == corrupt_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "corrupt_bytes",
-    [
-        pytest.param(b'{"version":1,"payload":', id="invalid-json"),
-        pytest.param(
-            (b"[" * 10000) + b"0" + (b"]" * 10000),
-            id="recursive-json",
-        ),
-        pytest.param((b"- " * 10000) + b"0\n", id="recursive-yaml"),
-    ],
-)
-async def test_f3_corrupt_selfmod_inventory_starts_bounded_degraded_and_is_actionable(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-    corrupt_bytes: bytes,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    selfmod_dir = data_dir / "selfmod"
-    selfmod_dir.mkdir(parents=True)
-    data_dir.chmod(0o700)
-    inventory_path = selfmod_dir / "inventory.yaml"
-    inventory_path.write_bytes(corrupt_bytes)
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-
-    services = await DaemonServices.build(config)
-    try:
-        impl = HandlerImplementation(services=services)
-        status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "selfmod"})
-
-        inventory_status = status["selfmod"]["inventory"]
-        assert inventory_status["status"] == "degraded"
-        assert inventory_status["load_status"] == "corrupt"
-        assert inventory_status["fail_closed"] is True
-        assert str(inventory_path) == inventory_status["path"]
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["selfmod"]["problems"] == ["selfmod_inventory_corrupt"]
-        assert services.skill_manager.state_degraded is True
-        assert inventory_path.read_bytes() == corrupt_bytes
     finally:
         await services.shutdown()
 
@@ -718,7 +184,6 @@ async def test_m5_daemon_services_wires_timeline_index_append_observer(
     )
     preexisting_sessions = SessionManager(state_dir=config.data_dir / "sessions" / "state")
     preexisting_transcripts = TranscriptStore(config.data_dir / "sessions")
-    config.data_dir.chmod(0o700)
     preexisting_session = preexisting_sessions.create(
         channel="cli",
         user_id=UserId("alice"),
@@ -781,7 +246,6 @@ async def test_m5_daemon_services_rebuilds_terminated_transcript_timeline(
     )
     preexisting_sessions = SessionManager(state_dir=config.data_dir / "sessions" / "state")
     preexisting_transcripts = TranscriptStore(config.data_dir / "sessions")
-    config.data_dir.chmod(0o700)
     terminated_session = preexisting_sessions.create(
         channel="cli",
         user_id=UserId("alice"),
@@ -850,17 +314,10 @@ async def test_h1_daemon_services_build_fails_closed_when_control_plane_sidecar_
         *,
         data_dir,
         policy_path,
-        authority_claim,
         assistant_fs_roots,
         startup_timeout_seconds,
     ):
-        _ = (
-            data_dir,
-            policy_path,
-            authority_claim,
-            assistant_fs_roots,
-            startup_timeout_seconds,
-        )
+        _ = (data_dir, policy_path, assistant_fs_roots, startup_timeout_seconds)
         raise ControlPlaneUnavailableError(reason_code="control_plane.startup_failed")
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _raise_sidecar)
@@ -897,17 +354,10 @@ async def test_h1_daemon_services_closes_started_sidecar_on_late_build_failure(
         *,
         data_dir,
         policy_path,
-        authority_claim,
         assistant_fs_roots,
         startup_timeout_seconds,
     ):
-        _ = (
-            data_dir,
-            policy_path,
-            authority_claim,
-            assistant_fs_roots,
-            startup_timeout_seconds,
-        )
+        _ = (data_dir, policy_path, assistant_fs_roots, startup_timeout_seconds)
         return _FakeSidecar()
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
@@ -933,7 +383,7 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_remote_provider_env(monkeypatch)
-    captured: dict[str, object] = {}
+    captured: dict[str, float] = {}
 
     class _FakeSidecar:
         def __init__(self) -> None:
@@ -945,8 +395,7 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
             return True
 
         async def close(self) -> None:
-            claim = captured["authority_claim"]
-            captured["claim_released_during_sidecar_close"] = claim.released
+            return None
 
     async def _fake_start(  # type: ignore[no-untyped-def]
         *,
@@ -954,11 +403,9 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
         policy_path,
         assistant_fs_roots,
         startup_timeout_seconds,
-        authority_claim,
     ):
         _ = (data_dir, policy_path, assistant_fs_roots)
         captured["startup_timeout_seconds"] = float(startup_timeout_seconds)
-        captured["authority_claim"] = authority_claim
         return _FakeSidecar()
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
@@ -971,11 +418,8 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
     services = await DaemonServices.build(config)
     try:
         assert captured["startup_timeout_seconds"] == pytest.approx(12.5)
-        assert captured["authority_claim"] is services.authority_claim
     finally:
         await services.shutdown()
-    assert captured["claim_released_during_sidecar_close"] is False
-    assert services.authority_claim.released is True
 
 
 @pytest.mark.asyncio
@@ -1002,11 +446,10 @@ async def test_daemon_services_uses_default_control_plane_startup_timeout(
         *,
         data_dir,
         policy_path,
-        authority_claim,
         assistant_fs_roots,
         startup_timeout_seconds,
     ):
-        _ = (data_dir, policy_path, authority_claim, assistant_fs_roots)
+        _ = (data_dir, policy_path, assistant_fs_roots)
         captured["startup_timeout_seconds"] = float(startup_timeout_seconds)
         return _FakeSidecar()
 
@@ -1019,452 +462,6 @@ async def test_daemon_services_uses_default_control_plane_startup_timeout(
     services = await DaemonServices.build(config)
     try:
         assert captured["startup_timeout_seconds"] == pytest.approx(15.0)
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("link_shape", ["intermediate", "final"])
-async def test_f3_daemon_reset_rejects_symlink_in_generic_wipe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    link_shape: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        configured = tmp_path / "configured"
-        configured.mkdir()
-        external = tmp_path / "external"
-        external_checkpoints = external / "checkpoints"
-        external_checkpoints.mkdir(parents=True)
-        sentinel = external_checkpoints / "retained.json"
-        sentinel.write_bytes(b"external checkpoint bytes")
-        if link_shape == "intermediate":
-            (configured / "redirect").symlink_to(external, target_is_directory=True)
-            checkpoint_root = configured / "redirect" / "checkpoints"
-        else:
-            checkpoint_root = configured / "checkpoints"
-            checkpoint_root.symlink_to(external_checkpoints, target_is_directory=True)
-        services.checkpoint_store._dir = checkpoint_root
-
-        with pytest.raises(OSError, match=r"symlink|ancestry"):
-            await services.reset_test_state()
-
-        assert sentinel.read_bytes() == b"external checkpoint bytes"
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("link_shape", ["intermediate", "final"])
-async def test_f3_daemon_reset_rejects_symlinked_audit_log(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    link_shape: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        configured = tmp_path / "configured-audit"
-        configured.mkdir()
-        external = tmp_path / "external-audit"
-        external.mkdir()
-        sentinel = external / "audit.jsonl"
-        sentinel.write_bytes(b"external audit sentinel")
-        if link_shape == "intermediate":
-            (configured / "redirect").symlink_to(external, target_is_directory=True)
-            audit_path = configured / "redirect" / "audit.jsonl"
-        else:
-            audit_path = configured / "audit.jsonl"
-            audit_path.symlink_to(sentinel)
-        services.audit_log._log_path = audit_path
-
-        with pytest.raises((AtomicWriteError, OSError)):
-            await services.reset_test_state()
-
-        assert sentinel.read_bytes() == b"external audit sentinel"
-    finally:
-        await services.shutdown()
-
-
-def _fail_atomic_write(stage: AtomicWriteStage) -> None:
-    if stage is AtomicWriteStage.WRITE:
-        raise OSError("injected post-reset publication failure")
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_clears_scheduler_durable_task_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        old_task = services.scheduler.create_task(
-            name="pre-reset",
-            goal="must not return",
-            schedule=Schedule.from_event("message.received"),
-            capability_snapshot={Capability.MESSAGE_SEND},
-            policy_snapshot_ref="policy-pre-reset",
-            created_by=UserId("alice"),
-        )
-
-        await services.reset_test_state()
-        services.scheduler._state_fault_injector = _fail_atomic_write
-
-        with pytest.raises(AtomicWriteError, match="failed at write"):
-            services.scheduler.create_task(
-                name="post-reset-failed",
-                goal="fail before publication",
-                schedule=Schedule.from_event("message.received"),
-                capability_snapshot={Capability.MESSAGE_SEND},
-                policy_snapshot_ref="policy-post-reset",
-                created_by=UserId("alice"),
-            )
-
-        assert services.scheduler.list_tasks() == []
-        assert services.scheduler.get_task(old_task.id) is None
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_clears_control_plane_sidecar_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        origin = Origin(session_id="reset-control-plane", user_id="alice", workspace_id="ws")
-        await services.control_plane.begin_precontent_plan(
-            session_id=origin.session_id,
-            goal=f"read {tmp_path / 'source.txt'}",
-            origin=origin,
-            ttl_seconds=300,
-            max_actions=3,
-            capabilities={Capability.FILE_READ},
-        )
-
-        result = await services.reset_test_state()
-
-        assert result["cleared"]["control_plane_trace_plans"] == 1
-        assert result["cleared"]["control_plane_audit_entries"] >= 1
-        status = await services.control_plane.state_status()
-        assert status["status"] == "ok"
-        assert all(domain["load_status"] == "ok" for domain in status["domains"].values())
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_clears_scheduler_durable_pending_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        old_task = services.scheduler.create_task(
-            name="pre-reset",
-            goal="must not return",
-            schedule=Schedule.from_event("message.received"),
-            capability_snapshot={Capability.MESSAGE_SEND},
-            policy_snapshot_ref="policy-pre-reset",
-            created_by=UserId("alice"),
-        )
-        services.scheduler.queue_confirmation(
-            old_task.id,
-            {"confirmation_id": "pre-reset-confirmation", "status": "pending"},
-        )
-
-        await services.reset_test_state()
-        new_task = services.scheduler.create_task(
-            name="post-reset",
-            goal="fresh authority",
-            schedule=Schedule.from_event("message.received"),
-            capability_snapshot={Capability.MESSAGE_SEND},
-            policy_snapshot_ref="policy-post-reset",
-            created_by=UserId("alice"),
-        )
-        services.scheduler._state_fault_injector = _fail_atomic_write
-
-        with pytest.raises(AtomicWriteError, match="failed at write"):
-            services.scheduler.queue_confirmation(
-                new_task.id,
-                {"confirmation_id": "post-reset-failed", "status": "pending"},
-            )
-
-        retained_ids = {
-            str(row.get("confirmation_id", ""))
-            for rows in services.scheduler._pending_confirmations.values()
-            for row in rows
-        }
-        assert retained_ids == set()
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_clears_approval_durable_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        services.credential_store.register_approval_factor(
-            ApprovalFactorRecord(
-                credential_id="pre-reset-factor",
-                user_id="alice",
-                method="totp",
-                principal_id="alice",
-                secret_b32="JBSWY3DPEHPK3PXP",
-            )
-        )
-
-        await services.reset_test_state()
-        services.credential_store._approval_state_fault_injector = _fail_atomic_write
-
-        with pytest.raises(AtomicWriteError, match="failed at write"):
-            services.credential_store.register_approval_factor(
-                ApprovalFactorRecord(
-                    credential_id="post-reset-factor",
-                    user_id="alice",
-                    method="totp",
-                    principal_id="alice",
-                    secret_b32="JBSWY3DPEHPK3PXP",
-                )
-            )
-
-        assert services.credential_store.list_approval_factors() == []
-        assert services.credential_store.list_signer_keys(include_revoked=True) == []
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("replacement_shape", ["symlink", "real_directory"])
-async def test_f3_approval_reset_rejects_parent_swap_before_corrupt_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    replacement_shape: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        configured = tmp_path / "configured-approval"
-        configured.mkdir()
-        tmp_path.chmod(0o700)
-        configured.chmod(0o700)
-        approval_path = configured / "approval.json"
-        services.credential_store.set_approval_store_path(approval_path)
-        services.credential_store.register_approval_factor(
-            ApprovalFactorRecord(
-                credential_id="pre-reset-factor",
-                user_id="alice",
-                method="totp",
-                principal_id="alice",
-                secret_b32="JBSWY3DPEHPK3PXP",
-            )
-        )
-        corrupt_name = "approval.json.corrupt.race"
-        (configured / corrupt_name).write_bytes(b"owned corrupt artifact")
-        external = tmp_path / "external-approval"
-        external.mkdir()
-        sentinel = external / corrupt_name
-        sentinel.write_bytes(b"external approval sentinel")
-        parked = tmp_path / "parked-approval"
-
-        def _swap_before_cleanup(stage: AtomicWriteStage) -> None:
-            if stage is not AtomicWriteStage.CLEANUP:
-                return
-            configured.rename(parked)
-            if replacement_shape == "symlink":
-                configured.symlink_to(external, target_is_directory=True)
-            else:
-                external.rename(configured)
-
-        services.credential_store._approval_state_fault_injector = _swap_before_cleanup
-
-        with pytest.raises(AtomicWriteError):
-            services.credential_store.reset_approval_state()
-
-        assert (configured / corrupt_name).read_bytes() == b"external approval sentinel"
-        assert services.credential_store.approval_state_degraded is True
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_clears_authority_load_degradation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    data_dir = tmp_path / "data"
-    skill_dir = data_dir / "skills"
-    selfmod_dir = data_dir / "selfmod"
-    skill_dir.mkdir(parents=True)
-    selfmod_dir.mkdir(parents=True)
-    data_dir.chmod(0o700)
-    (data_dir / "approval-factors.json").write_bytes(b'{"version":3,"payload":')
-    (skill_dir / "inventory.json").write_bytes(b'{"version":1,"payload":')
-    (selfmod_dir / "inventory.yaml").write_bytes(b'{"version":1,"payload":')
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        assert services.credential_store.approval_state_degraded is True
-        assert services.skill_manager.state_degraded is True
-        assert services.selfmod_manager.state_degraded is True
-
-        await services.reset_test_state()
-
-        assert services.credential_store.approval_state_degraded is False
-        assert services.credential_store.approval_state_load_result().status.value == "ok"
-        assert services.skill_manager.state_degraded is False
-        assert services.skill_manager.inventory_load_result().status.value == "ok"
-        assert services.selfmod_manager.state_degraded is False
-        assert services.selfmod_manager.inventory_load_result().status.value == "ok"
-
-        await services.shutdown()
-        services = await DaemonServices.build(config)
-
-        assert services.credential_store.approval_state_degraded is False
-        assert services.credential_store.list_approval_factors() == []
-        assert services.skill_manager.state_degraded is False
-        assert services.skill_manager.list_installed() == []
-        assert services.selfmod_manager.state_degraded is False
-        assert services.selfmod_manager._inventory.skills == {}
-        assert services.selfmod_manager._inventory.behavior_packs == {}
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure_surface", ["readmission", "runtime_overlay"])
-async def test_f3_selfmod_reset_post_wipe_failure_withdraws_skill_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_surface: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
-
-        def _fail_post_wipe(*args: object, **kwargs: object) -> None:
-            del args, kwargs
-            raise OSError(f"injected selfmod {failure_surface} failure")
-
-        if failure_surface == "readmission":
-            monkeypatch.setattr(
-                "shisad.selfmod.manager.ensure_owner_only_directory",
-                _fail_post_wipe,
-            )
-        else:
-            monkeypatch.setattr(
-                services.selfmod_manager,
-                "_apply_behavior_overlay",
-                _fail_post_wipe,
-            )
-
-        with pytest.raises(OSError, match=failure_surface):
-            await services.reset_test_state()
-
-        assert services.selfmod_manager.state_degraded is True
-        assert services.selfmod_manager.inventory_load_result().status.value == "corrupt"
-        assert services.skill_manager.state_degraded is True
-        assert services.skill_manager._skill_tool_map == {}
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_skill_reset_readmission_failure_stays_degraded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    try:
-        services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
-
-        def _fail_readmission(*args: object, **kwargs: object) -> None:
-            del args, kwargs
-            raise OSError("injected skill readmission failure")
-
-        monkeypatch.setattr(
-            "shisad.skills.manager.ensure_owner_only_directory",
-            _fail_readmission,
-        )
-
-        with pytest.raises(OSError, match="skill readmission"):
-            await services.reset_test_state()
-
-        assert services.skill_manager.state_degraded is True
-        assert services.skill_manager.inventory_load_result().status.value == "corrupt"
-        assert services.skill_manager._skill_tool_map == {}
     finally:
         await services.shutdown()
 
@@ -1589,7 +586,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         )
         services.skill_manager._skill_tool_map["demo"] = [ToolName("demo.tool")]
         services.skill_manager._pending_registration_events.append(object())  # type: ignore[arg-type]
-        services.skill_manager._persist_inventory_snapshot(services.skill_manager._inventory)
+        services.skill_manager._persist_inventory()
 
         services.credential_store.register_approval_factor(
             ApprovalFactorRecord(
@@ -1726,11 +723,7 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
             ).results
             == []
         )
-        assert services.evidence_store.is_empty_domain() is True
-        assert services.evidence_store.state_load_result().status.value == "ok"
-        reset_restarted_evidence = ArtifactLedger(config.data_dir / "sessions" / "evidence")
-        assert reset_restarted_evidence.state_load_result().status.value == "ok"
-        assert reset_restarted_evidence.committed_ref_count() == 0
+        assert services.evidence_store._refs == {}
         assert services.ingestion.artifacts_empty()
         assert services.ingestion.search_index_count() == 0
         assert services.ingestion._active_key_id
@@ -1997,7 +990,6 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         impl._plan_violation_counts[session.id] = 3
         impl._confirmation_alerted_at[pending.confirmation_id] = datetime.now(UTC)
         impl._confirmation_failure_tracker.record_failure(user_id="alice", method="totp")
-        impl._dashboard.mark_false_positive(event_id="evt-reset", reason="unit-test")
         impl._identity_map.record_pairing_request(
             channel="matrix",
             external_user_id="mallory",
@@ -2025,7 +1017,6 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert result["cleared"]["confirmation_lockouts"] == 1
         assert result["cleared"]["pairing_requests"] == 1
         assert result["cleared"]["pairing_request_artifacts"] == 1
-        assert result["cleared"]["dashboard_false_positive_marks"] == 1
 
         assert impl._pending_actions == {}
         assert impl._pending_by_session == {}
@@ -2035,483 +1026,9 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert impl._confirmation_alerted_at == {}
         assert impl._confirmation_failure_tracker._state == {}
         assert impl._identity_map.list_pairing_requests() == []
-        assert impl._dashboard._marks == {}
-        pending_result, pending_payload = decode_versioned_json_snapshot(
-            impl._pending_actions_file.read_bytes()
-        )
-        assert pending_result.status is StateLoadStatus.OK
-        assert pending_payload == []
-        assert impl._pairing_requests_file.read_bytes() == b""
+        assert not impl._pending_actions_file.exists()
+        assert not impl._pairing_requests_file.exists()
     finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_kind", ["malformed", "future", "symlink", "hardlink"])
-async def test_f3_pending_action_startup_fails_closed_without_following_invalid_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    invalid_kind: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    pending_path = config.data_dir / "pending_actions.json"
-    external = tmp_path / "external-pending.json"
-    expected_external = b"external pending authority"
-    if invalid_kind == "malformed":
-        pending_path.write_bytes(b'{"version":1,"payload":')
-        pending_path.chmod(0o600)
-    elif invalid_kind == "future":
-        pending_path.write_bytes(encode_versioned_json_snapshot([], version=2))
-        pending_path.chmod(0o600)
-    else:
-        external.write_bytes(expected_external)
-        external.chmod(0o600)
-        if invalid_kind == "symlink":
-            pending_path.symlink_to(external)
-        else:
-            pending_path.hardlink_to(external)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = impl._pending_action_state_status()
-        assert status["status"] == "degraded"
-        assert status["fail_closed"] is True
-        daemon_status = await impl.do_daemon_status({})
-        doctor = await impl.do_doctor_check({"component": "actions"})
-        assert daemon_status["actions"]["status"] == "degraded"
-        assert doctor["status"] == "degraded"
-        assert doctor["checks"]["actions"]["fail_closed"] is True
-        assert impl._pending_actions == {}
-        if invalid_kind in {"symlink", "hardlink"}:
-            assert external.read_bytes() == expected_external
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_pending_action_legacy_owner_file_is_normalized_and_loaded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    pending_path = config.data_dir / "pending_actions.json"
-    pending_path.write_bytes(b"[]")
-    pending_path.chmod(0o644)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        assert impl._pending_action_state_status()["status"] == "ok"
-        assert impl._pending_state_load_result.legacy is True
-        assert pending_path.stat().st_mode & 0o777 == 0o600
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("invalid_payload", "expected_reason"),
-    [
-        ([{}], "invalid_pending_action_row"),
-        (["not-a-row"], "invalid_pending_action_row"),
-        (
-            [{"confirmation_id": "duplicate"}, {"confirmation_id": " duplicate "}],
-            "duplicate_pending_action_identity",
-        ),
-    ],
-    ids=["identity-less", "non-dict", "duplicate-identity"],
-)
-async def test_f3_current_pending_envelope_rejects_invalid_rows_without_rewrite(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    invalid_payload: list[object],
-    expected_reason: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    pending_path = config.data_dir / "pending_actions.json"
-    retained_bytes = encode_versioned_json_snapshot(invalid_payload, version=1)
-    pending_path.write_bytes(retained_bytes)
-    pending_path.chmod(0o600)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = impl._pending_action_state_status()
-        assert status["status"] == "degraded"
-        assert status["reason"] == expected_reason
-        assert status["fail_closed"] is True
-        assert impl._pending_actions == {}
-        assert pending_path.read_bytes() == retained_bytes
-        with pytest.raises(StatePersistenceDegradedError):
-            impl._queue_pending_action(
-                session_id=SessionId("blocked-actions"),
-                user_id=UserId("alice"),
-                workspace_id=WorkspaceId("workspace"),
-                tool_name=ToolName("note.create"),
-                arguments={"content": "blocked"},
-                reason="requires_confirmation",
-                capabilities={Capability.MEMORY_WRITE},
-            )
-        assert pending_path.read_bytes() == retained_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "invalid_payload",
-    [
-        [{}],
-        ["not-a-row"],
-        [{"confirmation_id": "valid"}, {"unexpected": "retained"}],
-    ],
-    ids=["identity-less", "non-dict", "mixed-valid-invalid"],
-)
-async def test_f3_legacy_pending_snapshot_rejects_malformed_rows_without_rewrite(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    invalid_payload: list[object],
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    pending_path = config.data_dir / "pending_actions.json"
-    retained_bytes = json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
-    pending_path.write_bytes(retained_bytes)
-    pending_path.chmod(0o600)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = impl._pending_action_state_status()
-        assert status["status"] == "degraded"
-        assert status["reason"] == "invalid_pending_action_row"
-        assert status["fail_closed"] is True
-        assert impl._pending_actions == {}
-        assert pending_path.read_bytes() == retained_bytes
-        with pytest.raises(StatePersistenceDegradedError):
-            impl._queue_pending_action(
-                session_id=SessionId("blocked-legacy-actions"),
-                user_id=UserId("alice"),
-                workspace_id=WorkspaceId("workspace"),
-                tool_name=ToolName("note.create"),
-                arguments={"content": "blocked"},
-                reason="requires_confirmation",
-                capabilities={Capability.MEMORY_WRITE},
-            )
-        assert pending_path.read_bytes() == retained_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("collision_kind", ["nested", "scheduler-shadow"])
-@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
-async def test_f3_pending_snapshot_rejects_canonical_identity_collisions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    collision_kind: str,
-    snapshot_kind: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    if collision_kind == "nested":
-        invalid_payload: list[object] = [
-            {"confirmation_id": "direct-a", "identity": {"confirmation_id": "shared"}},
-            {"confirmation_id": "direct-b", "identity": {"confirmation_id": "shared"}},
-        ]
-    else:
-        services.scheduler._pending_confirmations["task-shadow"] = [{"confirmation_id": "shared"}]
-        invalid_payload = [
-            {"confirmation_id": "direct-a", "identity": {"confirmation_id": "shared"}},
-            {"confirmation_id": "shared", "identity": {"confirmation_id": "nested-b"}},
-        ]
-    pending_path = config.data_dir / "pending_actions.json"
-    retained_bytes = (
-        encode_versioned_json_snapshot(invalid_payload, version=1)
-        if snapshot_kind == "current"
-        else json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
-    )
-    pending_path.write_bytes(retained_bytes)
-    pending_path.chmod(0o600)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = impl._pending_action_state_status()
-        assert status["status"] == "degraded"
-        assert status["reason"] == "duplicate_pending_action_identity"
-        assert status["fail_closed"] is True
-        assert impl._pending_actions == {}
-        assert pending_path.read_bytes() == retained_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_legacy_pending_snapshot_rejects_nested_only_identity_collision(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    invalid_payload = [
-        {"identity": {"confirmation_id": "shared"}},
-        {"confirmation_id": "", "identity": {"confirmation_id": "shared"}},
-    ]
-    pending_path = config.data_dir / "pending_actions.json"
-    retained_bytes = json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
-    pending_path.write_bytes(retained_bytes)
-    pending_path.chmod(0o600)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = impl._pending_action_state_status()
-        assert status["status"] == "degraded"
-        assert status["reason"] == "duplicate_pending_action_identity"
-        assert status["fail_closed"] is True
-        assert impl._pending_actions == {}
-        assert pending_path.read_bytes() == retained_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
-async def test_f3_pending_snapshot_rejects_blank_nested_confirmation_identity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    snapshot_kind: str,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    invalid_payload = [{"confirmation_id": "direct", "identity": {"confirmation_id": " "}}]
-    pending_path = config.data_dir / "pending_actions.json"
-    retained_bytes = (
-        encode_versioned_json_snapshot(invalid_payload, version=1)
-        if snapshot_kind == "current"
-        else json.dumps(invalid_payload, sort_keys=True).encode("utf-8")
-    )
-    pending_path.write_bytes(retained_bytes)
-    pending_path.chmod(0o600)
-    try:
-        impl = HandlerImplementation(services=services)
-
-        status = impl._pending_action_state_status()
-        assert status["status"] == "degraded"
-        assert status["reason"] == "invalid_pending_action_row"
-        assert status["fail_closed"] is True
-        assert impl._pending_actions == {}
-        assert pending_path.read_bytes() == retained_bytes
-    finally:
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_route_keeps_event_loop_live_behind_ledger_writer(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    impl = HandlerImplementation(services=services)
-    ledger = services.evidence_store
-    ledger.store(
-        SessionId("sess-a"),
-        "reset me",
-        taint_labels=set(),
-        source="unit-test",
-        summary="reset me",
-    )
-    lock_held = Event()
-    release_writer = Event()
-    holder_timed_out = Event()
-
-    def _hold_writer() -> None:
-        with ledger._lock:
-            lock_held.set()
-            if not release_writer.wait(timeout=3.0):
-                holder_timed_out.set()
-
-    holder = Thread(target=_hold_writer)
-    holder.start()
-    try:
-        assert await asyncio.to_thread(lock_held.wait, 1.0)
-        heartbeat_ticks = 0
-
-        async def _heartbeat() -> None:
-            nonlocal heartbeat_ticks
-            for _ in range(5):
-                heartbeat_ticks += 1
-                await asyncio.sleep(0)
-            release_writer.set()
-
-        heartbeat = asyncio.create_task(_heartbeat())
-        result = await impl.do_daemon_reset({})
-        await heartbeat
-        await asyncio.to_thread(holder.join, 1.0)
-
-        assert holder_timed_out.is_set() is False
-        assert heartbeat_ticks == 5
-        assert result["status"] == "reset"
-        assert result["cleared"]["evidence_refs"] == 1
-        assert all(result["invariants"].values())
-    finally:
-        release_writer.set()
-        holder.join(timeout=1.0)
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_channel_doctor_keeps_event_loop_live_behind_replay_writer(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-    )
-    services = await DaemonServices.build(config)
-    impl = HandlerImplementation(services=services)
-    store = services.channel_state_store
-    lock_held = Event()
-    release_writer = Event()
-    holder_timed_out = Event()
-
-    def _hold_writer() -> None:
-        with store._lock:
-            lock_held.set()
-            if not release_writer.wait(timeout=2.0):
-                holder_timed_out.set()
-
-    holder = Thread(target=_hold_writer)
-    holder.start()
-    try:
-        assert await asyncio.to_thread(lock_held.wait, 1.0)
-        heartbeat_ticks = 0
-
-        async def _heartbeat() -> None:
-            nonlocal heartbeat_ticks
-            for _ in range(5):
-                heartbeat_ticks += 1
-                await asyncio.sleep(0)
-            release_writer.set()
-
-        heartbeat = asyncio.create_task(_heartbeat())
-        result = await impl.do_doctor_check({"component": "channels"})
-        await heartbeat
-        await asyncio.to_thread(holder.join, 1.0)
-
-        assert holder_timed_out.is_set() is False
-        assert heartbeat_ticks == 5
-        assert result["status"] == "ok"
-    finally:
-        release_writer.set()
-        holder.join(timeout=1.0)
-        await services.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_f3_daemon_reset_keeps_event_loop_live_behind_replay_writer(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_remote_provider_env(monkeypatch)
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        test_mode=True,
-    )
-    services = await DaemonServices.build(config)
-    impl = HandlerImplementation(services=services)
-    store = services.channel_state_store
-    store.mark_seen(channel="discord", message_id="m-reset")
-    lock_held = Event()
-    release_writer = Event()
-    holder_timed_out = Event()
-
-    def _hold_writer() -> None:
-        with store._lock:
-            lock_held.set()
-            if not release_writer.wait(timeout=2.0):
-                holder_timed_out.set()
-
-    holder = Thread(target=_hold_writer)
-    holder.start()
-    try:
-        assert await asyncio.to_thread(lock_held.wait, 1.0)
-        heartbeat_ticks = 0
-
-        async def _heartbeat() -> None:
-            nonlocal heartbeat_ticks
-            for _ in range(5):
-                heartbeat_ticks += 1
-                await asyncio.sleep(0)
-            release_writer.set()
-
-        heartbeat = asyncio.create_task(_heartbeat())
-        result = await impl.do_daemon_reset({})
-        await heartbeat
-        await asyncio.to_thread(holder.join, 1.0)
-
-        assert holder_timed_out.is_set() is False
-        assert heartbeat_ticks == 5
-        assert result["status"] == "reset"
-        assert result["cleared"]["channel_state_channels"] == 1
-        assert result["cleared"]["channel_state_files"] >= 1
-        assert all(result["invariants"].values())
-    finally:
-        release_writer.set()
-        holder.join(timeout=1.0)
         await services.shutdown()
 
 
@@ -2994,49 +1511,6 @@ async def test_daemon_services_shutdown_reaches_all_registered_resources() -> No
     assert "sidecar" in calls
     assert "approval-web" in calls
     assert calls[-1] == "server", "control server must be the last resource to stop"
-
-
-@pytest.mark.asyncio
-async def test_daemon_services_shutdown_keeps_task_affine_resources_on_caller_task() -> None:
-    owner_task = asyncio.current_task()
-    shutdown_task: asyncio.Task[object] | None = None
-
-    class _McpManagerStub:
-        async def shutdown(self) -> None:
-            nonlocal shutdown_task
-            shutdown_task = asyncio.current_task()
-
-    services = object.__new__(DaemonServices)
-    services.mcp_manager = _McpManagerStub()  # type: ignore[assignment]
-
-    await DaemonServices.shutdown(services)
-
-    assert shutdown_task is owner_task
-
-
-@pytest.mark.asyncio
-async def test_daemon_services_shutdown_retries_task_affine_resource_after_cancellation() -> None:
-    attempts = 0
-    first_attempt_entered = asyncio.Event()
-
-    class _McpManagerStub:
-        async def shutdown(self) -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                first_attempt_entered.set()
-                await asyncio.Event().wait()
-
-    services = object.__new__(DaemonServices)
-    services.mcp_manager = _McpManagerStub()  # type: ignore[assignment]
-    shutdown_task = asyncio.create_task(DaemonServices.shutdown(services))
-    await first_attempt_entered.wait()
-
-    shutdown_task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await shutdown_task
-    assert attempts == 2
 
 
 def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:

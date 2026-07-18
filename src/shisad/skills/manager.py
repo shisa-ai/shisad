@@ -2,45 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import os
-import shutil
-import stat
-import uuid
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field
 
-from shisad.core.artifact_staging import (
-    DEFAULT_ARTIFACT_STAGE_MAX_BYTES as _ARTIFACT_STAGE_MAX_BYTES,
-)
-from shisad.core.artifact_staging import (
-    DEFAULT_ARTIFACT_STAGE_MAX_ENTRIES as _ARTIFACT_STAGE_MAX_ENTRIES,
-)
-from shisad.core.artifact_staging import (
-    capture_bounded_regular_tree,
-    copy_bounded_regular_tree,
-    digest_regular_tree_files,
-    fsync_directory,
-    materialize_regular_tree_files,
-)
-from shisad.core.atomic_state import (
-    AtomicWriteError,
-    AtomicWriteFaultInjector,
-    StateLoadResult,
-    StateLoadStatus,
-    StatePersistenceDegradedError,
-    atomic_write_bytes,
-    decode_json_document,
-    decode_versioned_json_snapshot,
-    encode_versioned_json_snapshot,
-    ensure_owner_only_directory,
-    read_owned_regular_file,
-    remove_owner_controlled_directory_contents,
-    validate_directory_ancestry,
-)
 from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolRetryClass
@@ -55,7 +23,6 @@ from shisad.skills.analyzer import (
     SkillBundle,
     ToolSurfaceAnalyzer,
     load_skill_bundle,
-    load_skill_bundle_snapshot,
 )
 from shisad.skills.artifacts import ArtifactState
 from shisad.skills.cross_skill import scan_cross_skill
@@ -68,9 +35,6 @@ from shisad.skills.signatures import KeyRing, SignatureStatus, verify_manifest_s
 
 logger = logging.getLogger(__name__)
 
-_SKILL_INVENTORY_VERSION = 1
-_SKILL_INVENTORY_DOMAIN_MARKER = b"shisad-skill-inventory-domain-v1\n"
-
 
 class SkillInstallDecision(BaseModel):
     allowed: bool
@@ -82,18 +46,13 @@ class SkillInstallDecision(BaseModel):
 
 
 class InstalledSkill(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     name: str
     version: str
     path: str
     manifest_hash: str
     state: ArtifactState
     author: str
-    content_digest: str = ""
-    content_digest_legacy: bool = Field(default=True, strict=True)
     tool_schema_hashes: dict[str, str] = Field(default_factory=dict)
-    tool_schema_hashes_legacy: bool = Field(default=False, strict=True)
 
 
 class SkillManager:
@@ -108,33 +67,13 @@ class SkillManager:
         llm_analyzer: LlmSkillAnalyzer | None = None,
         tool_registry: ToolRegistry | None = None,
     ) -> None:
-        self._storage_dir = Path(storage_dir)
-        self._storage_root_invalid = False
-        try:
-            self._storage_root_existed_at_start = validate_directory_ancestry(self._storage_dir)
-            self._storage_root_was_empty_at_start = (
-                _directory_is_empty(self._storage_dir)
-                if self._storage_root_existed_at_start
-                else True
-            )
-            ensure_owner_only_directory(self._storage_dir)
-        except OSError:
-            self._storage_root_invalid = True
-            self._storage_root_existed_at_start = True
-            self._storage_root_was_empty_at_start = False
+        self._storage_dir = storage_dir
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._inventory_path = self._storage_dir / "inventory.json"
-        self._inventory_domain_marker_path = self._storage_dir / ".inventory-domain-v1"
-        self._inventory_domain_marker_status = (
-            "invalid" if self._storage_root_invalid else self._inspect_inventory_domain_marker()
-        )
         self._policy = policy or SkillPolicy()
         self._keyring = keyring or KeyRing()
         self._llm_analyzer = llm_analyzer
         self._tool_registry = tool_registry
-        self._state_fault_injector: AtomicWriteFaultInjector | None = None
-        self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-        self._persistence_degradation: AtomicWriteError | None = None
-        self._external_degradation: tuple[str, str] | None = None
         self._dangerous = DangerousPatternAnalyzer()
         self._tool_surface = ToolSurfaceAnalyzer()
         self._capability = CapabilityInferenceAnalyzer()
@@ -144,32 +83,9 @@ class SkillManager:
             skills_root=self._storage_dir.parent / "skills",
             config_root=self._storage_dir.parent,
         )
+        self._inventory = self._load_inventory()
         self._skill_tool_map: dict[str, list[ToolName]] = {}
         self._pending_registration_events: list[SkillToolRegistrationDropped] = []
-        if self._storage_root_invalid:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_storage_root",
-            )
-            self._inventory = {}
-        else:
-            self._inventory = self._load_inventory()
-        if (
-            not self._storage_root_invalid
-            and self._state_load_result.status is StateLoadStatus.MISSING
-        ):
-            initial_result = self._state_load_result
-            if self._ensure_inventory_domain_marker():
-                try:
-                    self._persist_inventory_snapshot({})
-                except AtomicWriteError as exc:
-                    self._persistence_degradation = exc
-                else:
-                    self._state_load_result = initial_result
-        elif (
-            not self._storage_root_invalid and self._state_load_result.status is StateLoadStatus.OK
-        ):
-            self._ensure_inventory_domain_marker()
         self._register_inventory_tools()
 
     def review(self, skill_path: Path) -> dict[str, Any]:
@@ -209,141 +125,98 @@ class SkillManager:
         *,
         approve_untrusted: bool = False,
     ) -> SkillInstallDecision:
-        self._require_state_available(transition="install")
-        staged_path = self._stage_install_bundle(skill_path)
-        try:
-            captured = capture_bounded_regular_tree(
-                staged_path,
-                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
+        bundle = load_skill_bundle(
+            skill_path,
+            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+        )
+        findings = self._run_static(bundle)
+        if self._llm_analyzer is not None:
+            llm_findings = await self._llm_analyzer.analyze(
+                bundle,
+                static_risk_score=_risk_score(findings),
             )
-            content_digest = self._content_digest(captured.files)
-            bundle = load_skill_bundle_snapshot(
-                staged_path,
-                captured.files,
-                allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
-            )
-            findings = self._run_static(bundle)
-            if self._llm_analyzer is not None:
-                llm_findings = await self._llm_analyzer.analyze(
-                    bundle,
-                    static_risk_score=_risk_score(findings),
-                )
-                findings.extend(llm_findings)
-            findings.extend(scan_cross_skill([bundle, *self._installed_bundles()]))
-            content_map = {file.path: file.content for file in bundle.files if not file.binary}
-            findings = self._meta.filter(findings, content_map=content_map)
-            signature = verify_manifest_signature(
-                manifest=bundle.manifest,
-                file_hashes={file.path: file.sha256 for file in bundle.files},
-                keyring=self._keyring,
-            )
-            summary = render_risk_summary(skill=bundle, findings=findings, signature=signature)
+            findings.extend(llm_findings)
+        findings.extend(scan_cross_skill([bundle, *self._installed_bundles()]))
+        content_map = {file.path: file.content for file in bundle.files if not file.binary}
+        findings = self._meta.filter(findings, content_map=content_map)
+        signature = verify_manifest_signature(
+            manifest=bundle.manifest,
+            file_hashes={file.path: file.sha256 for file in bundle.files},
+            keyring=self._keyring,
+        )
+        summary = render_risk_summary(skill=bundle, findings=findings, signature=signature)
 
-            if signature.status == SignatureStatus.INVALID:
-                return SkillInstallDecision(
-                    allowed=False,
-                    status="blocked",
-                    reason=signature.reason,
-                    findings=findings,
-                    summary=summary,
-                    artifact_state=ArtifactState.REVOKED,
-                )
-            if (
-                self._policy.require_signature_for_auto_install
-                and signature.status is not SignatureStatus.TRUSTED
-            ):
-                return SkillInstallDecision(
-                    allowed=False,
-                    status="review",
-                    reason="signature_required_policy",
-                    findings=findings,
-                    summary=summary,
-                    artifact_state=ArtifactState.REVIEW,
-                )
-            if signature.require_confirmation and not approve_untrusted:
-                return SkillInstallDecision(
-                    allowed=False,
-                    status="review",
-                    reason=signature.reason,
-                    findings=findings,
-                    summary=summary,
-                    artifact_state=ArtifactState.REVIEW,
-                )
-
-            max_severity = _max_severity(findings)
-            if max_severity in {FindingSeverity.CRITICAL, FindingSeverity.HIGH}:
-                if any("tool_surface_policy" in finding.tags for finding in findings):
-                    return SkillInstallDecision(
-                        allowed=False,
-                        status="review",
-                        reason="tool_surface_policy_violation",
-                        findings=findings,
-                        summary=summary,
-                        artifact_state=ArtifactState.REVIEW,
-                    )
-                return SkillInstallDecision(
-                    allowed=False,
-                    status="review",
-                    reason="high_risk_findings",
-                    findings=findings,
-                    summary=summary,
-                    artifact_state=ArtifactState.REVIEW,
-                )
-
-            existing = self._inventory.get(bundle.manifest.name)
-            if existing is not None and self._policy.require_review_on_update:
-                return SkillInstallDecision(
-                    allowed=False,
-                    status="review",
-                    reason="update_requires_review",
-                    findings=findings,
-                    summary=summary,
-                    artifact_state=ArtifactState.REVIEW,
-                )
-
-            retained_path = self._publish_install_bundle(
-                staged_path,
-                captured.files,
-                expected_digest=content_digest,
-            )
-            try:
-                self._activate_loaded_bundle(
-                    bundle,
-                    retained_path,
-                    content_digest=content_digest,
-                )
-            except AtomicWriteError as exc:
-                if not exc.publication_may_have_committed:
-                    self._discard_managed_install_bundle(retained_path)
-                raise
-            except Exception:
-                current = self._inventory.get(bundle.manifest.name)
-                if current is None or Path(current.path) != retained_path:
-                    self._discard_managed_install_bundle(retained_path)
-                raise
-            if existing is not None:
-                try:
-                    self._retire_superseded_managed_bundle(
-                        Path(existing.path),
-                        retained_path=retained_path,
-                    )
-                except OSError:
-                    logger.exception(
-                        "superseded managed skill bundle finalization failed for %s",
-                        existing.path,
-                    )
+        if signature.status == SignatureStatus.INVALID:
             return SkillInstallDecision(
-                allowed=True,
-                status="installed",
-                reason="ok",
+                allowed=False,
+                status="blocked",
+                reason=signature.reason,
                 findings=findings,
                 summary=summary,
-                artifact_state=ArtifactState.PUBLISHED,
+                artifact_state=ArtifactState.REVOKED,
             )
-        finally:
-            if staged_path.exists():
-                shutil.rmtree(staged_path, ignore_errors=True)
+        if (
+            self._policy.require_signature_for_auto_install
+            and signature.status is not SignatureStatus.TRUSTED
+        ):
+            return SkillInstallDecision(
+                allowed=False,
+                status="review",
+                reason="signature_required_policy",
+                findings=findings,
+                summary=summary,
+                artifact_state=ArtifactState.REVIEW,
+            )
+        if signature.require_confirmation and not approve_untrusted:
+            return SkillInstallDecision(
+                allowed=False,
+                status="review",
+                reason=signature.reason,
+                findings=findings,
+                summary=summary,
+                artifact_state=ArtifactState.REVIEW,
+            )
+
+        max_severity = _max_severity(findings)
+        if max_severity in {FindingSeverity.CRITICAL, FindingSeverity.HIGH}:
+            if any("tool_surface_policy" in finding.tags for finding in findings):
+                return SkillInstallDecision(
+                    allowed=False,
+                    status="review",
+                    reason="tool_surface_policy_violation",
+                    findings=findings,
+                    summary=summary,
+                    artifact_state=ArtifactState.REVIEW,
+                )
+            return SkillInstallDecision(
+                allowed=False,
+                status="review",
+                reason="high_risk_findings",
+                findings=findings,
+                summary=summary,
+                artifact_state=ArtifactState.REVIEW,
+            )
+
+        existing = self._inventory.get(bundle.manifest.name)
+        if existing is not None and self._policy.require_review_on_update:
+            return SkillInstallDecision(
+                allowed=False,
+                status="review",
+                reason="update_requires_review",
+                findings=findings,
+                summary=summary,
+                artifact_state=ArtifactState.REVIEW,
+            )
+
+        self.activate_bundle(skill_path)
+        return SkillInstallDecision(
+            allowed=True,
+            status="installed",
+            reason="ok",
+            findings=findings,
+            summary=summary,
+            artifact_state=ArtifactState.PUBLISHED,
+        )
 
     def profile(self, skill_path: Path) -> SkillProfiler:
         bundle = load_skill_bundle(
@@ -363,27 +236,20 @@ class SkillManager:
         return profiler
 
     def list_installed(self) -> list[InstalledSkill]:
-        self._require_state_available(transition="list")
-        return sorted(
-            (item.model_copy(deep=True) for item in self._inventory.values()),
-            key=lambda item: item.name,
-        )
+        return sorted(self._inventory.values(), key=lambda item: item.name)
 
     def revoke(self, *, skill_name: str, reason: str = "") -> InstalledSkill | None:
-        self._require_state_available(transition="revoke")
         installed = self._inventory.get(skill_name)
         if installed is None:
             return None
         if installed.state == ArtifactState.REVOKED:
-            return installed.model_copy(deep=True)
+            return installed
         updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
-        candidate = dict(self._inventory)
-        candidate[skill_name] = updated
-        self._persist_inventory_snapshot(candidate)
-        self._inventory = candidate
+        self._inventory[skill_name] = updated
+        self._persist_inventory()
         self._unregister_skill_tools(skill_name)
         _ = reason
-        return updated.model_copy(deep=True)
+        return updated
 
     def activate_bundle(
         self,
@@ -391,49 +257,11 @@ class SkillManager:
         *,
         state: ArtifactState = ArtifactState.PUBLISHED,
     ) -> InstalledSkill | None:
-        self._require_state_available(transition="activate")
-        bundle, content_digest = self._capture_loaded_bundle(skill_path)
-        return self._activate_loaded_bundle(
-            bundle,
+        bundle = load_skill_bundle(
             skill_path,
-            state=state,
-            content_digest=content_digest,
-        )
-
-    def activate_bundle_snapshot(
-        self,
-        skill_path: Path,
-        files_snapshot: Mapping[str, bytes],
-        *,
-        state: ArtifactState = ArtifactState.PUBLISHED,
-    ) -> InstalledSkill | None:
-        """Activate tool metadata parsed from the caller's captured bytes."""
-
-        self._require_state_available(transition="activate")
-        bundle = load_skill_bundle_snapshot(
-            skill_path,
-            files_snapshot,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
-        content_digest = self._content_digest(files_snapshot)
-        _current_bundle, current_digest = self._capture_loaded_bundle(skill_path)
-        if current_digest != content_digest:
-            raise ValueError("captured snapshot does not match the retained skill bundle")
-        return self._activate_loaded_bundle(
-            bundle,
-            skill_path,
-            state=state,
-            content_digest=content_digest,
-        )
-
-    def _activate_loaded_bundle(
-        self,
-        bundle: SkillBundle,
-        skill_path: Path,
-        *,
-        state: ArtifactState = ArtifactState.PUBLISHED,
-        content_digest: str,
-    ) -> InstalledSkill:
+        self._unregister_skill_tools(bundle.manifest.name)
         installed = InstalledSkill(
             name=bundle.manifest.name,
             version=bundle.manifest.version,
@@ -441,115 +269,17 @@ class SkillManager:
             manifest_hash=bundle.manifest.manifest_hash(),
             state=state,
             author=bundle.manifest.author,
-            content_digest=content_digest,
-            content_digest_legacy=False,
             tool_schema_hashes=_declared_tool_schema_hashes(bundle.manifest),
         )
-        candidate = dict(self._inventory)
-        candidate[bundle.manifest.name] = installed
-        self._persist_inventory_snapshot(candidate)
-        self._inventory = candidate
-        self._unregister_skill_tools(bundle.manifest.name)
+        self._inventory[bundle.manifest.name] = installed
+        self._persist_inventory()
         if state == ArtifactState.PUBLISHED:
             self._register_skill_tools(
                 bundle.manifest,
                 expected_hashes=installed.tool_schema_hashes,
                 registration_source="activate_bundle",
             )
-        return installed.model_copy(deep=True)
-
-    def _stage_install_bundle(self, skill_path: Path) -> Path:
-        bundles_root = self._storage_dir / "bundles"
-        ensure_owner_only_directory(bundles_root)
-        staging_path = bundles_root / f".install-{uuid.uuid4().hex}.tmp"
-        try:
-            copy_bounded_regular_tree(
-                skill_path,
-                staging_path,
-                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
-            )
-        except OSError:
-            shutil.rmtree(staging_path, ignore_errors=True)
-            raise
-        return staging_path
-
-    def _publish_install_bundle(
-        self,
-        staging_path: Path,
-        files_snapshot: Mapping[str, bytes],
-        *,
-        expected_digest: str,
-    ) -> Path:
-        retained_path = staging_path.parent / f"bundle-{uuid.uuid4().hex}"
-        try:
-            materialize_regular_tree_files(
-                files_snapshot,
-                retained_path,
-                max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-                max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
-            )
-            fsync_directory(retained_path.parent)
-            _bundle, retained_digest = self._capture_loaded_bundle(retained_path)
-            if retained_digest != expected_digest:
-                raise OSError("published skill snapshot digest mismatch")
-        except (OSError, TypeError, ValueError):
-            self._discard_managed_install_bundle(retained_path)
-            raise
-        return retained_path
-
-    def _content_digest(self, files_snapshot: Mapping[str, bytes]) -> str:
-        return digest_regular_tree_files(
-            files_snapshot,
-            max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-            max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
-        )
-
-    def _capture_loaded_bundle(self, skill_path: Path) -> tuple[SkillBundle, str]:
-        snapshot = capture_bounded_regular_tree(
-            skill_path,
-            max_entries=_ARTIFACT_STAGE_MAX_ENTRIES,
-            max_total_bytes=_ARTIFACT_STAGE_MAX_BYTES,
-        )
-        bundle = load_skill_bundle_snapshot(
-            skill_path,
-            snapshot.files,
-            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
-        )
-        return bundle, self._content_digest(snapshot.files)
-
-    def _retire_superseded_managed_bundle(
-        self,
-        previous_path: Path,
-        *,
-        retained_path: Path,
-    ) -> None:
-        if previous_path == retained_path or not self._is_managed_install_bundle(previous_path):
-            return
-        if any(Path(item.path) == previous_path for item in self._inventory.values()):
-            return
-        self._discard_managed_install_bundle(previous_path)
-
-    def _is_managed_install_bundle(self, path: Path) -> bool:
-        absolute = Path(os.path.abspath(os.fspath(path)))
-        bundles_root = Path(os.path.abspath(os.fspath(self._storage_dir / "bundles")))
-        bundle_id = absolute.name.removeprefix("bundle-")
-        if absolute.parent != bundles_root or not absolute.name.startswith("bundle-"):
-            return False
-        try:
-            return uuid.UUID(hex=bundle_id).hex == bundle_id
-        except ValueError:
-            return False
-
-    def _discard_managed_install_bundle(self, path: Path) -> None:
-        if not self._is_managed_install_bundle(path) or not path.exists():
-            return
-        remove_owner_controlled_directory_contents(
-            path,
-            allow_nested_directories=True,
-        )
-        path.rmdir()
-        fsync_directory(path.parent)
+        return installed
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
         return [str(name) for name in self._skill_tool_map.get(skill_name, [])]
@@ -565,7 +295,6 @@ class SkillManager:
         skill_name: str,
         request: SkillExecutionRequest,
     ) -> SkillSandboxDecision:
-        self._require_state_available(transition="authorize_runtime")
         installed = self._inventory.get(skill_name)
         if installed is None:
             return SkillSandboxDecision(allowed=False, reason="unknown_skill")
@@ -574,14 +303,10 @@ class SkillManager:
         path = Path(installed.path)
         if not path.exists():
             return SkillSandboxDecision(allowed=False, reason="skill_path_missing")
-        if installed.content_digest_legacy or not installed.content_digest:
-            return SkillSandboxDecision(allowed=False, reason="skill_content_unbound")
-        try:
-            bundle, content_digest = self._capture_loaded_bundle(path)
-        except (FileNotFoundError, OSError, TypeError, ValueError):
-            return SkillSandboxDecision(allowed=False, reason="skill_content_read_failed")
-        if content_digest != installed.content_digest:
-            return SkillSandboxDecision(allowed=False, reason="skill_content_drift")
+        bundle = load_skill_bundle(
+            path,
+            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+        )
         manifest_hash = bundle.manifest.manifest_hash()
         if manifest_hash != installed.manifest_hash:
             return SkillSandboxDecision(allowed=False, reason="skill_manifest_drift")
@@ -601,511 +326,65 @@ class SkillManager:
         findings.extend(self._capability.analyze(bundle))
         return findings
 
-    @property
-    def state_degraded(self) -> bool:
-        return (
-            self._persistence_degradation is not None
-            or self._external_degradation is not None
-            or self._state_load_result.status
-            in {
-                StateLoadStatus.CORRUPT,
-                StateLoadStatus.UNSUPPORTED_SCHEMA,
-            }
-        )
-
-    def degrade_from_external_authority(self, *, authority: str, reason: str) -> None:
-        """Withdraw dynamic tools when a coupled activation authority is uncertain."""
-
-        self._external_degradation = (authority, reason)
-        self._unregister_all_skill_tools()
-
-    def inventory_load_result(self) -> StateLoadResult:
-        return self._state_load_result
-
-    def reset_state(self) -> tuple[int, int, int]:
-        """Reset installed skills and all typed inventory authority together."""
-
-        entry_count = len(self._inventory)
-        registration_count = sum(len(items) for items in self._skill_tool_map.values())
-        pending_event_count = len(self._pending_registration_events)
-        self._unregister_all_skill_tools()
-        self._pending_registration_events.clear()
-        try:
-            remove_owner_controlled_directory_contents(
-                self._storage_dir,
-                allow_nested_directories=True,
-            )
-            self._inventory = {}
-            self._storage_root_invalid = False
-            self._inventory_domain_marker_status = "missing"
-            self._state_load_result = StateLoadResult(StateLoadStatus.MISSING)
-            self._persistence_degradation = None
-            self._external_degradation = None
-            ensure_owner_only_directory(self._storage_dir)
-            if not self._ensure_inventory_domain_marker():
-                degradation = self._persistence_degradation
-                if degradation is not None:
-                    raise degradation
-                raise RuntimeError("skill inventory reset marker publication failed")
-            self._persist_inventory_snapshot({})
-        except Exception as exc:
-            if isinstance(exc, AtomicWriteError):
-                self._persistence_degradation = exc
-            self._mark_reset_failed()
-            raise
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_SKILL_INVENTORY_VERSION,
-        )
-        return entry_count, registration_count, pending_event_count
-
-    def _mark_reset_failed(self) -> None:
-        self._inventory = {}
-        self._storage_root_invalid = True
-        self._inventory_domain_marker_status = "invalid"
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.CORRUPT,
-            reason="reset_failed",
-        )
-        self._external_degradation = ("skill_reset", "reset_failed")
-        self._pending_registration_events.clear()
-        self._unregister_all_skill_tools()
-
-    def state_status(self) -> dict[str, Any]:
-        load_result = self._state_load_result
-        problems: list[str] = []
-        if self._persistence_degradation is not None:
-            problems.append("skill_inventory_persistence_degraded")
-        elif self._external_degradation is not None:
-            problems.append("skill_inventory_external_authority_degraded")
-        elif load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            problems.append(f"skill_inventory_{load_result.status.value}")
-        external = self._external_degradation
-        remediation = ""
-        if external is not None:
-            remediation = (
-                f"Restore the coupled {external[0]} authority from a trusted backup or "
-                "explicitly reset that state domain after verification, then restart shisad."
-            )
-        elif self.state_degraded:
-            remediation = (
-                "Restore the skill inventory from a trusted backup, or remove it only after "
-                "verifying that no skills should remain active, then restart shisad."
-            )
-        persistence = self._persistence_degradation
-        return {
-            "status": "degraded" if self.state_degraded else "ok",
-            "problems": problems,
-            "path": str(self._inventory_path),
-            "load_status": load_result.status.value,
-            "reason": load_result.reason or (external[1] if external is not None else ""),
-            "schema_version": load_result.schema_version,
-            "legacy": load_result.legacy,
-            "fail_closed": self.state_degraded,
-            "stage": (
-                persistence.stage.value
-                if persistence is not None
-                else "external"
-                if external is not None
-                else ""
-            ),
-            "remediation": remediation,
-        }
-
-    def _require_state_available(self, *, transition: str) -> None:
-        external = self._external_degradation
-        if external is not None:
-            raise StatePersistenceDegradedError(
-                authority=external[0],
-                transition=transition,
-                stage="external",
-                reason=external[1],
-            )
-        persistence = self._persistence_degradation
-        if persistence is not None:
-            raise StatePersistenceDegradedError(
-                authority="skill_inventory",
-                transition=transition,
-                stage=persistence.stage.value,
-                reason=(
-                    "commit_uncertain"
-                    if persistence.publication_may_have_committed
-                    else "publication_failed"
-                ),
-            )
-        load_result = self._state_load_result
-        if load_result.status in {
-            StateLoadStatus.CORRUPT,
-            StateLoadStatus.UNSUPPORTED_SCHEMA,
-        }:
-            raise StatePersistenceDegradedError(
-                authority="skill_inventory",
-                transition=transition,
-                stage="load",
-                reason=load_result.reason or load_result.status.value,
-            )
-
     def _load_inventory(self) -> dict[str, InstalledSkill]:
-        try:
-            target_stat = self._inventory_path.lstat()
-        except FileNotFoundError:
-            new_or_legacy_empty_domain = not self._storage_root_existed_at_start or (
-                self._inventory_domain_marker_status == "missing"
-                and self._storage_root_was_empty_at_start
-            )
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.MISSING if new_or_legacy_empty_domain else StateLoadStatus.CORRUPT,
-                reason=("" if new_or_legacy_empty_domain else "inventory_missing_existing_root"),
-            )
+        if not self._inventory_path.exists():
             return {}
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="inventory_stat_failed",
-            )
-            return {}
-        if not stat.S_ISREG(target_stat.st_mode):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_target",
-            )
-            return {}
-        try:
-            raw_bytes = read_owned_regular_file(self._inventory_path, required_mode=0o600)
-        except OSError:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="inventory_read_failed",
-            )
-            return {}
-        if raw_bytes is None:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="inventory_read_failed",
-            )
-            return {}
-
-        legacy = False
-        document_result, raw_payload = decode_json_document(raw_bytes)
-        if document_result.status is not StateLoadStatus.OK:
-            self._state_load_result = document_result
-            return {}
-        if isinstance(raw_payload, list):
-            payload: Any = raw_payload
-            load_result = StateLoadResult(StateLoadStatus.OK, legacy=True)
-            legacy = True
-        else:
-            load_result, payload = decode_versioned_json_snapshot(
-                raw_bytes,
-                supported_version=_SKILL_INVENTORY_VERSION,
-            )
-            if load_result.status is not StateLoadStatus.OK:
-                self._state_load_result = load_result
-                return {}
+        payload = json.loads(self._inventory_path.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_payload",
-                schema_version=load_result.schema_version,
-                legacy=legacy,
-            )
             return {}
-
-        inventory: dict[str, InstalledSkill] = {}
-        missing_binding_map = False
-        invalid_binding_map = False
-        invalid_content_binding = False
-        for item in payload:
-            if not isinstance(item, dict):
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="invalid_inventory_entry",
-                    schema_version=load_result.schema_version,
-                    legacy=legacy,
-                )
-                return {}
-            candidate_item = dict(item)
-            if legacy:
-                candidate_item["tool_schema_hashes_legacy"] = True
-                candidate_item["content_digest_legacy"] = True
-            elif "content_digest" not in item:
-                candidate_item["content_digest"] = ""
-                candidate_item["content_digest_legacy"] = True
-            try:
-                entry = InstalledSkill.model_validate(candidate_item)
-            except (TypeError, ValueError, ValidationError):
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="invalid_inventory_entry",
-                    schema_version=load_result.schema_version,
-                    legacy=legacy,
-                )
-                return {}
-            if not all(
-                value.strip()
-                for value in (
-                    entry.name,
-                    entry.version,
-                    entry.path,
-                    entry.manifest_hash,
-                    entry.author,
-                )
-            ):
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="invalid_inventory_entry",
-                    schema_version=load_result.schema_version,
-                    legacy=legacy,
-                )
-                return {}
-            if entry.name in inventory:
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="duplicate_skill_name",
-                    schema_version=load_result.schema_version,
-                    legacy=legacy,
-                )
-                return {}
-            inventory[entry.name] = entry
-            if not legacy and "tool_schema_hashes" not in item:
-                missing_binding_map = True
-            if not entry.tool_schema_hashes_legacy and any(
-                not value.strip() for value in entry.tool_schema_hashes.values()
-            ):
-                invalid_binding_map = True
-            if not entry.content_digest_legacy and not _is_sha256_digest(entry.content_digest):
-                invalid_content_binding = True
-        if missing_binding_map:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="missing_tool_schema_bindings",
-                schema_version=load_result.schema_version,
-            )
-            return {}
-        if invalid_binding_map:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_tool_schema_bindings",
-                schema_version=load_result.schema_version,
-            )
-            return {}
-        if invalid_content_binding:
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_skill_content_binding",
-                schema_version=load_result.schema_version,
-            )
-            return {}
-        self._state_load_result = StateLoadResult(
-            load_result.status,
-            reason=load_result.reason,
-            schema_version=load_result.schema_version,
-            legacy=legacy
-            or any(
-                entry.tool_schema_hashes_legacy or entry.content_digest_legacy
-                for entry in inventory.values()
-            ),
-        )
-        return inventory
-
-    def _inspect_inventory_domain_marker(self) -> str:
-        try:
-            target_stat = self._inventory_domain_marker_path.lstat()
-        except FileNotFoundError:
-            return "missing"
-        except OSError:
-            return "invalid"
-        if not stat.S_ISREG(target_stat.st_mode):
-            return "invalid"
-        try:
-            marker = read_owned_regular_file(
-                self._inventory_domain_marker_path,
-                required_mode=0o600,
-            )
-        except OSError:
-            return "invalid"
-        if marker is None:
-            return "invalid"
-        return "valid" if marker == _SKILL_INVENTORY_DOMAIN_MARKER else "invalid"
-
-    def _ensure_inventory_domain_marker(self) -> bool:
-        if self._inventory_domain_marker_status == "valid":
-            return True
-        if self._inventory_domain_marker_status == "invalid":
-            self._state_load_result = StateLoadResult(
-                StateLoadStatus.CORRUPT,
-                reason="invalid_inventory_domain_marker",
-            )
-            return False
-        try:
-            atomic_write_bytes(
-                self._inventory_domain_marker_path,
-                _SKILL_INVENTORY_DOMAIN_MARKER,
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            self._persistence_degradation = exc
-            return False
-        self._inventory_domain_marker_status = "valid"
-        return True
-
-    def _persist_inventory_snapshot(self, inventory: dict[str, InstalledSkill]) -> None:
-        payload = [
-            entry.model_dump(mode="json")
-            for entry in sorted(inventory.values(), key=lambda item: item.name)
+        entries = [
+            InstalledSkill.model_validate(item) for item in payload if isinstance(item, dict)
         ]
-        encoded = encode_versioned_json_snapshot(
-            payload,
-            version=_SKILL_INVENTORY_VERSION,
-        )
-        try:
-            atomic_write_bytes(
-                self._inventory_path,
-                encoded,
-                fault_injector=self._state_fault_injector,
-            )
-        except AtomicWriteError as exc:
-            if exc.publication_may_have_committed:
-                self._persistence_degradation = exc
-                self._unregister_all_skill_tools()
-            raise
-        self._state_load_result = StateLoadResult(
-            StateLoadStatus.OK,
-            schema_version=_SKILL_INVENTORY_VERSION,
-            legacy=any(
-                entry.tool_schema_hashes_legacy or entry.content_digest_legacy
-                for entry in inventory.values()
-            ),
-        )
+        return {entry.name: entry for entry in entries}
+
+    def _persist_inventory(self) -> None:
+        payload = [entry.model_dump(mode="json") for entry in self.list_installed()]
+        self._inventory_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _installed_bundles(self) -> list[SkillBundle]:
         bundles: list[SkillBundle] = []
         for skill in self._inventory.values():
-            if skill.state != ArtifactState.PUBLISHED:
-                continue
             path = Path(skill.path)
-            if skill.content_digest_legacy or not skill.content_digest:
-                raise StatePersistenceDegradedError(
-                    authority="skill_inventory",
-                    transition="install",
-                    stage="cross_skill_validation",
-                    reason="skill_content_unbound",
-                )
             if not path.exists():
-                raise StatePersistenceDegradedError(
-                    authority="skill_inventory",
-                    transition="install",
-                    stage="cross_skill_validation",
-                    reason="skill_path_missing",
-                )
+                continue
             try:
-                bundle, content_digest = self._capture_loaded_bundle(path)
-            except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
-                raise StatePersistenceDegradedError(
-                    authority="skill_inventory",
-                    transition="install",
-                    stage="cross_skill_validation",
-                    reason="skill_content_read_failed",
-                ) from exc
-            if content_digest != skill.content_digest:
-                raise StatePersistenceDegradedError(
-                    authority="skill_inventory",
-                    transition="install",
-                    stage="cross_skill_validation",
-                    reason="skill_content_drift",
+                bundles.append(
+                    load_skill_bundle(
+                        path,
+                        allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+                    )
                 )
-            bundles.append(bundle)
+            except (FileNotFoundError, OSError, TypeError, ValueError):
+                continue
         return bundles
 
     def _register_inventory_tools(self) -> None:
-        if self.state_degraded:
+        if self._tool_registry is None:
             return
         inventory_migrated = False
-        candidate = dict(self._inventory)
-        registration_bundles: list[tuple[InstalledSkill, SkillBundle]] = []
         for installed in self._inventory.values():
             if installed.state != ArtifactState.PUBLISHED:
                 continue
             path = Path(installed.path)
             if not path.exists():
                 continue
-            if installed.content_digest_legacy or not installed.content_digest:
-                logger.warning(
-                    "Skipping content-unbound legacy skill until it is reviewed again: "
-                    "skill=%s version=%s",
-                    installed.name,
-                    installed.version,
-                )
-                continue
             try:
-                bundle, content_digest = self._capture_loaded_bundle(path)
+                bundle = load_skill_bundle(
+                    path,
+                    allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+                )
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
-            if content_digest != installed.content_digest:
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="skill_content_drift",
-                    schema_version=_SKILL_INVENTORY_VERSION,
-                )
-                self._unregister_all_skill_tools()
-                return
-            if not _tool_schema_bindings_complete(
-                bundle.manifest,
-                expected_hashes=installed.tool_schema_hashes,
-            ):
-                if installed.tool_schema_hashes_legacy:
-                    logger.warning(
-                        "Skipping unbound legacy skill tools until the skill is reviewed "
-                        "again: skill=%s version=%s",
-                        installed.name,
-                        installed.version,
-                    )
-                    continue
-                self._state_load_result = StateLoadResult(
-                    StateLoadStatus.CORRUPT,
-                    reason="invalid_tool_schema_bindings",
-                    schema_version=_SKILL_INVENTORY_VERSION,
-                )
-                self._unregister_all_skill_tools()
-                return
-            registration_bundles.append((installed, bundle))
-            migrated_hashes = _migrated_tool_schema_hashes(
-                bundle.manifest,
-                expected_hashes=installed.tool_schema_hashes,
-            )
-            if (
-                migrated_hashes != installed.tool_schema_hashes
-                or installed.tool_schema_hashes_legacy
-            ):
-                candidate[installed.name] = installed.model_copy(
-                    update={
-                        "tool_schema_hashes": migrated_hashes,
-                        "tool_schema_hashes_legacy": False,
-                    }
-                )
-                inventory_migrated = True
-        if inventory_migrated:
-            try:
-                self._persist_inventory_snapshot(candidate)
-            except AtomicWriteError as exc:
-                if exc.publication_may_have_committed:
-                    return
-                logger.warning(
-                    "Could not durably migrate legacy skill tool metadata; using the "
-                    "compatible durable metadata for this process",
-                )
-            else:
-                self._inventory = candidate
-        for original, bundle in registration_bundles:
-            installed = self._inventory.get(original.name, original)
+            expected_hashes = getattr(installed, "tool_schema_hashes", {})
+            previous_hashes = dict(expected_hashes)
             self._register_skill_tools(
                 bundle.manifest,
-                expected_hashes=installed.tool_schema_hashes,
+                expected_hashes=expected_hashes,
                 registration_source="inventory_reload",
             )
+            inventory_migrated = inventory_migrated or expected_hashes != previous_hashes
+        if inventory_migrated:
+            self._persist_inventory()
 
     def _register_skill_tools(
         self,
@@ -1133,22 +412,15 @@ class SkillManager:
             )
             expected_hash = str((expected_hashes or {}).get(declared_tool.name, "")).strip()
             actual_hash = tool_def.schema_hash()
-            if registration_source == "inventory_reload" and not expected_hash:
-                self._record_registration_drop(
-                    manifest=manifest,
-                    tool_name=tool_name,
-                    registration_source=registration_source,
-                    expected_hash=expected_hash,
-                    actual_hash=actual_hash,
-                )
-                continue
             if expected_hash and expected_hash != actual_hash:
                 legacy_hash = tool_def.legacy_schema_hash_without_retry_metadata()
                 if (
                     registration_source == "inventory_reload"
                     and tool_def.retry_class is ToolRetryClass.UNKNOWN
                     and expected_hash == legacy_hash
+                    and expected_hashes is not None
                 ):
+                    expected_hashes[declared_tool.name] = actual_hash
                     expected_hash = actual_hash
                 else:
                     self._record_registration_drop(
@@ -1176,10 +448,6 @@ class SkillManager:
         for tool_name in self._skill_tool_map.get(skill_name, []):
             self._tool_registry.unregister(tool_name)
         self._skill_tool_map.pop(skill_name, None)
-
-    def _unregister_all_skill_tools(self) -> None:
-        for skill_name in list(self._skill_tool_map):
-            self._unregister_skill_tools(skill_name)
 
     def _record_registration_drop(
         self,
@@ -1211,16 +479,6 @@ class SkillManager:
             event.expected_hash_prefix,
             event.actual_hash_prefix,
         )
-
-
-def _directory_is_empty(path: Path) -> bool:
-    try:
-        next(path.iterdir())
-    except StopIteration:
-        return True
-    except OSError:
-        return False
-    return False
 
 
 def _risk_score(findings: list[Finding]) -> float:
@@ -1282,52 +540,5 @@ def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
     return hashes
 
 
-def _migrated_tool_schema_hashes(
-    manifest: Any,
-    *,
-    expected_hashes: dict[str, str],
-) -> dict[str, str]:
-    """Upgrade only the bounded pre-retry-metadata schema representation."""
-
-    migrated = dict(expected_hashes)
-    required_caps = _skill_tool_capabilities(manifest)
-    for declared_tool in getattr(manifest, "tools", []):
-        expected_hash = str(expected_hashes.get(declared_tool.name, "")).strip()
-        if not expected_hash:
-            continue
-        tool_def = ToolDefinition(
-            name=ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
-            description=declared_tool.description,
-            parameters=list(declared_tool.parameters),
-            capabilities_required=sorted(required_caps, key=str),
-            destinations=list(declared_tool.destinations),
-            require_confirmation=bool(declared_tool.require_confirmation),
-            registration_source="skill",
-            registration_source_id=str(manifest.name),
-            upstream_tool_name=str(declared_tool.name),
-        )
-        if (
-            tool_def.retry_class is ToolRetryClass.UNKNOWN
-            and expected_hash == tool_def.legacy_schema_hash_without_retry_metadata()
-        ):
-            migrated[declared_tool.name] = tool_def.schema_hash()
-    return migrated
-
-
-def _tool_schema_bindings_complete(
-    manifest: Any,
-    *,
-    expected_hashes: dict[str, str],
-) -> bool:
-    declared_names = {str(declared_tool.name) for declared_tool in getattr(manifest, "tools", [])}
-    if set(expected_hashes) != declared_names:
-        return False
-    return all(str(value).strip() for value in expected_hashes.values())
-
-
 def _hash_prefix(value: str) -> str:
     return value[:12]
-
-
-def _is_sha256_digest(value: str) -> bool:
-    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

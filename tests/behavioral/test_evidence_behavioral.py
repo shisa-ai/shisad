@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
@@ -13,7 +14,6 @@ import pytest
 
 from shisad.assistant.web import WebToolkit
 from shisad.core.api.transport import ControlClient
-from shisad.core.atomic_state import StateLoadStatus, decode_versioned_json_snapshot
 from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
@@ -498,9 +498,7 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow_with_encrypted_arti
             assert ref_id
 
             index_path = config.data_dir / "sessions" / "evidence" / "refs_index.json"
-            load_result, index = decode_versioned_json_snapshot(index_path.read_bytes())
-            assert load_result.status is StateLoadStatus.OK
-            assert isinstance(index, dict)
+            index = json.loads(index_path.read_text(encoding="utf-8"))
             content_hash = str(index[sid][ref_id]["content_hash"])
             blob_path = config.data_dir / "sessions" / "evidence" / "blobs" / f"{content_hash}.txt"
             assert _UNIQUE_MARKER.encode("utf-8") not in blob_path.read_bytes()

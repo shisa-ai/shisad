@@ -3,81 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import logging
-import os
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-logger = logging.getLogger(__name__)
-
-
-class ReplayEventVariant(StrEnum):
-    """Typed provider event families with independent replay authority."""
-
-    ORDINARY_MESSAGE = "ordinary_message"
-    DISCORD_INTERACTION = "discord_interaction"
-    DIRECT_INGRESS = "direct_ingress"
-    COMPATIBILITY = "compatibility"
-
-
-class ReplayIdentity(BaseModel):
-    """Immutable provider-scoped identity used for durable ingress admission."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    provider: str
-    account_id: str
-    tenant_id: str
-    delivery_id: str
-    event_variant: ReplayEventVariant
-    message_id: str
-
-    @field_validator("provider", "account_id", "tenant_id", "delivery_id", "message_id")
-    @classmethod
-    def _require_nonempty_coordinate(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("replay identity coordinates cannot be empty")
-        return normalized
-
-
-def provider_account_fingerprint(provider: str, account_material: str) -> str:
-    """Return a stable non-secret identifier for a configured provider account."""
-
-    normalized_provider = provider.strip().lower()
-    digest = hashlib.sha256(
-        f"shisad-replay-account-v1\0{normalized_provider}\0{account_material}".encode()
-    ).hexdigest()
-    return f"sha256:{digest}"
-
-
-def direct_replay_identity(
-    *,
-    message_id: str,
-    rpc_peer: dict[str, int | None] | None,
-) -> ReplayIdentity:
-    """Derive direct-ingress scope only from transport-authenticated peer state."""
-
-    peer = rpc_peer or {}
-    raw_uid = peer.get("uid")
-    raw_gid = peer.get("gid")
-    uid = raw_uid if isinstance(raw_uid, int) else os.getuid()
-    gid = raw_gid if isinstance(raw_gid, int) else os.getgid()
-    return ReplayIdentity(
-        provider="direct",
-        account_id=f"uid:{uid}",
-        tenant_id=f"gid:{gid}",
-        delivery_id="channel.ingest",
-        event_variant=ReplayEventVariant.DIRECT_INGRESS,
-        message_id=message_id,
-    )
+from pydantic import BaseModel, Field
 
 
 class DeliveryTarget(BaseModel):
@@ -129,8 +61,6 @@ class Channel(Protocol):
 
     def health_status(self) -> dict[str, Any]: ...
 
-    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity: ...
-
 
 class InMemoryChannel:
     """In-memory channel used for tests and local fallback."""
@@ -148,7 +78,6 @@ class InMemoryChannel:
         self._outgoing: asyncio.Queue[DeliveryEnvelope] = asyncio.Queue(maxsize=max_buffer)
         self._offline_outgoing: deque[DeliveryEnvelope] = deque(maxlen=max_buffer)
         self._connected = False
-        self._consumer_error_type = ""
         self._last_heartbeat: datetime | None = None
         self._reconnect_backoff_base = reconnect_backoff_base
         self._reconnect_backoff_max = reconnect_backoff_max
@@ -158,7 +87,6 @@ class InMemoryChannel:
         return self._connected
 
     async def connect(self) -> None:
-        self._consumer_error_type = ""
         self._connected = True
         await self.heartbeat()
         while self._offline_outgoing:
@@ -204,57 +132,11 @@ class InMemoryChannel:
             heartbeat_age = (datetime.now(UTC) - self._last_heartbeat).total_seconds()
         return {
             "connected": self._connected,
-            "consumer_status": (
-                "failed"
-                if self._consumer_error_type
-                else ("running" if self._connected else "stopped")
-            ),
-            "consumer_error_type": self._consumer_error_type,
             "last_heartbeat": self._last_heartbeat.isoformat() if self._last_heartbeat else None,
             "heartbeat_age_seconds": heartbeat_age,
             "pending_outgoing": self.pending_outgoing(),
             "pending_incoming": self._incoming.qsize(),
         }
-
-    def _record_consumer_failure(self, error: BaseException) -> None:
-        """Make a terminal provider-consumer failure visible without leaking details."""
-
-        self._consumer_error_type = type(error).__name__
-        self._connected = False
-        logger.error(
-            "Channel consumer stopped with an error: channel=%s error_type=%s",
-            self._name,
-            self._consumer_error_type,
-        )
-
-    def _observe_consumer_task(self, task: asyncio.Task[Any]) -> None:
-        """Observe terminal task exceptions so provider conflicts cannot be false-green."""
-
-        def _completed(completed: asyncio.Task[Any]) -> None:
-            if completed.cancelled():
-                return
-            try:
-                error = completed.exception()
-            except asyncio.CancelledError:
-                return
-            if error is not None:
-                self._record_consumer_failure(error)
-
-        task.add_done_callback(_completed)
-
-    def replay_identity(self, message: ChannelMessage) -> ReplayIdentity:
-        tenant_id = message.workspace_hint.strip() or self._name
-        delivery_id = (
-            message.reply_target.strip() or message.thread_id.strip() or tenant_id
-        )
-        return ReplayIdentity(
-            provider=self._name,
-            account_id=provider_account_fingerprint(self._name, "in-memory"),
-            tenant_id=tenant_id,
-            delivery_id=delivery_id,
-            event_variant=ReplayEventVariant.ORDINARY_MESSAGE,
-            message_id=message.message_id,
-        )
 
     async def run_with_reconnect(
         self,

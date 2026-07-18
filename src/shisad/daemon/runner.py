@@ -25,7 +25,6 @@ from shisad.core.api.schema import (
     BrowserScreenshotParams,
     ChannelIngestParams,
     ChannelPairingProposalParams,
-    ChannelReplayRebaselineParams,
     ConfirmationMetricsParams,
     DashboardMarkFalsePositiveParams,
     DashboardQueryParams,
@@ -119,7 +118,6 @@ from shisad.core.api.schema import (
     WebFetchParams,
     WebSearchParams,
 )
-from shisad.core.authority import DaemonAuthorityClaim
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.interfaces import TypedHandler
 from shisad.core.log import setup_logging
@@ -437,12 +435,6 @@ def _method_specs(
             True,
             ChannelPairingProposalParams,
         ),
-        (
-            "channel.replay_rebaseline",
-            handlers.handle_channel_replay_rebaseline,
-            True,
-            ChannelReplayRebaselineParams,
-        ),
         ("tool.execute", handlers.handle_tool_execute, True, ToolExecuteParams),
         ("browser.paste", handlers.handle_browser_paste, True, BrowserPasteParams),
         ("browser.screenshot", handlers.handle_browser_screenshot, True, BrowserScreenshotParams),
@@ -527,130 +519,77 @@ async def _reminder_delivery_pump(
             continue
 
 
-async def _shutdown_daemon_runtime(
-    *,
-    services: DaemonServices,
-    channel_pump_tasks: list[asyncio.Task[None]],
-    reminder_pump_task: asyncio.Task[None] | None,
-) -> None:
-    """Stop pumps and claimed services without exposing a partial cleanup boundary."""
-
-    for task in channel_pump_tasks:
-        task.cancel()
-    if reminder_pump_task is not None:
-        reminder_pump_task.cancel()
-    for task in channel_pump_tasks:
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    if reminder_pump_task is not None:
-        with contextlib.suppress(asyncio.CancelledError):
-            await reminder_pump_task
-    await services.shutdown()
-    logger.info("shisad daemon stopped")
-
-
-async def _shutdown_daemon_runtime_terminal(
-    *,
-    services: DaemonServices,
-    channel_pump_tasks: list[asyncio.Task[None]],
-    reminder_pump_task: asyncio.Task[None] | None,
-) -> None:
-    """Finish task-affine daemon cleanup before propagating repeated cancellation."""
-
-    cancellation_requested = False
-    while True:
-        try:
-            await _shutdown_daemon_runtime(
-                services=services,
-                channel_pump_tasks=channel_pump_tasks,
-                reminder_pump_task=reminder_pump_task,
-            )
-            break
-        except asyncio.CancelledError:
-            cancellation_requested = True
-    if cancellation_requested:
-        raise asyncio.CancelledError
-
-
-async def run_daemon(
-    config: DaemonConfig,
-    on_started: Callable[[], None] | None = None,
-    authority_claim: DaemonAuthorityClaim | None = None,
-) -> None:
+async def run_daemon(config: DaemonConfig, on_started: Callable[[], None] | None = None) -> None:
     """Run the shisad daemon."""
-    try:
-        setup_logging(level=config.log_level)
-    except BaseException:
-        if authority_claim is not None:
-            authority_claim.release()
-        raise
-    build_kwargs: dict[str, DaemonAuthorityClaim] = {}
-    if authority_claim is not None:
-        build_kwargs["authority_claim"] = authority_claim
-    services = await DaemonServices.build(config, **build_kwargs)
+    setup_logging(level=config.log_level)
+    services = await DaemonServices.build(config)
+    handlers = DaemonControlHandlers(services=services)
+    await services.approval_web.start()
+
+    for method_name, method_handler, admin_only, params_model in _method_specs(
+        handlers,
+        test_mode=config.test_mode,
+    ):
+        services.server.register_method(
+            method_name,
+            _wrap_tracked_handler(
+                services=services,
+                method_name=method_name,
+                method_handler=cast(TypedHandler, method_handler),
+            ),
+            admin_only=admin_only,
+            params_model=params_model,
+        )
+
+    await services.server.start()
+    logger.info("shisad daemon started")
+    if on_started is not None:
+        try:
+            on_started()
+        except Exception:
+            logger.exception("daemon started callback failed")
+
+    # Effective config summary — so operators can verify settings from logs
+    _search_status = "enabled" if config.web_search_enabled else "DISABLED"
+    _fetch_status = "enabled" if config.web_fetch_enabled else "DISABLED"
+    _search_backend = config.web_search_backend_url or "(not configured)"
+    _n_domains = len(config.web_allowed_domains)
+    logger.info(
+        "Config: web.search=%s backend=%s web.fetch=%s allowed_domains=%d fs_roots=%s",
+        _search_status,
+        _search_backend,
+        _fetch_status,
+        _n_domains,
+        config.assistant_fs_roots,
+    )
+    _warn_on_startup_config_gaps(config)
     channel_pump_tasks: list[asyncio.Task[None]] = []
-    reminder_pump_task: asyncio.Task[None] | None = None
-    try:
-        handlers = DaemonControlHandlers(services=services)
-        await services.approval_web.start()
-
-        for method_name, method_handler, admin_only, params_model in _method_specs(
-            handlers,
-            test_mode=config.test_mode,
-        ):
-            services.server.register_method(
-                method_name,
-                _wrap_tracked_handler(
-                    services=services,
-                    method_name=method_name,
-                    method_handler=cast(TypedHandler, method_handler),
-                ),
-                admin_only=admin_only,
-                params_model=params_model,
-            )
-
-        await services.server.start()
-        logger.info("shisad daemon started")
-        if on_started is not None:
-            try:
-                on_started()
-            except Exception:
-                logger.exception("daemon started callback failed")
-
-        # Effective config summary — so operators can verify settings from logs
-        _search_status = "enabled" if config.web_search_enabled else "DISABLED"
-        _fetch_status = "enabled" if config.web_fetch_enabled else "DISABLED"
-        _search_backend = config.web_search_backend_url or "(not configured)"
-        _n_domains = len(config.web_allowed_domains)
-        logger.info(
-            "Config: web.search=%s backend=%s web.fetch=%s allowed_domains=%d fs_roots=%s",
-            _search_status,
-            _search_backend,
-            _fetch_status,
-            _n_domains,
-            config.assistant_fs_roots,
-        )
-        _warn_on_startup_config_gaps(config)
-        reminder_pump_task = asyncio.create_task(
-            _reminder_delivery_pump(services=services, handlers=handlers)
-        )
-        for channel_name, channel in services.channels.items():
-            channel_pump_tasks.append(
-                asyncio.create_task(
-                    channel_receive_pump(
-                        channel_name=channel_name,
-                        channel=channel,
-                        shutdown_event=services.shutdown_event,
-                        handlers=handlers,
-                        state_store=services.channel_state_store,
-                    )
+    reminder_pump_task = asyncio.create_task(
+        _reminder_delivery_pump(services=services, handlers=handlers)
+    )
+    for channel_name, channel in services.channels.items():
+        channel_pump_tasks.append(
+            asyncio.create_task(
+                channel_receive_pump(
+                    channel_name=channel_name,
+                    channel=channel,
+                    shutdown_event=services.shutdown_event,
+                    handlers=handlers,
+                    state_store=services.channel_state_store,
                 )
             )
+        )
 
+    try:
         await services.shutdown_event.wait()
     finally:
-        await _shutdown_daemon_runtime_terminal(
-            services=services,
-            channel_pump_tasks=channel_pump_tasks,
-            reminder_pump_task=reminder_pump_task,
-        )
+        for task in channel_pump_tasks:
+            task.cancel()
+        reminder_pump_task.cancel()
+        for task in channel_pump_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        with contextlib.suppress(asyncio.CancelledError):
+            await reminder_pump_task
+        await services.shutdown()
+        logger.info("shisad daemon stopped")

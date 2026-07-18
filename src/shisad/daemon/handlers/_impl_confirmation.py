@@ -1051,7 +1051,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
     def _pending_state_degradation_fields(self) -> dict[str, str]:
         degradation = getattr(self, "_pending_state_degradation", None)
-        if not isinstance(degradation, Mapping) or not degradation:
+        if not isinstance(degradation, Mapping):
             return {}
         return {
             "persistence_status": "degraded",
@@ -3077,8 +3077,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 transcript_appended = True
                 if not target_ref_id or store is None:
                     raise ValueError("missing evidence ref for endorsement")
-                endorsed = await asyncio.to_thread(
-                    store.endorse,
+                endorsed = store.endorse(
                     pending.session_id,
                     target_ref_id,
                     endorsement_state=ArtifactEndorsementState.USER_ENDORSED,

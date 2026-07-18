@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
-import struct
 from pathlib import Path
-from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from shisad.core.attachments import AttachmentIngestor
 from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
-from shisad.core.evidence import ArtifactLedger
 from shisad.core.session import Session, SessionManager
 from shisad.core.types import (
     Capability,
@@ -44,7 +39,6 @@ from shisad.memory.schema import MemoryEntry, MemorySource
 from shisad.memory.surfaces.recall import build_recall_pack
 from shisad.scheduler.schema import Schedule, ScheduledTask
 from shisad.security.control_plane.schema import Origin
-from shisad.security.firewall import ContentFirewall
 
 
 class _EventCollector:
@@ -273,67 +267,6 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
         "reminder.create",
         "reminder.list",
     }.issubset(set(registry))
-
-
-@pytest.mark.asyncio
-async def test_f3_attachment_tool_route_keeps_event_loop_live_behind_ledger_writer(
-    tmp_path: Path,
-) -> None:
-    harness = _StructuredBranchHarness(
-        web_payload={"ok": True, "results": []},
-        git_status_payload={"ok": True},
-    )
-    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
-    harness._attachment_ingestor = AttachmentIngestor(
-        roots=[tmp_path],
-        evidence_store=ledger,
-        firewall=ContentFirewall(),
-    )
-    image = tmp_path / "heartbeat.png"
-    ihdr = b"IHDR" + struct.pack(">IIBBBBB", 2, 3, 8, 2, 0, 0, 0)
-    image.write_bytes(
-        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + b"\x00\x00\x00\x00"
-    )
-    lock_held = Event()
-    release_writer = Event()
-    holder_timed_out = Event()
-
-    def _hold_writer() -> None:
-        with ledger._lock:
-            lock_held.set()
-            if not release_writer.wait(timeout=3.0):
-                holder_timed_out.set()
-
-    holder = Thread(target=_hold_writer)
-    holder.start()
-    assert await asyncio.to_thread(lock_held.wait, 1.0)
-    heartbeat_ticks = 0
-
-    async def _heartbeat() -> None:
-        nonlocal heartbeat_ticks
-        for _ in range(5):
-            heartbeat_ticks += 1
-            await asyncio.sleep(0)
-        release_writer.set()
-
-    heartbeat = asyncio.create_task(_heartbeat())
-    result = await HandlerImplementation._execute_approved_action(
-        harness,  # type: ignore[arg-type]
-        sid=harness.session_id,
-        user_id=UserId("user-1"),
-        tool_name=ToolName("attachment.ingest"),
-        arguments={"path": str(image), "mime_type": "image/png"},
-        capabilities=set(),
-        approval_actor="control_api",
-    )
-    await heartbeat
-    await asyncio.to_thread(holder.join, 1.0)
-
-    assert holder_timed_out.is_set() is False
-    assert heartbeat_ticks == 5
-    assert result.success is True
-    assert result.tool_output is not None
-    assert json.loads(result.tool_output.content)["ok"] is True
 
 
 @pytest.mark.asyncio
