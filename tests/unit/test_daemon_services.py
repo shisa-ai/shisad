@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import sqlite3
 import subprocess
@@ -173,6 +174,7 @@ async def test_daemon_services_builds_with_local_provider(
             capabilities={Capability.MEMORY_WRITE},
         )
         status = await impl.do_daemon_status({})
+        authority_doctor = await impl.do_doctor_check({"component": "authority"})
         doctor = await impl.do_doctor_check({"component": "approvals"})
         skill_doctor = await impl.do_doctor_check({"component": "skills"})
         selfmod_doctor = await impl.do_doctor_check({"component": "selfmod"})
@@ -185,6 +187,26 @@ async def test_daemon_services_builds_with_local_provider(
         assert services.matrix_channel is None
         assert services.server is not None
         assert services.internal_ingress_marker is not None
+        assert status["authority"] == {
+            "status": "ok",
+            "problems": [],
+            "claim_reference_held": True,
+            "lock_state": "held",
+            "record_owner": "current_user",
+            "record_mode": "0600",
+            "expected_record_mode": "0600",
+            "permissions_ok": True,
+            "record_identity": "matched",
+            "namespace_state": "bound",
+            "candidate_count": len(services.authority_claim.candidates),
+            "candidate_roles": sorted(
+                candidate.role for candidate in services.authority_claim.candidates
+            ),
+            "paths_redacted": True,
+            "remediation": "",
+        }
+        assert authority_doctor["status"] == "ok"
+        assert authority_doctor["checks"]["authority"] == status["authority"]
         assert status["approvals"]["status"] == "ok"
         assert status["approvals"]["load_status"] == "missing"
         assert status["skills"]["status"] == "ok"
@@ -226,6 +248,53 @@ async def test_daemon_services_builds_with_local_provider(
         assert control_plane_doctor["checks"]["control_plane"]["status"] == "ok"
         assert pending.confirmation_id in impl._pending_actions
     finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("degradation", ["record_permissions", "lock_not_held"])
+async def test_f3_authority_diagnostics_are_redacted_and_report_degradation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    degradation: str,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    claim = services.authority_claim
+    claim_fd = claim._fd
+    assert claim_fd is not None
+    if degradation == "record_permissions":
+        claim._record_path.chmod(0o644)
+    else:
+        fcntl.flock(claim_fd, fcntl.LOCK_UN)
+    try:
+        impl = HandlerImplementation(services=services)
+
+        status = await impl.do_daemon_status({})
+        doctor = await impl.do_doctor_check({"component": "authority"})
+
+        authority_status = status["authority"]
+        assert authority_status["status"] == "degraded"
+        assert authority_status["paths_redacted"] is True
+        assert str(tmp_path) not in json.dumps(authority_status, sort_keys=True)
+        assert str(claim_fd) not in json.dumps(authority_status, sort_keys=True)
+        assert doctor["status"] == "degraded"
+        assert doctor["checks"]["authority"] == authority_status
+        if degradation == "record_permissions":
+            assert authority_status["record_mode"] == "0644"
+            assert authority_status["permissions_ok"] is False
+            assert "record_permissions_invalid" in authority_status["problems"]
+        else:
+            assert authority_status["lock_state"] == "not_held"
+            assert "lock_not_held" in authority_status["problems"]
+    finally:
+        claim._record_path.chmod(0o600)
+        fcntl.flock(claim_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         await services.shutdown()
 
 
@@ -2125,9 +2194,7 @@ async def test_f3_pending_snapshot_rejects_canonical_identity_collisions(
             {"confirmation_id": "direct-b", "identity": {"confirmation_id": "shared"}},
         ]
     else:
-        services.scheduler._pending_confirmations["task-shadow"] = [
-            {"confirmation_id": "shared"}
-        ]
+        services.scheduler._pending_confirmations["task-shadow"] = [{"confirmation_id": "shared"}]
         invalid_payload = [
             {"confirmation_id": "direct-a", "identity": {"confirmation_id": "shared"}},
             {"confirmation_id": "shared", "identity": {"confirmation_id": "nested-b"}},
@@ -2202,9 +2269,7 @@ async def test_f3_pending_snapshot_rejects_blank_nested_confirmation_identity(
         test_mode=True,
     )
     services = await DaemonServices.build(config)
-    invalid_payload = [
-        {"confirmation_id": "direct", "identity": {"confirmation_id": " "}}
-    ]
+    invalid_payload = [{"confirmation_id": "direct", "identity": {"confirmation_id": " "}}]
     pending_path = config.data_dir / "pending_actions.json"
     retained_bytes = (
         encode_versioned_json_snapshot(invalid_payload, version=1)

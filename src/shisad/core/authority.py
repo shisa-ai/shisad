@@ -154,6 +154,117 @@ class DaemonAuthorityClaim:
     def released(self) -> bool:
         return self._fd is None
 
+    def diagnostic_status(self) -> dict[str, Any]:
+        """Return redacted health for the process-lifetime authority claim."""
+
+        problems: list[str] = []
+        fd = self._fd
+        claim_reference_held = fd is not None
+        record_owner = "unavailable"
+        record_mode = ""
+        permissions_ok = False
+        record_identity = "unavailable"
+        lock_state = "unavailable"
+        namespace_state = "unavailable"
+        record_stat: os.stat_result | None = None
+        path_stat: os.stat_result | None = None
+
+        if fd is None:
+            problems.append("claim_reference_released")
+        else:
+            try:
+                record_stat = os.fstat(fd)
+            except OSError:
+                problems.append("record_descriptor_unavailable")
+            try:
+                path_stat = self._record_path.lstat()
+            except OSError:
+                problems.append("record_path_unavailable")
+            if record_stat is not None:
+                record_owner = (
+                    "current_user" if record_stat.st_uid == os.geteuid() else "unexpected_owner"
+                )
+                record_mode = f"{stat.S_IMODE(record_stat.st_mode):04o}"
+                permissions_ok = record_owner == "current_user" and record_mode == "0600"
+                if not permissions_ok:
+                    problems.append("record_permissions_invalid")
+            if record_stat is not None and path_stat is not None:
+                if (record_stat.st_dev, record_stat.st_ino) == (
+                    path_stat.st_dev,
+                    path_stat.st_ino,
+                ):
+                    record_identity = "matched"
+                else:
+                    record_identity = "mismatched"
+                    problems.append("record_identity_mismatched")
+
+            if record_identity == "matched":
+                probe_fd = -1
+                try:
+                    probe_fd = os.open(
+                        self._record_path,
+                        os.O_RDONLY
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_NONBLOCK", 0),
+                    )
+                    try:
+                        fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError as exc:
+                        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                            lock_state = "held"
+                        else:
+                            problems.append("lock_probe_failed")
+                    else:
+                        lock_state = "not_held"
+                        problems.append("lock_not_held")
+                        fcntl.flock(probe_fd, fcntl.LOCK_UN)
+                except OSError:
+                    problems.append("lock_probe_unavailable")
+                finally:
+                    if probe_fd >= 0:
+                        os.close(probe_fd)
+
+            namespace_socket = self._namespace_socket
+            if namespace_socket is None:
+                problems.append("namespace_reference_unavailable")
+            else:
+                try:
+                    _verify_bound_namespace_socket(
+                        namespace_socket.fileno(),
+                        root=self._registry_root,
+                        record_path=self._record_path,
+                        error_type=AuthorityClaimError,
+                    )
+                except (OSError, AuthorityClaimError):
+                    namespace_state = "invalid"
+                    problems.append("namespace_binding_invalid")
+                else:
+                    namespace_state = "bound"
+
+        status = "degraded" if problems else "ok"
+        return {
+            "status": status,
+            "problems": problems,
+            "claim_reference_held": claim_reference_held,
+            "lock_state": lock_state,
+            "record_owner": record_owner,
+            "record_mode": record_mode,
+            "expected_record_mode": "0600",
+            "permissions_ok": permissions_ok,
+            "record_identity": record_identity,
+            "namespace_state": namespace_state,
+            "candidate_count": len(self._candidates),
+            "candidate_roles": sorted(candidate.role for candidate in self._candidates),
+            "paths_redacted": True,
+            "remediation": (
+                "Restart shisad after restoring owner-only authority registry permissions; "
+                "if degradation persists, inspect the daemon authority admission logs."
+                if problems
+                else ""
+            ),
+        }
+
     def verify(self, candidates: tuple[DaemonAuthorityCandidate, ...]) -> None:
         """Prove this live record owns exactly the supplied candidate set."""
 

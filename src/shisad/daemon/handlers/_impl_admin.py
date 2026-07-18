@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "dependencies",
     "storage",
+    "authority",
     "scheduler",
     "actions",
     "approvals",
@@ -1568,6 +1569,7 @@ class AdminImplMixin(HandlerMixinBase):
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
             "audit_entries": self._audit_log.entry_count,
+            "authority": self._services.authority_claim.diagnostic_status(),
             "policy_hash": (
                 self._policy_loader.file_hash[:12] if self._policy_loader.file_hash else "default"
             ),
@@ -1890,6 +1892,7 @@ class AdminImplMixin(HandlerMixinBase):
         component_factories = {
             "dependencies": self._doctor_dependencies_status,
             "storage": self._doctor_storage_status,
+            "authority": self._services.authority_claim.diagnostic_status,
             "scheduler": self._scheduler.state_status,
             "actions": self._pending_action_state_status,
             "approvals": self._doctor_approval_status,
@@ -2198,22 +2201,19 @@ class AdminImplMixin(HandlerMixinBase):
             if (
                 str(getattr(pending, "user_id", "")).strip() != normalized_principal_id
                 or normalized_principal_id not in allowed_channel_principals
-                or str(getattr(pending, "workspace_id", "")).strip()
-                != normalized_workspace_id
+                or str(getattr(pending, "workspace_id", "")).strip() != normalized_workspace_id
             ):
                 continue
             pending_delivery_target = getattr(pending, "delivery_target", None)
             if isinstance(pending_delivery_target, Mapping):
                 try:
-                    pending_delivery_target = DeliveryTarget.model_validate(
-                        pending_delivery_target
-                    )
+                    pending_delivery_target = DeliveryTarget.model_validate(pending_delivery_target)
                 except (TypeError, ValueError):
                     pending_delivery_target = None
-            if (
-                not isinstance(pending_delivery_target, DeliveryTarget)
-                or pending_delivery_target.model_dump(mode="json")
-                != delivery_target.model_dump(mode="json")
+            if not isinstance(
+                pending_delivery_target, DeliveryTarget
+            ) or pending_delivery_target.model_dump(mode="json") != delivery_target.model_dump(
+                mode="json"
             ):
                 continue
             decision_nonce = str(getattr(pending, "decision_nonce", "")).strip()

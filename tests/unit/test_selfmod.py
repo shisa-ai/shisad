@@ -1253,6 +1253,94 @@ def test_f3_selfmod_change_record_fault_restores_inventory_and_runtime(
     assert restarted_planner.defaults[-1] == ("neutral", "")
 
 
+@pytest.mark.parametrize("artifact_type", ["skill_bundle", "behavior_pack"])
+@pytest.mark.parametrize("transition", ["failed_apply", "rollback"])
+def test_f3_selfmod_runtime_restore_failure_degrades_direct_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_type: str,
+    transition: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    if artifact_type == "skill_bundle":
+        stable = _write_signed_skill_bundle(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+        )
+        candidate = _write_signed_skill_bundle(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="2.0.0",
+        )
+        status_key = "skills"
+        artifact_name = "calendar-helper"
+        transition_reason = "skill_activation_failed"
+    else:
+        stable = _write_signed_behavior_pack(
+            tmp_path / "stable",
+            key_path=key_path,
+            version="1.0.0",
+            tone="friendly",
+            custom_text="Stay warm.",
+        )
+        candidate = _write_signed_behavior_pack(
+            tmp_path / "candidate",
+            key_path=key_path,
+            version="2.0.0",
+            tone="strict",
+            custom_text="Stay strict.",
+        )
+        status_key = "behavior_packs"
+        artifact_name = "operator-tone"
+        transition_reason = "behavior_overlay_failed"
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+
+    if transition == "failed_apply":
+        proposal = manager.propose(candidate)
+
+        def _fail_change_commit(*_args: object, **_kwargs: object) -> None:
+            raise selfmod_manager_module._SelfModificationOperationError(
+                "change_record_persist_failed"
+            )
+
+        monkeypatch.setattr(manager, "_commit_inventory_and_change", _fail_change_commit)
+    else:
+        applied = manager.apply(manager.propose(candidate).proposal_id, confirm=True)
+        assert applied.applied is True
+
+        def _fail_rollback_runtime(*_args: object, **_kwargs: object) -> list[str]:
+            raise selfmod_manager_module._SelfModificationOperationError(transition_reason)
+
+        monkeypatch.setattr(manager, "_apply_runtime_for_inventory", _fail_rollback_runtime)
+
+    monkeypatch.setattr(manager, "_restore_runtime", lambda *_args, **_kwargs: False)
+
+    if transition == "failed_apply":
+        result = manager.apply(proposal.proposal_id, confirm=True)
+        assert result.applied is False
+        assert result.active_version == ""
+    else:
+        result = manager.rollback(applied.change_id)
+        assert result.rolled_back is False
+        assert result.active_version == ""
+
+    assert result.reason == "runtime_restore_failed"
+    assert manager.state_degraded is True
+    assert manager.status()[status_key][artifact_name] == {
+        "enabled": False,
+        "active_version": "",
+    }
+    assert manager._authority_block_path.exists() is (transition == "failed_apply")
+
+
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"

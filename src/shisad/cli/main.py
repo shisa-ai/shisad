@@ -874,8 +874,7 @@ def _verify_claimed_backup_directory(data_root_fd: int, backup_fd: int) -> None:
         or not stat.S_ISDIR(opened_stat.st_mode)
         or entry_stat.st_uid != os.getuid()
         or opened_stat.st_uid != os.getuid()
-        or (entry_stat.st_dev, entry_stat.st_ino)
-        != (opened_stat.st_dev, opened_stat.st_ino)
+        or (entry_stat.st_dev, entry_stat.st_ino) != (opened_stat.st_dev, opened_stat.st_ino)
     ):
         raise OSError("fresh-config backup directory identity changed")
 
@@ -1234,7 +1233,7 @@ def doctor(ctx: click.Context) -> None:
     "--component",
     default="all",
     help=(
-        "Component to check (all, dependencies, storage, approvals, skills, selfmod, "
+        "Component to check (all, dependencies, storage, authority, approvals, skills, selfmod, "
         "dashboard, evidence, control_plane, provider, policy, channels, sandbox, browser, "
         "realitycheck)"
     ),

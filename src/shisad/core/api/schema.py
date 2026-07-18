@@ -2321,6 +2321,7 @@ class DaemonStatusResult(BaseModel):
     yara_policy_required: bool = False
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
+    authority: dict[str, Any] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)
     pairing_requests: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)

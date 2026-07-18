@@ -403,6 +403,15 @@ claim remains held until mutable services and listeners stop. This is a local
 mutable-file authority boundary, not a multi-host or remote provider-account
 lease.
 
+`shisad status` and `shisad doctor check --component authority` project the
+live claim's health without exposing authority paths, process/user identifiers,
+or file descriptors. The diagnostic reports only candidate roles/count, whether
+the in-process claim reference is held, normalized owner/mode compliance, record
+identity, host lock state, and namespace binding. Permission, identity, lock, or
+namespace drift makes the authority component degraded and provides a restart/
+registry-remediation hint; it is not collapsed into a generic healthy storage
+row.
+
 The local claim does not prevent another host or process outside that filesystem
 from using the same remote bot/account. Telegram polling startup failures and
 terminal Slack, Discord, or Matrix consumer-task failures mark the adapter

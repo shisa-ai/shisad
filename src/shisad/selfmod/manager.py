@@ -647,7 +647,24 @@ class SelfModificationManager:
                     reason="artifact_store_restore_failed",
                 )
                 return _finish_guarded(result) if authority_is_durable else result
-            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
+            if not self._restore_runtime(
+                previous_inventory,
+                proposal.artifact_type,
+                proposal.name,
+            ):
+                self._disable_in_memory_artifact_authority(
+                    proposal.artifact_type,
+                    proposal.name,
+                    reason="runtime_restore_failed",
+                )
+                return SelfModificationApplyResult(
+                    applied=False,
+                    proposal_id=proposal_id,
+                    warnings=list(inspection.warnings),
+                    capability_diff=dict(inspection.capability_diff),
+                    active_version="",
+                    reason="runtime_restore_failed",
+                )
             return _finish_guarded(
                 SelfModificationApplyResult(
                     applied=False,
@@ -773,7 +790,24 @@ class SelfModificationManager:
                     active_version="",
                     reason="inventory_restore_failed",
                 )
-            self._restore_runtime(current_inventory, change.artifact_type, change.name)
+            if not self._restore_runtime(
+                current_inventory,
+                change.artifact_type,
+                change.name,
+            ):
+                self._disable_in_memory_artifact_authority(
+                    change.artifact_type,
+                    change.name,
+                    reason="runtime_restore_failed",
+                )
+                return SelfModificationRollbackResult(
+                    rolled_back=False,
+                    change_id=change_id,
+                    artifact_type=change.artifact_type,
+                    name=change.name,
+                    active_version="",
+                    reason="runtime_restore_failed",
+                )
             return SelfModificationRollbackResult(
                 rolled_back=False,
                 change_id=change_id,
@@ -1116,11 +1150,12 @@ class SelfModificationManager:
             raise _SelfModificationOperationError("behavior_overlay_failed") from exc
         return []
 
-    def _restore_runtime(self, inventory: _Inventory, artifact_type: str, name: str) -> None:
+    def _restore_runtime(self, inventory: _Inventory, artifact_type: str, name: str) -> bool:
         try:
             self._apply_runtime_for_inventory(inventory, artifact_type, name)
         except _SelfModificationOperationError:
-            return None
+            return False
+        return True
 
     def _publish_authority_guard(self) -> None:
         atomic_write_bytes(
