@@ -22,9 +22,11 @@ from shisad.core.atomic_state import (
     StatePersistenceDegradedError,
     encode_versioned_json_snapshot,
 )
+from shisad.core.planner import Planner
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import ToolName
-from shisad.security.policy import SkillPolicy
+from shisad.security.pep import PEP
+from shisad.security.policy import PolicyBundle, SkillPolicy
 from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
 
@@ -42,9 +44,16 @@ def _write_owner_only_text(path: Path, payload: str) -> None:
 class _PlannerStub:
     def __init__(self) -> None:
         self.defaults: list[tuple[str, str]] = []
+        self.persona_defaults_enabled = True
 
     def set_persona_defaults(self, *, tone: str, custom_text: str) -> None:
         self.defaults.append((tone, custom_text))
+
+    def block_persona_defaults(self) -> None:
+        self.persona_defaults_enabled = False
+
+    def unblock_persona_defaults(self) -> None:
+        self.persona_defaults_enabled = True
 
 
 def _generate_ssh_keypair(tmp_path: Path, *, name: str) -> Path:
@@ -212,8 +221,10 @@ def _build_manager(
     tmp_path: Path,
     *,
     allowed_signers_path: Path,
-) -> tuple[SelfModificationManager, _PlannerStub]:
-    planner = _PlannerStub()
+    planner: Any | None = None,
+) -> tuple[SelfModificationManager, Any]:
+    if planner is None:
+        planner = _PlannerStub()
     skill_manager = SkillManager(
         storage_dir=tmp_path / "skills-state",
         policy=SkillPolicy(
@@ -1338,6 +1349,94 @@ def test_f3_selfmod_runtime_restore_failure_degrades_direct_recovery(
         "enabled": False,
         "active_version": "",
     }
+    assert manager._authority_block_path.exists() is (transition == "failed_apply")
+
+
+@pytest.mark.parametrize("transition", ["failed_apply", "rollback"])
+def test_f3_behavior_runtime_restore_failure_blocks_actual_planner_overlay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    planner = Planner(
+        object(),
+        PEP(PolicyBundle(default_require_confirmation=False), ToolRegistry()),
+        persona_tone="neutral",
+    )
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=allowed_signers,
+        planner=planner,
+    )
+    stable = _write_signed_behavior_pack(
+        tmp_path / "stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    candidate = _write_signed_behavior_pack(
+        tmp_path / "candidate",
+        key_path=key_path,
+        version="2.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    assert manager.apply(manager.propose(stable).proposal_id, confirm=True).applied is True
+
+    if transition == "failed_apply":
+        proposal = manager.propose(candidate)
+
+        def _fail_change_commit(*_args: object, **_kwargs: object) -> None:
+            raise selfmod_manager_module._SelfModificationOperationError(
+                "change_record_persist_failed"
+            )
+
+        monkeypatch.setattr(manager, "_commit_inventory_and_change", _fail_change_commit)
+        successful_overlay_calls_remaining = 1
+    else:
+        applied = manager.apply(manager.propose(candidate).proposal_id, confirm=True)
+        assert applied.applied is True
+        successful_overlay_calls_remaining = 0
+
+    original_setter = planner.set_persona_defaults
+
+    def _fail_runtime_restore(*, tone: str, custom_text: str) -> None:
+        nonlocal successful_overlay_calls_remaining
+        if successful_overlay_calls_remaining > 0:
+            successful_overlay_calls_remaining -= 1
+            original_setter(tone=tone, custom_text=custom_text)
+            return
+        raise RuntimeError("injected planner overlay failure")
+
+    monkeypatch.setattr(planner, "set_persona_defaults", _fail_runtime_restore)
+
+    if transition == "failed_apply":
+        result = manager.apply(proposal.proposal_id, confirm=True)
+        assert result.applied is False
+    else:
+        result = manager.rollback(applied.change_id)
+        assert result.rolled_back is False
+
+    assert result.reason == "runtime_restore_failed"
+    assert result.active_version == ""
+    assert manager.state_degraded is True
+    assert manager.status()["behavior_packs"]["operator-tone"] == {
+        "enabled": False,
+        "active_version": "",
+    }
+    assert planner._persona_tone == "strict"
+    assert planner._custom_persona_text == "Stay strict."
+    prompt = planner._compose_system_prompt()
+    assert "tone=neutral" in prompt
+    assert "Stay strict." not in prompt
     assert manager._authority_block_path.exists() is (transition == "failed_apply")
 
 

@@ -181,6 +181,15 @@ as an empty inventory. If self-modification activation truth is uncertain,
 dynamic skill registrations are withdrawn because the two authorities cannot
 be safely reconciled in that process.
 
+Behavior-pack persona publication has a separate in-process authority gate.
+Overlay updates close that gate before changing planner defaults and reopen it
+only after the complete update succeeds. If candidate application, recovery, or
+rollback cannot restore a coherent overlay, prompt composition ignores the
+staged defaults while self-modification reports degraded. With no separate
+per-call tone override it uses a neutral tone, and it omits mutable custom
+persona text; it does not continue using the possibly candidate or mismatched
+overlay.
+
 Self-modification proposal, change, and incident records use the same
 old-or-new publication boundary. A broken requested proposal or change is
 reported as corrupt or unsupported rather than missing. Inspect `shisad status`,

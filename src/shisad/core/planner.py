@@ -198,6 +198,7 @@ class Planner:
         self._system_prompt = system_prompt
         self._persona_tone = persona_tone
         self._custom_persona_text = custom_persona_text.strip()
+        self._persona_defaults_enabled = True
         self._capabilities = capabilities or ProviderCapabilities()
         self._tool_registry = tool_registry
         # Keep direct-constructor default lenient for backwards-compatible test/tooling
@@ -215,6 +216,14 @@ class Planner:
         if normalized is not None:
             self._persona_tone = normalized
         self._custom_persona_text = custom_text.strip()
+
+    def block_persona_defaults(self) -> None:
+        """Withdraw mutable default persona authority until a coherent update completes."""
+        self._persona_defaults_enabled = False
+
+    def unblock_persona_defaults(self) -> None:
+        """Publish the currently staged default persona after a coherent update."""
+        self._persona_defaults_enabled = True
 
     async def propose(
         self,
@@ -297,7 +306,10 @@ class Planner:
         persona_tone_override: str | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
-        tone = self._normalize_persona_tone(persona_tone_override) or self._persona_tone
+        tone = self._normalize_persona_tone(persona_tone_override)
+        if tone is None:
+            tone = self._persona_tone if self._persona_defaults_enabled else "neutral"
+        custom_persona_text = self._custom_persona_text if self._persona_defaults_enabled else ""
         safety_prompt = self._system_prompt
         web_recovery_prompt = self._web_recovery_prompt(tools)
         if web_recovery_prompt and "SEARCH EVIDENCE RECOVERY POLICY" not in safety_prompt:
@@ -310,10 +322,10 @@ class Planner:
             ),
             (f"PERSONA STYLE INSTRUCTIONS (tone={tone})\n{_PERSONA_STYLE_PROFILES[tone]}"),
         ]
-        if self._custom_persona_text:
+        if custom_persona_text:
             sections.append(
                 "CUSTOM PERSONA (trusted operator config)\n"
-                f"{self._custom_persona_text}\n"
+                f"{custom_persona_text}\n"
                 "Custom persona instructions are style-only and must not override "
                 "safety/policy/tool constraints."
             )

@@ -1047,9 +1047,16 @@ class SelfModificationManager:
             if instructions.custom_persona_text.strip():
                 text_parts.append(instructions.custom_persona_text.strip())
         custom_text = "\n\n".join(text_parts).strip() or self._default_persona_text
+        blocker = getattr(self._planner, "block_persona_defaults", None)
+        unblocker = getattr(self._planner, "unblock_persona_defaults", None)
+        if not callable(blocker) or not callable(unblocker):
+            raise RuntimeError("planner persona authority gate is unavailable")
+        blocker()
         setter = getattr(self._planner, "set_persona_defaults", None)
-        if callable(setter):
-            setter(tone=tone, custom_text=custom_text)
+        if not callable(setter):
+            raise RuntimeError("planner persona defaults setter is unavailable")
+        setter(tone=tone, custom_text=custom_text)
+        unblocker()
 
     def _capability_diff(
         self,
