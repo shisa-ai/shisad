@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import shisad.core.artifact_staging as artifact_staging_module
 from shisad.core.artifact_staging import ArtifactTreeCopyError, copy_bounded_regular_tree
 
 
@@ -192,6 +193,133 @@ def test_artifact_staging_enforces_depth_bound(tmp_path: Path) -> None:
             source,
             destination,
             max_entries=512,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_rejects_regular_file_hardlink_alias(tmp_path: Path) -> None:
+    external = tmp_path / "external.txt"
+    external.write_text("operator secret", encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    os.link(external, source / "alias.txt")
+    destination = tmp_path / "destination"
+
+    with pytest.raises(ArtifactTreeCopyError, match="hard link"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_rechecks_hardlink_count_after_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "payload.txt"
+    source_file.write_bytes(b"approved")
+    external_alias = tmp_path / "external-alias.txt"
+    destination = tmp_path / "destination"
+    original_open = os.open
+    linked = False
+
+    def _open_after_link(
+        path: str | bytes | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal linked
+        if (
+            path == "payload.txt"
+            and dir_fd is not None
+            and flags & (os.O_WRONLY | os.O_RDWR) == 0
+            and not linked
+        ):
+            os.link(source_file, external_alias)
+            linked = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", _open_after_link)
+
+    with pytest.raises(ArtifactTreeCopyError, match="hard link"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert linked is True
+    assert not destination.exists()
+
+
+def test_artifact_staging_rejects_changed_mount_identity_for_nested_subtree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    nested = source / "mounted"
+    nested.mkdir()
+    (nested / "secret.txt").write_text("operator secret", encoding="utf-8")
+    destination = tmp_path / "destination"
+    calls = 0
+
+    def _changed_mount_id(_fd: int) -> int:
+        nonlocal calls
+        calls += 1
+        return 100 if calls == 1 else 200
+
+    monkeypatch.setattr(
+        artifact_staging_module,
+        "_mount_id",
+        _changed_mount_id,
+    )
+
+    with pytest.raises(ArtifactTreeCopyError, match="nested mount"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
+            max_total_bytes=32,
+        )
+
+    assert not destination.exists()
+
+
+def test_artifact_staging_fails_closed_when_mount_identity_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.txt").write_text("payload", encoding="utf-8")
+    destination = tmp_path / "destination"
+
+    def _mount_id_unavailable(_fd: int) -> int:
+        raise ArtifactTreeCopyError("artifact mount identity unavailable")
+
+    monkeypatch.setattr(
+        artifact_staging_module,
+        "_mount_id",
+        _mount_id_unavailable,
+    )
+
+    with pytest.raises(ArtifactTreeCopyError, match="mount identity unavailable"):
+        copy_bounded_regular_tree(
+            source,
+            destination,
+            max_entries=8,
             max_total_bytes=32,
         )
 

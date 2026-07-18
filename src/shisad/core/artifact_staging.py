@@ -75,6 +75,23 @@ def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
     return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
 
 
+def _mount_id(fd: int) -> int:
+    """Read the kernel mount identity for one held Linux file descriptor."""
+
+    try:
+        fdinfo = Path(f"/proc/self/fdinfo/{fd}").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ArtifactTreeCopyError("artifact mount identity unavailable") from exc
+    for line in fdinfo.splitlines():
+        key, separator, value = line.partition(":")
+        if key == "mnt_id" and separator:
+            try:
+                return int(value.strip())
+            except ValueError as exc:
+                raise ArtifactTreeCopyError("artifact mount identity unavailable") from exc
+    raise ArtifactTreeCopyError("artifact mount identity unavailable")
+
+
 def _paths_overlap(source: Path, destination: Path) -> bool:
     return source == destination or source in destination.parents or destination in source.parents
 
@@ -88,9 +105,12 @@ def _copy_file(
     totals: _CopyTotals,
     max_total_bytes: int,
     root_device: int,
+    root_mount_id: int,
 ) -> None:
     if observed.st_dev != root_device:
         raise ArtifactTreeCopyError(f"artifact tree contains a mounted file: {name}")
+    if observed.st_nlink != 1:
+        raise ArtifactTreeCopyError(f"artifact tree contains a hard link: {name}")
     if totals.total_bytes + observed.st_size > max_total_bytes:
         raise ArtifactTreeCopyError("artifact tree byte limit exceeded")
     source_fd = os.open(
@@ -106,6 +126,10 @@ def _copy_file(
         opened = os.fstat(source_fd)
         if not stat.S_ISREG(opened.st_mode) or not _same_inode(observed, opened):
             raise ArtifactTreeCopyError(f"artifact tree entry changed during staging: {name}")
+        if opened.st_nlink != 1:
+            raise ArtifactTreeCopyError(f"artifact tree contains a hard link: {name}")
+        if _mount_id(source_fd) != root_mount_id:
+            raise ArtifactTreeCopyError(f"artifact tree contains a nested mount: {name}")
         destination_fd = os.open(
             name,
             os.O_WRONLY
@@ -148,6 +172,7 @@ def _copy_directory_contents(
     max_entries: int,
     max_total_bytes: int,
     root_device: int,
+    root_mount_id: int,
     depth: int = 0,
 ) -> None:
     if depth > _MAX_TREE_DEPTH:
@@ -170,6 +195,7 @@ def _copy_directory_contents(
                     totals=totals,
                     max_total_bytes=max_total_bytes,
                     root_device=root_device,
+                    root_mount_id=root_mount_id,
                 )
                 continue
             if not stat.S_ISDIR(observed.st_mode):
@@ -186,6 +212,10 @@ def _copy_directory_contents(
                     raise ArtifactTreeCopyError(
                         f"artifact tree directory changed during staging: {name}"
                     )
+                if _mount_id(source_child_fd) != root_mount_id:
+                    raise ArtifactTreeCopyError(
+                        f"artifact tree contains a nested mount: {name}"
+                    )
                 os.mkdir(name, 0o700, dir_fd=destination_fd)
                 destination_child_fd = os.open(
                     name,
@@ -200,6 +230,7 @@ def _copy_directory_contents(
                     max_entries=max_entries,
                     max_total_bytes=max_total_bytes,
                     root_device=root_device,
+                    root_mount_id=root_mount_id,
                     depth=depth + 1,
                 )
                 os.fsync(destination_child_fd)
@@ -232,6 +263,7 @@ def copy_bounded_regular_tree(
     created = False
     try:
         source_stat = os.fstat(source_fd)
+        source_mount_id = _mount_id(source_fd)
         destination_parent_fd = _open_directory_chain(destination.parent)
         os.mkdir(destination.name, 0o700, dir_fd=destination_parent_fd)
         created = True
@@ -249,6 +281,7 @@ def copy_bounded_regular_tree(
             max_entries=max_entries,
             max_total_bytes=max_total_bytes,
             root_device=source_stat.st_dev,
+            root_mount_id=source_mount_id,
         )
         os.fsync(destination_parent_fd)
         return ArtifactTreeCopyResult(
